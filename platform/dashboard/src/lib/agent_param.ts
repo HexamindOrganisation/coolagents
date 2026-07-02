@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 /**
@@ -56,6 +56,16 @@ export interface AgentSelection {
   /** Called by the picker's onChange — updates ?agent= via ``replace``
    *  so picker clicks don't pollute the back-button trail. */
   set: (name: string) => void;
+  /** The raw ``?agent=`` URL value, unchanged. ``null`` when the URL
+   *  has no such param. Useful for "you asked for X but we're showing
+   *  Y" banners without callers having to re-read useSearchParams. */
+  requested: string | null;
+  /** True once the agents list has loaded AND the URL asked for a name
+   *  that isn't in it. Gated on ``namesLoaded`` so the banner doesn't
+   *  flash during the initial fetch, and gated on "no project switch
+   *  in flight" so it doesn't fire when the user is deliberately
+   *  moving between projects. */
+  notFound: boolean;
 }
 
 export interface UseAgentSelectionOptions {
@@ -94,7 +104,30 @@ export function useAgentSelection(
     [agents],
   );
 
-  // Resolve `selected`. The three-way branch is deliberate:
+  // Track resetOn transitions across renders. A "real switch" is a
+  // transition between two KNOWN project ids (both non-null and
+  // different). null → realId is just orgs-hydration completing; the
+  // user hasn't switched anything. realId → null is between-route
+  // teardown. Neither counts.
+  //
+  // Held as state (not a ref) so lint is happy and the "just switched"
+  // signal is visible during render. Setting state during render is
+  // the React-blessed pattern for "adjust state when a prop changes";
+  // React discards this render's output and re-runs synchronously
+  // with the new state before committing anything to the DOM.
+  const [lastResetOn, setLastResetOn] = useState<string | null | undefined>(
+    options.resetOn,
+  );
+  const isSwitchingProjects =
+    lastResetOn != null &&
+    options.resetOn != null &&
+    lastResetOn !== options.resetOn;
+
+  // Resolve `selected`. Five-way branch:
+  //   * mid-switch → the URL still carries the old project's ?agent=.
+  //     Fall back to the new project's first agent (or null) so we
+  //     don't fire a cross-project fetch this render. The effect
+  //     below strips the stale param next tick.
   //   * names still loading → trust the URL (don't drop a valid value
   //     just because the list hasn't arrived yet).
   //   * URL points at a known name → use it.
@@ -102,7 +135,10 @@ export function useAgentSelection(
   //     fall back to first known name (session-only, no URL write).
   let selected: string | null;
   let fromUrl: boolean;
-  if (raw && !namesLoaded) {
+  if (isSwitchingProjects) {
+    selected = knownNames.length > 0 ? knownNames[0] : null;
+    fromUrl = false;
+  } else if (raw && !namesLoaded) {
     selected = raw;
     fromUrl = true;
   } else if (raw && knownNames.includes(raw)) {
@@ -116,6 +152,16 @@ export function useAgentSelection(
     fromUrl = false;
   }
 
+  // "You asked for X, we're showing Y." Only fires once names have
+  // loaded (so no flash during the initial fetch) and only when the
+  // requested name genuinely isn't in the new project (never on the
+  // switch itself, which will resolve next tick).
+  const notFound =
+    raw !== null &&
+    namesLoaded &&
+    !knownNames.includes(raw) &&
+    !isSwitchingProjects;
+
   const set = useCallback(
     (name: string) => {
       const next = new URLSearchParams(params);
@@ -125,21 +171,19 @@ export function useAgentSelection(
     [params, setParams],
   );
 
-  // Real transitions only — ref-tracked so the mount doesn't fire.
-  // ``resetOn=undefined`` opts out of reset behavior entirely (useful
-  // for routes with no project scope).
-  const previousResetOn = useRef<string | null | undefined>(options.resetOn);
+  // Only a real switch between two known project ids clears the URL.
+  // Hydration (null → realId) and route exits (realId → null) leave
+  // the URL alone. ``resetOn=undefined`` opts out entirely.
   useEffect(() => {
-    if (previousResetOn.current === options.resetOn) return;
-    previousResetOn.current = options.resetOn;
-    // Only clear if the param is actually set — no-op writes still
-    // touch history via useSearchParams, so we guard here.
+    if (lastResetOn === options.resetOn) return;
+    setLastResetOn(options.resetOn);
+    if (lastResetOn == null || options.resetOn == null) return;
     if (params.has("agent")) {
       const next = new URLSearchParams(params);
       next.delete("agent");
       setParams(next, { replace: true });
     }
-  }, [options.resetOn, params, setParams]);
+  }, [options.resetOn, lastResetOn, params, setParams]);
 
-  return { selected, fromUrl, set };
+  return { selected, fromUrl, set, requested: raw, notFound };
 }

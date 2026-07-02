@@ -212,4 +212,125 @@ describe("useAgentSelection — resetOn", () => {
     rerender();
     expect(result.current.location.search).toBe("?agent=beta");
   });
+
+  it("does NOT clear the URL when resetOn hydrates from null to a real id", () => {
+    // Regression for the hydration-clear bug. useProjectScoped returns
+    // null while useOrgs() is loading, then transitions to a real id
+    // once orgs land. The old ref-guard fired the reset on that
+    // transition, stripping ?agent= on every cold page load. The fix:
+    // a transition where either endpoint is null/undefined is not a
+    // "switch" and must leave the URL alone.
+    const { result, rerender } = renderHook(
+      ({ project }: { project: string | null }) => {
+        const sel = useAgentSelection(AGENTS("alpha", "beta"), {
+          resetOn: project,
+        });
+        const location = useLocation();
+        return { sel, location };
+      },
+      {
+        initialProps: { project: null },
+        wrapper: wrapperAt("/policies?agent=beta"),
+      },
+    );
+
+    // Orgs finished loading — project id materializes. The URL param
+    // must stay put; the user did not switch projects, we just learned
+    // which project they were already on.
+    rerender({ project: "proj-1" });
+    expect(result.current.location.search).toBe("?agent=beta");
+    expect(result.current.sel.selected).toBe("beta");
+    expect(result.current.sel.fromUrl).toBe(true);
+  });
+
+  it("does NOT leak the old project's ?agent= into the new project on a switch", () => {
+    // Regression for the loading-window race. On a project switch,
+    // react-query drops agents.data to undefined until the new fetch
+    // lands. The old loading-window branch trusted `raw` unconditionally
+    // and handed the stale name to downstream fetches — a 404 flash or
+    // (worse) a cross-project edit if the name happened to collide.
+    // Fix: detect the switch during render and fall back to the new
+    // project's first agent (or null) instead of the stale URL value.
+    let currentAgents: readonly { name: string }[] | undefined = AGENTS(
+      "alpha",
+      "beta",
+    );
+    const { result, rerender } = renderHook(
+      ({ project }: { project: string }) => {
+        const sel = useAgentSelection(currentAgents, { resetOn: project });
+        return { sel };
+      },
+      {
+        initialProps: { project: "proj-1" },
+        wrapper: wrapperAt("/policies?agent=beta"),
+      },
+    );
+
+    // Sanity: URL wins on mount.
+    expect(result.current.sel.selected).toBe("beta");
+
+    // Project switch AND react-query drops data to undefined at the
+    // same tick — the switching-projects guard must fire even though
+    // knownNames is empty here.
+    currentAgents = undefined;
+    rerender({ project: "proj-2" });
+    expect(result.current.sel.selected).toBeNull();
+    expect(result.current.sel.fromUrl).toBe(false);
+  });
+});
+
+describe("useAgentSelection — notFound + requested for the banner", () => {
+  it("exposes requested = raw ?agent= value regardless of match", () => {
+    const { result } = renderHook(
+      () => useAgentSelection(AGENTS("alpha", "beta")),
+      { wrapper: wrapperAt("/policies?agent=gone") },
+    );
+    expect(result.current.requested).toBe("gone");
+  });
+
+  it("requested is null when ?agent= is absent", () => {
+    const { result } = renderHook(
+      () => useAgentSelection(AGENTS("alpha", "beta")),
+      { wrapper: wrapperAt("/policies") },
+    );
+    expect(result.current.requested).toBeNull();
+  });
+
+  it("notFound=true once names have loaded and ?agent= is not among them", () => {
+    // Regression for the silent-misroute-to-wrong-agent bug. fromUrl
+    // was computed but never surfaced, so callers had no signal to
+    // render the "we're editing X, not Y" banner. Save then went to
+    // the wrong agent.
+    const { result } = renderHook(
+      () => useAgentSelection(AGENTS("alpha", "beta")),
+      { wrapper: wrapperAt("/policies?agent=gone") },
+    );
+    expect(result.current.notFound).toBe(true);
+    expect(result.current.selected).toBe("alpha");
+  });
+
+  it("notFound=false while names are still loading (no flash)", () => {
+    // The banner must not appear during the initial fetch — the URL
+    // param may well be valid, we just don't know yet.
+    const { result } = renderHook(() => useAgentSelection(undefined), {
+      wrapper: wrapperAt("/policies?agent=beta"),
+    });
+    expect(result.current.notFound).toBe(false);
+  });
+
+  it("notFound=false when the URL matches a known name", () => {
+    const { result } = renderHook(
+      () => useAgentSelection(AGENTS("alpha", "beta")),
+      { wrapper: wrapperAt("/policies?agent=beta") },
+    );
+    expect(result.current.notFound).toBe(false);
+  });
+
+  it("notFound=false when ?agent= is absent (fallback is expected, not an error)", () => {
+    const { result } = renderHook(
+      () => useAgentSelection(AGENTS("alpha", "beta")),
+      { wrapper: wrapperAt("/policies") },
+    );
+    expect(result.current.notFound).toBe(false);
+  });
 });

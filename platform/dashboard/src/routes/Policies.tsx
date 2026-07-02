@@ -49,10 +49,12 @@ export function PoliciesPage() {
   // resetOn=projectId clears the URL on a real project switch, but
   // NOT on the initial mount — so incoming ?agent= from a link is
   // preserved.
-  const { selected: selectedAgent, set: setSelectedAgent } = useAgentSelection(
-    agents.data,
-    { resetOn: scope.projectId },
-  );
+  const {
+    selected: selectedAgent,
+    set: setSelectedAgent,
+    requested,
+    notFound,
+  } = useAgentSelection(agents.data, { resetOn: scope.projectId });
   const [tab, setTab] = useState<Tab>("yaml");
 
   if (scope.status === "no-project") {
@@ -75,6 +77,26 @@ export function PoliciesPage() {
         </div>
         <Tabs value={tab} onChange={setTab} />
       </header>
+
+      {/* URL asked for an agent this project doesn't have — show a banner
+          instead of silently editing the wrong agent's policy. */}
+      {notFound && requested && (
+        <div className="flex items-center gap-2 px-6 py-2 text-xs bg-approval/5 border-b border-approval/30 text-approval">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span>
+            No agent named{" "}
+            <span className="font-mono font-medium">{requested}</span> in this
+            project.
+            {selectedAgent && (
+              <>
+                {" Showing "}
+                <span className="font-mono font-medium">{selectedAgent}</span>
+                {" instead."}
+              </>
+            )}
+          </span>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">
