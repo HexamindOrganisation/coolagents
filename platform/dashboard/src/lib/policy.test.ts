@@ -87,23 +87,21 @@ describe("parsePolicy — inline-roles shape", () => {
   it("mergedTools() exposes the worst-case cross-role view for the graph", () => {
     // The overview graph asks "what's the worst mode any caller could
     // hit?" — mergedTools answers by combining every concrete role's
-    // tools with worstMode ordering.
+    // resolved tool map with worstMode ordering. web_search comes in
+    // via the read_only mixin (allow); refund_order is deny in the
+    // `default` role and allow in support/billing, so worst-case is deny.
     const p = parsePolicy(INLINE_ROLES_POLICY);
     const merged = mergedTools(p!);
-    // web_search lives ONLY in the read_only mixin (filtered out); the
-    // dashboard doesn't resolve `inherits:` client-side yet, so
-    // web_search doesn't appear in the merged view. Documented
-    // limitation — pinned so a future inheritance resolver flips the
-    // assertion, not silently changes behavior.
-    expect(Object.keys(merged)).toEqual(["refund_order"]);
-    // Two roles allow refund_order, one denies → worst-case is deny.
+    expect(Object.keys(merged).sort()).toEqual(["refund_order", "web_search"]);
+    expect(merged.web_search?.mode).toBe("allow");
     expect(merged.refund_order?.mode).toBe("deny");
   });
 
-  it("keeps flat top-level tools authoritative — roles can't override", () => {
-    // Reviewer finding #2: a user editing the flat tools.web_search.mode
-    // to allow must see that take visible effect on the graph, even if
-    // some role denies it. The merge preserves flat entries verbatim.
+  it("worst-cases across flat and roles — a role deny beats a flat allow", () => {
+    // Reviewer finding #75: a flat top-level allow used to win over a
+    // role's deny, so the overview graph rendered green even though
+    // some role would deny at runtime. Fixed: worst-case merge, no
+    // flat-priority. If any voice denies, the graph shows deny.
     const p = parsePolicy(`
 version: 1
 default_policy: { mode: deny }
@@ -115,8 +113,7 @@ roles:
       web_search: { mode: deny }
 `);
     const merged = mergedTools(p!);
-    // Flat entry wins — the strict role's deny does NOT upgrade it.
-    expect(merged.web_search?.mode).toBe("allow");
+    expect(merged.web_search?.mode).toBe("deny");
   });
 
   it("exposes per-role tool maps (including empty-tools roles)", () => {
@@ -133,8 +130,12 @@ roles:
     // Mixin excluded — is_mixin: true roles compose INTO concrete ones
     // via `inherits`; treating them first-class would double-count.
     expect(p!.roles.read_only).toBeUndefined();
-    expect(p!.roles.support?.refund_order.mode).toBe("allow");
-    expect(p!.roles.default?.refund_order.mode).toBe("deny");
+    // After inheritance resolution, web_search from read_only is
+    // present in every concrete role that inherits it.
+    expect(p!.roles.support?.tools.web_search.mode).toBe("allow");
+    expect(p!.roles.support?.tools.refund_order.mode).toBe("allow");
+    expect(p!.roles.default?.tools.refund_order.mode).toBe("deny");
+    expect(p!.roles.default?.tools.web_search.mode).toBe("allow");
   });
 
   it("preserves parseRolesFromPolicy's mixin filter (unchanged)", () => {
@@ -210,18 +211,18 @@ tools:
     expect(view!.tools).toEqual(["web_search", "fetch", "upload"]);
   });
 
-  it("falls back to default_policy for tools not in policy (or in mixin only)", () => {
-    // web_search lives only in the read_only mixin (filtered out).
-    // Without client-side `inherits:` resolution it falls to
-    // default_policy=deny. Documented limitation — pinned so a
-    // future inheritance resolver flips the assertion, not silently
-    // changes behavior. The wasm bundle at runtime enforces `allow`
-    // via inheritance.
+  it("resolves web_search from the read_only mixin via inherits:", () => {
+    // Reviewer finding #90: previously parsePolicy dropped mixins and
+    // never walked `inherits:`, so web_search (declared only in the
+    // read_only mixin) rendered as deny on the graph even though every
+    // concrete role in INLINE_ROLES_POLICY inherits read_only and can
+    // therefore call web_search at runtime.
     const view = buildAgentView(
       agent({ yaml: AGENT_YAML, policy: INLINE_ROLES_POLICY }),
     );
-    expect(effectiveMode(view!, "web_search")).toBe("deny");
-    expect(view!.missingInPolicy).toContain("web_search");
+    expect(effectiveMode(view!, "web_search")).toBe("allow");
+    // web_search now has a policy entry after inheritance resolution.
+    expect(view!.missingInPolicy).not.toContain("web_search");
   });
 
   it("effectiveMode returns worst-case across roles for a policy tool", () => {
@@ -390,7 +391,7 @@ roles:
       x: { mode: allow }
 `);
     expect(Object.keys(p!.roles).sort()).toEqual(["default", "support"]);
-    expect(p!.roles.default).toEqual({});
+    expect(p!.roles.default).toEqual({ tools: {} });
   });
 
   it("skips tool entries with invalid mode strings", () => {
@@ -420,6 +421,125 @@ tools:
     expect(p!.tools.read_file?.file_scope?.allowed_paths).toEqual([
       "/workspace/**",
     ]);
+  });
+});
+
+describe("parsePolicy — inherits resolution (finding #90)", () => {
+  it("resolves tools inherited from a mixin ancestor", () => {
+    const p = parsePolicy(INLINE_ROLES_POLICY);
+    // Every concrete role picks up web_search from the read_only mixin.
+    expect(p!.roles.default?.tools.web_search?.mode).toBe("allow");
+    expect(p!.roles.support?.tools.web_search?.mode).toBe("allow");
+    expect(p!.roles.billing?.tools.web_search?.mode).toBe("allow");
+  });
+
+  it("child role overrides an inherited mode", () => {
+    // strict inherits web_search: allow from read_only, then redeclares
+    // it as deny. The child's own entry must win.
+    const p = parsePolicy(`
+version: 1
+default_policy: { mode: deny }
+roles:
+  read_only:
+    is_mixin: true
+    tools:
+      web_search: { mode: allow }
+  strict:
+    inherits: [read_only]
+    tools:
+      web_search: { mode: deny }
+`);
+    expect(p!.roles.strict?.tools.web_search?.mode).toBe("deny");
+  });
+
+  it("later ancestor overrides earlier ancestor on the same tool", () => {
+    // Two mixins declare the same tool. The child inherits [a, b] — b
+    // wins because it comes later in the list.
+    const p = parsePolicy(`
+version: 1
+default_policy: { mode: deny }
+roles:
+  a:
+    is_mixin: true
+    tools:
+      x: { mode: allow }
+  b:
+    is_mixin: true
+    tools:
+      x: { mode: deny }
+  child:
+    inherits: [a, b]
+`);
+    expect(p!.roles.child?.tools.x?.mode).toBe("deny");
+  });
+
+  it("handles a cyclic inherits declaration without hanging", () => {
+    // a inherits b inherits a. Both are valid targets to reach, but
+    // the resolver must short-circuit on re-entry so the parse
+    // terminates. The declared own-tools still land in each role.
+    const p = parsePolicy(`
+version: 1
+default_policy: { mode: deny }
+roles:
+  a:
+    inherits: [b]
+    tools:
+      only_in_a: { mode: allow }
+  b:
+    inherits: [a]
+    tools:
+      only_in_b: { mode: allow }
+`);
+    expect(p).not.toBeNull();
+    expect(p!.roles.a?.tools.only_in_a?.mode).toBe("allow");
+    expect(p!.roles.b?.tools.only_in_b?.mode).toBe("allow");
+  });
+});
+
+describe("parsePolicy — per-role default_policy (finding #78)", () => {
+  it("parses a per-role default_policy and inherits it from ancestors", () => {
+    const p = parsePolicy(`
+version: 1
+default_policy: { mode: deny }
+roles:
+  permissive_mixin:
+    is_mixin: true
+    default_policy: { mode: allow }
+  role_a:
+    inherits: [permissive_mixin]
+  role_b:
+    default_policy: { mode: approval_required }
+`);
+    // role_a inherits the mixin's default_policy.
+    expect(p!.roles.role_a?.default_policy?.mode).toBe("allow");
+    // role_b declares its own.
+    expect(p!.roles.role_b?.default_policy?.mode).toBe("approval_required");
+  });
+
+  it("effectiveMode uses a role's own default_policy for an unlisted tool", () => {
+    // role_a raises its baseline to allow but doesn't list `fetch`.
+    // effectiveMode must count role_a's default (allow) as a voice,
+    // not fall through to the global default (deny).
+    const yaml = `
+name: bot
+model: gpt-5.4
+tools:
+  - fetch
+`;
+    const policy = `
+version: 1
+default_policy: { mode: deny }
+roles:
+  role_a:
+    default_policy: { mode: allow }
+`;
+    const view = buildAgentView({
+      name: "bot",
+      agent_yaml: yaml,
+      policy_yaml: policy,
+    } as unknown as AgentRead);
+    // Worst-case is allow — role_a is the only voice and it says allow.
+    expect(effectiveMode(view!, "fetch")).toBe("allow");
   });
 });
 

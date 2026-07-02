@@ -10,6 +10,16 @@ export interface ToolPolicy {
   };
 }
 
+export interface RolePolicy {
+  /** Tools this role gates, AFTER inheritance resolution. Own entries
+   *  override any inherited entry with the same tool name. */
+  tools: Record<string, ToolPolicy>;
+  /** Per-role default when a tool isn't listed. Falls back to the
+   *  global default_policy when absent. Inherited from the closest
+   *  ancestor that declares one. */
+  default_policy?: { mode: Mode };
+}
+
 export interface ParsedPolicy {
   version: number;
   default_policy: { mode: Mode };
@@ -18,12 +28,13 @@ export interface ParsedPolicy {
    *  edit at this level is authoritative. See `mergedTools` for the
    *  worst-case union across roles. */
   tools: Record<string, ToolPolicy>;
-  /** Concrete roles present in the yaml. Empty on flat policy YAML.
-   *  Mixins are filtered (composed via `inherits:` into concrete roles
-   *  at wasm-compile time). A concrete role with no `tools:` map is
-   *  still listed here as `{}` so this map agrees with
-   *  parseRolesFromPolicy on which roles the picker offers. */
-  roles: Record<string, Record<string, ToolPolicy>>;
+  /** Concrete roles present in the yaml, AFTER inheritance resolution.
+   *  Each entry carries the effective tool map (own tools merged over
+   *  ancestors) plus the resolved default_policy. Mixins compose in via
+   *  `inherits:` and are not first-class entries here. A concrete role
+   *  with no `tools:` map is still listed with `tools: {}` so this map
+   *  agrees with parseRolesFromPolicy on which roles the picker offers. */
+  roles: Record<string, RolePolicy>;
 }
 
 export interface ParsedAgent {
@@ -130,6 +141,65 @@ export function parseAgent(
   void policyYaml;
 }
 
+/** Extract a role's inherits list, filtering non-string entries. */
+function readInherits(spec: unknown): string[] {
+  const raw = (spec as { inherits?: unknown } | undefined)?.inherits;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((x): x is string => typeof x === "string");
+}
+
+/**
+ * Resolve a role's inheritance chain, merging ancestor tools into the
+ * role's own map. Own tools override inherited tools; sibling ancestors
+ * merge left-to-right (later ancestor overrides earlier on a name
+ * collision). Cycle-safe via the ``stack`` guard — a re-entered role
+ * short-circuits to an empty map, so cyclic inherits definitions parse
+ * without hanging or throwing.
+ *
+ * Both mixins and concrete roles participate as ancestors; the mixin
+ * filter only applies to which roles are returned to the caller (via
+ * ``parsePolicy.roles``), not to which entries contribute during
+ * resolution.
+ */
+function resolveInheritance(
+  specs: Record<
+    string,
+    {
+      tools: Record<string, ToolPolicy>;
+      inherits: string[];
+      defaultMode?: Mode;
+    }
+  >,
+): Record<string, RolePolicy> {
+  const memo: Record<string, RolePolicy> = {};
+  const resolve = (name: string, stack: Set<string>): RolePolicy => {
+    if (memo[name]) return memo[name];
+    if (stack.has(name)) return { tools: {} };
+    const spec = specs[name];
+    if (!spec) return { tools: {} };
+    stack.add(name);
+    const tools: Record<string, ToolPolicy> = {};
+    let defaultMode: Mode | undefined;
+    // Walk ancestors first so own entries override inherited ones.
+    for (const parent of spec.inherits) {
+      const resolved = resolve(parent, stack);
+      Object.assign(tools, resolved.tools);
+      if (resolved.default_policy) defaultMode = resolved.default_policy.mode;
+    }
+    // Own tools + own default_policy override anything inherited.
+    Object.assign(tools, spec.tools);
+    if (spec.defaultMode) defaultMode = spec.defaultMode;
+    stack.delete(name);
+    memo[name] = {
+      tools,
+      ...(defaultMode ? { default_policy: { mode: defaultMode } } : {}),
+    };
+    return memo[name];
+  };
+  for (const name of Object.keys(specs)) resolve(name, new Set());
+  return memo;
+}
+
 export function parsePolicy(policyYaml: string): ParsedPolicy | null {
   try {
     // `yaml.load` returns `unknown`; the shape checks below narrow it
@@ -147,25 +217,51 @@ export function parsePolicy(policyYaml: string): ParsedPolicy | null {
 
     // Two shapes coexist: (a) flat, with tools at top level; (b)
     // inline-roles, with concrete roles under `roles.<name>.tools`.
-    // We parse BOTH but keep them separate — the flat block is
-    // authoritative when the user writes at that level, roles carry
-    // the per-role variations. Downstream callers pick which they
-    // want via `tools` (flat) vs `roles[name]` vs `mergedTools(policy)`.
+    // Both parsed — flat block stays as authored (never merged with
+    // role decisions), roles carry the effective per-role view AFTER
+    // inheritance resolution. Downstream picks: ``tools`` (flat) vs
+    // ``roles[name]`` (fully-resolved role) vs ``mergedTools(policy)``
+    // (worst-case across the whole policy).
     const flatTools = readToolMap(raw.tools);
     const rolesRaw = raw.roles;
-    const roles: Record<string, Record<string, ToolPolicy>> = {};
+    const roles: Record<string, RolePolicy> = {};
     if (rolesRaw && typeof rolesRaw === "object" && !Array.isArray(rolesRaw)) {
+      // Two passes: (1) collect ALL role specs including mixins so they
+      // can serve as inheritance parents; (2) resolve the graph; (3)
+      // publish only concrete roles to the caller. Mixins participate
+      // as ancestors — dropping them at step 1 was the "web_search
+      // never appears" bug the review flagged.
+      const rawSpecs: Record<
+        string,
+        {
+          tools: Record<string, ToolPolicy>;
+          inherits: string[];
+          defaultMode?: Mode;
+        }
+      > = {};
       for (const [roleName, spec] of Object.entries(
         rolesRaw as Record<string, unknown>,
       )) {
         if (!spec || typeof spec !== "object") continue;
-        // Mixins compose INTO concrete roles at wasm-compile time; they
-        // aren't selectable roles and mustn't count toward the graph.
+        const s = spec as { tools?: unknown; default_policy?: unknown };
+        const roleDefault = s.default_policy as { mode?: unknown } | undefined;
+        rawSpecs[roleName] = {
+          tools: readToolMap(s.tools),
+          inherits: readInherits(spec),
+          ...(isMode(roleDefault?.mode)
+            ? { defaultMode: roleDefault.mode }
+            : {}),
+        };
+      }
+      const resolved = resolveInheritance(rawSpecs);
+      // Publish only concrete roles — mixins compose INTO them via
+      // inherits and aren't selectable on their own.
+      for (const [roleName, spec] of Object.entries(
+        rolesRaw as Record<string, unknown>,
+      )) {
+        if (!spec || typeof spec !== "object") continue;
         if (isMixinSpec(spec)) continue;
-        // Empty-tools roles ARE valid (they fall back to default_policy
-        // at runtime). Keep them as `{}` here so parsePolicy.roles
-        // agrees with parseRolesFromPolicy on which roles exist.
-        roles[roleName] = readToolMap((spec as { tools?: unknown }).tools);
+        roles[roleName] = resolved[roleName] ?? { tools: {} };
       }
     }
 
@@ -185,36 +281,35 @@ export function parsePolicy(policyYaml: string): ParsedPolicy | null {
  * PLUS the flat top-level `tools:` block. Used by the overview graph
  * when it needs one edge color per tool without picking a role first.
  *
- * Precedence rules:
- *   1. If the flat top-level `tools:` block declares a tool, that
- *      entry wins — the user's explicit top-level edit is
- *      authoritative and roles can't silently upgrade a flat `allow`
- *      to `deny`.
- *   2. Otherwise, the strongest per-role mode wins (`deny` >
- *      `approval_required` > `allow`). Later roles beat earlier ones
- *      on equal strength — keeps whichever declaration carries a
- *      more-specific `file_scope`.
+ * Semantics: strongest mode wins across the whole policy (`deny` >
+ * `approval_required` > `allow`). Flat top-level entries participate
+ * as another voice, not as an override — a role deny stays visible on
+ * the graph even when the flat block says allow, because at runtime
+ * the role IS what gates the call. Later contributors beat earlier
+ * ones on equal strength so the last-declared ``file_scope`` survives.
  *
  * Every consumer that wants "the color for this tool on the graph"
- * routes through this helper; the raw `policy.tools` / `policy.roles`
- * fields stay pure representations of the yaml.
+ * routes through this helper; the raw ``policy.tools`` / ``policy.roles``
+ * fields stay pure representations of the YAML.
  */
 export function mergedTools(policy: ParsedPolicy): Record<string, ToolPolicy> {
-  const merged: Record<string, ToolPolicy> = { ...policy.tools };
-  for (const roleTools of Object.values(policy.roles)) {
-    for (const [toolName, roleEntry] of Object.entries(roleTools)) {
-      // Flat entry wins — never override an explicit top-level rule.
-      if (toolName in policy.tools) continue;
-      const current = merged[toolName];
-      if (current === undefined) {
-        merged[toolName] = roleEntry;
-        continue;
-      }
-      // Later role wins on equal strength (>=) so the last-declared
-      // file_scope survives; strictly-stronger always upgrades.
-      if (MODE_STRENGTH[roleEntry.mode] >= MODE_STRENGTH[current.mode]) {
-        merged[toolName] = roleEntry;
-      }
+  const merged: Record<string, ToolPolicy> = {};
+  const contribute = (entry: ToolPolicy, toolName: string): void => {
+    const current = merged[toolName];
+    if (current === undefined) {
+      merged[toolName] = entry;
+      return;
+    }
+    if (MODE_STRENGTH[entry.mode] >= MODE_STRENGTH[current.mode]) {
+      merged[toolName] = entry;
+    }
+  };
+  for (const [toolName, entry] of Object.entries(policy.tools)) {
+    contribute(entry, toolName);
+  }
+  for (const rolePolicy of Object.values(policy.roles)) {
+    for (const [toolName, entry] of Object.entries(rolePolicy.tools)) {
+      contribute(entry, toolName);
     }
   }
   return merged;
@@ -241,9 +336,37 @@ export function buildAgentView(agent: AgentRead): AgentView | null {
   };
 }
 
+/**
+ * The mode the overview graph should color the ``(agent, tool)`` edge.
+ *
+ * Semantics: worst case across every voice that has an opinion.
+ *   * If a flat top-level entry exists, its mode is one voice.
+ *   * Each role contributes: the role's own entry for the tool, or,
+ *     when the role doesn't list the tool, that role's ``default_policy``
+ *     mode (or the global default if the role didn't set one).
+ *   * When there are no roles and no flat entry, the global
+ *     ``default_policy`` mode wins by default.
+ *
+ * The strongest mode across all those voices is returned. This mirrors
+ * runtime behavior: any role that would deny the call at runtime shows
+ * as deny on the overview.
+ */
 export function effectiveMode(view: AgentView, toolName: string): Mode {
-  const entry = mergedTools(view.policy)[toolName];
-  return entry?.mode ?? view.policy.default_policy.mode;
+  const voices: Mode[] = [];
+  const flatEntry = view.policy.tools[toolName];
+  if (flatEntry) voices.push(flatEntry.mode);
+  const roleNames = Object.keys(view.policy.roles);
+  for (const roleName of roleNames) {
+    const role = view.policy.roles[roleName];
+    const roleEntry = role.tools[toolName];
+    if (roleEntry) {
+      voices.push(roleEntry.mode);
+    } else {
+      voices.push(role.default_policy?.mode ?? view.policy.default_policy.mode);
+    }
+  }
+  if (voices.length === 0) return view.policy.default_policy.mode;
+  return worstMode(voices) ?? view.policy.default_policy.mode;
 }
 
 export const MODE_COLOR: Record<Mode, string> = {
