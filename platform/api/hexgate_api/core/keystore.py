@@ -278,3 +278,10 @@ class FileKeyStore:
             self.fingerprint(),
             bar,
         )
+
+
+# Process-wide signing keystore singleton. Construction is side-effect-free
+# (no filesystem access until ensure_keypair()); the app lifespan calls
+# ensure_keypair() at startup. Readers import this name lazily at call time so
+# a test swap of ``core.keystore.keystore`` is picked up.
+keystore = FileKeyStore()

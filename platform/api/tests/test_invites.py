@@ -23,7 +23,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api import main
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.core import mailer
 from hexgate_api.main import app
 from hexgate_api.models import (
@@ -67,14 +67,14 @@ async def client(session_factory, tmp_path) -> TestClient:
             yield session
 
     app.dependency_overrides[get_session] = override_session
-    original_keystore = main.keystore
-    main.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
-    main.keystore.ensure_keypair()
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
-        main.keystore = original_keystore
+        keystore_mod.keystore = original_keystore
 
 
 class _CapturingSender:

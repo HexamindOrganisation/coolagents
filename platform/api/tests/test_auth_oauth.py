@@ -35,6 +35,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api import main
 from hexgate_api.main import app
 from hexgate_api.models import OAuthAccount, User
@@ -53,7 +54,7 @@ def test_build_router_returns_none_without_env(monkeypatch) -> None:
     # build_google_oauth_router calls into the keystore for the state
     # secret — ensure it's initialised so the call doesn't blow up
     # before it hits the env-var check we actually care about.
-    main.keystore.ensure_keypair()
+    keystore_mod.keystore.ensure_keypair()
     from hexgate_api.auth import build_google_oauth_router
 
     assert build_google_oauth_router() is None
@@ -63,7 +64,7 @@ def test_build_router_returns_router_with_env(monkeypatch) -> None:
     """With both env vars set → APIRouter with /authorize + /callback."""
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_SECRET", "test-secret")
-    main.keystore.ensure_keypair()
+    keystore_mod.keystore.ensure_keypair()
     from hexgate_api.auth import build_google_oauth_router
 
     router = build_google_oauth_router()
@@ -94,7 +95,7 @@ def test_spa_catchall_does_not_shadow_oauth_routes(monkeypatch, tmp_path) -> Non
 
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_SECRET", "test-secret")
-    main.keystore.ensure_keypair()
+    keystore_mod.keystore.ensure_keypair()
 
     dist = tmp_path / "dist"
     dist.mkdir()
@@ -104,7 +105,7 @@ def test_spa_catchall_does_not_shadow_oauth_routes(monkeypatch, tmp_path) -> Non
     # Same order as main.lifespan: v1 routes, then the OAuth router, then the
     # SPA catch-all LAST.
     app = FastAPI()
-    app.include_router(main.v1)
+    app.include_router(main._build_v1_router())
     google_router = build_google_oauth_router()
     assert google_router is not None
     app.include_router(google_router, prefix="/v1/auth/google", tags=["auth"])
@@ -155,7 +156,7 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
     the callback never actually reaches Google — tests control the
     canned response that "Google" would have returned.
 
-    The OAuth router normally mounts inside ``main._maybe_mount_oauth_routers``
+    The OAuth router normally mounts inside ``auth.router.mount_oauth_routers``
     during lifespan startup. Tests sidestep the lifespan (which would
     touch the real hexgate.db + run backfill) and mount the router
     directly here once the keystore is initialised. The mounted route
@@ -191,9 +192,9 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
             yield session
 
     app.dependency_overrides[get_session] = override_session
-    original_keystore = main.keystore
-    main.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
-    main.keystore.ensure_keypair()
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
 
     # Mount the OAuth router now (lifespan would have done this in
     # production). Safe to call multiple times — FastAPI appends; the
@@ -210,7 +211,7 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
         yield client
     finally:
         app.dependency_overrides.clear()
-        main.keystore = original_keystore
+        keystore_mod.keystore = original_keystore
 
 
 def _state_from_authorize_url(authorize_url: str) -> str:

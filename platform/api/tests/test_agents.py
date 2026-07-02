@@ -24,7 +24,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api import main
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.main import app
 from hexgate_api.bootstrap.seed import ensure_default_project
 from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
@@ -70,9 +70,9 @@ async def client(session_factory, tmp_path) -> TestClient:
     # needs an initialised keystore. The fixture doesn't run the app
     # lifespan, so wire up a throwaway temp-dir keystore here and restore
     # the original afterward.
-    original_keystore = main.keystore
-    main.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
-    main.keystore.ensure_keypair()
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
     try:
         # Bake the dev-user header into every request so M3 Phase 2's
         # require_org_member dependency lets these tests through. The
@@ -80,7 +80,7 @@ async def client(session_factory, tmp_path) -> TestClient:
         yield TestClient(app, headers={"X-Dev-User": DEFAULT_USER_ID})
     finally:
         app.dependency_overrides.clear()
-        main.keystore = original_keystore
+        keystore_mod.keystore = original_keystore
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +349,7 @@ async def test_manifest_endpoint_returns_registered_manifest_with_tools(
         # test keystore through so first-time agents get a real signed
         # bundle (when opa's available) and the starter policy_yaml.
         await register_manifest(
-            session, DEFAULT_PROJECT_ID, manifest, sign=main.keystore.sign
+            session, DEFAULT_PROJECT_ID, manifest, sign=keystore_mod.keystore.sign
         )
 
     resp = client.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/manifest")
@@ -375,10 +375,10 @@ async def test_manifest_endpoint_returns_latest_version(
         )
         # ``sign=`` required from Phase 7 step 1 onward.
         await register_manifest(
-            session, DEFAULT_PROJECT_ID, v1, sign=main.keystore.sign
+            session, DEFAULT_PROJECT_ID, v1, sign=keystore_mod.keystore.sign
         )
         await register_manifest(
-            session, DEFAULT_PROJECT_ID, v2, sign=main.keystore.sign
+            session, DEFAULT_PROJECT_ID, v2, sign=keystore_mod.keystore.sign
         )
 
     resp = client.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/manifest")
@@ -406,7 +406,7 @@ async def test_manifest_endpoint_round_trips_model_and_system_prompt(
         # test keystore through so first-time agents get a real signed
         # bundle (when opa's available) and the starter policy_yaml.
         await register_manifest(
-            session, DEFAULT_PROJECT_ID, manifest, sign=main.keystore.sign
+            session, DEFAULT_PROJECT_ID, manifest, sign=keystore_mod.keystore.sign
         )
 
     resp = client.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/manifest")
@@ -491,7 +491,7 @@ def _mint_token_for_test(session_factory) -> str:
                 name="phase6-test",
                 scopes=["read"],
                 env="live",
-                signing_key_bytes=main.keystore._private_key_bytes(),
+                signing_key_bytes=keystore_mod.keystore._private_key_bytes(),
             )
             await session.commit()
             return full

@@ -33,7 +33,7 @@ from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 from starlette.websockets import WebSocketDisconnect
 
-from hexgate_api import main
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.main import app
 from hexgate_api.domains.tokens.service import mint_dev_token
 from hexgate_api.bootstrap.seed import ensure_default_project
@@ -73,14 +73,14 @@ async def client(session_factory, tmp_path) -> TestClient:
             yield session
 
     app.dependency_overrides[get_session] = override_session
-    original_keystore = main.keystore
-    main.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
-    main.keystore.ensure_keypair()
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
-        main.keystore = original_keystore
+        keystore_mod.keystore = original_keystore
 
 
 @pytest_asyncio.fixture
@@ -100,7 +100,7 @@ async def fresh_token(session_factory) -> str:
             # Pull the raw private bytes the same way mint_token in
             # main.py does. ``_private_key_bytes`` is internal but
             # tests are entitled to reach in.
-            signing_key_bytes=main.keystore._private_key_bytes(),
+            signing_key_bytes=keystore_mod.keystore._private_key_bytes(),
         )
         await session.commit()
     return full

@@ -3,26 +3,32 @@ import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import (
-    APIRouter,
-    FastAPI,
-)
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from hexgate_api import health
+from hexgate_api.bootstrap.seed import ensure_default_project
 from hexgate_api.core.clickhouse import ping as clickhouse_ping
 from hexgate_api.core.db import async_session_factory, init_db
-from hexgate_api.core.keystore import FileKeyStore
-from hexgate_api import health
+from hexgate_api.core.keystore import keystore
+from hexgate_api.domains.agents.router import router as agents_router
 from hexgate_api.domains.agents.service import backfill_bundles
-from hexgate_api.bootstrap.seed import ensure_default_project
+from hexgate_api.domains.audit.router import router as audit_router
+from hexgate_api.domains.auth.router import include_auth_routers, mount_oauth_routers
+from hexgate_api.domains.chat.router import router as chat_router
+from hexgate_api.domains.invitations.router import router as invitations_router
+from hexgate_api.domains.members.router import router as members_router
+from hexgate_api.domains.orgs.router import router as orgs_router
+from hexgate_api.domains.projects.router import router as projects_router
+from hexgate_api.domains.tokens.router import router as tokens_router
 
-
-# Load .env into os.environ before any HEXGATE_* read (CORS + keystore
-# resolve at import time). Real env vars still take precedence.
+# Load .env into os.environ before any HEXGATE_* read (CORS resolves at import
+# time). Real env vars still take precedence.
 load_dotenv()
 
-keystore = FileKeyStore()
 _log = logging.getLogger(__name__)
+
+_DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
 
 
 def _demo_enabled() -> bool:
@@ -39,6 +45,20 @@ def _demo_enabled() -> bool:
         "yes",
         "on",
     )
+
+
+def _cors_origins() -> list[str]:
+    """Allowed browser origins from comma-separated ``HEXGATE_CORS_ORIGINS``.
+
+    Entries are trailing-slash/whitespace-stripped to match the ``Origin``
+    header. Unset or unparseable falls back to the dev default. No wildcard:
+    credentialed CORS forbids it, so production must list explicit origins.
+    """
+    raw = os.environ.get("HEXGATE_CORS_ORIGINS", "").strip()
+    if not raw:
+        return _DEFAULT_CORS_ORIGINS
+    parsed = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    return parsed or _DEFAULT_CORS_ORIGINS
 
 
 def _configure_email_sender() -> None:
@@ -81,16 +101,31 @@ def _configure_email_sender() -> None:
         )
 
 
+def _build_v1_router() -> APIRouter:
+    """Assemble the versioned ``/v1`` router from every domain + auth wiring."""
+    v1 = APIRouter(prefix="/v1")
+    v1.include_router(health.v1_router)
+    v1.include_router(tokens_router)
+    v1.include_router(audit_router)
+    v1.include_router(agents_router)
+    v1.include_router(chat_router)
+    v1.include_router(orgs_router)
+    v1.include_router(members_router)
+    v1.include_router(invitations_router)
+    v1.include_router(projects_router)
+    include_auth_routers(v1)
+    return v1
+
+
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
     await init_db()
     keystore.ensure_keypair()
-    # OAuth router mounting waits on the keystore — its state-token
-    # secret is derived from the keystore's private key (see
-    # auth._oauth_state_secret). Doing this at module load would race
-    # the lifespan; the include here runs once at startup, before any
-    # request reaches the app.
-    _maybe_mount_oauth_routers()
+    # OAuth router mounting waits on the keystore — its state-token secret is
+    # derived from the keystore's private key (see auth._oauth_state_secret).
+    # Doing this at import would race the lifespan; it runs once at startup,
+    # before any request reaches the app.
+    mount_oauth_routers(app_)
     # SPA catch-all goes on LAST — after the OAuth router just mounted — so
     # /{path} never shadows /v1/auth/google/*. (Static /v1 routes are already
     # registered at import; only the OAuth router mounts here at startup, so the
@@ -98,11 +133,11 @@ async def lifespan(app_: FastAPI):
     if _demo_enabled():
         from hexgate_api.demo import enable_demo
 
-        enable_demo(app)
+        enable_demo(app_)
     else:
         from hexgate_api.core.spa import mount_spa
 
-        mount_spa(app)
+        mount_spa(app_)
     async with async_session_factory() as session:
         await ensure_default_project(session)
         # Backfill signed bundles for seeded agents so they're served via
@@ -133,156 +168,23 @@ async def lifespan(app_: FastAPI):
     yield
 
 
-app = FastAPI(title="Hexgate API", version="0.1.0", lifespan=lifespan)
+def create_app() -> FastAPI:
+    """Build the FastAPI app: middleware + health + the versioned ``/v1`` router.
 
-
-_DEFAULT_CORS_ORIGINS = ["http://localhost:5173"]
-
-
-def _cors_origins() -> list[str]:
-    """Allowed browser origins from comma-separated ``HEXGATE_CORS_ORIGINS``.
-
-    Entries are trailing-slash/whitespace-stripped to match the ``Origin``
-    header. Unset or unparseable falls back to the dev default. No wildcard:
-    credentialed CORS forbids it, so production must list explicit origins.
+    The SPA catch-all and the OAuth router are mounted in :func:`lifespan`
+    (after startup) so they don't shadow the static routes registered here.
     """
-    raw = os.environ.get("HEXGATE_CORS_ORIGINS", "").strip()
-    if not raw:
-        return _DEFAULT_CORS_ORIGINS
-    parsed = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
-    return parsed or _DEFAULT_CORS_ORIGINS
+    app_ = FastAPI(title="Hexgate API", version="0.1.0", lifespan=lifespan)
+    app_.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app_.include_router(health.router)
+    app_.include_router(_build_v1_router())
+    return app_
 
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins(),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# Domain routers. Imported here (not in the top import block) so they land
-# after the keystore is defined: the routers/deps pull in auth.py, whose
-# _session_secret() lazy-imports the keystore singleton from this module. The
-# two auth surfaces (dashboard humans vs SDK machines) stay separate by design
-# — see m3-platform-auth.md, "the dual-auth-surface insight".
-from hexgate_api.domains.agents.router import router as agents_router  # noqa: E402
-from hexgate_api.domains.audit.router import router as audit_router  # noqa: E402
-from hexgate_api.domains.chat.router import router as chat_router  # noqa: E402
-from hexgate_api.domains.invitations.router import (  # noqa: E402
-    router as invitations_router,
-)
-from hexgate_api.domains.members.router import router as members_router  # noqa: E402
-from hexgate_api.domains.orgs.router import router as orgs_router  # noqa: E402
-from hexgate_api.domains.projects.router import router as projects_router  # noqa: E402
-from hexgate_api.domains.tokens.router import router as tokens_router  # noqa: E402
-
-v1 = APIRouter(prefix="/v1")
-app.include_router(health.router)
-v1.include_router(health.v1_router)
-v1.include_router(tokens_router)
-v1.include_router(audit_router)
-v1.include_router(agents_router)
-v1.include_router(chat_router)
-v1.include_router(orgs_router)
-v1.include_router(members_router)
-v1.include_router(invitations_router)
-v1.include_router(projects_router)
-
-
-# ---------------------------------------------------------------------------
-# M3 Phase 3a — FastAPI Users routers
-#
-# Mounted under /v1/auth/* and /v1/users/* so they ride the same versioned
-# prefix as the rest of the API. The library provides one router per
-# concern; we include the cookie auth + register routers now and the
-# verify / reset-password / oauth routers in 3b / 3c.
-# ---------------------------------------------------------------------------
-
-from hexgate_api.auth import (  # noqa: E402 — placed late so keystore is initialised
-    UserCreate,
-    UserRead,
-    UserUpdate,
-    auth_backend,
-    build_google_oauth_router,
-    fastapi_users,
-)
-
-v1.include_router(
-    fastapi_users.get_auth_router(auth_backend),
-    prefix="/auth/cookie",
-    tags=["auth"],
-)
-v1.include_router(
-    fastapi_users.get_register_router(UserRead, UserCreate),
-    prefix="/auth",
-    tags=["auth"],
-)
-# Phase 3b — email verification (POST /auth/request-verify-token + /auth/verify)
-# and password reset (POST /auth/forgot-password + /auth/reset-password). Both
-# routers use the UserManager email hooks (on_after_request_verify +
-# on_after_forgot_password) to send the magic-link tokens through the mailer.
-v1.include_router(
-    fastapi_users.get_verify_router(UserRead),
-    prefix="/auth",
-    tags=["auth"],
-)
-v1.include_router(
-    fastapi_users.get_reset_password_router(),
-    prefix="/auth",
-    tags=["auth"],
-)
-v1.include_router(
-    fastapi_users.get_users_router(UserRead, UserUpdate),
-    prefix="/users",
-    tags=["users"],
-)
-
-
-# ---------------------------------------------------------------------------
-# M3 Phase 4 — Organization CRUD
-#
-# Read-your-own / create-new / read-by-id / update-name. Member
-# management + invitations land in subsequent steps but share these
-# dependencies and schemas.
-# ---------------------------------------------------------------------------
-
-
-def _maybe_mount_oauth_routers() -> None:
-    """Mount the Phase 3c OAuth router(s) iff env-configured.
-
-    Called from the lifespan once the keystore is initialised — its
-    private key derives the OAuth state-token secret. With no Google
-    credentials in env, this is a no-op and ``make platform-api``
-    works out of the box; flipping the two env vars and restarting
-    the server turns Google sign-in on. The router goes onto ``app``
-    directly (not ``v1``) so we don't double-include the rest of v1
-    that ``app.include_router(v1)`` below already mounted.
-    """
-    import sys
-
-    google_router = build_google_oauth_router()
-    if google_router is not None:
-        app.include_router(
-            google_router,
-            prefix="/v1/auth/google",
-            tags=["auth"],
-        )
-        print(
-            "[hexgate] Google OAuth enabled (HEXGATE_GOOGLE_CLIENT_ID set)",
-            file=sys.stderr,
-        )
-    else:
-        print(
-            "[hexgate] Google OAuth disabled — set HEXGATE_GOOGLE_CLIENT_ID "
-            "+ HEXGATE_GOOGLE_CLIENT_SECRET to enable",
-            file=sys.stderr,
-        )
-
-
-app.include_router(v1)
-
-# The SPA catch-all is mounted in the lifespan (after the OAuth router), NOT
-# here — registering it at import would shadow the lifespan-mounted
-# /v1/auth/google/* routes, since Starlette matches in registration order.
+app = create_app()

@@ -26,7 +26,7 @@ async def _validate_sdk_token(authorization: str, session: AsyncSession) -> None
     (the bearer-implicit SDK routes). Raises 401 on signature or
     revocation failure; returns None on success.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="malformed authorization header")

@@ -19,8 +19,8 @@ from clickhouse_connect.driver.exceptions import (
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.domains.audit import service as audit
-from hexgate_api import main
 from hexgate_api.domains.audit.service import (
     CLOCK_SKEW_FUTURE,
     list_decisions,
@@ -140,14 +140,14 @@ def client(
     # The dashboard-read gating tests run the real require_org_member chain,
     # whose cookie transport needs an initialised keystore (same swap as the
     # client fixture in test_auth.py).
-    original_keystore = main.keystore
-    main.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
-    main.keystore.ensure_keypair()
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
-        main.keystore = original_keystore
+        keystore_mod.keystore = original_keystore
 
 
 def test_happy_path_returns_202_and_inserts_row(

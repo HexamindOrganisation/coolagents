@@ -91,13 +91,13 @@ async def get_user_db(
 def _session_secret() -> str:
     """Derive a stable session-JWT secret from the platform's signing key.
 
-    Lazy import of ``main.keystore`` to dodge the import cycle (main.py
-    imports auth.py for the routers). Domain-separation prefix keeps
-    this distinct from any other key derivation off the same root.
-    Rotating the keystore invalidates every session — that's the right
+    Lazy import of the ``core.keystore`` singleton (read at call time) so a
+    test swap of ``core.keystore.keystore`` is picked up. Domain-separation
+    prefix keeps this distinct from any other key derivation off the same
+    root. Rotating the keystore invalidates every session — that's the right
     blast radius.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     return hashlib.sha256(
         b"hexagate-session-v1:" + keystore._private_key_bytes()
@@ -343,7 +343,7 @@ def _oauth_state_secret() -> str:
     zero — a key rotation invalidates any pending OAuth flows, which is
     exactly what you'd want.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     return hashlib.sha256(
         b"hexagate-oauth-state-v1:" + keystore._private_key_bytes()

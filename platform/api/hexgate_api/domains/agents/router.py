@@ -178,7 +178,7 @@ async def api_update_agent(
     body: AgentUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> AgentRead:
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     await ensure_default_project(session)
     agent = await update_agent(
@@ -305,7 +305,7 @@ async def api_register_agent(
     don't touch the agent's policy_yaml, so the operator's dashboard
     edits are preserved.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     version, created = await register_manifest(
         session, project_id, body.manifest, sign=keystore.sign

@@ -37,7 +37,7 @@ async def well_known_keys() -> dict[str, object]:
     breaking clients. Lets dashboards and CLIs sanity-check that what
     their SDK has embedded matches what this platform is signing with.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     return {
         "keys": [
@@ -87,7 +87,7 @@ async def mint_token(
     body: TokenMintRequest,
     session: AsyncSession = Depends(get_session),
 ) -> TokenMintResponse:
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     await ensure_default_project(
         session

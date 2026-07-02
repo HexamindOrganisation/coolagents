@@ -57,7 +57,7 @@ async def ws_require_project(
     Reuses :func:`require_project`'s signature + revocation gates so
     HTTP and WS paths can't drift on what counts as a valid token.
     """
-    from hexgate_api.main import keystore
+    from hexgate_api.core.keystore import keystore
 
     subprotocols = websocket.scope.get("subprotocols") or []
     bearer: str | None = None
