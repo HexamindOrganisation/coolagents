@@ -36,12 +36,13 @@ Example::
 
 from hexgate.mcp.client import MCPClient, MCPConnectionError
 from hexgate.mcp.config import MCPServerConfig, MCPServerConfigError
-from hexgate.mcp.proxy import MCPToolset
+from hexgate.mcp.proxy import MCPToolProxy, MCPToolset
 
 __all__ = [
     "MCPClient",
     "MCPConnectionError",
     "MCPServerConfig",
     "MCPServerConfigError",
+    "MCPToolProxy",
     "MCPToolset",
 ]

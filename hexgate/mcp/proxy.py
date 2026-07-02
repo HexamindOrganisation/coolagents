@@ -1,16 +1,22 @@
-"""Auto-register MCP server tools as LangChain :class:`BaseTool` instances.
+"""Framework-agnostic MCP toolset: enumerate tools, forward calls, own the
+transport lifecycle.
 
-The toolset is an async context manager: enter opens connections to each
-configured server, walks the (paginated) tool catalog, and builds proxies;
-exit tears the transports down. The proxies forward calls to the live
-MCP session — they must not outlive the context manager.
+The proxy layer produces :class:`MCPToolProxy` descriptors — one per MCP
+tool exposed by the connected servers. Each descriptor carries the
+LLM-facing metadata (name / description / JSON Schema) and an async
+``call(**kwargs) -> dict`` that forwards to the live MCP session and
+returns the ``{"ok": True | False, ...}`` envelope shape native
+``@agent_tool`` functions use.
 
-The tools returned look identical to ``@agent_tool``-decorated functions
-to the rest of the runtime: pass them to :func:`create_agent`, call
-:func:`enforce_policy` as usual, and the existing
-:class:`GuardedTool` wrap routes every call through
-:class:`PolicyEnforcer`. Policy YAML references them by the qualified
-name ``mcp-<server>-<tool>``.
+To hand these tools to an agent framework, wrap the toolset via the
+adapter of your choice:
+
+    from hexgate.adapters.langchain.mcp import wrap_mcp_toolset
+    async with MCPToolset(slack_cfg) as mcp:
+        tools = wrap_mcp_toolset(mcp)  # list[langchain BaseTool]
+
+For back-compat, :meth:`MCPToolset.tools` still returns LangChain tools
+directly — pre-adapter-split callers keep working.
 """
 
 from __future__ import annotations
@@ -18,16 +24,19 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import jsonschema
-from langchain_core.tools import BaseTool, StructuredTool
 from mcp.types import CallToolResult, Tool
 
 from hexgate.mcp.client import MCPClient, MCPConnectionError
 from hexgate.mcp.config import MCPServerConfig
+
+if TYPE_CHECKING:
+    from langchain_core.tools import BaseTool
 
 logger = logging.getLogger("hexgate.mcp.proxy")
 
@@ -50,6 +59,27 @@ class _ToolsetState:
         self.open = True
 
 
+@dataclass(frozen=True, slots=True)
+class MCPToolProxy:
+    """Framework-agnostic descriptor for one MCP tool.
+
+    Adapters (LangChain, OpenAI Agents, Pydantic AI, Google ADK) read
+    only the four fields below; nothing about the underlying
+    :class:`MCPClient` or :class:`_ToolsetState` leaks out. Wrap into a
+    framework-native tool via that adapter's ``wrap_mcp_toolset(...)``.
+
+    ``call`` is the async closure produced by :func:`_build_proxy`. It
+    handles pre-call JSON-Schema validation, exception mapping, and
+    envelope shaping — everything the framework would otherwise have to
+    reimplement.
+    """
+
+    qualified_name: str
+    description: str
+    input_schema: dict[str, Any]
+    call: Callable[..., Awaitable[dict[str, Any]]]
+
+
 class MCPToolset:
     """Holds open connections to one or more MCP servers + exposes tools.
 
@@ -64,9 +94,12 @@ class MCPToolset:
     Usage::
 
         async with MCPToolset(slack_cfg, github_cfg) as mcp:
+            # LangChain path (back-compat shortcut):
             agent, handler = create_agent(model="gpt-5.4", tools=mcp.tools)
-            agent = enforce_policy(agent, "policy.yaml")
-            await agent.ainvoke(...)
+
+            # OR any other adapter, via its wrap_mcp_toolset:
+            from hexgate.adapters.openai.mcp import wrap_mcp_toolset
+            openai_tools = wrap_mcp_toolset(mcp)
     """
 
     def __init__(self, *configs: MCPServerConfig) -> None:
@@ -86,7 +119,7 @@ class MCPToolset:
             )
         self._configs = configs
         self._stack: contextlib.AsyncExitStack | None = None
-        self._tools: list[BaseTool] = []
+        self._proxies: list[MCPToolProxy] = []
         self._states: list[_ToolsetState] = []
 
     async def __aenter__(self) -> "MCPToolset":
@@ -111,7 +144,7 @@ class MCPToolset:
                 # before the client's __aexit__ runs.
                 self._stack.push_async_callback(_mark_closed, state)
                 for mcp_tool in catalog:
-                    self._tools.append(_build_proxy_tool(state, config, mcp_tool))
+                    self._proxies.append(_build_proxy(state, config, mcp_tool))
         except BaseException:
             # aclose() suppresses inner errors; if cancellation hit us we
             # still re-raise the original. Drop the stack reference so
@@ -132,12 +165,12 @@ class MCPToolset:
     ) -> bool | None:
         stack = self._stack
         self._stack = None
-        # Clear BOTH _tools and _states so a re-entered toolset doesn't
+        # Clear BOTH _proxies and _states so a re-entered toolset doesn't
         # accumulate phantom state objects from earlier sessions. (The
         # AsyncExitStack itself is single-use, so re-enter mostly means
         # "tests that reuse the instance"; the clears keep that path
         # honest rather than relying on no-one ever doing it.)
-        self._tools.clear()
+        self._proxies.clear()
         self._states.clear()
         if stack is None:
             return None
@@ -148,19 +181,31 @@ class MCPToolset:
         return await stack.__aexit__(exc_type, exc, tb)
 
     @property
-    def tools(self) -> list[BaseTool]:
-        """The combined tool catalog across every attached server."""
-        return list(self._tools)
+    def proxies(self) -> list[MCPToolProxy]:
+        """The combined tool catalog across every attached server, as
+        framework-agnostic descriptors. Feed to any adapter's
+        ``wrap_mcp_toolset(mcp)`` to get framework-native tools."""
+        return list(self._proxies)
+
+    @property
+    def tools(self) -> "list[BaseTool]":
+        """LangChain BaseTools, one per proxy. Back-compat shortcut for
+        code written before per-adapter wrappers existed — equivalent to
+        ``wrap_mcp_toolset(self)`` from
+        :mod:`hexgate.adapters.langchain.mcp`."""
+        from hexgate.adapters.langchain.mcp import wrap_mcp_toolset
+
+        return wrap_mcp_toolset(self)
 
 
 async def _mark_closed(state: _ToolsetState) -> None:
     state.open = False
 
 
-def _build_proxy_tool(
+def _build_proxy(
     state: _ToolsetState, config: MCPServerConfig, mcp_tool: Tool
-) -> BaseTool:
-    """One LangChain BaseTool that forwards calls to ``state.client``.
+) -> MCPToolProxy:
+    """One :class:`MCPToolProxy` that forwards calls to ``state.client``.
 
     Closure captures the shared state + the tool's server-local name;
     LLM-visible name is the qualified ``mcp-<server>-<tool>`` form so it
@@ -168,11 +213,11 @@ def _build_proxy_tool(
     """
     qualified = config.qualified_tool_name(mcp_tool.name)
     inner_name = mcp_tool.name
-    # MCP gives us JSON Schema; LangChain's StructuredTool accepts the dict
-    # form directly as args_schema, no Pydantic model generation needed for
-    # the LLM-facing contract. We validate the args ourselves against this
-    # same schema BEFORE forwarding so a missing-required-arg call returns
-    # a structured error envelope instead of a wasted server round-trip.
+    # MCP gives us JSON Schema; adapters (LangChain / OpenAI Agents /
+    # etc.) each decide how to feed it into their tool constructor. We
+    # validate args ourselves against this schema BEFORE forwarding so a
+    # missing-required-arg call returns a structured error envelope
+    # instead of a wasted server round-trip.
     #
     # `is None` (not `or`) — an empty dict `{}` is a VALID JSON Schema
     # meaning "accept anything". Falsy-or would replace it with the
@@ -186,7 +231,7 @@ def _build_proxy_tool(
     description = mcp_tool.description or f"{qualified} (no description provided)"
     validator = _validator_for(schema, qualified)
 
-    async def proxy(**kwargs: Any) -> dict[str, Any]:
+    async def call(**kwargs: Any) -> dict[str, Any]:
         if not state.open:
             return _error_envelope(
                 "use_after_close",
@@ -227,12 +272,12 @@ def _build_proxy_tool(
             )
         return _result_to_envelope(qualified, result)
 
-    proxy.__name__ = qualified
-    return StructuredTool.from_function(
-        coroutine=proxy,
-        name=qualified,
+    call.__name__ = qualified
+    return MCPToolProxy(
+        qualified_name=qualified,
         description=description,
-        args_schema=schema,
+        input_schema=schema,
+        call=call,
     )
 
 
@@ -242,8 +287,8 @@ def _validator_for(
     """Build a JSON Schema validator for an MCP tool's inputSchema.
 
     Returns ``None`` if the schema is unusable (e.g. not an object schema,
-    no fields to validate) — that's the same loose contract LangChain
-    accepts and we don't want to be stricter than the LLM-facing spec.
+    no fields to validate) — that's the same loose contract adapters
+    accept and we don't want to be stricter than the LLM-facing spec.
     """
     try:
         validator_cls = jsonschema.validators.validator_for(schema)
