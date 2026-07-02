@@ -162,7 +162,7 @@ jobs:
         run: cd platform/api && uv sync --group dev
 
       - name: Postgres smoke test
-        run: cd platform/api && uv run pytest tests/test_postgres_smoke.py -v
+        run: cd platform/api && uv run pytest tests/core/test_postgres_smoke.py -v
 
   dashboard:
     name: Dashboard
