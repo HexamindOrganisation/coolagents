@@ -37,7 +37,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core import keystore as keystore_mod
 from hexgate_api import main
-from hexgate_api.main import app
 from hexgate_api.models import OAuthAccount, User
 from hexgate_api.bootstrap.seed import ensure_default_project
 
@@ -157,12 +156,9 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
     canned response that "Google" would have returned.
 
     The OAuth router normally mounts inside ``auth.router.mount_oauth_routers``
-    during lifespan startup. Tests sidestep the lifespan (which would
-    touch the real hexgate.db + run backfill) and mount the router
-    directly here once the keystore is initialised. The mounted route
-    persists on ``app`` across tests in this file — fine because each
-    test rebuilds the in-memory DB and the OAuth wiring doesn't carry
-    cross-test state.
+    during lifespan startup. Tests sidestep the lifespan (which would touch the
+    real hexgate.db + run backfill) and instead build an isolated app here
+    (v1 router + OAuth router) so nothing leaks onto the shared ``main.app``.
     """
     from hexgate_api.auth import build_google_oauth_router
     from hexgate_api.core.db import get_session
@@ -191,26 +187,28 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
         async with session_factory() as session:
             yield session
 
-    app.dependency_overrides[get_session] = override_session
     original_keystore = keystore_mod.keystore
     keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
     keystore_mod.keystore.ensure_keypair()
 
-    # Mount the OAuth router now (lifespan would have done this in
-    # production). Safe to call multiple times — FastAPI appends; the
-    # first match still wins on duplicate routes.
+    # Build an isolated app rather than mutating the shared ``main.app`` —
+    # otherwise a prior test that ran the lifespan (mounting the SPA
+    # catch-all) would shadow this OAuth router and the callback 404s. Same
+    # mount order as ``main.lifespan``: v1 routes, then the OAuth router.
+    from hexgate_api.main import _build_v1_router
+
+    oauth_app = FastAPI()
+    oauth_app.include_router(_build_v1_router())
     google_router = build_google_oauth_router()
     assert google_router is not None  # env vars were set above
-    app.include_router(google_router, prefix="/v1/auth/google", tags=["auth"])
-    # Rebuild OpenAPI so the new routes are findable in the dispatcher.
-    app.openapi_schema = None
+    oauth_app.include_router(google_router, prefix="/v1/auth/google", tags=["auth"])
+    oauth_app.dependency_overrides[get_session] = override_session
 
     try:
-        client = TestClient(app)
+        client = TestClient(oauth_app)
         client.fake = fake  # type: ignore[attr-defined]
         yield client
     finally:
-        app.dependency_overrides.clear()
         keystore_mod.keystore = original_keystore
 
 

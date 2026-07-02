@@ -23,7 +23,7 @@ from hexgate_api.schemas import (
     InputSchema,
     ToolDefinition,
 )
-from hexgate_api.domains.agents.service import (
+from hexgate_api.domains.agents.compiler import (
     _classify_tool,
     _default_policy_for_manifest,
     _emit_tool_lines,

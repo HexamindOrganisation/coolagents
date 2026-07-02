@@ -24,11 +24,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
 from hexgate.security import generate_keypair, sign_bytes, verify_bytes
 from hexgate_api.models import Agent  # noqa: F401 — ensures the table is registered
-from hexgate_api.domains.agents.service import (
-    backfill_bundles,
-    compile_bundle,
-    update_agent,
-)
+from hexgate_api.domains.agents.compiler import compile_bundle
+from hexgate_api.domains.agents.service import backfill_bundles, update_agent
 from hexgate_api.bootstrap.seed import ensure_default_project
 
 

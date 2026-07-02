@@ -6,9 +6,9 @@ cookie login/logout, password reset (Phase 3b later), and the
 the rest of the route table consumes.
 
 The two auth surfaces (humans via cookie, machines via biscuit) stay
-separate by design — biscuits live in ``main._validate_sdk_token`` and
-``require_project``; this module never touches them. See
-``m3-platform-auth.md`` for the dual-surface rationale.
+separate by design — biscuits live in ``deps/tokens.py``
+(``_validate_sdk_token`` / ``require_project``); this module never touches
+them. See ``m3-platform-auth.md`` for the dual-surface rationale.
 
 ID type is ``str`` (UUID-formatted) rather than ``uuid.UUID`` so the
 column types stay aligned with the rest of our str-keyed SQLModel
@@ -175,7 +175,7 @@ class UserManager(BaseUserManager[User, str]):
              user so the dashboard never lands on an empty
              "no orgs yet" state. The org's slug is derived from the
              email prefix with collision fallback (see
-             :func:`services._generate_unique_org_slug`).
+             :func:`hexgate_api.domains.orgs.service._generate_unique_org_slug`).
 
         Caveat: FastAPI-Users commits the User row BEFORE calling this
         hook. The two writes are therefore NOT in one transaction — if
