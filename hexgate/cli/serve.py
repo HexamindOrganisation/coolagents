@@ -366,9 +366,7 @@ async def _serve_loop(context: ServeContext, url: str, console: Console) -> None
                 # Dispatch on a background task so the read loop can
                 # immediately pick up the next frame — critical for
                 # approval.reply arriving mid-chat.
-                task = asyncio.create_task(
-                    _dispatch_message(context, ws, payload)
-                )
+                task = asyncio.create_task(_dispatch_message(context, ws, payload))
                 dispatched.add(task)
                 task.add_done_callback(dispatched.discard)
         except ConnectionClosed:

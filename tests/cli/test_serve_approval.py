@@ -489,3 +489,116 @@ async def test_serve_loop_does_not_deadlock_on_approval() -> None:
     assert result is True, (
         "approval TTL-denied — dispatch model regressed to inline await"
     )
+
+
+# ---------------------------------------------------------------------------
+# Additional fail-closed branches on _handle_message and __call__
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_failure_denies_and_cleans_pending() -> None:
+    """If ``ws.send`` raises (peer went away between bind and send), the
+    handler must fail-closed and not leak a pending entry."""
+
+    class _BrokenWS:
+        async def send(self, _: str) -> None:
+            raise ConnectionError("peer gone")
+
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    handler.bind_socket(_BrokenWS())
+    result = await handler(_decision())
+    assert result is False
+    assert handler._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_handle_message_ignores_approval_reply_when_handler_is_not_relay(
+    caplog,
+) -> None:
+    """A non-relay handler (auto-approve bool, custom callable) can't
+    consume replies — the router must log + drop, not crash."""
+    import logging
+
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=True,  # auto-approve bool, not a RelayApprovalHandler
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hexgate.cli.serve"):
+        await _handle_message(
+            context,
+            _FakeWS(),
+            {"type": "approval.reply", "decision_id": "appr_x", "allowed": True},
+        )
+    assert any("not a RelayApprovalHandler" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_ignores_approval_reply_missing_decision_id(
+    caplog,
+) -> None:
+    """Malformed reply (no string decision_id) must warn and drop, not
+    NPE deep inside ``resolve``."""
+    import logging
+
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=handler,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="hexgate.cli.serve"):
+        await _handle_message(
+            context,
+            _FakeWS(),
+            {"type": "approval.reply", "allowed": True},  # no decision_id
+        )
+    assert any("missing string decision_id" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_message_echoes_error_back_to_peer_on_exception() -> None:
+    """When _handle_message crashes, _dispatch_message must catch, log,
+    and echo an ``error`` event to the peer — the read loop mustn't die."""
+    from hexgate.cli.serve import ServeContext, _dispatch_message
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=None,
+    )
+    # Malformed reset — will crash inside _handle_message because state
+    # isn't fully wired; any exception path works to prove the catch.
+    # We force one by sending an unknown-type frame after monkey-patching
+    # logger to raise. Simpler: send a chat frame — state.start_turn on a
+    # fresh ChatState with runtime=None will trip inside stream_agent.
+    # Cleanest: patch _handle_message directly.
+    import hexgate.cli.serve as serve_mod
+
+    async def _boom(*_, **__):
+        raise RuntimeError("kapow")
+
+    original = serve_mod._handle_message
+    serve_mod._handle_message = _boom
+    try:
+        await _dispatch_message(context, ws, {"type": "chat", "message": "hi"})
+    finally:
+        serve_mod._handle_message = original
+
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["event_type"] == "error"
+    assert "kapow" in ws.sent[0]["message"]
