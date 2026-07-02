@@ -15,14 +15,23 @@ import dataclasses
 from agents import Agent
 
 from hexgate.adapters.openai.tools import wrap_tools
+from hexgate.agents.factory import ApprovalHandler
 from hexgate.security.enforcer import PolicyEnforcer
 
 
-def wrap_openai_agent(agent: Agent, *, enforcer: PolicyEnforcer) -> Agent:
+def wrap_openai_agent(
+    agent: Agent,
+    *,
+    enforcer: PolicyEnforcer,
+    approval_handler: ApprovalHandler | None = None,
+) -> Agent:
     """Return a clone of ``agent`` whose tools are gated by ``enforcer``.
 
     Mechanics only — resolution/refresh live with the caller. Caller
-    must open a :class:`User` scope around the run.
+    must open a :class:`User` scope around the run. ``approval_handler``
+    (async ``fn(decision) -> bool`` or ``bool`` shorthand) fires when a
+    tool call carries a ``NEEDS_APPROVAL`` outcome; a truthy return runs
+    the tool, falsy surfaces the ``[approval_required]`` marker.
     """
-    guarded_tools = wrap_tools(agent.tools, enforcer)
+    guarded_tools = wrap_tools(agent.tools, enforcer, approval_handler=approval_handler)
     return dataclasses.replace(agent, tools=guarded_tools)

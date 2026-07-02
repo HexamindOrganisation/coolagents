@@ -25,6 +25,7 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
+from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 from hexgate.security.binding import PolicyBinding, resolve_policy
@@ -34,7 +35,12 @@ from hexgate.security.enforcer import build_enforcer
 class HexgateRunner:
     """Runner for OpenAI agents with Hexgate tool policy and observability."""
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        *,
+        approval_handler: ApprovalHandler | None = None,
+    ):
         self.api_key = resolve_api_key(api_key)
         if self.api_key is None:
             raise ValueError(
@@ -42,6 +48,7 @@ class HexgateRunner:
             )
         # Cached per agent name — keeps the ETag memory alive across runs.
         self._bindings: dict[str, PolicyBinding] = {}
+        self._approval_handler = approval_handler
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
         """Get-or-resolve the cached policy binding for ``agent``'s name.
@@ -98,7 +105,11 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
-        wrapped_agent = wrap_openai_agent(agent, enforcer=binding.enforcer)
+        wrapped_agent = wrap_openai_agent(
+            agent,
+            enforcer=binding.enforcer,
+            approval_handler=self._approval_handler,
+        )
         async with user:
             with self._propagate(user, agent.name):
                 return await Runner.run(
@@ -117,7 +128,11 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # per-run policy pull; 304 when unchanged
-        wrapped_agent = wrap_openai_agent(agent, enforcer=binding.enforcer)
+        wrapped_agent = wrap_openai_agent(
+            agent,
+            enforcer=binding.enforcer,
+            approval_handler=self._approval_handler,
+        )
         with user.sync_scope():
             with self._propagate(user, agent.name):
                 return Runner.run_sync(
@@ -143,7 +158,11 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # must precede the wrap + setup
-        wrapped_agent = wrap_openai_agent(agent, enforcer=binding.enforcer)
+        wrapped_agent = wrap_openai_agent(
+            agent,
+            enforcer=binding.enforcer,
+            approval_handler=self._approval_handler,
+        )
 
         with user.sync_scope():
             with self._propagate(user, agent.name):
