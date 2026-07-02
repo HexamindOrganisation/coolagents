@@ -16,6 +16,7 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from hexgate.adapters.google.wrapper import wrap_google_agent
+from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 
@@ -30,6 +31,7 @@ class HexgateRunner:
         app_name: str,
         session_service: BaseSessionService,
         api_key: str | None = None,
+        approval_handler: ApprovalHandler | None = None,
         **runner_kwargs: Any,
     ):
         self.api_key = resolve_api_key(api_key)
@@ -41,7 +43,7 @@ class HexgateRunner:
         # Runner is built once — refresh swaps the enforcer's policy
         # without touching it.
         self._wrapped_agent, self._binding = wrap_google_agent(
-            agent, api_key=self.api_key
+            agent, api_key=self.api_key, approval_handler=approval_handler
         )
         self._runner = Runner(
             agent=self._wrapped_agent,
