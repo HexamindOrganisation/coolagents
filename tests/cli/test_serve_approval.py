@@ -1,0 +1,491 @@
+"""Tests for :class:`RelayApprovalHandler` — the callback that routes
+NEEDS_APPROVAL decisions over the serve WS to the playground.
+
+We fake the websocket surface (only ``send`` is needed) so the tests
+run in-memory without opening a real socket.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import pytest
+
+from hexgate.cli.serve import RelayApprovalHandler
+from hexgate.security.decision import Decision, DecisionOutcome
+
+
+# ---------------------------------------------------------------------------
+# Fakes
+# ---------------------------------------------------------------------------
+
+
+class _FakeWS:
+    """Minimal stand-in for the websockets client WebSocket.
+
+    Records every ``send()`` payload in ``self.sent`` for inspection.
+    Optionally serializes concurrent sends behind an ``asyncio.Lock``
+    that the handler is expected to hold — we assert the ordering
+    invariant separately.
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[dict[str, Any]] = []
+
+    async def send(self, message: str) -> None:
+        # Yield control so a concurrent send has a chance to interleave
+        # if the handler ISN'T using a lock — this catches the bug the
+        # asyncio.Lock exists to prevent.
+        await asyncio.sleep(0)
+        self.sent.append(json.loads(message))
+
+
+def _decision(tool: str = "send_invoice", **kwargs: Any) -> Decision:
+    return Decision(
+        outcome=DecisionOutcome.NEEDS_APPROVAL,
+        agent_name=kwargs.pop("agent_name", "billing_bot"),
+        tool_name=tool,
+        role=kwargs.pop("role", "default"),
+        reason=kwargs.pop("reason", "test approval"),
+        error_type="approval_required",
+        arguments=kwargs.pop("arguments", {"order_id": "ORD-1"}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Happy path — request emitted, reply unblocks the coroutine
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_emits_approval_request_with_expected_shape() -> None:
+    """``__call__`` must send a well-formed ``approval.request`` frame
+    on the bound socket before it starts waiting for a reply."""
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    handler.bind_socket(ws)
+
+    async def approve_after_a_tick() -> None:
+        # Give __call__ a chance to send + start awaiting.
+        await asyncio.sleep(0.05)
+        assert len(ws.sent) == 1
+        decision_id = ws.sent[0]["decision_id"]
+        handler.resolve(decision_id, allowed=True)
+
+    task_approve = asyncio.create_task(approve_after_a_tick())
+    result = await handler(_decision())
+    await task_approve
+
+    assert result is True
+    sent = ws.sent[0]
+    # ``type`` (not ``event_type``) — approval is a control frame, same
+    # discriminator as hello / reset / session_reset.
+    assert sent["type"] == "approval.request"
+    assert sent["tool_name"] == "send_invoice"
+    assert sent["arguments"] == {"order_id": "ORD-1"}
+    assert sent["reason"] == "test approval"
+    assert sent["agent_name"] == "billing_bot"
+    assert sent["role"] == "default"
+    assert isinstance(sent["decision_id"], str)
+    assert sent["decision_id"].startswith("appr_")
+    assert isinstance(sent["expires_at"], str)
+
+
+@pytest.mark.asyncio
+async def test_resolve_deny_returns_false() -> None:
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    handler.bind_socket(ws)
+
+    async def deny_after_a_tick() -> None:
+        await asyncio.sleep(0.05)
+        handler.resolve(ws.sent[0]["decision_id"], allowed=False)
+
+    task = asyncio.create_task(deny_after_a_tick())
+    result = await handler(_decision())
+    await task
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_returns_false_when_no_socket_bound() -> None:
+    """Nothing to send an approval prompt to → deny rather than hang."""
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    # Deliberately DON'T bind_socket.
+    result = await handler(_decision())
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_timeout_returns_false() -> None:
+    """No reply within the TTL → deny (fail-closed)."""
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=0.1)
+    handler.bind_socket(ws)
+    result = await handler(_decision())
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_unbind_socket_denies_all_pending() -> None:
+    """Disconnecting mid-approval must fail every waiting handler so
+    coroutines don't outlive the socket they belonged to."""
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+
+    # Fire two approvals in parallel; both will be blocked awaiting
+    # their Events. Unbind should release them both as False.
+    task_a = asyncio.create_task(handler(_decision(tool="a")))
+    task_b = asyncio.create_task(handler(_decision(tool="b")))
+    await asyncio.sleep(0.05)  # let both reach the await
+
+    handler.unbind_socket()
+
+    results = await asyncio.gather(task_a, task_b)
+    assert results == [False, False]
+    # Socket unbound → subsequent __call__ also denies immediately.
+    assert await handler(_decision(tool="c")) is False
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — decision_id keying, no cross-talk, serialized sends
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_get_distinct_decision_ids() -> None:
+    """5 parallel tool calls → 5 unique decision_ids, no key collisions
+    (uuid4 is the source, but pin the invariant so a future rewrite
+    doesn't break it)."""
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+
+    tasks = [asyncio.create_task(handler(_decision(tool=f"t{i}"))) for i in range(5)]
+    # Let all 5 send frames.
+    await asyncio.sleep(0.05)
+    assert len(ws.sent) == 5
+    ids = [frame["decision_id"] for frame in ws.sent]
+    assert len(set(ids)) == 5
+
+    # Resolve each in a scrambled order — verifies the map lookup,
+    # not any FIFO assumption.
+    handler.resolve(ids[2], allowed=True)
+    handler.resolve(ids[0], allowed=False)
+    handler.resolve(ids[4], allowed=True)
+    handler.resolve(ids[1], allowed=True)
+    handler.resolve(ids[3], allowed=False)
+
+    results = await asyncio.gather(*tasks)
+    # Order in results matches task creation order; decisions match
+    # the specific IDs we resolved above.
+    assert results == [False, True, True, False, True]
+
+
+@pytest.mark.asyncio
+async def test_ws_send_is_serialized_across_concurrent_calls() -> None:
+    """The websockets library doesn't serialize concurrent send() calls,
+    so RelayApprovalHandler must hold a lock across the send. Without
+    the lock, two coroutines calling __call__ at the same time could
+    interleave WS frames — silent bug that hides until a big payload
+    exposes it. This test forces the race window and asserts sends
+    landed as complete frames (one after another, not interleaved)."""
+
+    concurrent_in_send = 0
+    peak_concurrency = 0
+
+    class _RaceCapturingWS:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, Any]] = []
+
+        async def send(self, message: str) -> None:
+            nonlocal concurrent_in_send, peak_concurrency
+            concurrent_in_send += 1
+            peak_concurrency = max(peak_concurrency, concurrent_in_send)
+            # Widen the race window so an unprotected send would clearly
+            # observe another concurrent one.
+            await asyncio.sleep(0.01)
+            concurrent_in_send -= 1
+            self.sent.append(json.loads(message))
+
+    ws = _RaceCapturingWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+
+    tasks = [asyncio.create_task(handler(_decision(tool=f"t{i}"))) for i in range(5)]
+    # Let all sends run (they all get serialized by the lock, then
+    # each awaits its own Event; we don't care about those here).
+    await asyncio.sleep(0.2)
+
+    handler.unbind_socket()
+    await asyncio.gather(*tasks)  # unblocks all as False
+
+    # Peak concurrency inside send() must be 1: no two coroutines can
+    # be mid-send simultaneously if the lock is held correctly.
+    assert peak_concurrency == 1, (
+        f"expected serialized sends, saw {peak_concurrency} concurrent"
+    )
+    assert len(ws.sent) == 5
+
+
+# ---------------------------------------------------------------------------
+# Resolve on unknown decision_id is a no-op
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_unknown_decision_id_is_noop() -> None:
+    """Spurious ``approval.reply`` payloads (stale from prev connection,
+    typos in a test harness) mustn't crash the handler — they're just
+    dropped silently."""
+    handler = RelayApprovalHandler(ttl_seconds=1.0)
+    # No exception; nothing to observe.
+    handler.resolve("appr_does_not_exist", allowed=True)
+    handler.resolve("appr_does_not_exist_either", allowed=False)
+
+
+# ---------------------------------------------------------------------------
+# Reply routing via ServeContext (integration with _handle_message)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_message_routes_approval_reply(monkeypatch) -> None:
+    """``approval.reply`` frames coming off the WS must reach
+    ``handler.resolve()`` via ``_handle_message`` — the small piece of
+    routing that ties the WS to the handler."""
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type] — unused for this branch
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=handler,
+    )
+
+    # Start a pending approval so there's something to resolve.
+    task = asyncio.create_task(handler(_decision()))
+    await asyncio.sleep(0.05)
+    decision_id = ws.sent[0]["decision_id"]
+
+    await _handle_message(
+        context,
+        ws,
+        {
+            "type": "approval.reply",
+            "decision_id": decision_id,
+            "allowed": True,
+        },
+    )
+
+    result = await task
+    assert result is True
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: _apply_approval_handler still routes NEEDS_APPROVAL through
+# the enforcer's callback slot. Pins the full serve→enforcer chain so a
+# future refactor can't silently drop the handler mid-plumbing.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_approval_handler_wires_relay_handler_into_guarded_tools() -> None:
+    """Verify the plumbing that connects ``RelayApprovalHandler`` all the
+    way down to ``GuardedTool.approval_handler`` — the slot the enforcer
+    actually calls on ``NEEDS_APPROVAL``. Without this test, a rename or
+    refactor of ``_apply_approval_handler`` (which we don't own — it
+    lives in ``hexgate/agents/loader.py``) could silently break the
+    Playground approval flow with only the low-level unit tests staying
+    green.
+    """
+    from types import SimpleNamespace
+
+    from hexgate.adapters.langchain.tools import GuardedTool
+    from hexgate.agents.loader import _apply_approval_handler
+    from hexgate.security.enforcer import PolicyEnforcer
+    from hexgate.security.policy_set import load_policy_set_from_dict
+
+    # Minimal Agent-shaped object with one GuardedTool. Real agents get
+    # wrapped by create_agent; we shortcut to just the surface
+    # _apply_approval_handler reads (``.tools``, ``.with_tools``).
+    engine = load_policy_set_from_dict(
+        {
+            "version": 1,
+            "default_policy": {"mode": "deny"},
+            "tools": {"noop": {"mode": "allow"}},
+        }
+    )
+    enforcer = PolicyEnforcer(engine, agent_name="test")
+
+    async def _stub_tool_run(**_: Any) -> str:
+        return "ok"
+
+    from langchain_core.tools import StructuredTool
+
+    inner = StructuredTool.from_function(
+        coroutine=_stub_tool_run,
+        name="noop",
+        description="test tool",
+    )
+    guarded = GuardedTool.wrap(inner, enforcer=enforcer, approval_handler=None)
+
+    class _StubAgent(SimpleNamespace):
+        def with_tools(self, tools):
+            self.tools = list(tools)
+            return self
+
+    agent = _StubAgent(tools=[guarded])
+
+    # This is the exact call serve.py's main() → build_runtime_from_
+    # local_agent → _build_runtime_from_spec makes. If it silently
+    # stops touching guarded.approval_handler, Playground approvals
+    # silently break.
+    relay = RelayApprovalHandler()
+    _apply_approval_handler(agent, relay)
+
+    # Every GuardedTool on the returned agent now carries the relay.
+    assert len(agent.tools) == 1
+    assert isinstance(agent.tools[0], GuardedTool)
+    assert agent.tools[0].approval_handler is relay
+
+
+# ---------------------------------------------------------------------------
+# Strict-bool + protocol contract on `approval.reply`
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_string_allowed_is_treated_as_deny() -> None:
+    """Fail-closed contract: a client that sends ``allowed: "false"``
+    (JSON string, not bool) must be treated as deny, not approved via
+    ``bool("false") == True``. The strict check lives in
+    ``_handle_message``, which is where the reply enters the process."""
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=handler,
+    )
+
+    task = asyncio.create_task(handler(_decision()))
+    await asyncio.sleep(0.05)
+    decision_id = ws.sent[0]["decision_id"]
+
+    # String "false" would be truthy under bool() — but must be denied.
+    await _handle_message(
+        context,
+        ws,
+        {"type": "approval.reply", "decision_id": decision_id, "allowed": "false"},
+    )
+    result = await task
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_true_bool_allowed_approves() -> None:
+    """Sanity: the strict check doesn't accidentally reject legit True."""
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=10.0)
+    handler.bind_socket(ws)
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=handler,
+    )
+
+    task = asyncio.create_task(handler(_decision()))
+    await asyncio.sleep(0.05)
+    decision_id = ws.sent[0]["decision_id"]
+    await _handle_message(
+        context,
+        ws,
+        {"type": "approval.reply", "decision_id": decision_id, "allowed": True},
+    )
+    assert (await task) is True
+
+
+# ---------------------------------------------------------------------------
+# End-to-end deadlock regression (finding #1)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_serve_loop_does_not_deadlock_on_approval() -> None:
+    """The critical bug the review caught: `_serve_loop` used to await
+    `_handle_message` inline, so a chat frame that triggered an approval
+    prompt would block the very coroutine that must read the matching
+    approval.reply off the socket. Every real approval TTL-denied.
+
+    This test simulates the real read loop's dispatch model (each
+    inbound frame → its own task) and confirms an approval AND its
+    reply can flow through without a stall.
+    """
+    from hexgate.cli.serve import _dispatch_message, ServeContext
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=5.0)
+    handler.bind_socket(ws)
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=handler,
+    )
+
+    # Simulate a chat frame arriving that immediately triggers an
+    # approval (bypass stream_agent — we're testing the dispatch model,
+    # not the LLM). Do that by directly calling handler() from a
+    # dispatched task; then dispatch the reply frame from ANOTHER task
+    # to prove the read loop stays free.
+    approval_task = asyncio.create_task(handler(_decision()))
+    await asyncio.sleep(0.05)
+    decision_id = ws.sent[0]["decision_id"]
+
+    # The reply arrives as a separate frame — under the old serial
+    # design, this dispatch would sit behind the still-awaiting
+    # approval_task and deadlock. Under the fixed design (each frame in
+    # its own task), it runs concurrently and resolve() fires the Event.
+    reply_task = asyncio.create_task(
+        _dispatch_message(
+            context,
+            ws,
+            {
+                "type": "approval.reply",
+                "decision_id": decision_id,
+                "allowed": True,
+            },
+        )
+    )
+
+    # Give both tasks time to complete. If deadlocked, we hit the 5s
+    # TTL and get False; asyncio.wait_for with a 2s cap turns the
+    # deadlock into a clear assertion failure rather than a slow test.
+    result = await asyncio.wait_for(approval_task, timeout=2.0)
+    await reply_task
+    assert result is True, (
+        "approval TTL-denied — dispatch model regressed to inline await"
+    )

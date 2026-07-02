@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   usePlayground,
+  type ApprovalRequestEvent,
   type ChatMessage,
   type ToolCall,
 } from "@/lib/playground";
@@ -49,7 +50,9 @@ export function PlaygroundPage() {
 }
 
 function PlaygroundLive({ projectId }: { projectId: string }) {
-  const { state, sendChat, reset } = usePlayground({ projectId });
+  const { state, sendChat, reset, respondToApproval } = usePlayground({
+    projectId,
+  });
   const [composer, setComposer] = useState("");
   const [agent, setAgent] = useState<AgentRead | null>(null);
   const [activeRole, setActiveRole] = useState<string | null>(null);
@@ -268,6 +271,13 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
           )}
         </div>
 
+        {state.pendingApprovals.length > 0 && (
+          <ApprovalPromptStack
+            pending={state.pendingApprovals}
+            onDecide={respondToApproval}
+          />
+        )}
+
         <footer className="border-t border-border p-4">
           <div className="flex items-center gap-2">
             <input
@@ -433,6 +443,137 @@ function DecisionRow({ call }: { call: ToolCall }) {
         <span className="text-muted-foreground text-[10px]">
           {call.endedAt ? `${call.endedAt - call.startedAt}ms` : "…"}
         </span>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Approval prompts
+// ---------------------------------------------------------------------
+//
+// The prompt renders INLINE above the composer (not as a modal) so the
+// user sees it in the flow of the conversation they were having, not
+// as a context-stealing overlay. When N > 1 concurrent approvals fire
+// (parallel tool calls via asyncio.gather on the serve side), the
+// stack renders each as its own row with its own decide buttons —
+// resolving one doesn't affect the others.
+
+interface ApprovalPromptStackProps {
+  pending: ApprovalRequestEvent[];
+  onDecide: (decision_id: string, allowed: boolean) => boolean;
+}
+
+function ApprovalPromptStack({ pending, onDecide }: ApprovalPromptStackProps) {
+  // One 1 Hz ticker for the whole stack — passed down as ``now`` so
+  // every card renders in lockstep from a single interval. Previously
+  // each card installed its own useCountdown → N cards = N intervals
+  // for the same wall-clock read.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="border-t border-approval/40 bg-approval/5 px-4 py-3 space-y-2 max-h-[45%] overflow-y-auto scrollbar-thin">
+      <div className="flex items-center gap-2 text-xs font-medium text-approval">
+        <ShieldAlert className="size-3.5" />
+        {pending.length === 1
+          ? "1 approval pending"
+          : `${pending.length} approvals pending`}
+      </div>
+      {pending.map((req) => (
+        <ApprovalPromptCard
+          key={req.decision_id}
+          request={req}
+          onDecide={onDecide}
+          now={now}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface ApprovalPromptCardProps {
+  request: ApprovalRequestEvent;
+  onDecide: (decision_id: string, allowed: boolean) => boolean;
+  now: number;
+}
+
+function ApprovalPromptCard({
+  request,
+  onDecide,
+  now,
+}: ApprovalPromptCardProps) {
+  const deadline = useMemo(
+    () => new Date(request.expires_at).getTime(),
+    [request.expires_at],
+  );
+  const remaining = Math.max(0, Math.floor((deadline - now) / 1000));
+  const urgency =
+    remaining <= 10
+      ? "text-deny"
+      : remaining <= 30
+        ? "text-approval"
+        : "text-muted-foreground";
+
+  const argsPretty = useMemo(
+    () => JSON.stringify(request.arguments, null, 2),
+    [request.arguments],
+  );
+
+  return (
+    <div className="rounded-md border border-approval/40 bg-background/60 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-sm">
+            <Wrench className="size-3.5 text-approval shrink-0" />
+            <span className="font-mono font-medium truncate">
+              {request.tool_name}
+            </span>
+            {request.role && (
+              <Badge
+                variant="outline"
+                className="font-mono text-[10px] shrink-0"
+              >
+                {request.role}
+              </Badge>
+            )}
+          </div>
+          {request.reason && (
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+              {request.reason}
+            </p>
+          )}
+        </div>
+        <span
+          className={cn("text-[10px] font-mono shrink-0 tabular-nums", urgency)}
+        >
+          {remaining > 0 ? `${remaining}s` : "expired"}
+        </span>
+      </div>
+      <pre className="mt-2 max-h-40 overflow-y-auto rounded bg-muted/60 p-2 text-[11px] font-mono leading-snug scrollbar-thin">
+        {argsPretty}
+      </pre>
+      <div className="mt-2 flex items-center justify-end gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 gap-1.5 text-xs border-deny/40 hover:bg-deny/10 hover:text-deny"
+          onClick={() => onDecide(request.decision_id, false)}
+        >
+          <X className="size-3" />
+          Deny
+        </Button>
+        <Button
+          size="sm"
+          className="h-7 gap-1.5 text-xs bg-allow hover:bg-allow/90 text-white"
+          onClick={() => onDecide(request.decision_id, true)}
+        >
+          <Check className="size-3" />
+          Approve
+        </Button>
       </div>
     </div>
   );
