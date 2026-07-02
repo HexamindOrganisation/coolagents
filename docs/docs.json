@@ -29,7 +29,9 @@
               "concepts/user-scope",
               "concepts/signed-bundles",
               "concepts/audit-trail",
-              "concepts/mcp"
+              "concepts/mcp",
+              "concepts/approval-required",
+              "concepts/approval-frameworks-compared"
             ]
           },
           {

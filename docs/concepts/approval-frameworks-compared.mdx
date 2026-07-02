@@ -1,0 +1,74 @@
+---
+title: "Approval — how other frameworks do it"
+description: "An honest comparison of the approval primitive across OpenAI Agents SDK, LangGraph, Pydantic AI, and Claude Code."
+---
+
+Every serious agent framework has an approval story. They differ on what they optimize for — durability, framework-native ergonomics, protocol coupling — and each design has a cost. This page names the tradeoffs we accepted and the ones we didn't.
+
+## TL;DR
+
+| Framework | Primitive | Durable across process restart | State a dev must configure | Concepts to learn |
+|---|---|---|---|---|
+| **Hexgate** | `async fn(decision) -> bool` callback | No (v1) | None — memory-scoped | 1 (the callback) |
+| **OpenAI Agents SDK** | `needs_approval=True` + `RunState.approve()` after `InterruptionEvent` | Yes (serialize `RunState`) | Pick a serialization sink | 4 (needs_approval flag, InterruptionEvent, RunState, approve/reject) |
+| **LangGraph** | `interrupt()` + `Command(resume=...)` | Yes (via checkpointer) | Configure checkpointer (in-memory / SQLite / Postgres) | 4 (interrupt, thread_id, checkpointer, resume) |
+| **Pydantic AI** | Raise `ModelRetry` from the tool | No | None | 2 (ModelRetry exception, retry handling) |
+| **Claude Code** | Terminal prompt in the loop | No | None | 0 (implicit) |
+
+## Why we chose a callback
+
+Every framework except Hexgate ties approval to some in-house state model — `RunState`, checkpointer threads, `ModelRetry` — because they own the agent loop. Hexgate is a policy layer that sits alongside the agent framework you already picked. We can't hand you our `RunState`; we can hand you a callable slot.
+
+The cost: no cross-process durability at v1. If the process that called the tool dies, the pending approval dies with it. In exchange: zero infrastructure to configure, one concept to teach, works identically whether you run in a notebook, a CLI, `hexgate serve`, or an API worker.
+
+Durability lands as a future `PlatformApprovalHandler` — same callback slot, backed by Postgres. Ships when demand shows up.
+
+## Compared to OpenAI Agents SDK
+
+Their model: mark a tool with `needs_approval=True`, run the agent, get an `InterruptionEvent`, call `RunState.approve(tool_call)` or `RunState.reject(tool_call)`, resume with the mutated state. Full docs: [openai.github.io/openai-agents-python — human-in-the-loop](https://openai.github.io/openai-agents-python/human_in_the_loop/).
+
+**Where theirs wins.** `RunState` serializes cleanly. Approve a call from a different process — different host, next day — and resume. That is genuinely nice for overnight human review.
+
+**Where ours wins.** Their model requires the tool decorator to declare approval intent; ours reads it from YAML at bind time, so a policy change doesn't touch tool code. Four concepts (`needs_approval`, `InterruptionEvent`, `RunState`, `approve`) collapse to one (`async fn(decision) -> bool`). And approval is one policy outcome among three (`allow` / `deny` / `approval_required`) — not a separate feature grafted on top.
+
+## Compared to LangGraph
+
+Their model: call `interrupt(payload)` inside a node, LangGraph raises a `GraphInterrupt`, the checkpointer persists graph state under a `thread_id`, resume with `graph.invoke(Command(resume=answer), {"configurable": {"thread_id": ...}})`. Full docs: [langchain-ai.github.io/langgraph — human-in-the-loop](https://langchain-ai.github.io/langgraph/how-tos/human_in_the_loop/breakpoints/).
+
+**Where theirs wins.** The checkpointer is pluggable — SQLite, Postgres, Redis — and covers the whole graph, not just tool calls. If your app is already LangGraph-native, you'll want `interrupt()`.
+
+**Where ours wins.** No checkpointer to configure and no `thread_id` to manage. LangGraph's out-of-the-box story ships nothing that notifies the approver — you build the Slack post / email / webhook yourself. Our callback IS the notification: the same handler that decides whether to approve also decides how to reach the human.
+
+## Compared to Pydantic AI
+
+Their model: overload `ModelRetry` — raise it from inside the tool and the agent re-prompts the model with the message. Full docs: [ai.pydantic.dev — tools](https://ai.pydantic.dev/tools/).
+
+**Where theirs wins.** Nothing to configure — the exception is the whole feature.
+
+**Where ours wins.** Approval and retry are different domains. `ModelRetry` is grep-invisible when you're auditing "which tools require approval?" — one exception type covers correction, backoff, and human-in-the-loop indistinguishably. Ours emits a distinct `Decision(outcome=NEEDS_APPROVAL)` object into the audit trail; a compliance query for "every approval-required call last quarter" is a straight ClickHouse `SELECT`.
+
+## Compared to Claude Code
+
+Their model: the terminal is the approval sink. Every dangerous tool call prints a prompt; the user hits `y` or `n`. No library API; the loop owns the UI.
+
+**What we stole.** The insight that "no infra" beats "durable" for the developer-loop case. Most approvals happen during dev, in a REPL / CLI / playground; nobody's overnight-approving in a notebook. Optimizing for that path first is right.
+
+**Where ours differs.** Claude Code IS a CLI. Hexgate is a library — we ship the same callback slot to notebook, CLI, `hexgate serve`, FastAPI worker, and (eventually) Postgres-backed background jobs. Same primitive; the sink changes.
+
+We also copied their startup warning: if your policy declares `approval_required` but you passed no handler, `hexgate serve` shouts about it at boot instead of silently auto-approving (which is exactly the bug that motivated the callback in the first place).
+
+## Points of vigilance
+
+- **The callback's simplicity is also a footgun.** `approval_handler=True` bypasses every prompt in one keystroke. Search for it in CI; it's the fastest way to accidentally ship a policy that reads "approval-required" but behaves like "allow".
+- **No cross-process durability at v1.** If the process serving the approval dies (host reboot, container OOM, `hexgate serve` restart) the pending prompt is lost. The framework fails-closed on the tool call — but the human never sees the request.
+- **The handler runs inside the agent turn.** A slow handler stalls the whole turn (streaming tokens included). Wrap everything blocking in `asyncio.to_thread` and cap external calls with `asyncio.wait_for`.
+- **Framework-native primitives still fire underneath.** If you use LangGraph's `interrupt()` inside a tool, our callback fires first, then `interrupt()` fires when the tool actually runs. The primitives compose, they don't replace each other.
+- **Concurrent parallel tool calls emit multiple simultaneous requests.** GPT-5.4, Claude 4.7, and LangGraph's default `ToolNode` all fan out via `asyncio.gather`. Your handler will be invoked concurrently — key state by decision content, not by array position.
+
+## What's on the roadmap
+
+- **`PlatformApprovalHandler`** — Postgres-backed pending-approvals table. Same callback slot; the sink survives process restarts. Unlocks webhook / Slack / mobile / overnight approvers. Ships when a customer asks.
+- **`SlackApprovalHandler`** — post `approval.request` to a channel, treat a reaction as `approval.reply`. First-party implementation on top of the callback.
+- **Per-tool RBAC approvers.** A policy field like `approvers: [role: finance-approver]` so the handler receives the required approver set. Today the callback decides for itself.
+- **Auto-classifier for repeat approvals.** Detect "same tool, same arguments, approved N times → auto-approve the (N+1)th with an audit note". Optional; some regulated tenants explicitly don't want this.
+- **Callback plumbing on non-LangChain adapters.** OpenAI Agents / Pydantic AI / Google ADK adapters have the same slot; each is one small PR to wire.
