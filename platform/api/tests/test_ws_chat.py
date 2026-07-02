@@ -31,7 +31,7 @@ from starlette.websockets import WebSocketDisconnect
 from hexgate_api import main
 from hexgate_api.main import app
 from hexgate_api.constants import DEFAULT_PROJECT_ID
-from hexgate_api.services import ensure_default_project
+from hexgate_api.bootstrap.seed import ensure_default_project
 
 
 # ---------------------------------------------------------------------------

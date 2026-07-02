@@ -24,7 +24,7 @@ from hexgate_api.domains.tokens.service import (
     mask_secret,
     mint_dev_token,
 )
-from hexgate_api.services import ensure_default_project
+from hexgate_api.bootstrap.seed import ensure_default_project
 
 router = APIRouter()
 

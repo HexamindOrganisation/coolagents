@@ -8,7 +8,7 @@ from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalErr
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api.audit import (
+from hexgate_api.domains.audit.service import (
     WINDOW_HOURS,
     AuditEventOutOfWindow,
     AuditPayloadTooLarge,
@@ -34,7 +34,7 @@ from hexgate_api.schemas import (
     DecisionAccepted,
     DecisionEvent,
 )
-from hexgate_api.services import get_latest_agent_version_id
+from hexgate_api.domains.agents.service import get_latest_agent_version_id
 
 _log = logging.getLogger(__name__)
 

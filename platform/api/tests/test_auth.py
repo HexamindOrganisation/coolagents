@@ -22,11 +22,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api import main
 from hexgate_api.core import mailer
 from hexgate_api.main import app
-from hexgate_api.services import (
+from hexgate_api.bootstrap.seed import ensure_default_project
+from hexgate_api.constants import (
     DEFAULT_PROJECT_ID,
     DEFAULT_USER_EMAIL,
     DEFAULT_USER_ID,
-    ensure_default_project,
 )
 
 

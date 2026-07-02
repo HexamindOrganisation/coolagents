@@ -25,14 +25,14 @@ from hexgate_api.schemas import (
     ValidatePolicyRequest,
     ValidatePolicyResponse,
 )
-from hexgate_api.services import (
-    ensure_default_project,
+from hexgate_api.domains.agents.service import (
     get_agent,
     get_latest_agent_versions_map,
     list_agents,
     register_manifest,
     update_agent,
 )
+from hexgate_api.bootstrap.seed import ensure_default_project
 
 router = APIRouter()
 

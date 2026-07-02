@@ -26,11 +26,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api import main
 from hexgate_api.main import app
-from hexgate_api.services import (
-    DEFAULT_PROJECT_ID,
-    DEFAULT_USER_ID,
-    ensure_default_project,
-)
+from hexgate_api.bootstrap.seed import ensure_default_project
+from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
 
 
 @pytest_asyncio.fixture
@@ -342,7 +339,7 @@ async def test_manifest_endpoint_returns_registered_manifest_with_tools(
 ) -> None:
     """After register_manifest, the endpoint surfaces the full manifest."""
     from hexgate_api.schemas import AgentManifest
-    from hexgate_api.services import register_manifest
+    from hexgate_api.domains.agents.service import register_manifest
 
     async with session_factory() as session:
         manifest = AgentManifest.model_validate(
@@ -369,7 +366,7 @@ async def test_manifest_endpoint_returns_latest_version(
 ) -> None:
     """When multiple versions exist, only the highest one is returned."""
     from hexgate_api.schemas import AgentManifest
-    from hexgate_api.services import register_manifest
+    from hexgate_api.domains.agents.service import register_manifest
 
     async with session_factory() as session:
         v1 = AgentManifest.model_validate(_sample_manifest("support_bot"))
@@ -395,7 +392,7 @@ async def test_manifest_endpoint_round_trips_model_and_system_prompt(
 ) -> None:
     """The new manifest fields survive register → read."""
     from hexgate_api.schemas import AgentManifest
-    from hexgate_api.services import register_manifest
+    from hexgate_api.domains.agents.service import register_manifest
 
     async with session_factory() as session:
         manifest = AgentManifest.model_validate(

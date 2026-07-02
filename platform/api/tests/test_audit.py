@@ -19,9 +19,9 @@ from clickhouse_connect.driver.exceptions import (
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from hexgate_api import audit
+from hexgate_api.domains.audit import service as audit
 from hexgate_api import main
-from hexgate_api.audit import (
+from hexgate_api.domains.audit.service import (
     CLOCK_SKEW_FUTURE,
     list_decisions,
     summarize,
@@ -36,7 +36,7 @@ from hexgate_api.deps.tokens import require_project
 from hexgate_api.main import app
 from hexgate_api.schemas import AnomalySeverity, AuditOutcome, DecisionEvent
 
-from hexgate_api.audit import prepare_date_range
+from hexgate_api.domains.audit.service import prepare_date_range
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -742,7 +742,7 @@ def test_readiness_reports_clickhouse(
 def test_real_clickhouse_round_trip() -> None:
     """Insert through the real write path (``insert_decision`` with
     ``_DECISION_INSERT_SETTINGS``); SELECT it back; clean up."""
-    from hexgate_api.audit import insert_decision
+    from hexgate_api.domains.audit.service import insert_decision
     from hexgate_api.core.clickhouse import get_clickhouse as real_get_clickhouse
 
     clickhouse_client = real_get_clickhouse()

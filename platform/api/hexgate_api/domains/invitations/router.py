@@ -53,7 +53,7 @@ async def api_create_invitation(
     The route also looks up the org name + inviter email for the email
     body (one extra query each; cheap).
     """
-    from hexgate_api.services import (
+    from hexgate_api.domains.invitations.service import (
         InvitationError,
         create_invitation,
         send_invitation_email,
@@ -109,7 +109,7 @@ async def api_list_invitations(
     show up. Already-accepted invites surface implicitly as new
     OrganizationMember rows via ``GET /members``.
     """
-    from hexgate_api.services import list_pending_invitations
+    from hexgate_api.domains.invitations.service import list_pending_invitations
 
     _, caller_member = membership
     rows = await list_pending_invitations(session, caller_member.org_id)
@@ -129,7 +129,10 @@ async def api_get_invitation_preview(
     authenticating. The invite id is UUID v4 (unguessable enough);
     the accept POST is what requires auth + strict email match.
     """
-    from hexgate_api.services import _is_invitation_terminal, find_invitation
+    from hexgate_api.domains.invitations.service import (
+        _is_invitation_terminal,
+        find_invitation,
+    )
 
     invitation = await find_invitation(session, invitation_id)
     if invitation is None:
@@ -171,7 +174,7 @@ async def api_accept_invitation(
       * 409 — already accepted or revoked
       * 403 — email mismatch ("this invite isn't for you")
     """
-    from hexgate_api.services import (
+    from hexgate_api.domains.invitations.service import (
         InvitationAlreadyConsumed,
         InvitationEmailMismatch,
         InvitationExpired,
@@ -216,7 +219,10 @@ async def api_revoke_invitation(
     """
     from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER
     from hexgate_api.domains.members.service import find_member
-    from hexgate_api.services import find_invitation, revoke_invitation
+    from hexgate_api.domains.invitations.service import (
+        find_invitation,
+        revoke_invitation,
+    )
 
     invitation = await find_invitation(session, invitation_id)
     if invitation is None:

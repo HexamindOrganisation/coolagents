@@ -21,10 +21,15 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api import services
+from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
 from hexgate.security import generate_keypair, sign_bytes, verify_bytes
 from hexgate_api.models import Agent  # noqa: F401 — ensures the table is registered
-from hexgate_api.services import compile_bundle, ensure_default_project, update_agent
+from hexgate_api.domains.agents.service import (
+    backfill_bundles,
+    compile_bundle,
+    update_agent,
+)
+from hexgate_api.bootstrap.seed import ensure_default_project
 
 
 _OPA_AVAILABLE = shutil.which("opa") is not None
@@ -133,7 +138,7 @@ async def test_update_agent_stores_signed_bundle(session, signer) -> None:
     sign, public_raw = signer
     agent = await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_DEMO_POLICY,
         sign=sign,
@@ -153,14 +158,14 @@ async def test_update_agent_clears_stale_bundle_on_bad_policy(session, signer) -
     sign, _ = signer
     await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_DEMO_POLICY,
         sign=sign,
     )
     agent = await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_BAD_POLICY,
         sign=sign,
@@ -174,7 +179,7 @@ async def test_update_agent_without_sign_stores_no_bundle(session) -> None:
     """No signer → no bundle (pure yaml save, e.g. tests / opa-less envs)."""
     agent = await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_DEMO_POLICY,
     )
@@ -198,7 +203,7 @@ async def test_backfill_signs_seeded_agents(session, signer) -> None:
     rows = (await session.exec(select(Agent))).all()
     assert all(a.compiled_wasm is None for a in rows)
 
-    n = await services.backfill_bundles(session, sign)
+    n = await backfill_bundles(session, sign)
     assert n >= 1
 
     # Every agent now carries a verifiable bundle.
@@ -212,9 +217,9 @@ async def test_backfill_signs_seeded_agents(session, signer) -> None:
 async def test_backfill_is_idempotent(session, signer) -> None:
     """A second backfill touches nothing — already-bundled agents are skipped."""
     sign, _ = signer
-    first = await services.backfill_bundles(session, sign)
+    first = await backfill_bundles(session, sign)
     assert first >= 1
-    assert (await services.backfill_bundles(session, sign)) == 0
+    assert (await backfill_bundles(session, sign)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +234,7 @@ async def test_agent_read_serializes_bundle_as_base64(session, signer) -> None:
     sign, public_raw = signer
     agent = await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_DEMO_POLICY,
         sign=sign,
@@ -253,7 +258,7 @@ async def test_agent_read_serializes_bundle_as_base64(session, signer) -> None:
 async def test_agent_read_nulls_when_unsigned(session) -> None:
     agent = await update_agent(
         session,
-        services.DEFAULT_PROJECT_ID,
+        DEFAULT_PROJECT_ID,
         "default",
         policy_yaml=_DEMO_POLICY,
     )
@@ -343,8 +348,8 @@ def test_get_agent_returns_etag_header_when_bundle_present() -> None:
     # M3 Phase 2: routes require the X-Dev-User header. The default seed user
     # is a member of support-bot's org, so baking it onto the client passes
     # the require_org_member gate.
-    with TestClient(main.app, headers={"X-Dev-User": services.DEFAULT_USER_ID}) as c:
-        r = c.get(f"/v1/projects/{services.DEFAULT_PROJECT_ID}/agents/default")
+    with TestClient(main.app, headers={"X-Dev-User": DEFAULT_USER_ID}) as c:
+        r = c.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default")
         assert r.status_code == 200
         etag = r.headers.get("etag")
         assert etag and etag.startswith('"') and etag.endswith('"')
@@ -364,12 +369,12 @@ def test_if_none_match_returns_304_when_unchanged() -> None:
     # M3 Phase 2: routes require the X-Dev-User header. The default seed user
     # is a member of support-bot's org, so baking it onto the client passes
     # the require_org_member gate.
-    with TestClient(main.app, headers={"X-Dev-User": services.DEFAULT_USER_ID}) as c:
-        r1 = c.get(f"/v1/projects/{services.DEFAULT_PROJECT_ID}/agents/default")
+    with TestClient(main.app, headers={"X-Dev-User": DEFAULT_USER_ID}) as c:
+        r1 = c.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default")
         etag = r1.headers["etag"]
 
         r2 = c.get(
-            f"/v1/projects/{services.DEFAULT_PROJECT_ID}/agents/default",
+            f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default",
             headers={"If-None-Match": etag},
         )
         assert r2.status_code == 304
@@ -387,9 +392,9 @@ def test_if_none_match_stale_etag_returns_fresh_200() -> None:
     # M3 Phase 2: routes require the X-Dev-User header. The default seed user
     # is a member of support-bot's org, so baking it onto the client passes
     # the require_org_member gate.
-    with TestClient(main.app, headers={"X-Dev-User": services.DEFAULT_USER_ID}) as c:
+    with TestClient(main.app, headers={"X-Dev-User": DEFAULT_USER_ID}) as c:
         r = c.get(
-            f"/v1/projects/{services.DEFAULT_PROJECT_ID}/agents/default",
+            f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default",
             headers={"If-None-Match": '"obviously-stale"'},
         )
         assert r.status_code == 200

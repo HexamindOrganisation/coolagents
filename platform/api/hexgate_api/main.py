@@ -13,10 +13,8 @@ from hexgate_api.core.clickhouse import ping as clickhouse_ping
 from hexgate_api.core.db import async_session_factory, init_db
 from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api import health
-from hexgate_api.services import (
-    backfill_bundles,
-    ensure_default_project,
-)
+from hexgate_api.domains.agents.service import backfill_bundles
+from hexgate_api.bootstrap.seed import ensure_default_project
 
 
 # Load .env into os.environ before any HEXGATE_* read (CORS + keystore
