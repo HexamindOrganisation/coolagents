@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useAgentSelection } from "@/lib/agent_param";
 import {
   AlertTriangle,
   Bot,
@@ -43,21 +44,18 @@ export function PoliciesPage() {
     queryFn: () => api.listAgents(scope.projectId as string),
     enabled: !!scope.projectId,
   });
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  // ?agent= drives selection so navigating /agents?agent=X → click
+  // "edit policy →" → land on /policies with the SAME X preselected.
+  // resetOn=projectId clears the URL on a real project switch, but
+  // NOT on the initial mount — so incoming ?agent= from a link is
+  // preserved.
+  const {
+    selected: selectedAgent,
+    set: setSelectedAgent,
+    requested,
+    notFound,
+  } = useAgentSelection(agents.data, { resetOn: scope.projectId });
   const [tab, setTab] = useState<Tab>("yaml");
-
-  // Wipe the selection on project switch — the previous project's
-  // agents don't exist over here.
-  useEffect(() => {
-    setSelectedAgent(null);
-  }, [scope.projectId]);
-
-  // Auto-select the first agent once the list loads.
-  useEffect(() => {
-    if (!selectedAgent && agents.data && agents.data.length > 0) {
-      setSelectedAgent(agents.data[0].name);
-    }
-  }, [agents.data, selectedAgent]);
 
   if (scope.status === "no-project") {
     return <NoProjectEmptyState resource="policies" />;
@@ -73,12 +71,32 @@ export function PoliciesPage() {
           <AgentPicker
             agents={agents.data ?? []}
             value={selectedAgent}
-            onChange={(name) => setSelectedAgent(name)}
+            onChange={setSelectedAgent}
             loading={agents.isLoading}
           />
         </div>
         <Tabs value={tab} onChange={setTab} />
       </header>
+
+      {/* URL asked for an agent this project doesn't have — show a banner
+          instead of silently editing the wrong agent's policy. */}
+      {notFound && requested && (
+        <div className="flex items-center gap-2 px-6 py-2 text-xs bg-approval/5 border-b border-approval/30 text-approval">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span>
+            No agent named{" "}
+            <span className="font-mono font-medium">{requested}</span> in this
+            project.
+            {selectedAgent && (
+              <>
+                {" Showing "}
+                <span className="font-mono font-medium">{selectedAgent}</span>
+                {" instead."}
+              </>
+            )}
+          </span>
+        </div>
+      )}
 
       {/* Content */}
       <div className="flex-1 overflow-hidden">

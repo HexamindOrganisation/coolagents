@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useAgentSelection } from "@/lib/agent_param";
 import { Bot, FileText, ShieldCheck, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
@@ -31,19 +31,16 @@ export function AgentsPage() {
     queryFn: () => api.listAgentManifests(scope.projectId as string),
     enabled: !!scope.projectId,
   });
-  const [selectedName, setSelectedName] = useState<string | null>(null);
-
-  // Switching projects clears the selected agent — the previous
-  // project's agent names mean nothing in the new project.
-  useEffect(() => {
-    setSelectedName(null);
-  }, [scope.projectId]);
-
-  useEffect(() => {
-    if (!selectedName && manifests.data && manifests.data.length > 0) {
-      setSelectedName(manifests.data[0].name);
-    }
-  }, [manifests.data, selectedName]);
+  // ?agent= drives selection so a link from /policies (or a shared URL
+  // /agents?agent=support_bot) lands on the right agent. Falls back to
+  // the first agent when the URL is unset or references a stale name.
+  // resetOn=projectId means the URL clears on a real project change,
+  // but NOT on the initial mount — so /agents?agent=beta from an
+  // incoming link isn't stomped before the user sees it.
+  const { selected: selectedName, set: setSelected } = useAgentSelection(
+    manifests.data,
+    { resetOn: scope.projectId },
+  );
 
   const active = manifests.data?.find((m) => m.name === selectedName);
 
@@ -59,13 +56,13 @@ export function AgentsPage() {
         <AgentPicker
           agents={manifests.data ?? []}
           value={selectedName}
-          onChange={setSelectedName}
+          onChange={setSelected}
           loading={manifests.isLoading}
         />
         <div className="flex-1" />
         {active && (
           <Link
-            to="/policies"
+            to={`/policies?agent=${encodeURIComponent(active.name)}`}
             className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
           >
             <ShieldCheck className="size-3" />
