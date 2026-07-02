@@ -33,58 +33,18 @@ from hexgate.mcp.proxy import (
     _result_to_envelope,
     _ToolsetState,
 )
-
-
-# ---- helpers ---------------------------------------------------------------
-
-
-def _text_result(text: str, *, is_error: bool = False) -> CallToolResult:
-    return CallToolResult(
-        content=[TextContent(type="text", text=text)], isError=is_error
-    )
-
-
-class _FakeMCPClient:
-    """Minimal stand-in for :class:`MCPClient` — records calls, scripts results.
-
-    Implements just the subset _build_proxy reads: ``config`` (for the
-    qualified name) and ``call_tool``. Each call appends to ``self.calls``.
-    """
-
-    def __init__(self, config: MCPServerConfig) -> None:
-        self.config = config
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._next_result: CallToolResult | Exception = _text_result("default")
-
-    def returns(self, result: CallToolResult) -> None:
-        self._next_result = result
-
-    def raises(self, exc: Exception) -> None:
-        self._next_result = exc
-
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
-        self.calls.append((name, arguments))
-        if isinstance(self._next_result, Exception):
-            raise self._next_result
-        return self._next_result
-
-
-def _slack_config(**overrides: Any) -> MCPServerConfig:
-    base: dict[str, Any] = {
-        "name": "slack",
-        "transport": "stdio",
-        "command": "slack-mcp",
-    }
-    base.update(overrides)
-    return MCPServerConfig(**base)
-
-
-def _tool(name: str, *, description: str = "", schema: dict | None = None) -> Tool:
-    return Tool(
-        name=name,
-        description=description or None,
-        inputSchema=schema or {"type": "object", "properties": {}},
-    )
+from tests.mcp.conftest import (
+    FakeMCPClient as _FakeMCPClient,
+)
+from tests.mcp.conftest import (
+    mcp_tool as _tool,
+)
+from tests.mcp.conftest import (
+    slack_config as _slack_config,
+)
+from tests.mcp.conftest import (
+    text_result as _text_result,
+)
 
 
 def _state(client: _FakeMCPClient | Any) -> _ToolsetState:
@@ -617,3 +577,175 @@ async def test_toolset_aexit_forwards_suppression_return(monkeypatch) -> None:
     # Inner CM says "I handled it" — the with block must NOT re-raise.
     async with MCPToolset(cfg):
         raise RuntimeError("inner CM should suppress this")
+
+
+# ---- Post-close guard (code-review finding #3) -----------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxies_raises_after_close(monkeypatch) -> None:
+    """`.proxies` after `__aexit__` must raise RuntimeError, not silently
+    return `[]`. Prior behavior let `wrap_mcp_toolset(mcp)` outside the
+    `async with` block produce an empty tool list and the agent built
+    with zero MCP tools — user saw no error, just an LLM that pretended
+    the tool didn't exist."""
+
+    class _NoopClient:
+        def __init__(self, config: MCPServerConfig) -> None:
+            self.config = config
+
+        async def __aenter__(self) -> "_NoopClient":
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> None:
+            pass
+
+        async def list_tools(self) -> list[Tool]:
+            return [_tool("ping")]
+
+    monkeypatch.setattr("hexgate.mcp.proxy.MCPClient", _NoopClient)
+
+    cfg = MCPServerConfig(name="a", transport="stdio", command="x")
+    toolset = MCPToolset(cfg)
+    async with toolset:
+        pass  # exit immediately
+
+    with pytest.raises(RuntimeError, match="already exited"):
+        _ = toolset.proxies
+
+
+@pytest.mark.asyncio
+async def test_tools_raises_after_close(monkeypatch) -> None:
+    """Same guard on the LangChain back-compat shortcut — hitting
+    `mcp.tools` after close must raise, not silently return `[]`."""
+
+    class _NoopClient:
+        def __init__(self, config: MCPServerConfig) -> None:
+            self.config = config
+
+        async def __aenter__(self) -> "_NoopClient":
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> None:
+            pass
+
+        async def list_tools(self) -> list[Tool]:
+            return [_tool("ping")]
+
+    monkeypatch.setattr("hexgate.mcp.proxy.MCPClient", _NoopClient)
+
+    cfg = MCPServerConfig(name="a", transport="stdio", command="x")
+    toolset = MCPToolset(cfg)
+    async with toolset:
+        pass
+
+    with pytest.raises(RuntimeError, match="already exited"):
+        _ = toolset.tools
+
+
+# ---- .tools identity stability (code-review finding #1) --------------------
+
+
+@pytest.mark.asyncio
+async def test_tools_returns_same_list_on_repeat_access(monkeypatch) -> None:
+    """Pre-refactor `mcp.tools` was a stored list, so identity was
+    stable across calls. Post-refactor it was a property that rebuilt
+    fresh StructuredTool objects each access, silently breaking any
+    downstream pattern that de-duped by identity or wrapped in place
+    (GuardedTool's shallow-copy + swap being the concrete case). The
+    property is now cached on first access."""
+
+    class _NoopClient:
+        def __init__(self, config: MCPServerConfig) -> None:
+            self.config = config
+
+        async def __aenter__(self) -> "_NoopClient":
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> None:
+            pass
+
+        async def list_tools(self) -> list[Tool]:
+            return [_tool("ping"), _tool("pong")]
+
+    monkeypatch.setattr("hexgate.mcp.proxy.MCPClient", _NoopClient)
+
+    cfg = MCPServerConfig(name="a", transport="stdio", command="x")
+    async with MCPToolset(cfg) as mcp:
+        first = mcp.tools
+        second = mcp.tools
+        # Same underlying list AND same wrapped objects — an in-place
+        # rewrap pattern (`already_wrapped: set = set(); already_wrapped.add(t)`)
+        # will see stable identity.
+        assert first is second
+        assert [id(t) for t in first] == [id(t) for t in second]
+
+
+# ---- Exception mapping (code-review finding #2) ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxy_maps_timeout_error_to_retryable_transport_error() -> None:
+    """A generic ``asyncio.TimeoutError`` from the SDK's per-call timeout
+    used to land in the catch-all `unknown` branch with `retryable=False`
+    — meaning a genuinely transient timeout the agent should have
+    retried instead aborted the run. TimeoutError is now bucketed with
+    other transport failures."""
+    import asyncio as _asyncio
+
+    client = _FakeMCPClient(_slack_config())
+    client.raises(_asyncio.TimeoutError())
+    proxy = _build_proxy(_state(client), _slack_config(), _tool("send"))
+
+    result = await proxy.call()
+
+    assert result["ok"] is False
+    assert result["error"]["type"] == "transport_error"
+    assert result["error"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_proxy_uses_stable_unknown_type_for_unhandled_exceptions() -> None:
+    """Bucketing unhandled exceptions under `exc.__class__.__name__.lower()`
+    produced unstable type strings (`"valueerror"`, `"httpstatuserror"`)
+    that leaked Python internals and weren't in the documented type set.
+    Policy YAML / downstream consumers switching on `error.type` couldn't
+    handle them. The bucket is now the stable string `"unknown"`; the
+    class name still surfaces in the human-readable message."""
+    client = _FakeMCPClient(_slack_config())
+    client.raises(ValueError("something odd happened"))
+    proxy = _build_proxy(_state(client), _slack_config(), _tool("send"))
+
+    result = await proxy.call()
+
+    assert result["error"]["type"] == "unknown"
+    # Class name preserved in the message for operator log grep.
+    assert "ValueError" in result["error"]["message"]
+    assert "something odd happened" in result["error"]["message"]
+
+
+# ---- Defensive schema copy (code-review finding #5) ------------------------
+
+
+def test_proxy_shields_input_schema_from_downstream_mutation() -> None:
+    """MCP's `Tool.inputSchema` is shared across the raw MCPTool, the
+    MCPToolProxy, and every adapter wrapper built from it. If any
+    framework (LangChain internals, Google's FunctionDeclaration ctor,
+    etc.) mutates the dict in place — normalizing types, injecting
+    `additionalProperties`, adding `$defs` — the mutation must NOT
+    bleed back into the raw MCPTool or into sibling adapter wrappers.
+    _build_proxy shallow-copies the schema to defend against that."""
+    original_schema = {
+        "type": "object",
+        "properties": {"channel": {"type": "string"}},
+        "required": ["channel"],
+    }
+    tool = Tool(name="send", inputSchema=original_schema)
+    proxy = _build_proxy(_state(_FakeMCPClient(_slack_config())), _slack_config(), tool)
+
+    # A downstream framework mutates the proxy's schema.
+    proxy.input_schema["additionalProperties"] = False
+
+    # The original schema on the MCPTool is untouched.
+    assert "additionalProperties" not in original_schema
+    assert "additionalProperties" not in tool.inputSchema

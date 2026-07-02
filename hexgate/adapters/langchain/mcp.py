@@ -11,8 +11,6 @@ gates every invocation through :class:`PolicyEnforcer`.
 
 from __future__ import annotations
 
-from typing import Any
-
 from langchain_core.tools import BaseTool, StructuredTool
 
 from hexgate.mcp.proxy import MCPToolProxy, MCPToolset
@@ -23,21 +21,15 @@ def _wrap_one(proxy: MCPToolProxy) -> BaseTool:
 
     LangChain's ``StructuredTool.from_function(args_schema=<dict>)``
     accepts a raw JSON Schema directly — no Pydantic model generation
-    needed. The wrapping ``async def`` is a thin passthrough so
-    LangChain's introspection sees a coroutine with the right name.
+    needed. ``proxy.call`` is used verbatim as the coroutine; its
+    ``__name__`` is already set to the qualified name by
+    :func:`hexgate.mcp.proxy._build_proxy`.
     """
-    schema = proxy.input_schema
-    call = proxy.call
-
-    async def coroutine(**kwargs: Any) -> dict[str, Any]:
-        return await call(**kwargs)
-
-    coroutine.__name__ = proxy.qualified_name
     return StructuredTool.from_function(
-        coroutine=coroutine,
+        coroutine=proxy.call,
         name=proxy.qualified_name,
         description=proxy.description,
-        args_schema=schema,
+        args_schema=proxy.input_schema,
     )
 
 

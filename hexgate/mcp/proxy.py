@@ -21,6 +21,7 @@ directly — pre-adapter-split callers keep working.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -121,6 +122,18 @@ class MCPToolset:
         self._stack: contextlib.AsyncExitStack | None = None
         self._proxies: list[MCPToolProxy] = []
         self._states: list[_ToolsetState] = []
+        # Set once `__aexit__` has run so both `.proxies` and `.tools` can
+        # raise on post-close access instead of silently returning `[]` —
+        # otherwise `wrap_mcp_toolset(mcp)` called after the `async with`
+        # block would hand an agent an empty tool list and the LLM would
+        # say "I don't have that capability" with no visible error.
+        self._closed = False
+        # First-access cache for the LangChain back-compat shortcut.
+        # Pre-refactor `.tools` was a stable list stored on the instance;
+        # rebuilding fresh StructuredTool objects each access broke
+        # identity for downstream de-dup / in-place enforcer patterns
+        # (GuardedTool's shallow-copy + swap being the concrete case).
+        self._langchain_tools: list[Any] | None = None
 
     async def __aenter__(self) -> "MCPToolset":
         # AsyncExitStack registers cleanup ATOMICALLY with __aenter__ — the
@@ -165,6 +178,9 @@ class MCPToolset:
     ) -> bool | None:
         stack = self._stack
         self._stack = None
+        # Flip closed BEFORE the stack teardown so any callback that
+        # re-reads `.proxies` (e.g. an exit-time diagnostic) fails loudly.
+        self._closed = True
         # Clear BOTH _proxies and _states so a re-entered toolset doesn't
         # accumulate phantom state objects from earlier sessions. (The
         # AsyncExitStack itself is single-use, so re-enter mostly means
@@ -172,6 +188,7 @@ class MCPToolset:
         # honest rather than relying on no-one ever doing it.)
         self._proxies.clear()
         self._states.clear()
+        self._langchain_tools = None
         if stack is None:
             return None
         # Forward exc_info so the inner transports take the right
@@ -180,11 +197,29 @@ class MCPToolset:
         # decision is preserved.
         return await stack.__aexit__(exc_type, exc, tb)
 
+    def _check_open(self) -> None:
+        """Raise if the toolset's `async with` block has already exited.
+
+        Silently returning an empty proxy list post-close would let
+        `wrap_mcp_toolset(mcp)` produce `[]` on the way out and the
+        agent would build with zero MCP tools, no error, no log. Raise
+        instead so the misuse surfaces at wrap time.
+        """
+        if self._closed:
+            raise RuntimeError(
+                "MCPToolset(...) has already exited — its transports are torn "
+                "down. Move the wrap_mcp_toolset(...) call and any downstream "
+                "agent construction INSIDE the `async with MCPToolset(...) as "
+                "mcp:` block, or open a fresh toolset."
+            )
+
     @property
     def proxies(self) -> list[MCPToolProxy]:
         """The combined tool catalog across every attached server, as
         framework-agnostic descriptors. Feed to any adapter's
-        ``wrap_mcp_toolset(mcp)`` to get framework-native tools."""
+        ``wrap_mcp_toolset(mcp)`` to get framework-native tools. Raises
+        ``RuntimeError`` if accessed after the `async with` block exits."""
+        self._check_open()
         return list(self._proxies)
 
     @property
@@ -192,10 +227,18 @@ class MCPToolset:
         """LangChain BaseTools, one per proxy. Back-compat shortcut for
         code written before per-adapter wrappers existed — equivalent to
         ``wrap_mcp_toolset(self)`` from
-        :mod:`hexgate.adapters.langchain.mcp`."""
-        from hexgate.adapters.langchain.mcp import wrap_mcp_toolset
+        :mod:`hexgate.adapters.langchain.mcp`.
 
-        return wrap_mcp_toolset(self)
+        Cached on first access so the returned list has stable identity
+        across calls — some downstream patterns (GuardedTool's
+        shallow-copy + swap, in-place `already_wrapped` sets) depend on
+        seeing the same object twice."""
+        self._check_open()
+        if self._langchain_tools is None:
+            from hexgate.adapters.langchain.mcp import wrap_mcp_toolset
+
+            self._langchain_tools = wrap_mcp_toolset(self)
+        return self._langchain_tools
 
 
 async def _mark_closed(state: _ToolsetState) -> None:
@@ -223,11 +266,19 @@ def _build_proxy(
     # meaning "accept anything". Falsy-or would replace it with the
     # type=object fallback below, narrowing what the server actually
     # advertised and changing the LLM-visible spec.
-    schema = (
+    #
+    # Shallow-copy the schema so a downstream framework (LangChain's
+    # StructuredTool internals, Google's FunctionDeclaration constructor,
+    # etc.) that mutates the dict in place — injecting
+    # `additionalProperties: false`, normalizing a `$defs` key — doesn't
+    # bleed the mutation back into the MCP `Tool.inputSchema` reference
+    # or into sibling adapter wrappers built from the same proxy.
+    raw_schema = (
         mcp_tool.inputSchema
         if mcp_tool.inputSchema is not None
         else {"type": "object", "properties": {}}
     )
+    schema = dict(raw_schema)
     description = mcp_tool.description or f"{qualified} (no description provided)"
     validator = _validator_for(schema, qualified)
 
@@ -256,19 +307,24 @@ def _build_proxy(
             result = await state.client.call_tool(inner_name, kwargs)
         except MCPConnectionError as exc:
             return _error_envelope("not_connected", str(exc), qualified)
-        except httpx.HTTPError as exc:
-            # Transport-level network failure (HTTP transport). Surface as
-            # a structured error so the agent can decide to retry rather
-            # than the run aborting.
+        except (httpx.HTTPError, TimeoutError, asyncio.TimeoutError) as exc:
+            # Transport-level failures — HTTP network blip / 5xx, or a
+            # per-call timeout raised by either the SDK's asyncio wait or
+            # a stdlib TimeoutError. Surface as retryable so the agent
+            # can decide to back off, not abort the run.
             return _error_envelope("transport_error", str(exc), qualified)
         except Exception as exc:
-            # Catches the SDK's RuntimeError on output-schema validation
-            # failures + any other surprise the transport may raise. The
-            # agent's loop then sees a tool message instead of an exception
-            # killing the run — same contract @agent_tool functions get
-            # via ``failure_mode="result"``.
+            # Anything else the transport / SDK may raise. Bucket under a
+            # stable ``"unknown"`` type instead of leaking the Python
+            # exception class name (was `"valueerror"`, `"runtimeerror"`,
+            # etc. — none of which appear in the documented type set
+            # policy YAML or downstream consumers can switch on). The
+            # exception class shows up in the message so operators still
+            # see it in logs / audit.
             return _error_envelope(
-                exc.__class__.__name__.lower(), str(exc) or repr(exc), qualified
+                "unknown",
+                f"{exc.__class__.__name__}: {exc}" if str(exc) else repr(exc),
+                qualified,
             )
         return _result_to_envelope(qualified, result)
 

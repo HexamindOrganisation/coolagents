@@ -65,15 +65,18 @@ def _wrap_one(proxy: MCPToolProxy) -> FunctionTool:
     verbatim than reject legitimate tools at wrap time. Our own
     pre-call validator in ``proxy.call`` still catches malformed args
     before the round trip.
+
+    ``on_invoke_tool`` is the one bit that can't collapse to
+    ``proxy.call`` directly — OpenAI hands us the raw JSON string, not
+    a parsed dict.
     """
     call = proxy.call
-    qualified = proxy.qualified_name
 
     async def on_invoke_tool(ctx: ToolContext[Any], raw: str) -> Any:
         return await call(**_parse_args(raw))
 
     return FunctionTool(
-        name=qualified,
+        name=proxy.qualified_name,
         description=proxy.description,
         params_json_schema=proxy.input_schema,
         on_invoke_tool=on_invoke_tool,

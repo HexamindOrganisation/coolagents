@@ -58,10 +58,17 @@ class _MCPProxyTool(BaseTool):
         self._call = proxy.call
 
     def _get_declaration(self) -> genai_types.FunctionDeclaration:
+        # Coerce a literal `{}` schema (MCP's "accept anything" shorthand)
+        # to a minimal object schema — Gemini's FunctionDeclaration
+        # validator rejects declarations whose parametersJsonSchema is
+        # missing a top-level `type`, causing the whole tool list to fail
+        # at declaration time. LangChain and OpenAI Agents tolerate `{}`
+        # unchanged, so the coercion is Google-specific.
+        schema = self._input_schema or {"type": "object", "properties": {}}
         return genai_types.FunctionDeclaration(
             name=self.name,
             description=self.description,
-            parametersJsonSchema=self._input_schema,
+            parametersJsonSchema=schema,
         )
 
     async def run_async(

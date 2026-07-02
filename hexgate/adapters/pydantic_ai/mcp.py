@@ -24,8 +24,6 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic_ai.tools import Tool
 
 from hexgate.mcp.proxy import MCPToolProxy, MCPToolset
@@ -35,20 +33,15 @@ def _wrap_one(proxy: MCPToolProxy) -> Tool:
     """Build a single :class:`Tool` around ``proxy.call``.
 
     Pydantic AI's ``Tool.from_schema`` accepts a raw JSON Schema — no
-    dynamic Pydantic model generation is needed. The passed function
-    receives the LLM's arguments as ``**kwargs``; Pydantic AI's
-    validator (built from the same schema) is the outer gate, and our
-    ``proxy.call`` runs its own JSON-Schema check as a defence-in-depth
-    layer before the server round-trip.
+    dynamic Pydantic model generation is needed. ``proxy.call`` is
+    passed verbatim as the function; its ``__name__`` is already the
+    qualified name (set by :func:`hexgate.mcp.proxy._build_proxy`).
+    Pydantic AI's own validator (built from the same schema) is the
+    outer gate; our ``proxy.call`` runs its own JSON-Schema check as a
+    defence-in-depth layer before the server round-trip.
     """
-    call = proxy.call
-
-    async def fn(**kwargs: Any) -> dict[str, Any]:
-        return await call(**kwargs)
-
-    fn.__name__ = proxy.qualified_name
     return Tool.from_schema(
-        function=fn,
+        function=proxy.call,
         name=proxy.qualified_name,
         description=proxy.description,
         json_schema=proxy.input_schema,
