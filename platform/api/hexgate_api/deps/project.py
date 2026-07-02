@@ -23,7 +23,7 @@ async def require_project_admin(
     tuple gives handlers both the caller and their membership row so
     they can reference ``member.org_id`` without a second lookup.
     """
-    from hexgate_api.services import ROLE_ADMIN, ROLE_OWNER
+    from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER
 
     project = await session.get(Project, project_id)
     if project is None:

@@ -28,11 +28,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api import main
 from hexgate_api.main import app
 from hexgate_api.models import OrganizationMember, User
-from hexgate_api.services import (
-    ROLE_ADMIN,
-    ROLE_MEMBER,
-    ensure_default_project,
-)
+from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER
+from hexgate_api.services import ensure_default_project
 
 
 # ---------------------------------------------------------------------------

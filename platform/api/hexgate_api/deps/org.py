@@ -76,7 +76,7 @@ async def require_org_admin(
     """Stricter variant of :func:`require_org_membership` — caller must
     be ``admin`` or ``owner``. Used by management endpoints (PATCH org,
     invite member, remove member, change role)."""
-    from hexgate_api.services import ROLE_ADMIN, ROLE_OWNER
+    from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER
 
     _, member = membership
     if member.role not in {ROLE_OWNER, ROLE_ADMIN}:
@@ -101,7 +101,7 @@ async def require_org_admin_or_self(
     The last-owner guard fires inside :func:`services.remove_member`
     so either path is rejected when removal would orphan the org.
     """
-    from hexgate_api.services import ROLE_ADMIN, ROLE_OWNER
+    from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER
 
     caller, member = membership
     if member.role in {ROLE_OWNER, ROLE_ADMIN}:

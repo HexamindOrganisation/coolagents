@@ -32,12 +32,8 @@ from hexgate_api.models import (
     User,
 )
 from hexgate_api.models import utcnow
-from hexgate_api.services import (
-    ROLE_ADMIN,
-    ROLE_MEMBER,
-    ROLE_OWNER,
-    ensure_default_project,
-)
+from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER, ROLE_OWNER
+from hexgate_api.services import ensure_default_project
 
 
 # ---------------------------------------------------------------------------

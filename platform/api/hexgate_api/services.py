@@ -20,59 +20,33 @@ from hexgate_api.models import (
     User,
     utcnow,
 )
-from hexgate_api.schemas import AgentManifest, ToolDefinition
+from hexgate_api.constants import (
+    ALL_ROLES,
+    DEFAULT_MEMBERSHIP_ID,
+    DEFAULT_ORG_ID,
+    DEFAULT_ORG_NAME,
+    DEFAULT_ORG_SLUG,
+    DEFAULT_PROJECT_ID,
+    DEFAULT_PROJECT_NAME,
+    DEFAULT_USER_EMAIL,
+    DEFAULT_USER_ID,
+    ROLE_OWNER,
+)
 from hexgate_api.core.ids import new_id
-from hexgate_api.seeds import DEFAULT_AGENT_NAME, SEED_AGENTS
+from hexgate_api.domains.members.service import (
+    _ROLE_RANK,
+    _can_invite_role,
+    find_member,
+)
+from hexgate_api.schemas import AgentManifest, ToolDefinition
+from hexgate_api.seeds import SEED_AGENTS
 
 logger = logging.getLogger("hexgate.platform.services")
-
-# Triple-default seed identity (M3). Fixed UUIDs so every fresh dev DB
-# produces identical rows — tests and integration scripts can reference
-# these constants directly instead of looking up by name.
-#
-# Production (hosted Hexgate) sets HEXGATE_SEED=skip to start with a
-# truly empty DB. Self-hosters and `make platform-api` get a working
-# install on first boot without any setup.
-DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
-DEFAULT_ORG_SLUG = "default"
-DEFAULT_ORG_NAME = "Default Organization"
-
-DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000002"
-# ``.local`` is a reserved TLD per RFC 6762 — pydantic's EmailStr (used in
-# fastapi-users' UserRead schema) rejects it, so /users/me crashes when the
-# admin's email goes through serialization. Use ``.dev`` (a real TLD Google
-# owns) so the email is syntactically valid while still clearly identifying
-# this as the default-seed admin, not a real mailbox.
-DEFAULT_USER_EMAIL = "admin@hexgate.dev"
-
-DEFAULT_PROJECT_ID = "00000000-0000-0000-0000-000000000003"
-DEFAULT_PROJECT_NAME = "support-bot"
-
-DEFAULT_MEMBERSHIP_ID = "00000000-0000-0000-0000-000000000004"
-
-PROTECTED_AGENT_NAMES = {DEFAULT_AGENT_NAME}
 
 
 def _seed_disabled() -> bool:
     """``HEXGATE_SEED=skip`` opts a deployment out of the triple-default."""
     return os.environ.get("HEXGATE_SEED", "").strip().lower() == "skip"
-
-
-# ---------------------------------------------------------------------------
-# M3 Phase 4 — Organization services
-#
-# Auto-creating a personal org on signup, listing orgs for the active
-# user, adding/removing/changing members with the "at least one owner"
-# invariant kept here so every caller respects it.
-# ---------------------------------------------------------------------------
-
-# Role constants — strings (not Enum) so we can add billing_admin etc.
-# without a schema change. Validation happens at the API layer where
-# clients send the value as a request body field.
-ROLE_OWNER = "owner"
-ROLE_ADMIN = "admin"
-ROLE_MEMBER = "member"
-ALL_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER}
 
 
 async def _generate_unique_org_slug(session: AsyncSession, base: str) -> str:
@@ -192,117 +166,6 @@ async def list_orgs_for_user(
     return [(o, r) for o, r in (await session.exec(stmt)).all()]
 
 
-async def find_member(
-    session: AsyncSession, *, org_id: str, user_id: str
-) -> OrganizationMember | None:
-    """Return the OrganizationMember row for (org, user), or None."""
-    stmt = select(OrganizationMember).where(
-        OrganizationMember.org_id == org_id,
-        OrganizationMember.user_id == user_id,
-    )
-    return (await session.exec(stmt)).first()
-
-
-async def list_org_members(
-    session: AsyncSession, org_id: str
-) -> list[tuple[OrganizationMember, User]]:
-    """Return (membership, user) tuples for an org's members."""
-    stmt = (
-        select(OrganizationMember, User)
-        .join(User, User.id == OrganizationMember.user_id)
-        .where(OrganizationMember.org_id == org_id)
-        .order_by(OrganizationMember.created_at)  # type: ignore[attr-defined]
-    )
-    return [(m, u) for m, u in (await session.exec(stmt)).all()]
-
-
-async def _count_owners(session: AsyncSession, org_id: str) -> int:
-    """How many ROLE_OWNER members an org currently has."""
-    stmt = select(OrganizationMember).where(
-        OrganizationMember.org_id == org_id,
-        OrganizationMember.role == ROLE_OWNER,
-    )
-    return len((await session.exec(stmt)).all())
-
-
-class LastOwnerError(Exception):
-    """Raised when an action would leave an org with zero owners.
-
-    Service-layer business-rule signal — routes translate to HTTP 409.
-    """
-
-
-async def remove_member(session: AsyncSession, *, org_id: str, user_id: str) -> bool:
-    """Remove (user, org) membership. Returns True on delete, False if
-    the row didn't exist. Refuses with :class:`LastOwnerError` if the
-    removal would leave the org with zero owners.
-    """
-    member = await find_member(session, org_id=org_id, user_id=user_id)
-    if member is None:
-        return False
-    if member.role == ROLE_OWNER and await _count_owners(session, org_id) <= 1:
-        raise LastOwnerError(
-            "cannot remove the last owner; promote another member to owner first"
-        )
-    await session.delete(member)
-    await session.commit()
-    return True
-
-
-class RoleEscalationError(PermissionError):
-    """Raised when a caller tries to set a member role above their own.
-
-    Mirrors the :func:`_can_invite_role` rank check so the
-    PATCH-member-role surface stays consistent with the invitation
-    surface. Without this guard, an admin could PATCH their own
-    membership row to ``{"role": "owner"}`` and seize the org —
-    bypassing every other gate this layer enforces.
-    """
-
-
-async def change_member_role(
-    session: AsyncSession,
-    *,
-    org_id: str,
-    user_id: str,
-    new_role: str,
-    caller_role: str,
-) -> OrganizationMember | None:
-    """Update a member's role. Returns the updated row, or None when
-    the membership doesn't exist.
-
-    Two refusal gates:
-      * :class:`RoleEscalationError` — the caller can't assign a role
-        above their own rank. Owner can set anything; admin can set
-        admin + member; member can't reach this code path (the route
-        layer rejects them via ``require_org_admin``).
-      * :class:`LastOwnerError` — demoting the only owner is refused.
-
-    ``caller_role`` is the caller's role on this org (resolved by the
-    route layer via :func:`require_org_admin`).
-    """
-    if new_role not in ALL_ROLES:
-        raise ValueError(f"unknown role: {new_role!r}")
-    if not _can_invite_role(caller_role, new_role):
-        raise RoleEscalationError(
-            f"{caller_role} cannot assign role {new_role!r} — "
-            "callers can only set roles at or below their own rank"
-        )
-    member = await find_member(session, org_id=org_id, user_id=user_id)
-    if member is None:
-        return None
-    demoting_owner = member.role == ROLE_OWNER and new_role != ROLE_OWNER
-    if demoting_owner and await _count_owners(session, org_id) <= 1:
-        raise LastOwnerError(
-            "cannot demote the last owner; promote another member to owner first"
-        )
-    member.role = new_role
-    session.add(member)
-    await session.commit()
-    await session.refresh(member)
-    return member
-
-
 # ---------------------------------------------------------------------------
 # M3 Phase 4 step 4 — Invitations
 #
@@ -343,25 +206,6 @@ class InvitationEmailMismatch(InvitationError):
 
     The invite is for a specific person, not a bearer-token-for-anyone.
     Refuse strictly rather than allow anyone-with-the-link to join."""
-
-
-# Role hierarchy as integers — higher is more privileged. Shared by
-# :func:`_can_invite_role` and the accept-invite upgrade path so a
-# refactor of one keeps both branches consistent.
-_ROLE_RANK: dict[str, int] = {ROLE_MEMBER: 0, ROLE_ADMIN: 1, ROLE_OWNER: 2}
-
-
-def _can_invite_role(inviter_role: str, target_role: str) -> bool:
-    """True if a member with ``inviter_role`` can mint an invite for
-    ``target_role``.
-
-    Rule: at-or-below. Owners can invite anyone; admins can invite
-    admin + member; members can't invite (the route layer rejects them
-    upstream via require_org_admin). The rule stops privilege
-    escalation by-design — admins can't mint owner invites and use them
-    to promote themselves.
-    """
-    return _ROLE_RANK.get(inviter_role, -1) >= _ROLE_RANK.get(target_role, 99)
 
 
 async def create_invitation(

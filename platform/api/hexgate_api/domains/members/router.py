@@ -36,7 +36,7 @@ async def api_list_members(
     "admin/owner" — every member has a legitimate need to know who
     else is in the org (e.g., to know who to ask for promotion).
     """
-    from hexgate_api.services import list_org_members
+    from hexgate_api.domains.members.service import list_org_members
 
     _, member = membership
     rows = await list_org_members(session, member.org_id)
@@ -65,7 +65,7 @@ async def api_update_member_role(
     Returns the updated row so the dashboard can re-render the badge
     without a follow-up GET.
     """
-    from hexgate_api.services import (
+    from hexgate_api.domains.members.service import (
         LastOwnerError,
         RoleEscalationError,
         change_member_role,
@@ -107,7 +107,7 @@ async def api_remove_member(
 
     Returns 204 No Content on success (REST norm for DELETE).
     """
-    from hexgate_api.services import LastOwnerError, remove_member
+    from hexgate_api.domains.members.service import LastOwnerError, remove_member
 
     _, caller_member = membership
     try:

@@ -23,21 +23,25 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api import main
 from hexgate_api.main import app
 from hexgate_api.models import Organization, OrganizationMember, User
-from hexgate_api.services import (
+from hexgate_api.constants import (
     DEFAULT_ORG_ID,
-    LastOwnerError,
     ROLE_ADMIN,
     ROLE_MEMBER,
     ROLE_OWNER,
+)
+from hexgate_api.domains.members.service import (
+    LastOwnerError,
+    change_member_role,
+    list_org_members,
+    remove_member,
+)
+from hexgate_api.services import (
     _email_to_slug_base,
     _generate_unique_org_slug,
-    change_member_role,
     create_org,
     ensure_default_project,
     ensure_personal_default_org,
-    list_org_members,
     list_orgs_for_user,
-    remove_member,
 )
 
 
@@ -313,7 +317,7 @@ async def test_remove_member_refuses_last_owner(session_factory) -> None:
     here; the route layer translates it to HTTP 409."""
     import pytest
 
-    from hexgate_api.services import DEFAULT_USER_ID
+    from hexgate_api.constants import DEFAULT_USER_ID
 
     async with session_factory() as s:
         with pytest.raises(LastOwnerError):
@@ -368,7 +372,7 @@ async def test_change_member_role_refuses_demoting_last_owner(
     """Demoting the only owner to member would orphan the org."""
     import pytest
 
-    from hexgate_api.services import DEFAULT_USER_ID
+    from hexgate_api.constants import DEFAULT_USER_ID
 
     async with session_factory() as s:
         with pytest.raises(LastOwnerError):

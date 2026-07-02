@@ -214,13 +214,9 @@ async def api_revoke_invitation(
     success — calling DELETE on an already-revoked invite is a no-op
     that still returns 204.
     """
-    from hexgate_api.services import (
-        ROLE_ADMIN,
-        ROLE_OWNER,
-        find_invitation,
-        find_member,
-        revoke_invitation,
-    )
+    from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER
+    from hexgate_api.domains.members.service import find_member
+    from hexgate_api.services import find_invitation, revoke_invitation
 
     invitation = await find_invitation(session, invitation_id)
     if invitation is None:

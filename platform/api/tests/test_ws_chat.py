@@ -30,7 +30,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from hexgate_api import main
 from hexgate_api.main import app
-from hexgate_api.services import DEFAULT_PROJECT_ID, ensure_default_project
+from hexgate_api.constants import DEFAULT_PROJECT_ID
+from hexgate_api.services import ensure_default_project
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +162,7 @@ def test_ws_chat_accepts_org_member(client: TestClient, session_factory) -> None
     import asyncio
 
     from hexgate_api.models import OrganizationMember, User
-    from hexgate_api.services import DEFAULT_ORG_ID, ROLE_MEMBER
+    from hexgate_api.constants import DEFAULT_ORG_ID, ROLE_MEMBER
     from sqlmodel import select
 
     _register_and_login(client, "insider@example.com")

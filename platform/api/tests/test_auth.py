@@ -279,7 +279,7 @@ def test_cookie_route_accepts_cookie_session(
     import uuid
 
     from hexgate_api.models import OrganizationMember, User
-    from hexgate_api.services import DEFAULT_ORG_ID
+    from hexgate_api.constants import DEFAULT_ORG_ID
 
     # Register + log in so the client carries the session cookie.
     client.post(
