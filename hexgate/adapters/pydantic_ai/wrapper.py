@@ -17,6 +17,7 @@ from pydantic_ai.tools import Tool
 
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.adapters.pydantic_ai.tools import wrap_tools
+from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -48,16 +49,19 @@ def wrap_pydantic_agent(
     *,
     agent: Agent,
     api_key: str | None = None,
+    approval_handler: ApprovalHandler | None = None,
 ) -> HexgatePydanticAgent:
     """Wrap a pydantic_ai agent with Hexgate policy + observability.
 
     Returns a :class:`HexgatePydanticAgent` backed by a clone of the
     caller's ``agent``; the original is not mutated. The proxy takes
     ``user`` per call; role resolves at call time from the active
-    :class:`User`. ``NEEDS_APPROVAL`` raises :class:`ModelRetry` with
-    an ``[approval_required]`` marker. ``api_key`` falls back to
-    ``HEXGATE_API_KEY``. The enforced policy is the platform's; unlisted
-    tools are denied.
+    :class:`User`. ``NEEDS_APPROVAL`` fires ``approval_handler`` (async
+    ``fn(decision) -> bool`` or ``bool`` shorthand); a truthy return
+    runs the tool, falsy or missing handler raises :class:`ModelRetry`
+    with an ``[approval_required]`` marker. ``api_key`` falls back to
+    ``HEXGATE_API_KEY``. The enforced policy is the platform's;
+    unlisted tools are denied.
     """
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
@@ -72,7 +76,9 @@ def wrap_pydantic_agent(
     enforcer = build_enforcer(
         resolved.engine, agent_name=agent_name, api_key=resolved_key
     )
-    cloned_agent = _clone_agent_with_tools(agent, wrap_tools(tools, enforcer))
+    cloned_agent = _clone_agent_with_tools(
+        agent, wrap_tools(tools, enforcer, approval_handler=approval_handler)
+    )
 
     return HexgatePydanticAgent(
         agent=cloned_agent,
