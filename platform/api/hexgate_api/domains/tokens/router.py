@@ -17,14 +17,14 @@ from hexgate_api.schemas import (
     TokenMintRequest,
     TokenMintResponse,
 )
-from hexgate_api.services import (
+from hexgate_api.domains.tokens.service import (
     delete_dev_token,
-    ensure_default_project,
     find_token_by_secret,
     list_dev_tokens,
     mask_secret,
     mint_dev_token,
 )
+from hexgate_api.services import ensure_default_project
 
 router = APIRouter()
 

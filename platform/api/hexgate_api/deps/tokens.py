@@ -15,7 +15,7 @@ from hexgate_api.core.biscuits import (
     verify_token,
 )
 from hexgate_api.core.db import get_session
-from hexgate_api.services import find_token_by_secret
+from hexgate_api.domains.tokens.service import find_token_by_secret
 
 
 async def _validate_sdk_token(authorization: str, session: AsyncSession) -> None:

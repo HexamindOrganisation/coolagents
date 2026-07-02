@@ -12,7 +12,6 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.models import (
     Agent,
     AgentVersion,
-    DevToken,
     Invitation,
     Organization,
     OrganizationMember,
@@ -22,7 +21,6 @@ from hexgate_api.models import (
     utcnow,
 )
 from hexgate_api.schemas import AgentManifest, ToolDefinition
-from hexgate_api.core.biscuits import MintRequest, make_envelope, mint_token
 from hexgate_api.core.ids import new_id
 from hexgate_api.seeds import DEFAULT_AGENT_NAME, SEED_AGENTS
 
@@ -598,109 +596,10 @@ async def send_invitation_email(
 
 
 # ---------------------------------------------------------------------------
-# M3 Phase 4 step 5 — Project CRUD
-#
-# The Project table has been multi-tenant since Step 1 (Project.org_id
-# FK), but until now the only Project came from the seed. These
-# helpers let users create + list + rename projects via the dashboard.
-# Delete is deliberately not implemented yet (cascade considerations
-# across Agent / DevToken / AgentVersion / Tool need their own focused
-# pass).
+# First-boot seeding — the triple-default Org + User + Membership + Project
+# + agents. Cross-domain by nature; lives here until a dedicated bootstrap
+# module owns it.
 # ---------------------------------------------------------------------------
-
-
-class ProjectNameTakenError(Exception):
-    """Raised when create / rename would conflict with an existing
-    project's name in the same org. Routes translate to HTTP 409.
-
-    The unique(org_id, name) constraint on Project catches the race —
-    this exception exists so the service layer can pre-check and
-    surface a clean message rather than the bare ``IntegrityError``.
-    """
-
-
-async def create_project(
-    session: AsyncSession,
-    *,
-    org_id: str,
-    name: str,
-) -> Project:
-    """Insert a Project under ``org_id`` with a fresh UUID id.
-
-    Raises :class:`ProjectNameTakenError` if a project with the same
-    name already exists in this org. Pre-checks rather than relying on
-    the IntegrityError from the unique constraint — gives a friendlier
-    error to surface in the UI without parsing SQL error text.
-    """
-    import uuid
-
-    existing = (
-        await session.exec(
-            select(Project).where(
-                Project.org_id == org_id,
-                Project.name == name,
-            )
-        )
-    ).first()
-    if existing is not None:
-        raise ProjectNameTakenError(
-            f"a project named {name!r} already exists in this org"
-        )
-
-    project = Project(id=str(uuid.uuid4()), org_id=org_id, name=name)
-    session.add(project)
-    await session.commit()
-    await session.refresh(project)
-    return project
-
-
-async def list_projects(session: AsyncSession, org_id: str) -> list[Project]:
-    """All projects under an org, ordered by creation time so the
-    user's seed/oldest project lands first in the dashboard list."""
-    stmt = (
-        select(Project).where(Project.org_id == org_id).order_by(Project.created_at)  # type: ignore[attr-defined]
-    )
-    return list((await session.exec(stmt)).all())
-
-
-async def update_project_name(
-    session: AsyncSession,
-    *,
-    project_id: str,
-    name: str,
-) -> Project | None:
-    """Rename a project. Returns the updated row, or None when the
-    project doesn't exist. Raises :class:`ProjectNameTakenError` if
-    the new name collides with another project in the same org.
-
-    A no-op rename (same name) is a 200 not a 409 — idempotent for
-    "save" buttons that double-fire.
-    """
-    project = await session.get(Project, project_id)
-    if project is None:
-        return None
-    if project.name == name:
-        return project
-
-    existing = (
-        await session.exec(
-            select(Project).where(
-                Project.org_id == project.org_id,
-                Project.name == name,
-                Project.id != project_id,
-            )
-        )
-    ).first()
-    if existing is not None:
-        raise ProjectNameTakenError(
-            f"a project named {name!r} already exists in this org"
-        )
-
-    project.name = name
-    session.add(project)
-    await session.commit()
-    await session.refresh(project)
-    return project
 
 
 def _announce_default_admin_credentials(email: str, password: str) -> None:
@@ -1005,105 +904,6 @@ async def backfill_bundles(
     if count:
         await session.commit()
     return count
-
-
-async def mint_dev_token(
-    session: AsyncSession,
-    project_id: str,
-    name: str,
-    scopes: list[str],
-    env: str,
-    *,
-    signing_key_bytes: bytes,
-) -> tuple[DevToken, str]:
-    """Create a new dev token, signed as a Biscuit by the platform's root key.
-
-    The wire format stays human-readable: ``fty_<env>_<project>_<biscuit_b64>``.
-    Project id is duplicated in the prefix (for grep / GitHub-secret-scanning)
-    and inside the Biscuit's claims (the source of truth at verification time).
-
-    ``signing_key_bytes`` are the raw 32-byte Ed25519 private key from the
-    platform's keystore. Pulled out of the keystore at the call site so this
-    function stays decoupled from where the key actually lives.
-
-    Returns the persisted row + the full token string (the b64 form is what
-    the operator copies out of the dashboard — shown once, never stored
-    in the row outside of the ``secret`` column for revocation lookup).
-    """
-    token_id = new_id(DevToken)
-    biscuit_b64 = mint_token(
-        signing_key_bytes,
-        MintRequest(
-            project_id=project_id,
-            token_id=token_id,
-            name=name,
-            scopes=scopes,
-            env=env,
-            ttl_seconds=None,  # dev tokens don't expire by default; revoke explicitly.
-        ),
-    )
-    prefix = f"fty_{env}"
-    full_token = make_envelope(env, project_id, biscuit_b64)
-
-    token = DevToken(
-        id=new_id(DevToken),
-        project_id=project_id,
-        name=name,
-        prefix=prefix,
-        secret=full_token,
-        scopes_csv=",".join(scopes),
-    )
-    session.add(token)
-    await session.commit()
-    await session.refresh(token)
-    return token, full_token
-
-
-async def list_dev_tokens(session: AsyncSession, project_id: str) -> list[DevToken]:
-    stmt = (
-        select(DevToken)
-        .where(DevToken.project_id == project_id)
-        .order_by(DevToken.created_at.desc())
-    )  # type: ignore[attr-defined]
-    return list((await session.exec(stmt)).all())
-
-
-async def find_token_by_secret(session: AsyncSession, secret: str) -> DevToken | None:
-    """Look up a token by its full secret value. Updates last_used_at on hit."""
-    from datetime import datetime, timezone
-
-    stmt = select(DevToken).where(DevToken.secret == secret)
-    token = (await session.exec(stmt)).first()
-    if token is not None:
-        token.last_used_at = datetime.now(timezone.utc)
-        session.add(token)
-        await session.commit()
-    return token
-
-
-async def delete_dev_token(
-    session: AsyncSession, project_id: str, token_id: str
-) -> bool:
-    token = await session.get(DevToken, token_id)
-    if token is None or token.project_id != project_id:
-        return False
-    await session.delete(token)
-    await session.commit()
-    return True
-
-
-def mask_secret(full: str) -> str:
-    """Return e.g. ``fty_live_8F3d…k29P`` for list display.
-
-    Skips trailing ``=`` base64 padding when computing the tail so masked
-    Biscuit envelopes don't end on a meaningless ``=`` character.
-    """
-    if len(full) <= 16:
-        return full
-    head = full[:12]
-    body = full.rstrip("=")
-    tail = body[-4:] if len(body) >= 4 else body
-    return f"{head}…{tail}"
 
 
 # --- Agent manifest registration --------------------------------------------

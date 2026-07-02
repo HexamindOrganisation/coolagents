@@ -484,7 +484,7 @@ def _mint_token_for_test(session_factory) -> str:
     """
     import asyncio
 
-    from hexgate_api.services import mint_dev_token
+    from hexgate_api.domains.tokens.service import mint_dev_token
 
     async def _mint():
         async with session_factory() as session:

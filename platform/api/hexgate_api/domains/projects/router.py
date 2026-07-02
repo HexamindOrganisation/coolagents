@@ -34,7 +34,10 @@ async def api_create_project(
     409 if a project with the same name already exists in this org
     (the user probably meant to switch to the existing one).
     """
-    from hexgate_api.services import ProjectNameTakenError, create_project
+    from hexgate_api.domains.projects.service import (
+        ProjectNameTakenError,
+        create_project,
+    )
 
     _, caller_member = membership
     try:
@@ -53,7 +56,7 @@ async def api_list_projects(
 ) -> list[ProjectRead]:
     """List every project inside an org. Any member can list — the
     dashboard's project picker consumes this."""
-    from hexgate_api.services import list_projects
+    from hexgate_api.domains.projects.service import list_projects
 
     _, caller_member = membership
     rows = await list_projects(session, caller_member.org_id)
@@ -84,7 +87,10 @@ async def api_update_project(
 ) -> ProjectRead:
     """Rename a project. Admin or owner required. 409 on name collision
     with another project in the same org."""
-    from hexgate_api.services import ProjectNameTakenError, update_project_name
+    from hexgate_api.domains.projects.service import (
+        ProjectNameTakenError,
+        update_project_name,
+    )
 
     try:
         project = await update_project_name(

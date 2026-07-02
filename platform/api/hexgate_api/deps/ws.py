@@ -19,7 +19,7 @@ from hexgate_api.core.biscuits import (
     verify_token,
 )
 from hexgate_api.models import OrganizationMember, Project, User
-from hexgate_api.services import find_token_by_secret
+from hexgate_api.domains.tokens.service import find_token_by_secret
 
 # Marker subprotocol the server echoes on a successful WS handshake. The
 # CLI client asserts it back so it knows the platform understands the
