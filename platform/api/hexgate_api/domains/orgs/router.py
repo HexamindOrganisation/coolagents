@@ -37,7 +37,10 @@ async def api_list_orgs(
     idempotent on the "user already owns an org" invariant, so a
     concurrent repair-then-create race can't double-bootstrap.
     """
-    from hexgate_api.services import ensure_personal_default_org, list_orgs_for_user
+    from hexgate_api.domains.orgs.service import (
+        ensure_personal_default_org,
+        list_orgs_for_user,
+    )
 
     rows = await list_orgs_for_user(session, user.id)
     if not rows:
@@ -67,7 +70,7 @@ async def api_create_org(
     409 rather than silently picking a different one — explicit failure
     so the UI can prompt for a tweak.
     """
-    from hexgate_api.services import (
+    from hexgate_api.domains.orgs.service import (
         _email_to_slug_base,
         _generate_unique_org_slug,
         create_org,

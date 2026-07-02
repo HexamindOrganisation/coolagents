@@ -35,14 +35,14 @@ from hexgate_api.domains.members.service import (
     list_org_members,
     remove_member,
 )
-from hexgate_api.services import (
+from hexgate_api.domains.orgs.service import (
     _email_to_slug_base,
     _generate_unique_org_slug,
     create_org,
-    ensure_default_project,
     ensure_personal_default_org,
     list_orgs_for_user,
 )
+from hexgate_api.services import ensure_default_project
 
 
 # ---------------------------------------------------------------------------

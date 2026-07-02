@@ -191,7 +191,7 @@ class UserManager(BaseUserManager[User, str]):
         ``is_verified`` at its own moment and call
         ``POST /auth/request-verify-token`` independently.
         """
-        from hexgate_api.services import ensure_personal_default_org
+        from hexgate_api.domains.orgs.service import ensure_personal_default_org
 
         # Redact the email — same PII rule the mailer error path uses
         # (al***@domain). User id is the durable handle for support.
