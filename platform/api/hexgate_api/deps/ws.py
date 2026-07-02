@@ -146,7 +146,11 @@ async def ws_require_org_member(
     # require_user_or_sdk_token (gone) and friends out of the cycle.
     from fastapi_users.db import SQLAlchemyUserDatabase
 
-    from hexgate_api.auth import OAuthAccount, UserManager, get_jwt_strategy
+    from hexgate_api.domains.auth.service import (
+        OAuthAccount,
+        UserManager,
+        get_jwt_strategy,
+    )
 
     user_db = SQLAlchemyUserDatabase(session, User, OAuthAccount)
     user_manager = UserManager(user_db)

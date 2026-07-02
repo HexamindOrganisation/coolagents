@@ -57,7 +57,7 @@ def enable_demo(app: FastAPI) -> None:
         is indistinguishable from a normal password login — the dashboard's
         ``ws_require_org_member`` accepts it unchanged.
         """
-        from hexgate_api.auth import cookie_transport, get_jwt_strategy
+        from hexgate_api.domains.auth.service import cookie_transport, get_jwt_strategy
         from hexgate_api.core.db import async_session_factory
         from hexgate_api.models import User
         from hexgate_api.constants import DEFAULT_USER_ID

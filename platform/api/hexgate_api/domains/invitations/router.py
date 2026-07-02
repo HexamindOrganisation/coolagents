@@ -86,7 +86,7 @@ async def api_create_invitation(
         # the same stderr block operators are already watching. Invitee
         # address is PII-redacted (same rule as mailer.py); the org slug
         # stays so support can grep by tenant.
-        from hexgate_api.auth import logger as auth_logger
+        from hexgate_api.domains.auth.service import logger as auth_logger
         from hexgate_api.core.mailer import _redact_email
 
         auth_logger.exception(

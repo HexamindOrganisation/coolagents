@@ -1,8 +1,8 @@
 """Bearer/SDK-token dependencies — machine auth via ``Authorization: Bearer``.
 
-The signing keystore is read lazily from :mod:`hexgate_api.main` at call time
-(the same pattern :func:`hexgate_api.auth._session_secret` uses) so the singleton
-stays in one place and test swaps of ``main.keystore`` are picked up.
+The signing keystore is read lazily from :mod:`hexgate_api.core.keystore` at
+call time so the singleton stays in one place and test swaps of
+``core.keystore.keystore`` are picked up.
 """
 
 from fastapi import Depends, Header, HTTPException

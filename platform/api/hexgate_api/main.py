@@ -150,7 +150,7 @@ async def lifespan(app_: FastAPI):
         )
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
-    from hexgate_api.auth import _cookie_secure, _dashboard_url
+    from hexgate_api.domains.auth.service import _cookie_secure, _dashboard_url
 
     _log.info(
         "hexgate-api startup config: cors_origins=%s cookie_secure=%s dashboard_url=%s",

@@ -54,7 +54,7 @@ def test_build_router_returns_none_without_env(monkeypatch) -> None:
     # secret — ensure it's initialised so the call doesn't blow up
     # before it hits the env-var check we actually care about.
     keystore_mod.keystore.ensure_keypair()
-    from hexgate_api.auth import build_google_oauth_router
+    from hexgate_api.domains.auth.service import build_google_oauth_router
 
     assert build_google_oauth_router() is None
 
@@ -64,7 +64,7 @@ def test_build_router_returns_router_with_env(monkeypatch) -> None:
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_SECRET", "test-secret")
     keystore_mod.keystore.ensure_keypair()
-    from hexgate_api.auth import build_google_oauth_router
+    from hexgate_api.domains.auth.service import build_google_oauth_router
 
     router = build_google_oauth_router()
     assert router is not None
@@ -89,7 +89,7 @@ def test_spa_catchall_does_not_shadow_oauth_routes(monkeypatch, tmp_path) -> Non
     throwaway app (v1 router → OAuth router → ``mount_spa``) and assert the
     OAuth route still wins over the ``/{full_path:path}`` catch-all.
     """
-    from hexgate_api.auth import build_google_oauth_router
+    from hexgate_api.domains.auth.service import build_google_oauth_router
     from hexgate_api.core.spa import mount_spa
 
     monkeypatch.setenv("HEXGATE_GOOGLE_CLIENT_ID", "test-client-id")
@@ -160,7 +160,7 @@ async def oauth_client(monkeypatch, session_factory, tmp_path) -> TestClient:
     real hexgate.db + run backfill) and instead build an isolated app here
     (v1 router + OAuth router) so nothing leaks onto the shared ``main.app``.
     """
-    from hexgate_api.auth import build_google_oauth_router
+    from hexgate_api.domains.auth.service import build_google_oauth_router
     from hexgate_api.core.db import get_session
     from hexgate_api.core.keystore import FileKeyStore
 

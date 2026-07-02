@@ -341,7 +341,7 @@ def test_default_admin_email_passes_pydantic_validation() -> None:
     fails after a refactor, change DEFAULT_USER_EMAIL to a real TLD
     (``.dev``, ``.io``, ``.com`` …).
     """
-    from hexgate_api.auth import UserRead
+    from hexgate_api.domains.auth.service import UserRead
 
     # Should not raise. The dummy values for the other fields don't
     # matter — only the email goes through validation that depends on
@@ -617,7 +617,7 @@ def test_cookie_secure_defaults_to_false_for_localhost_dev(monkeypatch) -> None:
     A Secure cookie is silently dropped by every browser on http://, so
     if this regressed to ``True`` ``make platform-api`` would 401 on
     every request after login. The ergonomic default is off."""
-    from hexgate_api.auth import _cookie_secure
+    from hexgate_api.domains.auth.service import _cookie_secure
 
     monkeypatch.delenv("HEXGATE_COOKIE_SECURE", raising=False)
     assert _cookie_secure() is False
@@ -630,7 +630,7 @@ def test_cookie_secure_respects_env_var(monkeypatch) -> None:
     HTTPS terminator can flip the Secure flag on with one env var. If
     any of the documented truthy values stopped working, prod would
     silently ship insecure cookies."""
-    from hexgate_api.auth import _cookie_secure
+    from hexgate_api.domains.auth.service import _cookie_secure
 
     for truthy in ("1", "true", "TRUE", "yes", "on"):
         monkeypatch.setenv("HEXGATE_COOKIE_SECURE", truthy)

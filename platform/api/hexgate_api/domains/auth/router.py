@@ -1,14 +1,14 @@
 """FastAPI Users router wiring + Google OAuth mounting.
 
 The identity implementation (UserManager, backend, schemas) lives in
-:mod:`hexgate_api.auth`; this module only assembles those pieces onto the app.
+:mod:`hexgate_api.domains.auth.service`; this module only assembles those pieces onto the app.
 """
 
 import sys
 
 from fastapi import APIRouter, FastAPI
 
-from hexgate_api.auth import (
+from hexgate_api.domains.auth.service import (
     UserCreate,
     UserRead,
     UserUpdate,

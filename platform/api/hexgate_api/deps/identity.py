@@ -10,7 +10,7 @@ import os
 from fastapi import Depends, Header, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api.auth import current_active_user_optional
+from hexgate_api.domains.auth.service import current_active_user_optional
 from hexgate_api.core.db import get_session
 from hexgate_api.models import User
 
