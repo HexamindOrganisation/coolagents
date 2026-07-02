@@ -229,7 +229,7 @@ describe("useAgentSelection — resetOn", () => {
         return { sel, location };
       },
       {
-        initialProps: { project: null },
+        initialProps: { project: null as string | null },
         wrapper: wrapperAt("/policies?agent=beta"),
       },
     );
