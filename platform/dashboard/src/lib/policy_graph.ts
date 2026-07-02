@@ -31,19 +31,17 @@
 
 import yaml from "js-yaml";
 import type { Edge, Node } from "@xyflow/react";
+import { isMixinSpec, MODE_COLOR, readToolMap, type Mode } from "./policy";
 
-export type Mode = "allow" | "deny" | "approval_required";
-
-interface ToolPolicySpec {
-  mode?: Mode;
-  constraints?: string[];
-}
+// Re-export Mode so existing consumers of this file (if any) don't break.
+export type { Mode } from "./policy";
 
 interface RoleSpec {
-  is_mixin?: boolean;
+  is_mixin?: unknown; // coerced by isMixinSpec()
   inherits?: string[];
-  tools?: Record<string, ToolPolicySpec>;
-  default_policy?: { mode?: Mode };
+  tools?: Record<string, unknown>; // shaped by readToolMap()
+  default_policy?: { mode?: unknown };
+  constraints?: string[];
 }
 
 interface InlinePolicy {
@@ -51,11 +49,42 @@ interface InlinePolicy {
   roles?: Record<string, RoleSpec>;
 }
 
-const MODE_COLOR: Record<Mode, string> = {
-  allow: "hsl(var(--semantic-allow))",
-  approval_required: "hsl(var(--semantic-approval))",
-  deny: "hsl(var(--semantic-deny))",
-};
+/**
+ * Union of every tool name mentioned under a role's ``tools:`` map,
+ * regardless of whether the mode is valid. readToolMap alone silently
+ * drops entries with mistyped modes (e.g. capitalized ``Deny``); using
+ * only its output as the tool-node source makes those tools disappear
+ * from the graph entirely — the user sees no node and assumes the tool
+ * is unconstrained. Fix: keep the tool visible; the edge renders with
+ * a fail-closed deny color and a diagnostic label.
+ */
+function rawToolNames(rawTools: unknown): string[] {
+  if (!rawTools || typeof rawTools !== "object") return [];
+  return Object.keys(rawTools as Record<string, unknown>);
+}
+
+/** Extract a raw mode string from an unvalidated tool spec entry. */
+function rawModeOf(spec: unknown): unknown {
+  return (spec as { mode?: unknown } | undefined)?.mode;
+}
+
+const VALID_MODES: readonly Mode[] = ["allow", "deny", "approval_required"];
+function isValidMode(m: unknown): m is Mode {
+  return (
+    typeof m === "string" && (VALID_MODES as readonly string[]).includes(m)
+  );
+}
+
+/**
+ * Extract constraint counts per role×tool. readToolMap() drops the
+ * `constraints` field (it only reads mode + file_scope), so we walk
+ * the raw spec ourselves to pull constraint counts for the edge
+ * label — everything else routes through readToolMap for consistency.
+ */
+function constraintCount(spec: unknown): number {
+  const c = (spec as { constraints?: unknown } | undefined)?.constraints;
+  return Array.isArray(c) ? c.length : 0;
+}
 
 export interface PolicyGraph {
   nodes: Node[];
@@ -86,11 +115,16 @@ export function buildPolicyGraph(policyYaml: string): PolicyGraph {
   }
 
   const roleNames = Object.keys(rolesMap);
-  // Tools = union across all roles, source order (first occurrence wins).
+  // Tools = union across all roles' raw tool maps (not filtered) so an
+  // entry with a mistyped mode still gets a node + a fail-closed edge.
+  // Dropping typos silently made those tools disappear from the graph,
+  // and the user assumed the tool was unconstrained. Fail-closed and
+  // visible beats invisible-and-permissive.
+  const toolMapsByRole: Record<string, ReturnType<typeof readToolMap>> = {};
   const toolSet = new Set<string>();
   for (const role of roleNames) {
-    const tools = rolesMap[role]?.tools ?? {};
-    for (const t of Object.keys(tools)) toolSet.add(t);
+    toolMapsByRole[role] = readToolMap(rolesMap[role]?.tools);
+    for (const t of rawToolNames(rolesMap[role]?.tools)) toolSet.add(t);
   }
   const toolNames = Array.from(toolSet);
 
@@ -120,7 +154,9 @@ export function buildPolicyGraph(policyYaml: string): PolicyGraph {
       position: { x: COL_ROLES_X, y: ROLE_Y_START + idx * ROLE_GAP_Y },
       data: {
         label: role,
-        muted: spec?.is_mixin === true,
+        // Coerced check — accepts is_mixin: true / "true" / 1 uniformly
+        // with parsePolicy so both views agree on which roles are mixins.
+        muted: isMixinSpec(spec),
       },
     });
   });
@@ -166,31 +202,48 @@ export function buildPolicyGraph(policyYaml: string): PolicyGraph {
 
   // Mode edges — role → tool, color encodes the policy mode. Constraint
   // count surfaces in the label so the user knows the rule has gates
-  // without opening the YAML.
+  // without opening the YAML. Invalid-mode entries (e.g. capitalized
+  // ``Deny``) render as deny with an "invalid mode" label so the user
+  // spots the typo instead of finding a silently-missing edge.
   for (const role of roleNames) {
     const spec = rolesMap[role];
-    if (spec?.is_mixin) continue; // mixins don't terminate; their tools surface via children
-    const tools = spec?.tools ?? {};
-    for (const [tool, toolSpec] of Object.entries(tools)) {
-      const mode = (toolSpec?.mode ?? "deny") as Mode;
-      const constraintCount = toolSpec?.constraints?.length ?? 0;
+    // Mixins compose into children via `inherits` — no direct terminal
+    // edges here (isMixinSpec accepts coerced truthy values, matching
+    // parsePolicy's contract).
+    if (isMixinSpec(spec)) continue;
+    const validatedTools = toolMapsByRole[role] ?? {};
+    const rawTools = (spec?.tools ?? {}) as Record<string, unknown>;
+    for (const tool of rawToolNames(rolesMap[role]?.tools)) {
+      const rawMode = rawModeOf(rawTools[tool]);
+      const validEntry = validatedTools[tool];
+      const mode: Mode = validEntry ? validEntry.mode : "deny";
+      const cnCount = constraintCount(rawTools[tool]);
+      const invalid = !isValidMode(rawMode);
+      let label: string;
+      if (invalid) {
+        label = `invalid mode · deny`;
+      } else if (cnCount > 0) {
+        label = `${mode} · ${cnCount} check${cnCount === 1 ? "" : "s"}`;
+      } else {
+        label = mode;
+      }
       edges.push({
         id: `mode:${role}->${tool}`,
         source: `role:${role}`,
         target: `tool:${tool}`,
         type: "smoothstep",
-        animated: mode === "allow",
+        animated: !invalid && mode === "allow",
         style: {
           stroke: MODE_COLOR[mode],
           strokeWidth: 2,
+          ...(invalid ? { strokeDasharray: "3 3" } : {}),
         },
-        label:
-          constraintCount > 0
-            ? `${mode} · ${constraintCount} check${constraintCount === 1 ? "" : "s"}`
-            : mode,
+        label,
         labelStyle: {
           fontSize: 10,
-          fill: "hsl(var(--foreground))",
+          fill: invalid
+            ? "hsl(var(--semantic-deny))"
+            : "hsl(var(--foreground))",
         },
         labelBgStyle: { fill: "hsl(var(--background))" },
         labelBgPadding: [4, 2],

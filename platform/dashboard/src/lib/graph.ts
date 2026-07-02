@@ -4,6 +4,7 @@ import {
   buildAgentView,
   effectiveMode,
   MODE_COLOR,
+  worstMode,
   type AgentView,
   type Mode,
 } from "./policy";
@@ -90,11 +91,14 @@ export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
   const toolCenterY = ((toolList.length - 1) * ROW_H) / 2;
   const shift = agentCenterY - toolCenterY;
   toolList.forEach((toolName, i) => {
-    // Determine the "worst" mode for the left strip on the tool node
+    // Determine the "worst" mode for the left strip on the tool node.
+    // Shares MODE_STRENGTH ordering with parsePolicy's cross-role merge
+    // via the exported worstMode helper — one source of truth for
+    // "which mode wins when they disagree."
     const modesForTool: Mode[] = agentViews
       .filter((v) => v.tools.includes(toolName))
       .map((v) => effectiveMode(v, toolName));
-    const mode = pickStripMode(modesForTool);
+    const mode = worstMode(modesForTool) ?? "default";
     nodes.push({
       id: `tool:${toolName}`,
       type: "tool",
@@ -107,49 +111,6 @@ export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
   return { nodes, edges, agentViews };
 }
 
-/** Build a per-agent local graph: the agent + its tools only. */
-export function buildAgentGraph(agent: AgentRead): {
-  nodes: Node[];
-  edges: Edge[];
-  view: AgentView | null;
-} {
-  const view = buildAgentView(agent);
-  if (!view) return { nodes: [], edges: [], view: null };
-
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-
-  const centerY = ((view.tools.length - 1) * ROW_H) / 2;
-
-  nodes.push({
-    id: "agent:self",
-    type: "agent",
-    position: { x: 40, y: centerY },
-    data: { name: view.name, model: view.model, toolCount: view.tools.length },
-    draggable: false,
-  });
-
-  view.tools.forEach((toolName, i) => {
-    const mode = effectiveMode(view, toolName);
-    nodes.push({
-      id: `tool:${toolName}`,
-      type: "tool",
-      position: { x: 380, y: i * ROW_H },
-      data: { name: toolName, mode },
-      draggable: false,
-    });
-    edges.push({
-      id: `e:agent->${toolName}`,
-      source: "agent:self",
-      target: `tool:${toolName}`,
-      style: edgeStyle(mode),
-      animated: mode === "approval_required",
-    });
-  });
-
-  return { nodes, edges, view };
-}
-
 function edgeStyle(mode: Mode): React.CSSProperties {
   const base = { stroke: MODE_COLOR[mode], strokeWidth: 1.75 };
   if (mode === "approval_required") {
@@ -159,11 +120,4 @@ function edgeStyle(mode: Mode): React.CSSProperties {
     return { ...base, strokeWidth: 1.5, opacity: 0.85 };
   }
   return base;
-}
-
-function pickStripMode(modes: Mode[]): Mode | "default" {
-  if (modes.includes("deny")) return "deny";
-  if (modes.includes("approval_required")) return "approval_required";
-  if (modes.includes("allow")) return "allow";
-  return "default";
 }
