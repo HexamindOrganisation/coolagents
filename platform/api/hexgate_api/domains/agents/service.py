@@ -18,7 +18,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.core.ids import new_id
 from hexgate_api.models import Agent, AgentVersion, Tool
 from hexgate_api.schemas import AgentManifest, ToolDefinition
-from hexgate_api.seeds import SEED_AGENTS
+from hexgate_api.domains.agents.seed_data import SEED_AGENTS
 from hexgate_api.domains.agents.compiler import (
     _default_policy_for_manifest,
     compile_bundle,

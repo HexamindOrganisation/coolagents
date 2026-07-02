@@ -4,8 +4,6 @@ Kept in one place so every domain service (and the test suite) references the
 same fixed UUIDs and role strings instead of redefining them.
 """
 
-from hexgate_api.seeds import DEFAULT_AGENT_NAME
-
 # Triple-default seed identity (M3). Fixed UUIDs so every fresh dev DB
 # produces identical rows — tests and integration scripts can reference
 # these constants directly instead of looking up by name.
@@ -30,6 +28,7 @@ DEFAULT_PROJECT_NAME = "support-bot"
 
 DEFAULT_MEMBERSHIP_ID = "00000000-0000-0000-0000-000000000004"
 
+DEFAULT_AGENT_NAME = "default"
 PROTECTED_AGENT_NAMES = {DEFAULT_AGENT_NAME}
 
 # Role constants — strings (not Enum) so we can add billing_admin etc.

@@ -11,7 +11,7 @@ Two agents, one permissive + gated, one strictly read-only — enough
 to tell the story of policy-driven control in a demo.
 """
 
-DEFAULT_AGENT_NAME = "default"
+from hexgate_api.constants import DEFAULT_AGENT_NAME
 
 _ALL_TOOLS_YAML = """
   - web_search

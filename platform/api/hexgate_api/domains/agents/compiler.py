@@ -134,7 +134,7 @@ def _emit_tool_lines(names: list[str], mode: str, indent: int = 6) -> str:
 def _default_policy_for_manifest(manifest: AgentManifest) -> str:
     """Build a starter role-aware ``policy_yaml`` from a manifest's tools.
 
-    Modeled on the ``support_bot`` seed at :mod:`hexgate_api.seeds`:
+    Modeled on the ``support_bot`` seed at :mod:`hexgate_api.domains.agents.seed_data`:
 
       - ``read_only`` (mixin) — every read-shape tool from the manifest.
       - ``default`` — inherits ``read_only``, used when no User scope is set.
