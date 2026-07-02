@@ -82,8 +82,27 @@ Do not ship this to production. It approves every `approval_required` call witho
 - [Framework comparison](/concepts/approval-frameworks-compared) walks through how other agent frameworks handle approval, and where Hexgate's callback fits in that landscape.
 - [Policy decision](/concepts/policy-decision) covers what `Decision` is and how the enforcer produces one.
 
+## Adapter coverage
+
+The callback is wired through the LangChain, OpenAI Agents, Pydantic AI, and Google ADK adapters. Pass it the same way on each:
+
+```python
+# OpenAI Agents
+from hexgate.adapters.openai import wrap_openai_agent
+wrapped = wrap_openai_agent(agent, enforcer=enforcer, approval_handler=ask_terminal)
+
+# Pydantic AI
+from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
+wrapped = wrap_pydantic_agent(agent=agent, approval_handler=ask_terminal)
+
+# Google ADK
+from hexgate.adapters.google import wrap_google_agent
+wrapped, binding = wrap_google_agent(agent, api_key=..., approval_handler=ask_terminal)
+```
+
+If you use one of the `HexgateRunner` classes, the same argument is available on the constructor and threads through to every run.
+
 ## Known limitations
 
 - **No cross-process durability yet.** State lives in the calling process's memory. A restart drops any pending prompt. A durable, Postgres-backed handler is on the roadmap for when overnight or off-host approvers become a real need.
 - **No per-tool RBAC on approvers.** A policy today says "somebody must approve", not "somebody with role `finance-approver` must approve". Follow-up.
-- **LangChain adapter only.** The OpenAI Agents, Pydantic AI, and Google ADK adapters currently render `approval_required` decisions as denied output instead of invoking the callback. Same slot exists on their `GuardedTool` wrapper, one small PR each to wire.
