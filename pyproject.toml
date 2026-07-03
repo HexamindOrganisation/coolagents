@@ -68,7 +68,6 @@ branch = true
 source = ["hexgate"]
 omit = [
     "*/__init__.py",
-    "*/builtin/*",  # packaged YAML/MD assets, not executable code
 ]
 
 [tool.coverage.report]
@@ -89,7 +88,5 @@ include = ["hexgate*"]
 
 [tool.setuptools.package-data]
 hexgate = [
-    "agents/builtin/*/*.md",
-    "agents/builtin/*/*.yaml",
     "agents/prompts/*.md",
 ]

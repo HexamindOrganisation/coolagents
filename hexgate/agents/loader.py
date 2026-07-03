@@ -1,9 +1,8 @@
-"""Load packaged and local agent definitions from disk."""
+"""Load local and registered agent definitions."""
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
@@ -51,7 +50,7 @@ BUILTIN_TOOLS = {
     "web_search": web_search,
     "write_file": write_file,
 }
-AgentSource = Literal["builtin", "local", "registered"]
+AgentSource = Literal["local", "registered"]
 AgentFactory: TypeAlias = Callable[..., tuple[AgentGraph, CallbackHandler]]
 REGISTERED_AGENTS: dict[str, AgentFactory] = {}
 
@@ -74,8 +73,8 @@ def _apply_local_override(
     other path (the no-override branch) forwards the observer but this
     one silently drops it.
 
-    Extracted from :func:`load_builtin_agent` + :func:`load_local_agent`
-    which shared this exact block verbatim. :func:`load_hexgate_agent`
+    Extracted from :func:`load_local_agent` which used this exact block
+    verbatim. :func:`load_hexgate_agent`
     deliberately doesn't use this helper — its override interaction is
     more involved (it layers in alongside the platform-served bundle).
     """
@@ -104,11 +103,6 @@ def _platform_bundle(payload: dict, client: HexgateClient) -> PolicyBundle | Non
     from hexgate.security.source import decode_and_verify_platform_bundle
 
     return decode_and_verify_platform_bundle(payload, client.public_key_bytes())
-
-
-def builtin_agents_root() -> Path:
-    """Return the filesystem path for packaged builtin agents."""
-    return Path(str(files("hexgate.agents.builtin")))
 
 
 def _load_agent_spec_from_dir(agent_dir: Path) -> AgentSpec:
@@ -171,28 +165,6 @@ def list_registered_agents() -> list[str]:
     return sorted(REGISTERED_AGENTS)
 
 
-def list_builtin_agents() -> list[str]:
-    """List available packaged builtin agent names."""
-    root = builtin_agents_root()
-    return sorted(
-        path.name
-        for path in root.iterdir()
-        if path.is_dir() and (path / "agent.yaml").exists()
-    )
-
-
-def load_builtin_agent_spec(name: str) -> AgentSpec:
-    """Load a builtin agent specification by name."""
-    agent_dir = builtin_agents_root() / name
-    return _load_agent_spec_from_dir(agent_dir)
-
-
-def load_builtin_agent_policy(name: str) -> AgentPolicy:
-    """Load the policy associated with a builtin agent."""
-    spec = load_builtin_agent_spec(name)
-    return load_policy((builtin_agents_root() / name / spec.policy))
-
-
 def find_local_agent_dir(name: str, base_dir: str | Path | None = None) -> Path:
     """Resolve a local agent name to its directory."""
     for agent_dir in iter_local_agent_dirs(base_dir):
@@ -217,14 +189,13 @@ def load_local_agent_policy(
 
 
 def list_available_agents(base_dir: str | Path | None = None) -> list[str]:
-    """List merged local and builtin agent ids."""
-    names = set(list_builtin_agents())
-    names.update(list_local_agents(base_dir))
+    """List merged local and registered agent ids."""
+    names = set(list_local_agents(base_dir))
     names.update(list_registered_agents())
     return sorted(names)
 
 
-def resolve_builtin_tools(
+def resolve_tools(
     tool_names: list[str],
     extra_tools: Mapping[str, Any] | None = None,
 ) -> list[Any]:
@@ -239,46 +210,6 @@ def resolve_builtin_tools(
         except KeyError as exc:
             raise KeyError(f'Unknown tool "{tool_name}"') from exc
     return resolved
-
-
-def load_builtin_agent(
-    name: str,
-    *,
-    session_id: str | None = None,
-    user_id: str | None = None,
-    tags: list[str] | None = None,
-    extra_tools: Mapping[str, Any] | None = None,
-    model: str | None = None,
-    approval_handler: ApprovalHandler | None = None,
-    decision_observer: "DecisionObserver | None" = None,
-) -> tuple[AgentGraph, CallbackHandler]:
-    """Load and instantiate a packaged builtin agent."""
-    spec = load_builtin_agent_spec(name)
-    agent_dir = builtin_agents_root() / name
-    system_prompt = (agent_dir / spec.system_prompt).read_text(encoding="utf-8")
-    policy: object = load_policy(agent_dir / spec.policy)
-    tools = resolve_builtin_tools(spec.tools, extra_tools=extra_tools)
-    agent, handler = create_agent(
-        model=model or spec.model,
-        tools=tools,
-        system_prompt=system_prompt,
-        session_id=session_id,
-        user_id=user_id,
-        tags=tags,
-        name=spec.name,
-        bind_policy=False,  # the loader applies its own policy below
-    )
-    overridden = _apply_local_override(
-        agent, approval_handler, decision_observer=decision_observer
-    )
-    if overridden is not None:
-        return overridden, handler
-    return enforce_policy(
-        agent,
-        policy,
-        approval_handler=approval_handler,
-        decision_observer=decision_observer,
-    ), handler
 
 
 def load_local_agent(
@@ -298,7 +229,7 @@ def load_local_agent(
     agent_dir = find_local_agent_dir(name, base_dir)
     system_prompt = (agent_dir / spec.system_prompt).read_text(encoding="utf-8")
     policy: object = load_policy(agent_dir / spec.policy)
-    tools = resolve_builtin_tools(spec.tools, extra_tools=extra_tools)
+    tools = resolve_tools(spec.tools, extra_tools=extra_tools)
     agent, handler = create_agent(
         model=model or spec.model,
         tools=tools,
@@ -439,13 +370,11 @@ def _apply_approval_handler(
 
 
 def resolve_agent_source(name: str, base_dir: str | Path | None = None) -> AgentSource:
-    """Return whether an agent id resolves from local or builtin definitions."""
+    """Return whether an agent id resolves from local or registered definitions."""
     if name in list_local_agents(base_dir):
         return "local"
     if name in list_registered_agents():
         return "registered"
-    if name in list_builtin_agents():
-        return "builtin"
     raise KeyError(f'Unknown agent "{name}"')
 
 
@@ -502,7 +431,7 @@ def load_hexgate_agent(
     spec = AgentSpec.model_validate(yaml.safe_load(payload["agent_yaml"]) or {})
     system_prompt = payload.get("system_md") or ""
 
-    tools = resolve_builtin_tools(spec.tools, extra_tools=extra_tools)
+    tools = resolve_tools(spec.tools, extra_tools=extra_tools)
 
     agent, handler = create_agent(
         model=model or spec.model,
@@ -555,20 +484,20 @@ def load_agent(
     approval_handler: ApprovalHandler | None = None,
     decision_observer: "DecisionObserver | None" = None,
 ) -> tuple[AgentGraph, CallbackHandler]:
-    """Load an agent from Hexgate (when HEXGATE_API_KEY is set), local, or builtin.
+    """Load an agent from Hexgate (when HEXGATE_API_KEY is set), local, or registered.
 
     ``name`` is required for every path post-Phase 7 — the
     HEXGATE_AGENT_NAME env-var fallback was removed when ``hexgate
     serve`` moved to the uvicorn-style ``module:attr`` spec.
 
-    Pass ``local_only=True`` to force resolution from local / registered /
-    builtin sources even when ``HEXGATE_API_KEY`` is set in the environment.
+    Pass ``local_only=True`` to force resolution from local / registered
+    sources even when ``HEXGATE_API_KEY`` is set in the environment.
     Useful for terminal-chat workflows that don't need cloud-fetched policy.
 
     ``decision_observer`` is forwarded to every enforced loader (local,
-    registered, builtin, cloud). Threaded as a kwarg rather than a
-    contextvar so the call sites stay explicit — ``hexgate chat`` is
-    the only caller passing it today.
+    registered, cloud). Threaded as a kwarg rather than a contextvar so
+    the call sites stay explicit — ``hexgate chat`` is the only caller
+    passing it today.
     """
     if not local_only and resolve_api_key():
         # load_hexgate_agent dropped its reserved ``user_id`` placeholder
@@ -598,20 +527,11 @@ def load_agent(
             approval_handler=approval_handler,
             decision_observer=decision_observer,
         )
-    if source == "registered":
-        return load_registered_agent(
-            name,
-            base_dir=base_dir,
-            session_id=session_id,
-            user_id=user_id,
-            tags=tags,
-            extra_tools=extra_tools,
-            model=model,
-            approval_handler=approval_handler,
-            decision_observer=decision_observer,
-        )
-    return load_builtin_agent(
+    # resolve_agent_source raises KeyError for unknown ids, so the only
+    # remaining source here is "registered".
+    return load_registered_agent(
         name,
+        base_dir=base_dir,
         session_id=session_id,
         user_id=user_id,
         tags=tags,

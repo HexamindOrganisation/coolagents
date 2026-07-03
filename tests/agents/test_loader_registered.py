@@ -28,18 +28,18 @@ def test_list_registered_agents_tracks_registered_ids() -> None:
     assert loader.list_registered_agents() == ["code_agent"]
 
 
-def test_resolve_agent_source_prefers_registered_over_builtin_when_no_local(
+def test_resolve_agent_source_resolves_registered_when_no_local(
     tmp_path: Path,
 ) -> None:
-    """Resolve registered agents ahead of builtin ones when local is absent."""
+    """Resolve registered agents when no local agent shadows the id."""
 
     def factory(**_kwargs: Any) -> tuple[str, str]:
         """Return fake runtime pieces."""
         return "agent", "handler"
 
-    loader.register_agent("researcher", factory)
+    loader.register_agent("code_agent", factory)
 
-    assert loader.resolve_agent_source("researcher", tmp_path) == "registered"
+    assert loader.resolve_agent_source("code_agent", tmp_path) == "registered"
 
 
 def test_load_registered_agent_passes_runtime_overrides_through() -> None:

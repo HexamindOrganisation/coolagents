@@ -58,11 +58,17 @@ def test_list_local_agents_reads_agents_subdirectory(tmp_path: Path) -> None:
     assert loader.list_local_agents(tmp_path) == ["project_agent"]
 
 
-def test_resolve_agent_source_prefers_local_over_builtin(tmp_path: Path) -> None:
-    """Prefer local agents when an id exists in both registries."""
-    _write_agent_dir(tmp_path / "researcher", name="researcher")
+def test_resolve_agent_source_resolves_local(tmp_path: Path) -> None:
+    """Resolve an on-disk agent dir to the ``local`` source."""
+    _write_agent_dir(tmp_path / "example_agent", name="example_agent")
 
-    assert loader.resolve_agent_source("researcher", tmp_path) == "local"
+    assert loader.resolve_agent_source("example_agent", tmp_path) == "local"
+
+
+def test_resolve_tools_raises_for_unknown_tools() -> None:
+    """Fail clearly when a referenced tool id is unknown."""
+    with pytest.raises(KeyError, match='Unknown tool "missing_tool"'):
+        loader.resolve_tools(["missing_tool"])
 
 
 def test_load_local_agent_resolves_spec_into_create_agent(

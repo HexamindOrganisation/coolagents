@@ -166,16 +166,50 @@ def test_override_raises_for_tampered_bundle(
         loader._local_policy_override()
 
 
+def _write_local_agent_dir(agent_dir: Path, *, name: str) -> None:
+    """Create a minimal local agent directory for loader integration tests."""
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "agent.yaml").write_text(
+        "\n".join(
+            [
+                f"name: {name}",
+                "model: gpt-5.4",
+                "system_prompt: system.md",
+                "tools:",
+                "  - web_search",
+                "policy: policy.yaml",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (agent_dir / "policy.yaml").write_text(
+        "\n".join(
+            [
+                "version: 1",
+                "default_policy:",
+                "  mode: deny",
+                "tools:",
+                "  web_search:",
+                "    mode: allow",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (agent_dir / "system.md").write_text(
+        "You are a local test agent.", encoding="utf-8"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Integration with the agent loaders
 # ---------------------------------------------------------------------------
 
 
 @needs_opa
-def test_load_builtin_agent_picks_up_override(
+def test_load_local_agent_picks_up_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``load_builtin_agent`` forwards the bundle to ``enforce_policy`` when
+    """``load_local_agent`` forwards the bundle to ``enforce_policy`` when
     the env var is set, replacing the agent's own policy.yaml, AND attaches
     the local PolicySource so per-run refresh picks up later edits."""
     import types
@@ -183,6 +217,7 @@ def test_load_builtin_agent_picks_up_override(
 
     from hexgate.security import PolicyBundle
 
+    _write_local_agent_dir(tmp_path / "example_agent", name="example_agent")
     bundle_dir = _build_bundle_dir(tmp_path / "bundle")
     monkeypatch.setenv("HEXGATE_LOCAL_POLICY", str(bundle_dir))
 
@@ -206,9 +241,9 @@ def test_load_builtin_agent_picks_up_override(
     monkeypatch.setattr(loader, "create_agent", fake_create_agent)
     monkeypatch.setattr(loader, "enforce_policy", fake_enforce_policy)
 
-    loader.load_builtin_agent("researcher")
+    loader.load_local_agent("example_agent", base_dir=tmp_path)
     assert isinstance(captured["policy"], PolicyBundle), (
-        "load_builtin_agent should have substituted the env-var bundle "
+        "load_local_agent should have substituted the env-var bundle "
         f"for the on-disk policy.yaml; got {type(captured['policy'])}"
     )
     # The override source was threaded into enforce_policy so refresh_policy()
@@ -217,7 +252,7 @@ def test_load_builtin_agent_picks_up_override(
 
 
 @needs_opa
-def test_load_builtin_agent_threads_decision_observer_under_override(
+def test_load_local_agent_threads_decision_observer_under_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When ``HEXGATE_LOCAL_POLICY`` is set, the override path must still
@@ -231,6 +266,7 @@ def test_load_builtin_agent_threads_decision_observer_under_override(
     import types
     from typing import Any
 
+    _write_local_agent_dir(tmp_path / "example_agent", name="example_agent")
     bundle_dir = _build_bundle_dir(tmp_path / "bundle")
     monkeypatch.setenv("HEXGATE_LOCAL_POLICY", str(bundle_dir))
 
@@ -254,24 +290,28 @@ def test_load_builtin_agent_threads_decision_observer_under_override(
     monkeypatch.setattr(loader, "enforce_policy", fake_enforce_policy)
 
     sentinel = lambda _event: None  # noqa: E731 — sentinel callable for identity check
-    loader.load_builtin_agent("researcher", decision_observer=sentinel)
+    loader.load_local_agent(
+        "example_agent", base_dir=tmp_path, decision_observer=sentinel
+    )
     assert captured["decision_observer"] is sentinel, (
-        "load_builtin_agent should forward decision_observer to enforce_policy "
+        "load_local_agent should forward decision_observer to enforce_policy "
         "even when HEXGATE_LOCAL_POLICY is set; got "
         f"{captured.get('decision_observer')!r}"
     )
 
 
 @needs_opa
-def test_load_builtin_agent_uses_original_policy_without_override(
+def test_load_local_agent_uses_original_policy_without_override(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Sanity check: without the env var, the agent's bundled policy.yaml
+    """Sanity check: without the env var, the agent's own policy.yaml
     is used (not a PolicyBundle). Guards against my own dispatcher
     silently always preferring wasm."""
     from typing import Any
     from hexgate.security import AgentPolicy, PolicyBundle
 
+    _write_local_agent_dir(tmp_path / "example_agent", name="example_agent")
     monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
     captured: dict[str, Any] = {}
 
@@ -291,7 +331,7 @@ def test_load_builtin_agent_uses_original_policy_without_override(
     monkeypatch.setattr(loader, "create_agent", fake_create_agent)
     monkeypatch.setattr(loader, "enforce_policy", fake_enforce_policy)
 
-    loader.load_builtin_agent("researcher")
+    loader.load_local_agent("example_agent", base_dir=tmp_path)
     assert isinstance(captured["policy"], AgentPolicy)
     assert not isinstance(captured["policy"], PolicyBundle)
 
