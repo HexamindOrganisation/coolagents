@@ -134,7 +134,7 @@ def test_google_manifest_extracts_mcp_tool_schema_from_json_schema():
     from mcp.types import Tool as MCPTool
 
     from hexgate.adapters.google.mcp import wrap_mcp_toolset
-    from hexgate.cli.register.google import _to_tool_definition
+    from hexgate.manifest.google import _to_tool_definition
     from hexgate.mcp import MCPServerConfig
     from hexgate.mcp.proxy import _ToolsetState
     from hexgate.mcp.proxy import _build_proxy as build
