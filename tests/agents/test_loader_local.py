@@ -20,7 +20,7 @@ def _write_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "model: gpt-5.4",
                 "system_prompt: system.md",
                 "tools:",
-                "  - web_search",
+                "  - read_file",
                 "policy: policy.yaml",
             ]
         ),
@@ -33,7 +33,7 @@ def _write_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "default_policy:",
                 "  mode: deny",
                 "tools:",
-                "  web_search:",
+                "  read_file:",
                 "    mode: allow",
             ]
         ),
@@ -105,6 +105,6 @@ def test_load_local_agent_resolves_spec_into_create_agent(
 
     assert (agent, handler) == ("agent-instance", "handler-instance")
     assert captured["name"] == "example_agent"
-    assert [tool.name for tool in captured["tools"]] == ["web_search"]
+    assert [tool.name for tool in captured["tools"]] == ["read_file"]
     assert "local test agent" in captured["system_prompt"]
-    assert captured_policy["policy"].tools["web_search"].mode == "allow"
+    assert captured_policy["policy"].tools["read_file"].mode == "allow"

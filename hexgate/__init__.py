@@ -32,8 +32,6 @@ from hexgate.tools import (
     read_file,
     write_file,
 )
-from hexgate.tools.fetch import fetch
-from hexgate.tools.websearch import web_search
 
 __all__ = [
     "AgentManifest",
@@ -51,7 +49,6 @@ __all__ = [
     "create_agent",
     "create_manifest",
     "enforce_policy",
-    "fetch",
     "glob",
     "grep",
     "invoke_agent",
@@ -67,6 +64,5 @@ __all__ = [
     "stream_agent",
     "stream_agent_raw",
     "unregister_agent",
-    "web_search",
     "write_file",
 ]

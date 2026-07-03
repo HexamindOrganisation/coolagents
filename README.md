@@ -88,8 +88,6 @@ The SDK itself only needs Python — but a few of the bundled tools shell out to
 | **The dashboard** under `platform/dashboard/` | Node 18+ and `pnpm` — `corepack enable` or `npm i -g pnpm` |
 | **The control plane** under `platform/api/` | [`uv`](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 
-`web_search` and `fetch` have no system dependencies — pure Python. If you're only using those, ignore the table above.
-
 The runtime preflights `ripgrep` at agent build time and refuses to start when it's missing — fail-fast is friendlier than silently falling back to a 100× slower path.
 
 ## ⚡ Quick Start — Local CLI
@@ -107,11 +105,10 @@ cp .env.sample .env
 hexgate chat --agent example_agent
 ```
 
-Keys the built-in example agent uses (bootstrap no longer hard-requires them — each is only needed if you invoke the piece that reads it):
+Keys the example agent uses (bootstrap no longer hard-requires them — each is only needed if you invoke the piece that reads it):
 
 - `OPENAI_API_KEY` — the default `openai:gpt-5.4` model. Skip it if you pass your own model; if it's missing, the model provider raises a key-named error when the agent is built.
-- `LINKUP_API_KEY` — the built-in `web_search` tool, which raises a clear error the first time it runs without a key.
-- `TAVILY_API_KEY` — the built-in `fetch` tool, same as above.
+- `LINKUP_API_KEY` / `TAVILY_API_KEY` — only for the example web tools (`examples/tools/`, used by `examples/research_agents.py`); each raises a clear error the first time it runs without a key. The default `example_agent` uses filesystem tools and needs neither.
 
 Run `hexgate --help` to see all subcommands (`chat`, `serve`, `register`), and `hexgate <subcommand> --help` for the flags each one accepts.
 
@@ -383,8 +380,6 @@ The current curated surface includes:
 - `load_hexgate_agent`
 - `User` — async context manager for per-request user attenuation (see [User Scope](#-user-scope))
 - `agent_tool`
-- `web_search`
-- `fetch`
 
 Example:
 
@@ -401,8 +396,6 @@ from hexgate import (
     load_agent,
     load_hexgate_agent,
     register_agent,
-    fetch,
-    web_search,
     User,
 )
 ```
@@ -782,9 +775,9 @@ default_policy:
   mode: deny
 
 tools:
-  web_search:
+  read_file:
     mode: allow
-  fetch:
+  glob:
     mode: allow
   refund_order:
     mode: allow
@@ -808,22 +801,22 @@ Every tool call routes through a `PolicyEnforcer` that returns `allow` / `deny` 
 `create_agent(...)` stays close to LangChain. Policy enforcement is applied after agent creation:
 
 ```python
-from hexgate import AgentPolicy, create_agent, enforce_policy, fetch, web_search
+from hexgate import AgentPolicy, create_agent, enforce_policy, glob, read_file
 
 policy = AgentPolicy.model_validate(
     {
         "version": 1,
         "default_policy": {"mode": "deny"},
         "tools": {
-            "web_search": {"mode": "allow"},
-            "fetch": {"mode": "allow"},
+            "read_file": {"mode": "allow"},
+            "glob": {"mode": "allow"},
         },
     }
 )
 
 agent, handler = create_agent(
     model="openai:gpt-5.4",
-    tools=[web_search, fetch],
+    tools=[read_file, glob],
     system_prompt="You are a careful research assistant.",
 )
 
@@ -1101,8 +1094,7 @@ Worth being explicit about the gaps so operators know where to layer their own c
 Copy `.env.sample` to `.env`. None of these are required to boot — set the ones whose feature you use. A missing key surfaces when that feature runs: the built-in tools raise their own clear error at call time, and the model provider raises a key-named error when the agent is built.
 
 - `OPENAI_API_KEY` — default model
-- `LINKUP_API_KEY` — built-in `web_search` tool
-- `TAVILY_API_KEY` — built-in `fetch` tool
+- `LINKUP_API_KEY` / `TAVILY_API_KEY` — example web tools in `examples/tools/` (not shipped in core)
 - `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` — tracing (optional)
 - optional `LANGFUSE_HOST`
 

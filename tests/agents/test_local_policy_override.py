@@ -176,7 +176,7 @@ def _write_local_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "model: gpt-5.4",
                 "system_prompt: system.md",
                 "tools:",
-                "  - web_search",
+                "  - read_file",
                 "policy: policy.yaml",
             ]
         ),
@@ -189,7 +189,7 @@ def _write_local_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "default_policy:",
                 "  mode: deny",
                 "tools:",
-                "  web_search:",
+                "  read_file:",
                 "    mode: allow",
             ]
         ),

@@ -29,11 +29,9 @@ from hexgate.security.source import _local_policy_override
 from hexgate.tools import (
     bash,
     edit_file,
-    fetch,
     glob,
     grep,
     read_file,
-    web_search,
     write_file,
 )
 from hexgate.tracing.langfuse import CallbackHandler
@@ -41,11 +39,9 @@ from hexgate.tracing.langfuse import CallbackHandler
 BUILTIN_TOOLS = {
     "bash": bash,
     "edit_file": edit_file,
-    "fetch": fetch,
     "glob": glob,
     "grep": grep,
     "read_file": read_file,
-    "web_search": web_search,
     "write_file": write_file,
 }
 AgentSource = Literal["local", "registered"]

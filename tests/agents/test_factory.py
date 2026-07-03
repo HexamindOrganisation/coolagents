@@ -52,9 +52,8 @@ def test_load_system_prompt_reads_default_prompt_file() -> None:
     """Load the default prompt file into prompt text."""
     prompt = factory.load_system_prompt(factory.DEFAULT_SYSTEM_PROMPT)
 
-    assert "web research assistant" in prompt
-    assert "web_search" in prompt
-    assert "fetch" in prompt
+    assert "helpful assistant" in prompt
+    assert "tool" in prompt
 
 
 def test_load_system_prompt_accepts_inline_text() -> None:
@@ -167,7 +166,7 @@ def test_create_agent_wires_tools_and_handler(monkeypatch: pytest.MonkeyPatch) -
     assert agent.tools == custom_tools
     assert calls["agent_kwargs"]["model"] == "openai:gpt-5.4"
     assert calls["agent_kwargs"]["tools"] == custom_tools
-    assert "web research assistant" in calls["agent_kwargs"]["system_prompt"]
+    assert "helpful assistant" in calls["agent_kwargs"]["system_prompt"]
     assert calls["handler_kwargs"] == {
         "session_id": "session-1",
         "user_id": "user-1",
