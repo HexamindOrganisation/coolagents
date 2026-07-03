@@ -84,9 +84,9 @@ def build_runtime(
 
     ``agent_name`` accepts two forms:
 
-    * Plain id (``"researcher"``) — resolved via local / registered /
-      builtin lookup, then enforced through the standard loader. This
-      is the existing path.
+    * Plain id (``"example_agent"``) — resolved via local / registered
+      lookup, then enforced through the standard loader. This is the
+      existing path.
     * uvicorn-style spec (``"examples.customer_bot:agent"``) — imported
       directly from the module and used as-is. Skips the name resolver
       entirely; the agent object is expected to be a fully-configured
