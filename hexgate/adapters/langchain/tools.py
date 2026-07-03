@@ -14,15 +14,20 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable
-from inspect import isawaitable
 from typing import Any
 
 from langchain_core.tools import BaseTool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import ConfigDict
 
+from hexgate.agents.approvals import (
+    resolve_approval_async as _resolve_approval_async,
+)
+from hexgate.agents.approvals import (
+    resolve_approval_sync as _resolve_approval_sync,
+)
 from hexgate.agents.factory import ApprovalHandler
-from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.tools.decorators import TOOL_METADATA_ATTR
 
@@ -33,29 +38,6 @@ def _copy_tool_metadata(source: Any, target: Any) -> Any:
     if metadata is not None:
         setattr(target, TOOL_METADATA_ATTR, metadata)
     return target
-
-
-def _resolve_approval_sync(handler: ApprovalHandler, decision: Decision) -> bool:
-    """Resolve a NEEDS_APPROVAL decision in a sync caller (rejects coroutines)."""
-    if isinstance(handler, bool):
-        return handler
-    result = handler(decision)
-    if isawaitable(result):
-        raise RuntimeError(
-            "approval_handler returned a coroutine; sync tool invocation cannot "
-            "await it — use ainvoke/astream/astream_events"
-        )
-    return bool(result)
-
-
-async def _resolve_approval_async(handler: ApprovalHandler, decision: Decision) -> bool:
-    """Resolve a NEEDS_APPROVAL decision in an async caller."""
-    if isinstance(handler, bool):
-        return handler
-    result = handler(decision)
-    if isawaitable(result):
-        result = await result
-    return bool(result)
 
 
 class GuardedTool(BaseTool):

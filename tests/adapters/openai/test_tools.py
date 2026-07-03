@@ -246,3 +246,109 @@ async def test_wrap_tools_isolates_policy_decisions_per_tool() -> None:
 
     assert allowed == 'invoked:{"text": "x"}'
     assert "policy_denied" in denied
+
+
+# ---------------------------------------------------------------------------
+# approval_handler on NEEDS_APPROVAL decisions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_true_runs_original_tool() -> None:
+    """An async handler that returns True lets the tool through."""
+    calls: list[Any] = []
+    seen_decisions: list[Any] = []
+
+    async def approve(decision: Any) -> bool:
+        seen_decisions.append(decision)
+        return True
+
+    wrapped = wrap_tool(
+        _make_tool(calls=calls),
+        _enforcer(_approval_required_policy_set()),
+        approval_handler=approve,
+    )
+
+    result = await wrapped.on_invoke_tool("ctx", '{"text": "hi"}')
+
+    assert result == 'invoked:{"text": "hi"}'
+    assert len(calls) == 1
+    assert len(seen_decisions) == 1
+    assert seen_decisions[0].tool_name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_false_returns_marker() -> None:
+    """A handler that returns False falls back to the [approval_required] marker."""
+    calls: list[Any] = []
+
+    async def deny(_: Any) -> bool:
+        return False
+
+    wrapped = wrap_tool(
+        _make_tool(calls=calls),
+        _enforcer(_approval_required_policy_set()),
+        approval_handler=deny,
+    )
+
+    result = await wrapped.on_invoke_tool("ctx", '{"text": "hi"}')
+
+    assert "approval_required" in result
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_bool_approval_handler_short_circuits() -> None:
+    """approval_handler=True skips the callback and runs the tool."""
+    calls: list[Any] = []
+    wrapped = wrap_tool(
+        _make_tool(calls=calls),
+        _enforcer(_approval_required_policy_set()),
+        approval_handler=True,
+    )
+
+    result = await wrapped.on_invoke_tool("ctx", '{"text": "hi"}')
+
+    assert result == 'invoked:{"text": "hi"}'
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_not_called_on_plain_deny() -> None:
+    """A plain deny never consults the approval handler."""
+    calls_to_handler: list[Any] = []
+
+    async def approve(decision: Any) -> bool:
+        calls_to_handler.append(decision)
+        return True
+
+    wrapped = wrap_tool(
+        _make_tool(),
+        _enforcer(_deny_policy_set()),
+        approval_handler=approve,
+    )
+
+    result = await wrapped.on_invoke_tool("ctx", '{"text": "hi"}')
+
+    assert "policy_denied" in result
+    assert calls_to_handler == []
+
+
+@pytest.mark.asyncio
+async def test_sync_approval_handler_is_accepted() -> None:
+    """A plain sync callable is a valid handler too."""
+    calls: list[Any] = []
+
+    def approve(_: Any) -> bool:
+        return True
+
+    wrapped = wrap_tool(
+        _make_tool(calls=calls),
+        _enforcer(_approval_required_policy_set()),
+        approval_handler=approve,
+    )
+
+    result = await wrapped.on_invoke_tool("ctx", '{"text": "hi"}')
+
+    assert result == 'invoked:{"text": "hi"}'
+    assert len(calls) == 1

@@ -70,26 +70,31 @@ def _demo_settings():
 
 def _run(agent_obj) -> None:
     global _loop, _task, _status
-    from hexgate.cli._common import (
-        build_approval_handler,
-        build_runtime_from_local_agent,
-    )
-    from hexgate.cli.serve import run_serve
+    from hexgate.cli._common import build_runtime_from_local_agent
+    from hexgate.cli.serve import RelayApprovalHandler, run_serve
     from rich.console import Console
 
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     try:
         settings = _demo_settings()
+        # Same default as `hexgate serve` (see hexgate/cli/serve.py): route
+        # NEEDS_APPROVAL to the connected playground tab via the WS relay.
+        # Without this the notebook BYOK container silently auto-approved
+        # every approval_required tool — the demo would ship the wrong
+        # security contract.
+        approval_handler = RelayApprovalHandler()
         runtime = build_runtime_from_local_agent(
             settings,
             agent_obj=agent_obj,
             description=None,
-            approval_handler=build_approval_handler(Console(), "auto-approve"),
+            approval_handler=approval_handler,
             auto_register=True,  # idempotent register of the agent manifest
             console=Console(),
         )
-        _task = _loop.create_task(run_serve(runtime))
+        _task = _loop.create_task(
+            run_serve(runtime, approval_handler=approval_handler)
+        )
         _status = "running"
         _loop.run_until_complete(_task)
     except asyncio.CancelledError:

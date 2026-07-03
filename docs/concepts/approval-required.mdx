@@ -1,0 +1,108 @@
+---
+title: "Approval-required"
+description: "Ask a human before a tool call runs, using a single async callback."
+---
+
+Some tool calls need a human in the loop. Refunds, sends, deletes, anything that touches money or another user's data. In Hexgate, you mark those tools `approval_required` in the policy and supply an async callback. When the agent tries to call one of them, the callback fires. Return `True` and the call goes through. Return `False` and the framework sees a `[policy_denied]` marker instead of a tool result.
+
+That callback is the whole feature. You write one function of the shape `async fn(decision) -> bool` and Hexgate calls it every time a tool needs approval. Where the human actually sits (terminal, playground popup, Slack channel, webhook) is up to you.
+
+## Quickstart
+
+Declare the tool in your policy:
+
+```yaml
+version: 1
+default_policy: { mode: deny }
+tools:
+  refund_order:
+    mode: approval_required
+    reason: "financial mutation, needs a human"
+```
+
+Write a handler and pass it when you bind the policy:
+
+```python
+import asyncio
+from hexgate import create_agent, enforce_policy
+from hexgate.security.decision import Decision
+
+async def ask_terminal(decision: Decision) -> bool:
+    print(f"\n[approval] {decision.agent_name} wants to call "
+          f"{decision.tool_name}({decision.arguments})")
+    print(f"  reason: {decision.reason}")
+    answer = await asyncio.to_thread(input, "  approve? [y/N]: ")
+    return answer.strip().lower() == "y"
+
+agent, handler = create_agent(model="gpt-5.4", tools=[refund_order])
+agent = enforce_policy(agent, "policy.yaml", approval_handler=ask_terminal)
+```
+
+Notice the `asyncio.to_thread(input, ...)`. Any blocking call inside the handler will stall the whole agent turn if you skip it, including the streaming tokens for the assistant's reply.
+
+## What the callback receives
+
+The `Decision` object holds everything the enforcer knew when it flagged the call.
+
+| Field | Type | Notes |
+|---|---|---|
+| `tool_name` | `str` | Name the model asked to call, e.g. `refund_order`, `mcp-slack-send_message`. |
+| `arguments` | `dict[str, Any]` | Exact arguments the model produced. Show these to the human verbatim, they're what will run. |
+| `reason` | `str` | Human-readable string from the policy engine, usually the failing constraint or the `reason:` field. |
+| `role` | `str \| None` | Active role from `User(role=...)` at the time of the call. |
+| `agent_name` | `str` | Which agent issued the call. Useful when several agents share one approval sink. |
+
+If your UI needs more context than this (customer ID, current balance, whatever), thread it into the arguments the model calls the tool with, or attach it via `User` scope. The callback shouldn't be reaching out to fetch its own context.
+
+## Common shapes
+
+**CLI.** The quickstart above.
+
+**Auto-approve during tests.** A plain `bool` is a valid `approval_handler`:
+
+```python
+agent = enforce_policy(agent, "policy.yaml", approval_handler=True)
+```
+
+Do not ship this to production. It approves every `approval_required` call without asking, which defeats the point of having the policy in the first place.
+
+**Playground.** `hexgate serve` binds a `RelayApprovalHandler` for you. Prompts appear inline above the composer in the connected playground tab, and the user's answer flows back over the same WebSocket. Nothing to configure.
+
+**Webhook or Slack.** Send an `approval.request` to your own queue inside the handler, park on an `asyncio.Event`, and set the event from the webhook handler when the answer arrives. Roughly forty lines of code. `RelayApprovalHandler` in the SDK source is a working reference.
+
+## Watch out for
+
+- **Timeouts.** If your handler can hang (waiting on a human who went to lunch, a webhook that never fires), wrap the wait in `asyncio.wait_for` and return `False` on `TimeoutError`. Hexgate will not do this for you. The tool call sits open until the handler returns.
+- **Blocking calls.** Anything sync (`input`, `requests.post`, `subprocess.run`) needs `asyncio.to_thread` or the agent turn stops streaming.
+- **`approval_handler=True` in production.** Add a grep to CI. It is the fastest way to accidentally ship a policy that reads "approval required" but behaves like "allow".
+- **Parallel tool calls.** Modern models fan out tool calls via `asyncio.gather`, so your handler will be invoked concurrently with different `Decision` objects. If you keep any state, key it by the decision content, not by array index.
+
+## Where to next
+
+- [Framework comparison](/concepts/approval-frameworks-compared) walks through how other agent frameworks handle approval, and where Hexgate's callback fits in that landscape.
+- [Policy decision](/concepts/policy-decision) covers what `Decision` is and how the enforcer produces one.
+
+## Adapter coverage
+
+The callback is wired through the LangChain, OpenAI Agents, Pydantic AI, and Google ADK adapters. Pass it the same way on each:
+
+```python
+# OpenAI Agents
+from hexgate.adapters.openai import wrap_openai_agent
+wrapped = wrap_openai_agent(agent, enforcer=enforcer, approval_handler=ask_terminal)
+
+# Pydantic AI
+from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
+wrapped = wrap_pydantic_agent(agent=agent, approval_handler=ask_terminal)
+
+# Google ADK
+from hexgate.adapters.google import wrap_google_agent
+wrapped, binding = wrap_google_agent(agent, api_key=..., approval_handler=ask_terminal)
+```
+
+If you use one of the `HexgateRunner` classes, the same argument is available on the constructor and threads through to every run.
+
+## Known limitations
+
+- **No cross-process durability yet.** State lives in the calling process's memory. A restart drops any pending prompt. A durable, Postgres-backed handler is on the roadmap for when overnight or off-host approvers become a real need.
+- **No per-tool RBAC on approvers.** A policy today says "somebody must approve", not "somebody with role `finance-approver` must approve". Follow-up.
