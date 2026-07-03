@@ -7,7 +7,7 @@ The two quickstarts aren't competing — they answer different questions.
 
 ## Inner loop — `hexgate chat`
 
-A single-process REPL against a local or builtin agent. No platform, no Docker,
+A single-process REPL against a local or registered agent. No platform, no Docker,
 no browser. The chat command sets `HEXGATE_LOCAL_MODE=1` automatically so audit
 stays on your machine even if `HEXGATE_API_KEY` lives in your `.env` from an earlier
 session. Denies and approval-required calls render as inline panels in the
@@ -33,6 +33,6 @@ debugging a production-like trace, or demoing.
 | `hexgate chat --agent ...` | No | Local terminal panel | Edit + restart (hot-reload only when `HEXGATE_LOCAL_POLICY` is set) | Inner loop, policy authoring |
 | `hexgate serve --agent ...` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
 
-Both commands accept either a plain agent id (`--agent researcher`) or a
+Both commands accept either a plain agent id (`--agent example_agent`) or a
 uvicorn-style `module.path:attr` spec (`--agent examples.customer_bot:agent`),
 so the same entry-point string works in both workflows.

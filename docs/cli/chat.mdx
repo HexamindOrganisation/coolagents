@@ -1,6 +1,6 @@
 ---
 title: "hexgate chat"
-description: "Single-process REPL against a local or builtin agent."
+description: "Single-process REPL against a local or registered agent."
 ---
 
 <Note>
@@ -11,7 +11,6 @@ description: "Single-process REPL against a local or builtin agent."
 ```bash
 hexgate chat --agent example_agent
 hexgate chat --list-agents
-hexgate chat --agent researcher
 hexgate chat --agent examples.customer_bot:agent     # module:attr spec
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
 ```

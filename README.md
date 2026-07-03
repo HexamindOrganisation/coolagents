@@ -65,7 +65,7 @@ You can use the SDK with nothing else (single-process REPL, YAML on disk). Or pl
 - [What you can import](#-what-you-can-import)
 - [Framework agent wrapping](#-framework-agent-wrapping) — OpenAI, LangChain, Google ADK, Pydantic AI
 - [Define agents in code](#-define-agents-in-code)
-- [Builtin and local agents](#-builtin-and-local-agents)
+- [Local and registered agents](#-local-and-registered-agents)
 - [Policy shape](#-policy-shape)
 - [Tool-call policy enforcement](#-tool-call-policy-enforcement)
 - [Policy bundles — compile, sign, enforce (WASM)](#-policy-bundles--compile-sign-enforce-wasm)
@@ -119,7 +119,7 @@ Useful next commands:
 
 ```bash
 hexgate chat --list-agents
-hexgate chat --agent researcher                                      # by id
+hexgate chat --agent example_agent                                   # by id
 hexgate chat --agent examples.customer_bot:agent                     # by module:attr (same shape as `hexgate serve`)
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
 hexgate chat --use examples/research_agents.py --agent update_researcher
@@ -127,7 +127,6 @@ hexgate chat --use examples/research_agents.py --agent update_researcher
 
 The included local agent lives in `examples/example_agent/`, and the CLI can also load:
 
-- builtin packaged agents like `researcher`
 - code-defined agents registered from `examples/file_agents.py`
 - code-defined research agents registered from `examples/research_agents.py`
 
@@ -135,7 +134,7 @@ The included local agent lives in `examples/example_agent/`, and the CLI can als
 
 The two Quick Starts above aren't competing — they answer different questions.
 
-**Inner loop — `hexgate chat`.** A single-process REPL against a local or builtin agent. No platform, no Docker, no browser. The chat command sets `HEXGATE_LOCAL_MODE=1` automatically so audit stays on your machine even if `HEXGATE_API_KEY` lives in your `.env` from an earlier session. Denies and approval-required calls render as inline panels in the terminal — same `Decision` data the platform would log, surfaced where you're iterating. Reach for `chat` when you're authoring a policy YAML, tweaking a tool, or shaping a system prompt.
+**Inner loop — `hexgate chat`.** A single-process REPL against a local or registered agent. No platform, no Docker, no browser. The chat command sets `HEXGATE_LOCAL_MODE=1` automatically so audit stays on your machine even if `HEXGATE_API_KEY` lives in your `.env` from an earlier session. Denies and approval-required calls render as inline panels in the terminal — same `Decision` data the platform would log, surfaced where you're iterating. Reach for `chat` when you're authoring a policy YAML, tweaking a tool, or shaping a system prompt.
 
 **Team loop — `hexgate serve` + dashboard Playground.** Same agent code, but the policy + decisions round-trip through the platform. You get auditable decisions in ClickHouse, the shared Playground UI, and live policy edits via the dashboard. Reach for `serve` when you're collaborating on an agent's behaviour, debugging a production-like trace, or demoing.
 
@@ -144,7 +143,7 @@ The two Quick Starts above aren't competing — they answer different questions.
 | `hexgate chat --agent ...` | No | Local terminal panel | Edit + restart (hot-reload only when `HEXGATE_LOCAL_POLICY` is set) | Inner loop, policy authoring |
 | `hexgate serve --agent ...` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
 
-Both commands accept either a plain agent id (`--agent researcher`) or a uvicorn-style `module.path:attr` spec (`--agent examples.customer_bot:agent`), so the same entry-point string works in both workflows.
+Both commands accept either a plain agent id (`--agent example_agent`) or a uvicorn-style `module.path:attr` spec (`--agent examples.customer_bot:agent`), so the same entry-point string works in both workflows.
 
 ## 🚀 Quick Start — Platform
 
@@ -235,7 +234,7 @@ curl -X POST localhost:8000/v1/audit/decisions \
   -H "Content-Type: application/json" \
   -d '{"event_id":"9f1e3c5a-4d2b-4b8e-9c8a-1f4e2d8a7c3b",
        "occurred_at":"2026-05-29T14:00:00Z",
-       "agent_name":"researcher","tool_name":"read_file","outcome":"deny"}'
+       "agent_name":"example_agent","tool_name":"read_file","outcome":"deny"}'
 # → 202 {"event_id":"9f1e3c5a-..."}
 ```
 
@@ -381,8 +380,6 @@ The current curated surface includes:
 - `invoke_agent`
 - `stream_agent`
 - `stream_agent_raw`
-- `load_builtin_agent`
-- `list_builtin_agents`
 - `load_hexgate_agent`
 - `User` — async context manager for per-request user attenuation (see [User Scope](#-user-scope))
 - `agent_tool`
@@ -402,7 +399,6 @@ from hexgate import (
     write_file,
     agent_tool,
     load_agent,
-    load_builtin_agent,
     load_hexgate_agent,
     register_agent,
     fetch,
@@ -751,23 +747,9 @@ hexgate chat --use examples/file_agents.py --agent repo_editor
 hexgate chat --use examples/research_agents.py --agent update_researcher
 ```
 
-## 🗂️ Builtin And Local Agents
+## 🗂️ Local And Registered Agents
 
-The package now ships with a small `hexgate.builtin_agents` directory for official starter agents.
-
-Current builtin agents:
-
-- `researcher`
-
-Example:
-
-```python
-from hexgate import load_builtin_agent
-
-agent, handler = load_builtin_agent("researcher")
-```
-
-The CLI also discovers local agents from:
+The CLI discovers local agents (a directory with an `agent.yaml`) from:
 
 - `./<agent_dir>/agent.yaml`
 - `./agents/<agent_dir>/agent.yaml`
@@ -777,6 +759,16 @@ This repo ships a demo agent at `examples/example_agent/`, so from the project r
 
 ```bash
 hexgate chat --agent example_agent
+```
+
+You can also load a code-defined agent by name after registering its factory
+with `register_agent` (see [Define agents in code](#-define-agents-in-code)):
+
+```python
+from hexgate import load_agent, register_agent
+
+register_agent("my_agent", build_my_agent)
+agent, handler = load_agent("my_agent")
 ```
 
 ## 🔐 Policy Shape
@@ -923,11 +915,11 @@ Point an agent at a local source and every tool call routes through the WASM eng
 ```bash
 # Pre-built bundle dir — rebuild it mid-session, next chat picks it up
 hexgate policy build policy.yaml --out ./bundle
-HEXGATE_LOCAL_POLICY=./bundle hexgate chat --agent researcher
+HEXGATE_LOCAL_POLICY=./bundle hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active (bundle-dir): ./bundle (wasm_hash=7e6d1f8b..., unsigned)
 
 # Raw yaml — edit policy.yaml in your editor, save, next chat sees the new policy
-HEXGATE_LOCAL_POLICY=./policy.yaml hexgate chat --agent researcher
+HEXGATE_LOCAL_POLICY=./policy.yaml hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active (yaml): ./policy.yaml (wasm_hash=ab12..., unsigned)
 ```
 
@@ -953,7 +945,7 @@ At runtime, point the verifier at the public key:
 HEXGATE_LOCAL_POLICY=./bundle \
 HEXGATE_BUNDLE_PUBKEY_PATH=./keys/dev.public \
 HEXGATE_BUNDLE_REQUIRE_SIGNATURE=true \
-hexgate chat --agent researcher
+hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active (bundle-dir): ./bundle (wasm_hash=..., signed)
 ```
 
@@ -1275,7 +1267,7 @@ stores and the dashboard renders.
 
 ## 🌐 Hexgate Platform
 
-The `platform/` directory contains an optional control plane that hosts agent definitions, dev tokens, and a live debug surface. The SDK works fully without it (`load_local_agent`, `load_builtin_agent` keep their existing semantics) — but with it you get:
+The `platform/` directory contains an optional control plane that hosts agent definitions, dev tokens, and a live debug surface. The SDK works fully without it (`load_local_agent` keeps its existing semantics) — but with it you get:
 
 - A web dashboard for editing agent YAMLs and viewing the project graph
 - Mintable dev tokens (`fty_test_*`, `fty_live_*`) that authenticate the SDK
@@ -1522,7 +1514,7 @@ Switch to `User(user_id="alice", role="default")` and `refund_order` itself is m
 
 - **Single-file policies still work.** A legacy `policy.yaml` is treated as the `default` role — no migration needed for agents that don't yet differentiate by role.
 - **Lazy attenuation.** `User.__aenter__` only pushes a contextvar — the cryptographic work happens inside `stream_agent` / `invoke_agent` the first time the agent runs. Errors surface at first agent call, not at scope entry.
-- **Local agents skip attenuation.** A `User` scope around a `load_local_agent` / `load_builtin_agent` agent logs a warning and runs with no facts. The `default` policy still applies — use `load_hexgate_agent` for the full signed chain.
+- **Local agents skip attenuation.** A `User` scope around a `load_local_agent` agent logs a warning and runs with no facts. The `default` policy still applies — use `load_hexgate_agent` for the full signed chain.
 - **Explicit override.** Passing `tool_use_context=` explicitly to `stream_agent` / `invoke_agent` wins over an active `User` scope. Useful for tests or one-off bypass.
 - **Sync callers.** `User` exposes both `async with user:` and `user.sync_scope()`. The async form is the primary API (room for KMS / audit / JWKS I/O in `__aenter__` / `__aexit__` later); the sync mirror exists for CLI loops and `Runner.run_sync`-style callers where the async ctxmgr protocol is unavailable.
 
