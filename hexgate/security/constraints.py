@@ -249,28 +249,18 @@ def _try_parse_call(text: str, source: str) -> Call | None:
 
 
 def _split_call_args(inner: str, source: str, fn: str) -> tuple[str, str]:
-    """Split ``field, value`` on the first top-level comma (outside strings)."""
-    in_string = escape = False
-    depth = 0
-    for i, ch in enumerate(inner):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_string:
-            escape = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch in "[{(":
-            depth += 1
-        elif ch in "]})":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            return inner[:i], inner[i + 1 :]
-    raise ConstraintParseError(f"{fn}() expects 'field, value' arguments in {source!r}")
+    """Split ``field, value`` on the first comma.
+
+    The field is always a bare path (no comma), so the first comma is the
+    separator; commas inside the value's string literal sit after it and are
+    handled by the JSON parse of the value.
+    """
+    field, sep, value = inner.partition(",")
+    if not sep:
+        raise ConstraintParseError(
+            f"{fn}() expects 'field, value' arguments in {source!r}"
+        )
+    return field, value
 
 
 def _validate_re2(pattern: str, source: str) -> None:

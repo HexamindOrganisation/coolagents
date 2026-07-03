@@ -41,6 +41,11 @@ def test_c_emits_expected_string(constraint: object, text: str) -> None:
     assert str(constraint) == text
 
 
+def test_c_and_constraint_repr() -> None:
+    assert repr(C("args.x")) == "C('args.x')"
+    assert repr(C("args.x") <= 5) == "C('args.x <= 5')"
+
+
 def test_c_validates_eagerly_on_construction() -> None:
     # A path that can't parse fails at the call site, not later at enforcement.
     with pytest.raises(ConstraintParseError):

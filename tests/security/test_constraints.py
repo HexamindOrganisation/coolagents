@@ -166,6 +166,26 @@ def test_parse_operators_inside_string_literals(src: str, value: str) -> None:
     assert parse_constraint(src).value == value
 
 
+def test_parse_string_literal_on_left() -> None:
+    """A string literal may sit on the left — the operator scan must skip past
+    it to find the real operator (not the ``==`` inside the string)."""
+    node = parse_constraint('"a==b" == args.x')
+    assert node.left == Lit("a==b")
+    assert node.op == "=="
+    assert node.right == Ref(("args", "x"))
+
+
+def test_parse_string_literal_on_left_with_escaped_quote() -> None:
+    node = parse_constraint(r'"a\"b" != args.x')
+    assert node.left == Lit('a"b')
+    assert node.op == "!="
+
+
+def test_evaluate_string_literal_on_left() -> None:
+    assert _eval('"USD" == args.currency', {"currency": "USD"}) is True
+    assert _eval('"USD" == args.currency', {"currency": "EUR"}) is False
+
+
 # ---------------------------------------------------------------------------
 # Path parsing
 # ---------------------------------------------------------------------------
@@ -304,6 +324,18 @@ def test_parse_call_builds_call_node() -> None:
 def test_parse_call_string_arg_may_contain_comma_and_parens() -> None:
     node = parse_constraint('contains(args.s, "a, b (c)")')
     assert node.value == Lit("a, b (c)")
+
+
+def test_parse_call_value_with_escaped_quote() -> None:
+    """An escaped quote inside the function value is handled by the splitter."""
+    node = parse_constraint(r'contains(args.s, "a\"b")')
+    assert node.value == Lit('a"b')
+
+
+@pytest.mark.parametrize("src", ["count( ) <= 1", 'startswith( , "x")'])
+def test_parse_rejects_empty_field_path(src: str) -> None:
+    with pytest.raises(ConstraintParseError, match="empty path"):
+        parse_constraint(src)
 
 
 @pytest.mark.parametrize(

@@ -440,6 +440,19 @@ def test_violation_rule_body_negates_constraint() -> None:
     assert "not input.args.amount <= 500" in body
 
 
+def test_violation_value_uses_json_when_constraint_has_backtick() -> None:
+    """A constraint whose text contains a backtick can't use Rego's backtick
+    raw-string for the violations membership — it falls back to a JSON string."""
+    raw = 'args.x == "a`b"'
+    payload = {
+        "version": 1,
+        "roles": {"default": {"tools": {"t": {"mode": "allow", "constraints": [raw]}}}},
+    }
+    rego = compile_to_rego(payload)
+    assert f"violations contains {json.dumps(raw)} if" in rego
+    assert f"`{raw}`" not in rego  # not the backtick raw-string form
+
+
 def test_violations_sentinel_emitted_for_constraint_free_policy() -> None:
     """Policies with zero constraints still need `violations` defined —
     a `false`-bodied sentinel keeps the decision rule safe to build."""

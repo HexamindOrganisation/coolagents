@@ -240,6 +240,7 @@ _OPERAND_POLICY = {
                     "mode": "allow",
                     "constraints": ["args.hi >= args.lo", "count(args.tags) <= 2"],
                 },
+                "litleft": {"mode": "allow", "constraints": ['"USD" == args.currency']},
             }
         }
     },
@@ -265,6 +266,9 @@ _OPERAND_POLICY = {
         ("combo", {"hi": 9, "lo": 1, "tags": ["a"]}, "allow"),
         ("combo", {"hi": 1, "lo": 9, "tags": ["a"]}, "deny"),  # first fails
         ("combo", {"hi": 9, "lo": 1, "tags": ["a", "b", "c"]}, "deny"),  # second fails
+        # string literal on the left of the comparison
+        ("litleft", {"currency": "USD"}, "allow"),
+        ("litleft", {"currency": "EUR"}, "deny"),
     ],
 )
 def test_operand_parity(tool: str, args: dict, expect: str) -> None:
