@@ -14,14 +14,16 @@ from __future__ import annotations
 import asyncio
 import sys
 
-# The API package is imported by module name (uvicorn runs `main:app` with the
-# api dir on sys.path), so callers must add platform/api to sys.path first.
+# The API runs as `hexgate_api.main:app` with the api dir on sys.path, so
+# callers must add platform/api to sys.path before calling in here.
 
 
 async def _mint() -> str:
-    from db import async_session_factory, init_db
-    from main import keystore  # the same FileKeyStore instance the API uses
-    from services import DEFAULT_PROJECT_ID, ensure_default_seed, mint_dev_token
+    from hexgate_api.constants import DEFAULT_PROJECT_ID
+    from hexgate_api.core.db import async_session_factory, init_db
+    from hexgate_api.core.keystore import keystore  # same singleton the API uses
+    from hexgate_api.features.tokens.service import mint_dev_token
+    from hexgate_api.seeds.defaults import ensure_default_seed
 
     await init_db()
     keystore.ensure_keypair()

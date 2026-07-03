@@ -1244,7 +1244,7 @@ FastAPI over SQLite. Run with:
 
 ```bash
 cd platform/api
-uv run uvicorn main:app --reload --port 8000
+uv run uvicorn hexgate_api.main:app --reload --port 8000
 ```
 
 The default `support-bot` project is seeded on first boot with two agents — `default` (broad access, side-effects gated by `approval_required`) and `read_only` (everything mutating denied).

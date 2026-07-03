@@ -66,7 +66,7 @@ async def main() -> bool:
     import websockets
 
     _spawn([str(BIN / "uvicorn"), "_mock_llm:app", "--port", str(MOCK_PORT)], DEPLOY)
-    _spawn([str(BIN / "uvicorn"), "main:app", "--port", str(API_PORT)], API_DIR)
+    _spawn([str(BIN / "uvicorn"), "hexgate_api.main:app", "--port", str(API_PORT)], API_DIR)
     if not _wait_http(f"http://127.0.0.1:{MOCK_PORT}/docs"):
         print("❌ mock LLM did not start")
         return False
