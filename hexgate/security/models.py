@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from hexgate.security.constraints import parse_constraint
 
 PolicyMode = Literal["allow", "deny", "approval_required"]
 
@@ -22,6 +24,17 @@ class BaseToolPolicy(BaseModel):
 
     mode: PolicyMode = "deny"
     constraints: list[str] = Field(default_factory=list)
+
+    @field_validator("constraints")
+    @classmethod
+    def _validate_constraint_grammar(cls, value: list[str]) -> list[str]:
+        """Parse every constraint at load — a malformed expression is a config
+        error, surfaced here at ``model_validate`` time rather than lazily at
+        the first matching tool call. Keeps ``models.py`` (document schema) and
+        ``constraints.py`` (expression grammar) jointly the enforced spec."""
+        for constraint in value:
+            parse_constraint(constraint)
+        return value
 
 
 class FileScope(BaseModel):

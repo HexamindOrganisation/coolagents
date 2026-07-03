@@ -28,6 +28,7 @@ from yaml.error import MarkedYAMLError
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
+    DEFAULT_ROLE_NAME,
     OpaNotFoundError,
     PolicySetError,
     SignatureError,
@@ -325,23 +326,14 @@ def _main_validate(args: argparse.Namespace) -> int:
 
     errors: list[str] = []
 
-    # Walk the policy set so inheritance + mixin filtering apply.
-    try:
-        policy_set = load_policy_set_from_dict(payload)
-    except (PolicySetError, ValidationError) as exc:
-        print(f"policy schema: {exc}", file=sys.stderr)
-        return 1
-
-    # Constraint grammar check across every (role, tool) pair the runtime
-    # would see at decision time.
-    for role in policy_set.roles:
-        policy = policy_set.policy_for(role)
-        for tool_name, tool_policy in policy.tools.items():
-            for raw in tool_policy.constraints:
-                try:
-                    parse_constraint(raw)
-                except ConstraintParseError as exc:
-                    errors.append(f"{role} → {tool_name}: {exc}")
+    # Constraint grammar check on the raw payload FIRST, so a bad expression
+    # reports as "role → tool: <error>" — friendlier than the raw pydantic
+    # ValidationError the model-level grammar validator would raise at load.
+    for role, tool_name, raw in _iter_raw_constraints(payload):
+        try:
+            parse_constraint(raw)
+        except ConstraintParseError as exc:
+            errors.append(f"{role} → {tool_name}: {exc}")
 
     if errors:
         print(f"{len(errors)} constraint error(s):", file=sys.stderr)
@@ -349,8 +341,46 @@ def _main_validate(args: argparse.Namespace) -> int:
             print(f"  • {e}", file=sys.stderr)
         return 1
 
+    # Schema + inheritance + mixin validation (constraints already clean above).
+    try:
+        load_policy_set_from_dict(payload)
+    except (PolicySetError, ValidationError) as exc:
+        print(f"policy schema: {exc}", file=sys.stderr)
+        return 1
+
     print("✓ Policy parses cleanly.")
     return 0
+
+
+def _iter_raw_constraints(payload: dict) -> "list[tuple[str, str, str]]":
+    """Yield ``(role, tool, raw_constraint)`` over an unvalidated policy payload.
+
+    Handles both document shapes: inline-roles (``payload["roles"]``) and the
+    flat single-policy form (tools at the top level → the ``default`` role).
+    Defensive against partially-malformed payloads — non-dict tools/specs are
+    skipped so the schema validator downstream reports them.
+    """
+    roles = payload.get("roles")
+    specs = (
+        list(roles.items())
+        if isinstance(roles, dict)
+        else [(DEFAULT_ROLE_NAME, payload)]
+    )
+    out: list[tuple[str, str, str]] = []
+    for role, spec in specs:
+        tools = (spec or {}).get("tools") if isinstance(spec, dict) else None
+        if not isinstance(tools, dict):
+            continue
+        for tool_name, tool_policy in tools.items():
+            raws = (
+                (tool_policy or {}).get("constraints")
+                if isinstance(tool_policy, dict)
+                else None
+            )
+            for raw in raws or []:
+                if isinstance(raw, str):
+                    out.append((role, tool_name, raw))
+    return out
 
 
 def _main_show_rego(args: argparse.Namespace) -> int:

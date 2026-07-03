@@ -56,26 +56,60 @@ class ConstraintParseError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class Constraint:
-    """A parsed constraint, ready to evaluate against tool arguments.
+class Lit:
+    """A literal operand — the parsed RHS value (str / number / bool / list / None)."""
 
-    ``path`` is the dotted accessor (``["args", "amount"]``); ``op`` is one
-    of the supported operators; ``value`` is the parsed literal RHS
-    (string / number / bool / list / None).
-    """
+    value: Any
+
+
+@dataclass(frozen=True, slots=True)
+class Ref:
+    """A dotted accessor into the evaluation context, e.g. ``args.amount``."""
 
     path: tuple[str, ...]
+
+
+Operand = Ref | Lit
+
+
+@dataclass(frozen=True, slots=True)
+class Cmp:
+    """A comparison node — ``<operand> <op> <operand>``.
+
+    Today the grammar only produces ``Ref <op> Lit`` (a path compared to a
+    literal); later tiers add ``Ref <op> Ref`` (cross-field) and other node
+    kinds alongside this one. Evaluation and Rego rendering dispatch on the
+    node type, so those additions are new cases rather than rewrites.
+    """
+
+    left: Operand
     op: str
-    value: Any
-    source: str  # for error messages
+    right: Operand
+    source: str  # raw text, for error messages
+
+    @property
+    def path(self) -> tuple[str, ...]:
+        """Back-compat accessor — the left path (left is a ``Ref`` today)."""
+        return self.left.path  # type: ignore[union-attr]
+
+    @property
+    def value(self) -> Any:
+        """Back-compat accessor — the right literal (right is a ``Lit`` today)."""
+        return self.right.value if isinstance(self.right, Lit) else self.right
+
+
+# The evaluator and Rego compiler dispatch on ``Node``. One member today; the
+# roadmap adds Call / Quant / And / Or / Not as siblings.
+Node = Cmp
+Constraint = Cmp  # back-compat alias for existing importers
 
 
 _OP_TOKENS = ("<=", ">=", "==", "!=", "not in", "in", "<", ">")
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
 
 
-def parse_constraint(source: str) -> Constraint:
-    """Parse one constraint line into a :class:`Constraint`.
+def parse_constraint(source: str) -> Node:
+    """Parse one constraint line into a :class:`Node`.
 
     Raises :class:`ConstraintParseError` for unsupported operators, bad
     identifiers on the left, or non-literal right-hand sides.
@@ -106,7 +140,7 @@ def parse_constraint(source: str) -> Constraint:
             f"{type(value).__name__}"
         )
 
-    return Constraint(path=path, op=op, value=value, source=source)
+    return Cmp(left=Ref(path), op=op, right=Lit(value), source=source)
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:
@@ -193,18 +227,32 @@ def _resolve_path(path: tuple[str, ...], context: dict[str, Any]) -> Any:
 _MISSING = object()
 
 
-def evaluate_constraint(constraint: Constraint, context: dict[str, Any]) -> bool:
-    """Return True when ``context`` satisfies ``constraint``.
+def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
+    """Resolve an operand to a concrete value (``_MISSING`` if a ref misses)."""
+    if isinstance(operand, Lit):
+        return operand.value
+    return _resolve_path(operand.path, context)
 
-    A missing path on the left is always False — a constraint that asks for
-    ``args.amount <= 50`` when the call didn't supply ``amount`` fails
-    closed. Callers can guard against the failure earlier by inspecting the
-    tool signature, but the engine's default stance is "absent fact = no".
+
+def _eval(node: Node, context: dict[str, Any]) -> bool:
+    """Dispatch a node to its evaluator. One node kind today (``Cmp``)."""
+    if isinstance(node, Cmp):
+        return _eval_cmp(node, context)
+    raise ConstraintParseError(f"cannot evaluate node {node!r}")
+
+
+def _eval_cmp(node: Cmp, context: dict[str, Any]) -> bool:
+    """Return True when ``context`` satisfies the comparison.
+
+    A missing operand on either side is always False — a constraint that asks
+    for ``args.amount <= 50`` when the call didn't supply ``amount`` fails
+    closed. The engine's default stance is "absent fact = no".
     """
-    actual = _resolve_path(constraint.path, context)
-    if actual is _MISSING:
+    actual = _resolve_operand(node.left, context)
+    expected = _resolve_operand(node.right, context)
+    if actual is _MISSING or expected is _MISSING:
         return False
-    op, expected = constraint.op, constraint.value
+    op = node.op
     try:
         if op == "==":
             return actual == expected
@@ -230,22 +278,27 @@ def evaluate_constraint(constraint: Constraint, context: dict[str, Any]) -> bool
     return False
 
 
+def evaluate_constraint(node: Node, context: dict[str, Any]) -> bool:
+    """Return True when ``context`` satisfies ``node`` (public entry point)."""
+    return _eval(node, context)
+
+
 def check_constraints(
-    constraints: list[str | Constraint],
+    constraints: list[str | Node],
     arguments: dict[str, Any] | None,
     tool_name: str,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
     Caller passes raw source strings (typical YAML path) or pre-parsed
-    Constraint instances. Source strings are parsed once per call here for
-    simplicity — caches can be added later if profiling demands it.
+    nodes. Source strings are parsed once per call here for simplicity —
+    caches can be added later if profiling demands it.
     """
     if not constraints:
         return
     context = {"args": dict(arguments or {})}
     for entry in constraints:
-        parsed = entry if isinstance(entry, Constraint) else parse_constraint(entry)
+        parsed = parse_constraint(entry) if isinstance(entry, str) else entry
         if not evaluate_constraint(parsed, context):
             raise PolicyDeniedError(
                 f'Policy on "{tool_name}" denied: constraint failed — {parsed.source}'

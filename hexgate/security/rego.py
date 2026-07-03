@@ -69,8 +69,8 @@ import hashlib
 import json
 from typing import Any
 
-from hexgate.security.constraints import Constraint, parse_constraint
-from hexgate.security.models import AgentPolicy, BaseToolPolicy
+from hexgate.security.constraints import Cmp, Lit, Node, Operand, Ref, parse_constraint
+from hexgate.security.models import AgentPolicy, BaseToolPolicy, FileToolPolicy
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
     PolicySet,
@@ -171,9 +171,11 @@ def _role_rules(policy_set: PolicySet) -> list[str]:
     """
     out: list[str] = []
     role_names = sorted(role for role in policy_set.roles)
+    non_default = [r for r in role_names if r != DEFAULT_ROLE_NAME]
     for role in role_names:
         policy = policy_set.policy_for(role)
-        rules = list(_rules_for_role(role, policy))
+        role_guard = _role_guard(role, non_default)
+        rules = list(_rules_for_role(role, policy, role_guard))
         if not rules:
             # Pure deny — skip the section entirely to keep the output tight.
             continue
@@ -182,97 +184,187 @@ def _role_rules(policy_set: PolicySet) -> list[str]:
     return out
 
 
-def _rules_for_role(role: str, policy: AgentPolicy) -> list[str]:
-    """Render rules for one resolved role (allow + violations per tool)."""
+def _role_guard(role: str, non_default: list[str]) -> list[str]:
+    """Body line(s) selecting which caller role a rule applies to.
+
+    A named role matches exactly (``input.role == "billing"``). The
+    ``default`` role is the *fallback*: it must fire for ``role == "default"``,
+    a null/absent role, AND any role not otherwise defined — mirroring
+    :meth:`PolicySet.policy_for`'s unknown-role fallback. A single exclusion
+    of the other concrete roles covers all three cases at once (and an
+    all-deny role, which emits no rules, still stays excluded because it's in
+    the concrete-role set passed here).
+    """
+    if role != DEFAULT_ROLE_NAME:
+        return [f'    input.role == "{_escape_string(role)}"']
+    if not non_default:
+        return []  # default is the only role → it applies to every caller
+    members = ", ".join(json.dumps(name) for name in non_default)
+    return [f"    not input.role in {{{members}}}"]
+
+
+def _rules_for_role(role: str, policy: AgentPolicy, role_guard: list[str]) -> list[str]:
+    """Render rules for one resolved role (allow + violations per tool).
+
+    Explicitly-listed tools each get their own ``input.tool == "X"`` rule;
+    ``default_policy`` (when not ``deny``) gets a catch-all for any tool *not*
+    explicitly listed — mirroring the pydantic engine's
+    ``policy.tools.get(tool, default_policy)`` fallback so both engines agree
+    on unlisted tools.
+    """
+    listed = sorted(policy.tools)
     out: list[str] = []
-    for tool_name in sorted(policy.tools):
-        tool_policy = policy.tools[tool_name]
-        rendered = _rules_for_tool(role, tool_name, tool_policy)
-        if rendered:
-            out.extend(rendered)
+    for tool_name in listed:
+        tool_guard = [f'    input.tool == "{_escape_string(tool_name)}"']
+        out.extend(
+            _gated_rules(
+                role, role_guard, tool_guard, policy.tools[tool_name], tool_name
+            )
+        )
+    out.extend(_default_rules(role, role_guard, policy.default_policy, listed))
     return out
 
 
-def _rules_for_tool(
-    role: str, tool_name: str, tool_policy: BaseToolPolicy
+def _default_rules(
+    role: str,
+    role_guard: list[str],
+    default_policy: BaseToolPolicy,
+    listed: list[str],
 ) -> list[str]:
-    """Render the rule(s) for a (role, tool) pair.
+    """Catch-all rules for ``default_policy`` — any tool not explicitly listed.
 
-    For ``deny`` mode: emit nothing (absence of a rule IS the deny).
-    For ``allow`` / ``approval_required``: emit the positive rule plus
-    one ``violations contains`` rule per constraint (the negation).
+    ``deny`` (the default) emits nothing: absence of a rule IS the deny. For
+    ``allow`` / ``approval_required`` the tool guard excludes the listed tools
+    so they keep using their own policy.
     """
-    mode = tool_policy.mode
-    if mode == "deny":
+    if default_policy.mode == "deny":
         return []
-    head = "allow" if mode == "allow" else "requires_approval"
+    if listed:
+        members = ", ".join(json.dumps(name) for name in listed)
+        tool_guard = [f"    not input.tool in {{{members}}}"]
+    else:
+        tool_guard = []  # nothing listed → the default applies to every tool
+    return _gated_rules(role, role_guard, tool_guard, default_policy, "<default>")
+
+
+def _gated_rules(
+    role: str,
+    role_guard: list[str],
+    tool_guard: list[str],
+    tool_policy: BaseToolPolicy,
+    label: str,
+) -> list[str]:
+    """Render the positive + per-constraint violation rules for one policy.
+
+    ``role_guard`` / ``tool_guard`` are the body line(s) selecting which
+    caller(s) and tool(s) the rule applies to. ``label`` names the tool (or
+    ``<default>``) for constraint parse errors.
+
+    ``deny`` mode emits nothing — absence of a rule IS the deny.
+    """
+    if tool_policy.mode == "deny":
+        return []
+    # file_scope is a pydantic-engine-only feature — the Rego compiler has no
+    # path-glob translation yet, so silently dropping it would compile to a
+    # FAIL-OPEN bundle (the path restriction lost, every path allowed). Refuse
+    # to build rather than ship a bundle weaker than the source policy. Only
+    # matters for non-deny modes (deny never consults file_scope on either
+    # engine), so this is reached after the deny short-circuit above.
+    if isinstance(tool_policy, FileToolPolicy) and tool_policy.file_scope is not None:
+        raise PolicySetError(
+            f"role {role!r} tool {label!r}: file_scope is not supported by the "
+            "WASM/Rego engine yet — compiling would produce a fail-open bundle "
+            "(the path restriction silently dropped). Enforce this policy on the "
+            "pydantic engine, or remove file_scope before building a bundle."
+        )
+    head = "allow" if tool_policy.mode == "allow" else "requires_approval"
 
     # Parse all constraints up-front — surfaces bad grammar at compile time.
-    parsed: list[tuple[str, Constraint]] = []
+    parsed: list[tuple[str, Node]] = []
     for raw_constraint in tool_policy.constraints:
         try:
             parsed.append((raw_constraint, parse_constraint(raw_constraint)))
         except Exception as exc:
             raise PolicySetError(
-                f"role {role!r} tool {tool_name!r}: invalid constraint "
+                f"role {role!r} tool {label!r}: invalid constraint "
                 f"{raw_constraint!r}: {exc}"
             ) from exc
 
+    guard = [*role_guard, *tool_guard]
     out: list[str] = []
-    out.extend(_positive_rule(role, tool_name, head, parsed))
+    out.extend(_positive_rule(guard, head, parsed))
     out.append("")
-    for raw, constraint in parsed:
-        out.extend(_violation_rule(role, tool_name, raw, constraint))
+    for raw, node in parsed:
+        out.extend(_violation_rule(guard, raw, node))
         out.append("")
     return out
 
 
 def _positive_rule(
-    role: str,
-    tool_name: str,
+    guard: list[str],
     head: str,
-    parsed: list[tuple[str, Constraint]],
+    parsed: list[tuple[str, Node]],
 ) -> list[str]:
-    """``allow if { role; tool; constraint1; constraint2; ... }``."""
-    body = [
-        f'    input.role == "{_escape_string(role)}"',
-        f'    input.tool == "{_escape_string(tool_name)}"',
-    ]
-    for _, constraint in parsed:
-        body.append(f"    {_constraint_to_rego(constraint)}")
+    """``allow if { <guard>; constraint1; constraint2; ... }``."""
+    body = list(guard)
+    for _, node in parsed:
+        body.append(f"    {_node_to_rego(node)}")
+    if not body:
+        # Unconditional rule (only-default role, default_policy allow, no
+        # tools/constraints) — an empty ``{}`` body is invalid Rego.
+        body = ["    true"]
     return [f"{head} if {{", *body, "}"]
 
 
 def _violation_rule(
-    role: str,
-    tool_name: str,
+    guard: list[str],
     raw_constraint: str,
-    constraint: Constraint,
+    node: Node,
 ) -> list[str]:
-    """``violations contains <raw> if { role; tool; not constraint }``.
+    """``violations contains <raw> if { <guard>; not constraint }``.
 
     The membership value is the original constraint string from the YAML
     so deny reasons match exactly what the dev wrote.
     """
     return [
         f"violations contains {_rego_string(raw_constraint)} if {{",
-        f'    input.role == "{_escape_string(role)}"',
-        f'    input.tool == "{_escape_string(tool_name)}"',
-        f"    not {_constraint_to_rego(constraint)}",
+        *guard,
+        f"    {_negated_node_to_rego(node)}",
         "}",
     ]
 
 
-def _constraint_to_rego(constraint: Constraint) -> str:
-    """Render one Constraint as a Rego condition line.
+def _negated_node_to_rego(node: Node) -> str:
+    """Render the logical negation of a node — the violation-rule condition.
+
+    For most comparisons this is ``not <cond>``. For ``not in`` the base
+    rendering is *already* ``not X in Y``; its negation is the plain
+    ``X in Y`` — emitting ``not not X in Y`` is a Rego parse error, so any
+    policy with a ``not in`` constraint would otherwise fail to compile.
+    """
+    if isinstance(node, Cmp) and node.op == "not in":
+        return f"{_render(node.left)} in {_render(node.right)}"
+    return f"not {_node_to_rego(node)}"
+
+
+def _node_to_rego(node: Node) -> str:
+    """Render one node as a Rego condition line. One node kind today (``Cmp``)."""
+    if isinstance(node, Cmp):
+        return _cmp_to_rego(node)
+    # Unreachable given parse_constraint's whitelist, but defensive.
+    raise PolicySetError(f"cannot render node {node!r}")
+
+
+def _cmp_to_rego(node: Cmp) -> str:
+    """Render a comparison as a Rego condition line.
 
     Path translation: ``args.amount`` → ``input.args.amount``. We always
     prefix ``input.`` so the rule body reads from the WASM evaluator's
     input dict (the conventional name in OPA's eval model).
     """
-    lhs = "input." + ".".join(constraint.path)
-    rhs = _render_literal(constraint.value)
-    op = constraint.op
+    lhs = _render(node.left)
+    rhs = _render(node.right)
+    op = node.op
     if op in _INFIX_OPS:
         return f"{lhs} {op} {rhs}"
     if op == "in":
@@ -285,15 +377,19 @@ def _constraint_to_rego(constraint: Constraint) -> str:
     raise PolicySetError(f"unsupported constraint operator {op!r}")
 
 
-def _render_literal(value: Any) -> str:
-    """Render a literal (string / int / float / bool / list) as Rego source.
+def _render(operand: Operand) -> str:
+    """Render an operand as Rego source.
 
-    JSON encoding does the right thing for every type we accept: strings
-    get double-quoted with escape handling, numbers are bare, booleans
-    map to ``true``/``false``, lists are bracketed comma-separated. Rego's
-    literal grammar is a superset of JSON for these shapes.
+    A ``Ref`` becomes an ``input.``-prefixed accessor; a ``Lit`` becomes a
+    JSON literal (strings double-quoted with escapes, numbers bare, booleans
+    ``true``/``false``, lists bracketed — Rego's literal grammar is a superset
+    of JSON for these shapes).
     """
-    return json.dumps(value)
+    if isinstance(operand, Ref):
+        return "input." + ".".join(operand.path)
+    if isinstance(operand, Lit):
+        return json.dumps(operand.value)
+    raise PolicySetError(f"cannot render operand {operand!r}")
 
 
 def _escape_string(value: str) -> str:
