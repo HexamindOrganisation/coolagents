@@ -53,6 +53,29 @@ export interface ErrorEvent {
   message: string;
 }
 
+/**
+ * Approval prompt emitted by ``hexgate serve`` when the enforcer flags
+ * a tool call as ``approval_required``. The serve process blocks on
+ * ``asyncio.Event`` until we send back an ``approval.reply`` with the
+ * matching ``decision_id``. Fail-closed on both ends: TTL expiry or
+ * server disconnect denies the underlying tool call.
+ *
+ * Uses ``type`` (not ``event_type``) — approval is a control frame,
+ * not a streaming event, so it lines up with the other controls
+ * (hello, session_reset, agent_online) rather than the LLM-turn
+ * stream (run_start, block_delta, ...).
+ */
+export interface ApprovalRequestEvent {
+  type: "approval.request";
+  decision_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  reason: string | null;
+  agent_name: string;
+  role: string | null;
+  expires_at: string; // ISO
+}
+
 export type StreamEvent =
   | RunStartEvent
   | BlockStartEvent
@@ -109,6 +132,10 @@ export interface PlaygroundState {
   decisions: ToolCall[];
   /** id of the assistant turn currently being streamed into. */
   currentTurnId: string | null;
+  /** Approval prompts awaiting a click. Keyed by decision_id on
+   * removal — NEVER by array index, since concurrent parallel tool
+   * calls can resolve out of arrival order. */
+  pendingApprovals: ApprovalRequestEvent[];
 }
 
 interface Options {
@@ -141,6 +168,7 @@ const INITIAL_STATE: PlaygroundState = {
   messages: [],
   decisions: [],
   currentTurnId: null,
+  pendingApprovals: [],
 };
 
 let cachedState: PlaygroundState = INITIAL_STATE;
@@ -180,6 +208,18 @@ function handleFrame(frame: unknown): void {
     return;
   }
   if (f.type === "session_reset") return;
+  if (f.type === "approval.request") {
+    const req = f as ApprovalRequestEvent;
+    setStore((s) => {
+      // Idempotent — reconnect/replay must not duplicate an already-
+      // pending approval. Match by decision_id.
+      if (s.pendingApprovals.some((a) => a.decision_id === req.decision_id)) {
+        return s;
+      }
+      return { ...s, pendingApprovals: [...s.pendingApprovals, req] };
+    });
+    return;
+  }
   if (f.event_type) setStore((s) => applyEvent(s, f as StreamEvent));
 }
 
@@ -196,7 +236,16 @@ function connectSocket(projectId: string): void {
   });
 
   ws.addEventListener("close", () => {
-    setStore((s) => ({ ...s, connected: false, agentOnline: false }));
+    // Clear pendingApprovals: the SDK-side unbind_socket() has already
+    // denied every in-flight approval, so leaving prompts on screen
+    // would let the user "approve" a decision that already resolved as
+    // denied server-side — silent UI/audit divergence.
+    setStore((s) => ({
+      ...s,
+      connected: false,
+      agentOnline: false,
+      pendingApprovals: [],
+    }));
     if (activeProjectId === projectId) {
       const delay = Math.min(1000 * 2 ** reconnectAttempts, 15000);
       reconnectAttempts += 1;
@@ -274,6 +323,28 @@ export function usePlayground({ projectId }: Options) {
     // happens inside ensureSocketFor on the next mount.
   }, [projectId]);
 
+  // Sweep expired approvals from the pending list every second — only
+  // while there ARE pending approvals. In the common idle case (no
+  // pending) the interval is not installed, so an open Playground tab
+  // contributes zero timer wakeups.
+  const hasPending = state.pendingApprovals.length > 0;
+  useEffect(() => {
+    if (!hasPending) return;
+    const id = setInterval(() => {
+      setStore((s) => {
+        if (s.pendingApprovals.length === 0) return s;
+        const now = Date.now();
+        const kept = s.pendingApprovals.filter(
+          (a) => new Date(a.expires_at).getTime() > now,
+        );
+        return kept.length === s.pendingApprovals.length
+          ? s
+          : { ...s, pendingApprovals: kept };
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [hasPending]);
+
   /**
    * Send a chat message, optionally scoped to a role.
    *
@@ -320,7 +391,21 @@ export function usePlayground({ projectId }: Options) {
 
   function reset() {
     const ws = activeSocket;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    const isOpen = ws && ws.readyState === WebSocket.OPEN;
+    // Fire an explicit deny for each still-pending approval BEFORE the
+    // reset frame. Without this, the serve-side coroutines keep waiting
+    // up to the full 5min TTL, and denied events from the "old" turn
+    // then land in the middle of the fresh session's audit log.
+    if (isOpen) {
+      for (const req of cachedState.pendingApprovals) {
+        ws.send(
+          JSON.stringify({
+            type: "approval.reply",
+            decision_id: req.decision_id,
+            allowed: false,
+          }),
+        );
+      }
       ws.send(JSON.stringify({ type: "reset" }));
     }
     setStore((s) => ({
@@ -328,10 +413,43 @@ export function usePlayground({ projectId }: Options) {
       currentTurnId: null,
       messages: [],
       decisions: [],
+      pendingApprovals: [],
     }));
   }
 
-  return { state, sendChat, reset };
+  /**
+   * Resolve a pending approval prompt. Sends ``approval.reply`` to the
+   * serve process — its ``asyncio.Event`` unblocks and the tool call
+   * either runs (allowed=true) or returns a policy-denied envelope
+   * (allowed=false). The local removal is gated on a SUCCESSFUL send:
+   * if the WS is closed we keep the entry so the user sees the
+   * disconnected state instead of a phantom "you approved this"
+   * outcome that the SDK never received.
+   */
+  function respondToApproval(decision_id: string, allowed: boolean): boolean {
+    const ws = activeSocket;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "approval.reply",
+          decision_id,
+          allowed,
+        }),
+      );
+    } catch {
+      return false;
+    }
+    setStore((s) => ({
+      ...s,
+      pendingApprovals: s.pendingApprovals.filter(
+        (a) => a.decision_id !== decision_id,
+      ),
+    }));
+    return true;
+  }
+
+  return { state, sendChat, reset, respondToApproval };
 }
 
 /**

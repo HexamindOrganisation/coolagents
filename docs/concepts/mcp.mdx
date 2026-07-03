@@ -8,7 +8,7 @@ description: "Auto-wrap third-party Model Context Protocol servers as policy-enf
 [README — MCP servers](https://github.com/HexamindOrganisation/hexgate#-mcp-servers-proxy).
 </Note>
 
-Hexgate's `hexgate.mcp` module wraps any [MCP](https://modelcontextprotocol.io) server as a set of LangChain `BaseTool` objects so they go through the same policy enforcement, audit, and approval flow as native `@agent_tool` functions. Zero glue code: connect the server, every tool it exposes auto-registers under a `mcp-<server>-<tool>` namespace.
+Hexgate's `hexgate.mcp` module wraps any [MCP](https://modelcontextprotocol.io) server as framework-native tool objects so they go through the same policy enforcement, audit, and approval flow as native tool functions. Zero glue code: connect the server, every tool it exposes auto-registers under a `mcp-<server>-<tool>` namespace. Wire the tools through whichever adapter your agent is built on (LangChain, OpenAI Agents, Pydantic AI, Google ADK).
 
 ## Usage
 
@@ -49,6 +49,30 @@ roles:
         mode: allow
         constraints: ["args.repo == 'hexgate'"]
 ```
+
+## Adapter coverage
+
+`MCPToolset` produces framework-agnostic `MCPToolProxy` descriptors. Each adapter has a `wrap_mcp_toolset` that turns those into its own tool type. Same shape everywhere; pick the one that matches your agent.
+
+```python
+# LangChain (also the back-compat default via mcp.tools)
+from hexgate.adapters.langchain.mcp import wrap_mcp_toolset
+tools = wrap_mcp_toolset(mcp)  # list[langchain_core.tools.BaseTool]
+
+# OpenAI Agents
+from hexgate.adapters.openai.mcp import wrap_mcp_toolset
+tools = wrap_mcp_toolset(mcp)  # list[agents.FunctionTool]
+
+# Pydantic AI
+from hexgate.adapters.pydantic_ai.mcp import wrap_mcp_toolset
+tools = wrap_mcp_toolset(mcp)  # list[pydantic_ai.tools.Tool]
+
+# Google ADK
+from hexgate.adapters.google.mcp import wrap_mcp_toolset
+tools = wrap_mcp_toolset(mcp)  # list[google.adk.tools.BaseTool]
+```
+
+Every wrapped tool carries the qualified name, the MCP-advertised description and JSON Schema, and the same `{"ok": True | False, ...}` envelope on invocation. The tools share the toolset's connection lifecycle: once the `async with MCPToolset(...)` block exits, calls return a `use_after_close` envelope rather than crashing.
 
 ## Try it
 

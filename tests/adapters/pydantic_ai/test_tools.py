@@ -214,3 +214,84 @@ async def test_wrap_tools_isolates_decisions_per_tool() -> None:
 
     with pytest.raises(ModelRetry, match="policy_denied"):
         await tool_b.function_schema.call({"text": "x"}, None)
+
+
+# ---------------------------------------------------------------------------
+# approval_handler on NEEDS_APPROVAL decisions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_true_runs_original_tool() -> None:
+    """An async handler that returns True lets the tool through."""
+    seen: list[Any] = []
+
+    async def approve(decision: Any) -> bool:
+        seen.append(decision)
+        return True
+
+    wrapped = wrap_tool(
+        _make_sync_tool(), _approval_enforcer(), approval_handler=approve
+    )
+
+    result = await wrapped.function_schema.call({"text": "hi"}, None)
+
+    assert result == "echo:hi"
+    assert len(seen) == 1
+    assert seen[0].tool_name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_false_raises_approval_marker() -> None:
+    """A handler that returns False raises ModelRetry with the marker."""
+
+    async def deny(_: Any) -> bool:
+        return False
+
+    wrapped = wrap_tool(_make_sync_tool(), _approval_enforcer(), approval_handler=deny)
+
+    with pytest.raises(ModelRetry, match="approval_required"):
+        await wrapped.function_schema.call({"text": "hi"}, None)
+
+
+@pytest.mark.asyncio
+async def test_bool_approval_handler_short_circuits() -> None:
+    """approval_handler=True skips the callback and runs the tool."""
+    wrapped = wrap_tool(_make_sync_tool(), _approval_enforcer(), approval_handler=True)
+
+    result = await wrapped.function_schema.call({"text": "hi"}, None)
+
+    assert result == "echo:hi"
+
+
+@pytest.mark.asyncio
+async def test_approval_handler_not_called_on_plain_deny() -> None:
+    """A plain deny never consults the approval handler."""
+    calls_to_handler: list[Any] = []
+
+    async def approve(decision: Any) -> bool:
+        calls_to_handler.append(decision)
+        return True
+
+    wrapped = wrap_tool(_make_sync_tool(), _deny_enforcer(), approval_handler=approve)
+
+    with pytest.raises(ModelRetry, match="policy_denied"):
+        await wrapped.function_schema.call({"text": "hi"}, None)
+
+    assert calls_to_handler == []
+
+
+@pytest.mark.asyncio
+async def test_sync_approval_handler_is_accepted() -> None:
+    """A plain sync callable is a valid handler too."""
+
+    def approve(_: Any) -> bool:
+        return True
+
+    wrapped = wrap_tool(
+        _make_async_tool(), _approval_enforcer(), approval_handler=approve
+    )
+
+    result = await wrapped.function_schema.call({"text": "hi"}, None)
+
+    assert result == "async:hi"

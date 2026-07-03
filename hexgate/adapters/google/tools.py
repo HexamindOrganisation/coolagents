@@ -1,6 +1,11 @@
 """Google ADK adapter: wrap ``BaseTool`` so ``run_async`` consults a
 :class:`PolicyEnforcer` first. Non-allow outcomes render as markered
 strings the model sees as tool output.
+
+When a caller supplies ``approval_handler``, a ``NEEDS_APPROVAL``
+decision fires the callback and runs the original tool on truthy return;
+falsy return (or a missing handler) keeps today's behavior of surfacing
+the ``[approval_required]`` marker to the model.
 """
 
 from __future__ import annotations
@@ -14,6 +19,9 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
+from hexgate.agents.approvals import resolve_approval_async
+from hexgate.agents.factory import ApprovalHandler
+from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 
 
@@ -32,7 +40,12 @@ def _normalize(tool: ToolEntry) -> BaseTool:
     )
 
 
-def wrap_tool(tool: ToolEntry, enforcer: PolicyEnforcer) -> BaseTool:
+def wrap_tool(
+    tool: ToolEntry,
+    enforcer: PolicyEnforcer,
+    *,
+    approval_handler: ApprovalHandler | None = None,
+) -> BaseTool:
     """Return a copy of ``tool`` with ``run_async`` gated by ``enforcer``."""
     base = _normalize(tool)
     name = base.name
@@ -45,6 +58,12 @@ def wrap_tool(tool: ToolEntry, enforcer: PolicyEnforcer) -> BaseTool:
         decision = enforcer.decide(name, args or {})
         if decision.allowed:
             return await original_run_async(args=args, tool_context=tool_context)
+        if (
+            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
+            and approval_handler is not None
+            and await resolve_approval_async(approval_handler, decision)
+        ):
+            return await original_run_async(args=args, tool_context=tool_context)
         return decision.as_error_message()
 
     wrapped = copy.copy(base)
@@ -52,6 +71,11 @@ def wrap_tool(tool: ToolEntry, enforcer: PolicyEnforcer) -> BaseTool:
     return wrapped
 
 
-def wrap_tools(tools: list[ToolEntry], enforcer: PolicyEnforcer) -> list[BaseTool]:
+def wrap_tools(
+    tools: list[ToolEntry],
+    enforcer: PolicyEnforcer,
+    *,
+    approval_handler: ApprovalHandler | None = None,
+) -> list[BaseTool]:
     """Return a fresh list of policy-gated copies."""
-    return [wrap_tool(t, enforcer) for t in tools]
+    return [wrap_tool(t, enforcer, approval_handler=approval_handler) for t in tools]
