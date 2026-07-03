@@ -30,7 +30,6 @@ from hexgate.tools import (
     glob,
     grep,
     read_file,
-    refund_order,
     write_file,
 )
 from hexgate.tools.fetch import fetch
@@ -65,7 +64,6 @@ __all__ = [
     "load_registered_agent",
     "register_agent",
     "read_file",
-    "refund_order",
     "stream_agent",
     "stream_agent_raw",
     "unregister_agent",

@@ -33,7 +33,6 @@ from hexgate.tools import (
     glob,
     grep,
     read_file,
-    refund_order,
     web_search,
     write_file,
 )
@@ -46,7 +45,6 @@ BUILTIN_TOOLS = {
     "glob": glob,
     "grep": grep,
     "read_file": read_file,
-    "refund_order": refund_order,
     "web_search": web_search,
     "write_file": write_file,
 }

@@ -1,0 +1,73 @@
+# Role-aware policy for examples/itsm_agent.py
+#
+# Paste this into the platform policy editor for the `itsm_agent` agent
+# (the SDK pulls it by agent name at run time). Allow / deny only.
+#
+# This layer answers ONE of the two security questions: "does the actor's
+# ROLE grant this operation?" The other — "is the transition valid from the
+# current state, and does the actor own / is mentioned on this record?" —
+# lives in the tool body, because the constraint engine only ever sees the
+# call's `args`, not the change's live state or its owner.
+#
+# Separation of duties is structural: each lifecycle transition is its own
+# tool, owned by exactly one role. A role simply has no access to a
+# transition it does not own, so e.g. a change_manager CANNOT schedule.
+#
+# Fail-closed everywhere: default_policy is deny, so any tool a role does not
+# explicitly allow is denied. `default` is the fallback when User.role is
+# unset or unknown.
+
+version: 1
+
+roles:
+  # ---- mixin: read base shared by every human role ----------------------
+  # is_mixin keeps it out of the selectable roles — it only exists to be
+  # inherited from. Read SCOPE (which rows each role may see) is narrowed
+  # further in the tool body; this just grants the read tools.
+  read_base:
+    is_mixin: true
+    default_policy: { mode: deny }
+    tools:
+      read_change:     { mode: allow }
+      list_my_changes: { mode: allow }
+
+  # ---- default: fail-closed fallback ------------------------------------
+  default:
+    default_policy: { mode: deny }
+
+  # ---- requester: create + edit drafts + submit -------------------------
+  # Write/submit are gated to state 'new' + ownership in the tool body, so
+  # the requester's write access expires once the change leaves 'new'.
+  requester:
+    inherits: [read_base]
+    default_policy: { mode: deny }
+    tools:
+      create_change:         { mode: allow }
+      update_change:         { mode: allow }
+      submit_for_assessment: { mode: allow }   # owns: new → Assess
+
+  # ---- implementer: read-only, scoped --------------------------------------
+  # No create / update / transition. Read SCOPE (only changes they are
+  # mentioned on) is enforced in read_change / list_my_changes.
+  implementer:
+    inherits: [read_base]
+    default_policy: { mode: deny }
+
+  # ---- change_manager: assess + authorize -------------------------------
+  # Reads all, edits assessment, owns Assess → Authorize. NO schedule_change
+  # entry → attempting to schedule is denied (that belongs to the CAB).
+  change_manager:
+    inherits: [read_base]
+    default_policy: { mode: deny }
+    tools:
+      update_assessment: { mode: allow }
+      authorize_change:  { mode: allow }       # owns: Assess → Authorize
+
+  # ---- cab_manager: decision only ---------------------------------------
+  # Reads all, owns Authorize → Schedule. NO update_change / update_assessment
+  # → decision-only; the CAB cannot edit change fields.
+  cab_manager:
+    inherits: [read_base]
+    default_policy: { mode: deny }
+    tools:
+      schedule_change: { mode: allow }         # owns: Authorize → Schedule
