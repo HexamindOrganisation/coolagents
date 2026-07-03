@@ -70,29 +70,82 @@ def _extract_system_prompt(instruction: object) -> str | None:
 
 
 def _to_tool_definition(tool: BaseTool) -> ToolDefinition | None:
-    """Convert a Google ADK tool to a ToolDefinition."""
+    """Convert a Google ADK tool to a ToolDefinition.
+
+    Reads schema from BOTH declaration fields: ``parameters`` (the typed
+    ``google.genai.types.Schema`` shape ADK's native ``FunctionTool``
+    populates from Python signatures) AND ``parametersJsonSchema`` (the
+    raw JSON Schema dict path used by tools that came from a source
+    without Python type hints — hexgate's MCP wrapper is the canonical
+    case). Without the JSON-Schema fallback, every MCP tool registers
+    with an empty argument schema and any policy generated from that
+    (write-vs-read classification, arg-level rules) is computed
+    against zero fields — silently mis-gated.
+    """
     declaration = tool._get_declaration()
     if declaration is None:
         return None
 
     parameters = declaration.parameters
-    raw_properties: dict[str, Any] = (
-        dict(parameters.properties or {}) if parameters else {}
-    )
-    properties = {
-        prop_name: InputProperty(
-            title=prop_name,
-            type=_schema_type(prop),
+    if parameters is not None:
+        raw_properties: dict[str, Any] = dict(parameters.properties or {})
+        properties = {
+            prop_name: InputProperty(
+                title=prop_name,
+                type=_schema_type(prop),
+            )
+            for prop_name, prop in raw_properties.items()
+        }
+        required = list(parameters.required or [])
+    else:
+        properties, required = _properties_from_json_schema(
+            declaration.parameters_json_schema
         )
-        for prop_name, prop in raw_properties.items()
-    }
-    required = list(parameters.required or []) if parameters else []
 
     return ToolDefinition(
         name=tool.name,
         description=tool.description or "",
         input_schema=InputSchema(properties=properties, required=required),
     )
+
+
+def _properties_from_json_schema(
+    schema: Any,
+) -> tuple[dict[str, InputProperty], list[str]]:
+    """Extract properties + required list from a raw JSON Schema dict.
+
+    Falls back to empty maps when the schema is missing, malformed, or
+    doesn't declare object properties. The registered ToolDefinition
+    still carries name + description; only the arg surface goes empty.
+    """
+    if not isinstance(schema, dict):
+        return {}, []
+    raw_properties = schema.get("properties")
+    if not isinstance(raw_properties, dict):
+        raw_properties = {}
+    properties = {
+        prop_name: InputProperty(
+            title=prop_name,
+            type=_json_schema_prop_type(prop),
+        )
+        for prop_name, prop in raw_properties.items()
+    }
+    raw_required = schema.get("required")
+    required = (
+        [str(r) for r in raw_required if isinstance(r, str)]
+        if isinstance(raw_required, list)
+        else []
+    )
+    return properties, required
+
+
+def _json_schema_prop_type(prop: Any) -> str:
+    """Read the ``type`` field off a raw JSON Schema property dict."""
+    if isinstance(prop, dict):
+        t = prop.get("type")
+        if isinstance(t, str):
+            return t.lower()
+    return "string"
 
 
 def _schema_type(schema: Any) -> str:

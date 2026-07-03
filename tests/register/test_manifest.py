@@ -120,6 +120,61 @@ def test_google_manifest_schema():
     assert manifest == expected_manifest
 
 
+def test_google_manifest_extracts_mcp_tool_schema_from_json_schema():
+    """Regression for post-review finding: _to_tool_definition used to
+    read only declaration.parameters (the typed Schema field). Google
+    ADK's native FunctionTool populates parameters from Python
+    signatures, but hexgate's MCP wrapper populates parametersJsonSchema
+    (raw JSON Schema dict) instead. Result: every MCP tool registered
+    with an empty arg schema, and any policy generated from that
+    (write-vs-read classification, arg-level rules) was computed
+    against zero fields — tools silently mis-gated. Now
+    _to_tool_definition also reads parametersJsonSchema and lifts
+    properties + required from there when parameters is None."""
+    from mcp.types import Tool as MCPTool
+
+    from hexgate.adapters.google.mcp import wrap_mcp_toolset
+    from hexgate.cli.register.google import _to_tool_definition
+    from hexgate.mcp import MCPServerConfig
+    from hexgate.mcp.proxy import _ToolsetState
+    from hexgate.mcp.proxy import _build_proxy as build
+
+    class _FakeClient:
+        def __init__(self, config):
+            self.config = config
+
+        async def call_tool(self, *_args, **_kwargs):
+            raise AssertionError("not exercised")
+
+    cfg = MCPServerConfig(name="slack", transport="stdio", command="slack-mcp")
+    schema = {
+        "type": "object",
+        "properties": {
+            "channel": {"type": "string"},
+            "text": {"type": "string"},
+        },
+        "required": ["channel", "text"],
+    }
+    mcp_tool = MCPTool(name="send", description="Post a message", inputSchema=schema)
+    proxy = build(_ToolsetState(_FakeClient(cfg)), cfg, mcp_tool)
+
+    class _Stub:
+        pass
+
+    stub = _Stub()
+    stub.proxies = [proxy]
+    [adk_tool] = wrap_mcp_toolset(stub)
+
+    tool_def = _to_tool_definition(adk_tool)
+    assert tool_def is not None
+    assert tool_def.name == "mcp-slack-send"
+    # Both properties surface — pre-fix this was `{}`.
+    assert set(tool_def.input_schema.properties.keys()) == {"channel", "text"}
+    assert tool_def.input_schema.properties["channel"].type == "string"
+    # Required list carries through too — pre-fix this was `[]`.
+    assert sorted(tool_def.input_schema.required) == ["channel", "text"]
+
+
 def test_pydantic_ai_manifest_schema():
     """Test the schema of the Pydantic AI manifest."""
     from pydantic_ai import Agent
