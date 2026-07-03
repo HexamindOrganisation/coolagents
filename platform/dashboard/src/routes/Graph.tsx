@@ -21,11 +21,21 @@ export function GraphPage() {
     queryFn: () => api.listAgents(scope.projectId as string),
     enabled: !!scope.projectId,
   });
+  // Manifests are the source of truth for tools on code-registered
+  // agents (hexgate register), whose Agent.agent_yaml is empty. Legacy
+  // YAML-edited agents just don't have a manifest entry and fall back
+  // to agent_yaml parsing. Both queries hit the same project so the
+  // pair reload together on a project switch.
+  const manifests = useQuery({
+    queryKey: ["agent-manifests", scope.projectId],
+    queryFn: () => api.listAgentManifests(scope.projectId as string),
+    enabled: !!scope.projectId,
+  });
 
   const { nodes, edges, agentViews } = useMemo(() => {
     if (!agents.data) return { nodes: [], edges: [], agentViews: [] };
-    return buildOverviewGraph(agents.data);
-  }, [agents.data]);
+    return buildOverviewGraph(agents.data, manifests.data);
+  }, [agents.data, manifests.data]);
 
   if (scope.status === "no-project") {
     return <NoProjectEmptyState resource="graph" />;
@@ -51,7 +61,7 @@ export function GraphPage() {
       </div>
 
       <div className="flex-1 relative">
-        {agents.isLoading ? (
+        {agents.isLoading || manifests.isLoading ? (
           <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
             Loading…
           </div>

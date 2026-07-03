@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
-import type { AgentRead } from "./api";
+import type { AgentManifestView, AgentRead } from "./api";
 import {
   buildAgentView,
   effectiveMode,
@@ -24,10 +24,24 @@ export interface OverviewGraph {
   agentViews: AgentView[];
 }
 
-/** Build the full project overview: everyone → all agents → all tools. */
-export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
+/**
+ * Build the full project overview: everyone → all agents → all tools.
+ *
+ * ``manifests`` (indexed by agent name) is optional but should be
+ * provided in production — it's the source of truth for tools of
+ * code-registered agents whose ``agent_yaml`` column is empty. Legacy
+ * YAML-edited agents (no manifest entry) fall back to parsing
+ * ``agent_yaml`` as before.
+ */
+export function buildOverviewGraph(
+  agents: AgentRead[],
+  manifests?: AgentManifestView[],
+): OverviewGraph {
+  const manifestByName = new Map<string, AgentManifestView>(
+    (manifests ?? []).map((m) => [m.name, m]),
+  );
   const agentViews = agents
-    .map(buildAgentView)
+    .map((a) => buildAgentView(a, manifestByName.get(a.name)?.manifest ?? null))
     .filter((a): a is AgentView => a !== null);
 
   const uniqueTools = new Set<string>();

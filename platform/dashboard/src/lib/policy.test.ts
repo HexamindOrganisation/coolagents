@@ -572,3 +572,86 @@ describe("buildAgentView — malformed input", () => {
     expect(view!.name).toBe("test");
   });
 });
+
+describe("buildAgentView — manifest as source of truth", () => {
+  const agent = (opts: { yaml: string; policy: string }): AgentRead =>
+    ({
+      name: "graph_smoke",
+      agent_yaml: opts.yaml,
+      policy_yaml: opts.policy,
+    }) as unknown as AgentRead;
+
+  it("reads tools + model from the manifest when provided, ignoring agent_yaml", () => {
+    // Code-registered agents leave agent_yaml empty; the manifest is
+    // the source of truth for their tool list. Passing the manifest
+    // must produce a usable AgentView even when agent_yaml is "".
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), {
+      model: "gpt-5.4",
+      tools: [{ name: "web_search" }, { name: "fetch" }],
+    });
+    expect(view).not.toBeNull();
+    expect(view!.name).toBe("graph_smoke");
+    expect(view!.model).toBe("gpt-5.4");
+    expect(view!.tools).toEqual(["web_search", "fetch"]);
+  });
+
+  it("prefers manifest tools over agent_yaml tools even when both are present", () => {
+    // Manifest wins because it's the fresher source (updated on every
+    // register). agent_yaml can be a stale hand-edited fixture.
+    const view = buildAgentView(
+      agent({
+        yaml: "name: x\nmodel: legacy\ntools:\n  - stale_tool",
+        policy: FLAT_POLICY,
+      }),
+      { model: "gpt-5.4", tools: [{ name: "fresh_tool" }] },
+    );
+    expect(view!.tools).toEqual(["fresh_tool"]);
+    expect(view!.model).toBe("gpt-5.4");
+  });
+
+  it("handles manifest.model === null by returning an empty model string", () => {
+    // AgentManifest.model is `string | null`. AgentView.model is
+    // non-null string, so coerce null → "" rather than propagating.
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), {
+      model: null,
+      tools: [{ name: "ping" }],
+    });
+    expect(view!.model).toBe("");
+  });
+
+  it("falls back to agent_yaml parsing when manifest is not provided", () => {
+    // Legacy YAML-edited agents have no registered manifest but do have
+    // agent_yaml. buildAgentView(agent, undefined) exercises the fallback.
+    const view = buildAgentView(
+      agent({
+        yaml: "name: legacy\nmodel: gpt-4\ntools:\n  - fetch",
+        policy: FLAT_POLICY,
+      }),
+    );
+    expect(view!.tools).toEqual(["fetch"]);
+    expect(view!.model).toBe("gpt-4");
+  });
+
+  it("falls back to agent_yaml parsing when manifest is explicit null", () => {
+    // manifests[agentName]?.manifest can be null (registered agent
+    // whose latest AgentVersion has manifest=null via legacy path).
+    // Same fallback as undefined.
+    const view = buildAgentView(
+      agent({
+        yaml: "name: x\ntools: []",
+        policy: FLAT_POLICY,
+      }),
+      null,
+    );
+    expect(view).not.toBeNull();
+  });
+
+  it("previously-broken code-registered agent (empty agent_yaml, no manifest) returns null gracefully", () => {
+    // The exact fingerprint of the pre-fix bug: agent_yaml === "" AND
+    // no manifest info. buildAgentView returns null — the Graph filters
+    // it out, showing "No agents yet." The manifest path fixes real
+    // registered agents; a truly manifest-less agent with empty YAML
+    // has nothing to render and shouldn't crash the graph.
+    expect(buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }))).toBeNull();
+  });
+});

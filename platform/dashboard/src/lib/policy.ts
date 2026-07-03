@@ -315,25 +315,62 @@ export function mergedTools(policy: ParsedPolicy): Record<string, ToolPolicy> {
   return merged;
 }
 
-export function buildAgentView(agent: AgentRead): AgentView | null {
-  const parsedAgent = parseAgent(agent.agent_yaml, agent.policy_yaml);
+/**
+ * Build an :class:`AgentView` from an :class:`AgentRead` and, optionally,
+ * that agent's registered manifest.
+ *
+ * ``agent_yaml`` is a legacy column from the pre-manifest dashboard flow
+ * where users hand-edited YAML. Code-registered agents (``hexgate
+ * register``) leave it empty — the source of truth for their tool list
+ * lives on the AgentVersion.manifest instead. When ``manifest`` is
+ * provided, its ``.tools`` and ``.model`` are used verbatim; the
+ * ``agent_yaml`` fallback only applies to legacy agents.
+ *
+ * Policy always parses from ``agent.policy_yaml`` — that's the operator's
+ * editable policy document regardless of registration path.
+ */
+export function buildAgentView(
+  agent: AgentRead,
+  manifest?: {
+    model: string | null;
+    tools: readonly { name: string }[];
+  } | null,
+): AgentView | null {
   const parsedPolicy = parsePolicy(agent.policy_yaml);
-  if (!parsedAgent || !parsedPolicy) return null;
-  // Display tool list = agent.yaml declaration ONLY. Role-only tool
-  // entries in policy don't create callable tools — the runtime
+  if (!parsedPolicy) return null;
+
+  let name: string;
+  let model: string;
+  let tools: string[];
+
+  if (manifest) {
+    // Prefer the registered manifest — it's the source of truth for
+    // code-defined agents. ``manifest.name`` isn't carried on the
+    // envelope (the enclosing view already has it), so fall back to
+    // AgentRead.name.
+    name = agent.name;
+    model = manifest.model ?? "";
+    tools = manifest.tools.map((t) => t.name);
+  } else {
+    // No manifest → this is a legacy YAML-edited agent. Parse
+    // agent_yaml. Returns null if the YAML is unparseable or empty
+    // (empty is the pre-manifest register bug's fingerprint — Graph
+    // now avoids that path by preferring the manifest above).
+    const parsedAgent = parseAgent(agent.agent_yaml, agent.policy_yaml);
+    if (!parsedAgent) return null;
+    name = parsedAgent.name || agent.name;
+    model = parsedAgent.model;
+    tools = [...parsedAgent.tools];
+  }
+
+  // Display tool list = manifest declaration OR agent.yaml declaration.
+  // Role-only policy entries do NOT create callable tools — the runtime
   // registers tools from agent.tools (the SDK-decorated functions);
   // policy just gates them. Including role-only tools here would draw
   // phantom capability edges on the graph.
-  const tools = [...parsedAgent.tools];
   const merged = mergedTools(parsedPolicy);
   const missingInPolicy = tools.filter((t) => !(t in merged));
-  return {
-    name: parsedAgent.name || agent.name,
-    model: parsedAgent.model,
-    tools,
-    policy: parsedPolicy,
-    missingInPolicy,
-  };
+  return { name, model, tools, policy: parsedPolicy, missingInPolicy };
 }
 
 /**
