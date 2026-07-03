@@ -13,29 +13,19 @@ from __future__ import annotations
 import copy
 import functools
 from collections.abc import Callable
-from inspect import isawaitable
 from typing import Any, Union
 
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
+from hexgate.agents.approvals import resolve_approval_async
 from hexgate.agents.factory import ApprovalHandler
-from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 
 
 ToolEntry = Union[BaseTool, Callable[..., Any]]
-
-
-async def _resolve_approval(handler: ApprovalHandler, decision: Decision) -> bool:
-    """Resolve a NEEDS_APPROVAL decision. ``bool`` handlers short-circuit."""
-    if isinstance(handler, bool):
-        return handler
-    result: Any = handler(decision)
-    if isawaitable(result):
-        result = await result  # type: ignore[assignment]
-    return bool(result)
 
 
 def _normalize(tool: ToolEntry) -> BaseTool:
@@ -71,7 +61,7 @@ def wrap_tool(
         if (
             decision.outcome is DecisionOutcome.NEEDS_APPROVAL
             and approval_handler is not None
-            and await _resolve_approval(approval_handler, decision)
+            and await resolve_approval_async(approval_handler, decision)
         ):
             return await original_run_async(args=args, tool_context=tool_context)
         return decision.as_error_message()

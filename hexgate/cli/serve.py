@@ -98,13 +98,20 @@ class RelayApprovalHandler:
     def __init__(self, ttl_seconds: float = APPROVAL_TTL_SECONDS) -> None:
         self._pending: dict[str, tuple[asyncio.Event, dict[str, Any]]] = {}
         self._ws: Any = None
+        self._send_lock: asyncio.Lock | None = None
         self._ttl = ttl_seconds
-        # Guards ws.send() from two concurrent __call__ invocations.
-        self._send_lock = asyncio.Lock()
 
-    def bind_socket(self, ws: Any) -> None:
-        """Called by ``_serve_loop`` on each new WS connect."""
+    def bind_socket(self, ws: Any, send_lock: asyncio.Lock) -> None:
+        """Called by ``_serve_loop`` on each new WS connect.
+
+        Takes the per-connection send lock so approval-request sends
+        serialize with every OTHER send on the same socket (chat
+        stream, reset ack, error echo). One lock across all sends is
+        the only way to keep frames from interleaving — websockets
+        does not serialize concurrent send() calls itself.
+        """
         self._ws = ws
+        self._send_lock = send_lock
 
     def unbind_socket(self) -> None:
         """Called on WS disconnect. Fail-closes every in-flight approval
@@ -115,10 +122,12 @@ class RelayApprovalHandler:
             evt.set()
         self._pending.clear()
         self._ws = None
+        self._send_lock = None
 
     async def __call__(self, decision: Decision) -> bool:
         ws = self._ws
-        if ws is None:
+        send_lock = self._send_lock
+        if ws is None or send_lock is None:
             logger.warning(
                 "approval requested but no playground is connected — denying "
                 "tool_name=%s",
@@ -155,7 +164,7 @@ class RelayApprovalHandler:
             # only other path is cancellation) should NOT clobber a
             # resolve() that already set allowed=True.
             try:
-                async with self._send_lock:
+                async with send_lock:
                     await ws.send(json.dumps(payload))
             except Exception:
                 logger.exception(
@@ -182,8 +191,18 @@ class RelayApprovalHandler:
         Unknown ``decision_id`` (already timed out, spurious reply,
         stale from a previous connection) is a no-op — we don't crash
         the serve loop over untrusted payload keys.
+
+        Atomically pops the entry from ``_pending`` before mutating
+        ``box``: without this, an ``unbind_socket`` firing between
+        ``box["allowed"] = True`` and the parked ``__call__``
+        coroutine waking up would find the still-registered entry and
+        flip ``allowed`` back to False — silently denying a call the
+        user just approved. Popping first means unbind can't see it.
+        The parked ``__call__`` sees ``box["allowed"] == True`` and
+        returns approve; its own ``finally`` ``pop(..., None)`` no-ops
+        because we already removed the entry.
         """
-        entry = self._pending.get(decision_id)
+        entry = self._pending.pop(decision_id, None)
         if entry is None:
             logger.debug(
                 "ignoring approval.reply for unknown decision_id=%r", decision_id
@@ -212,6 +231,43 @@ class ServeContext:
     # (auto-approve/deny bool, callable) are simply passed through to
     # the enforcer without any WS involvement.
     approval_handler: Any = None
+    # Per-connection send lock. Every ``ws.send`` on this connection —
+    # chat stream deltas, reset ack, error echo, approval.request —
+    # must acquire it. Now that ``_serve_loop`` dispatches each inbound
+    # frame as its own asyncio task, two of those sends can fire
+    # concurrently, and the ``websockets`` library does NOT serialize
+    # concurrent ``send()`` calls; interleaved frames would corrupt the
+    # protocol on the peer side. Set at connect time by ``_serve_loop``;
+    # ``None`` outside an active connection.
+    send_lock: asyncio.Lock | None = None
+    # Per-connection chat lock. Serializes the chat branch of
+    # ``_handle_message`` so two concurrent "chat" frames don't both
+    # call ``ChatState.start_turn`` (which unconditionally overwrites
+    # ``self.current_run``) and produce interleaved state mutation.
+    # Approval replies and reset frames still run concurrently with
+    # streaming — only chat-vs-chat is serialized. Set at connect time
+    # by ``_serve_loop``; ``None`` outside an active connection.
+    chat_lock: asyncio.Lock | None = None
+
+
+async def _safe_send(context: "ServeContext", ws: Any, message: str) -> None:
+    """Send ``message`` on ``ws`` under the connection's send lock.
+
+    Every non-approval WS send on the serve path routes through here so
+    concurrent frames don't interleave. The approval-request path
+    inside :class:`RelayApprovalHandler.__call__` acquires the same
+    lock (given to it via ``bind_socket``) — one lock across all send
+    sites is the invariant.
+    """
+    lock = context.send_lock
+    if lock is None:
+        # Not inside an active connection scope — should only happen in
+        # tests that bypass ``_serve_loop``. Fall through to a raw send
+        # so the test isn't forced to invent a lock.
+        await ws.send(message)
+        return
+    async with lock:
+        await ws.send(message)
 
 
 def _user_from_payload(attenuation: Any) -> User | None:
@@ -245,6 +301,32 @@ async def _maybe_user_scope(user: User | None):
             yield
 
 
+async def _run_chat_turn(
+    context: ServeContext, ws: Any, text: str, payload: dict
+) -> None:
+    """Run one chat turn end-to-end: start_turn → stream → apply + send.
+
+    Extracted so the chat branch of ``_handle_message`` can wrap it
+    under ``context.chat_lock`` without a giant indented block. Every
+    outbound event goes through ``_safe_send`` so a mid-turn approval
+    request from the enforcer serializes cleanly with these stream
+    deltas rather than interleaving on the wire.
+    """
+    # Policy refresh is handled inside stream_agent now (Phase 8a) —
+    # the attached PolicySource sends If-None-Match and reuses the
+    # cached bundle on 304. No need for serve to rebuild the runtime.
+    context.state.start_turn(text)
+    user = _user_from_payload(payload.get("user_attenuation"))
+    async with _maybe_user_scope(user):
+        async for event in stream_agent(
+            context.runtime.agent,
+            context.runtime.handler,
+            context.state.build_input(),
+        ):
+            context.state.apply_event(event)
+            await _safe_send(context, ws, event.model_dump_json())
+
+
 async def _handle_message(
     context: ServeContext,
     ws,
@@ -257,24 +339,26 @@ async def _handle_message(
         text = str(payload.get("message", "")).strip()
         if not text:
             return
-        # Policy refresh is handled inside stream_agent now (Phase 8a) —
-        # the attached PolicySource sends If-None-Match and reuses the
-        # cached bundle on 304. No need for serve to rebuild the runtime.
-        context.state.start_turn(text)
-        user = _user_from_payload(payload.get("user_attenuation"))
-        async with _maybe_user_scope(user):
-            async for event in stream_agent(
-                context.runtime.agent,
-                context.runtime.handler,
-                context.state.build_input(),
-            ):
-                context.state.apply_event(event)
-                await ws.send(event.model_dump_json())
+        # Serialize chat turns so two "chat" frames arriving back-to-back
+        # can't both call start_turn() concurrently — start_turn()
+        # unconditionally overwrites ``current_run``, which would leak
+        # the first turn's remaining events into the second turn's
+        # state. Approval replies still race with the streaming chat
+        # (different branch), so the deadlock fix isn't undone.
+        chat_lock = context.chat_lock
+        if chat_lock is None:
+            # No lock provided (test bypass of _serve_loop) — fall
+            # through unserialized; the test is responsible for not
+            # firing overlapping chats.
+            await _run_chat_turn(context, ws, text, payload)
+            return
+        async with chat_lock:
+            await _run_chat_turn(context, ws, text, payload)
         return
 
     if kind == "reset":
         context.state.clear()
-        await ws.send(json.dumps({"type": "session_reset"}))
+        await _safe_send(context, ws, json.dumps({"type": "session_reset"}))
         return
 
     if kind == "approval.reply":
@@ -338,6 +422,11 @@ async def _serve_loop(context: ServeContext, url: str, console: Console) -> None
     # very same coroutine that must read the matching approval.reply
     # frame off the socket → hard deadlock, every approval TTL-denies.
     dispatched: set[asyncio.Task[None]] = set()
+    # Per-connection locks live for the duration of THIS `async with
+    # connect(...)` block. Recreated on every reconnect so a torn-down
+    # connection can't share a lock with the next one — clean lifecycle.
+    context.send_lock = asyncio.Lock()
+    context.chat_lock = asyncio.Lock()
     async with connect(
         url, ping_interval=PING_INTERVAL, subprotocols=subprotocols
     ) as ws:
@@ -352,10 +441,12 @@ async def _serve_loop(context: ServeContext, url: str, console: Console) -> None
             # finally always unbinds — a hello-send failure that bypasses
             # this block leaves the handler unbound (its default state).
             if isinstance(context.approval_handler, RelayApprovalHandler):
-                context.approval_handler.bind_socket(ws)
+                context.approval_handler.bind_socket(ws, context.send_lock)
             console.print(f"[green]connected[/] — relaying through {url}")
-            await ws.send(
-                json.dumps({"type": "hello", "agent": context.runtime.agent_name})
+            await _safe_send(
+                context,
+                ws,
+                json.dumps({"type": "hello", "agent": context.runtime.agent_name}),
             )
             async for message in ws:
                 try:
@@ -389,6 +480,11 @@ async def _serve_loop(context: ServeContext, url: str, console: Console) -> None
                 # Reap the cancellations so we don't leak "Task was
                 # destroyed but it is pending!" warnings on shutdown.
                 await asyncio.gather(*pending, return_exceptions=True)
+            # Drop the per-connection locks so a next-reconnect call to
+            # bind_socket doesn't inherit a stale lock a canceled task
+            # might still be holding.
+            context.send_lock = None
+            context.chat_lock = None
 
 
 async def _dispatch_message(context: ServeContext, ws: Any, payload: dict) -> None:
@@ -405,7 +501,9 @@ async def _dispatch_message(context: ServeContext, ws: Any, payload: dict) -> No
     except Exception as exc:  # noqa: BLE001
         logger.exception("serve: error handling %r", payload.get("type"))
         try:
-            await ws.send(
+            await _safe_send(
+                context,
+                ws,
                 json.dumps(
                     {
                         "event_type": "error",
@@ -414,7 +512,7 @@ async def _dispatch_message(context: ServeContext, ws: Any, payload: dict) -> No
                         "root_run_id": "serve",
                         "sequence": 0,
                     }
-                )
+                ),
             )
         except Exception:  # noqa: BLE001
             # Socket already gone — nothing to report to.

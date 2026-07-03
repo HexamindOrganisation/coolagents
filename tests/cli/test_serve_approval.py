@@ -65,7 +65,7 @@ async def test_emits_approval_request_with_expected_shape() -> None:
     on the bound socket before it starts waiting for a reply."""
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=1.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     async def approve_after_a_tick() -> None:
         # Give __call__ a chance to send + start awaiting.
@@ -97,7 +97,7 @@ async def test_emits_approval_request_with_expected_shape() -> None:
 async def test_resolve_deny_returns_false() -> None:
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=1.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     async def deny_after_a_tick() -> None:
         await asyncio.sleep(0.05)
@@ -128,7 +128,7 @@ async def test_timeout_returns_false() -> None:
     """No reply within the TTL → deny (fail-closed)."""
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=0.1)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
     result = await handler(_decision())
     assert result is False
 
@@ -139,7 +139,7 @@ async def test_unbind_socket_denies_all_pending() -> None:
     coroutines don't outlive the socket they belonged to."""
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     # Fire two approvals in parallel; both will be blocked awaiting
     # their Events. Unbind should release them both as False.
@@ -167,7 +167,7 @@ async def test_concurrent_requests_get_distinct_decision_ids() -> None:
     doesn't break it)."""
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     tasks = [asyncio.create_task(handler(_decision(tool=f"t{i}"))) for i in range(5)]
     # Let all 5 send frames.
@@ -218,7 +218,7 @@ async def test_ws_send_is_serialized_across_concurrent_calls() -> None:
 
     ws = _RaceCapturingWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     tasks = [asyncio.create_task(handler(_decision(tool=f"t{i}"))) for i in range(5)]
     # Let all sends run (they all get serialized by the lock, then
@@ -266,7 +266,7 @@ async def test_handle_message_routes_approval_reply(monkeypatch) -> None:
 
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
 
     context = ServeContext(
         runtime=None,  # type: ignore[arg-type] — unused for this branch
@@ -378,7 +378,7 @@ async def test_string_allowed_is_treated_as_deny() -> None:
 
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
     context = ServeContext(
         runtime=None,  # type: ignore[arg-type]
         state=ChatState(),
@@ -408,7 +408,7 @@ async def test_true_bool_allowed_approves() -> None:
 
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=10.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
     context = ServeContext(
         runtime=None,  # type: ignore[arg-type]
         state=ChatState(),
@@ -448,7 +448,7 @@ async def test_serve_loop_does_not_deadlock_on_approval() -> None:
 
     ws = _FakeWS()
     handler = RelayApprovalHandler(ttl_seconds=5.0)
-    handler.bind_socket(ws)
+    handler.bind_socket(ws, asyncio.Lock())
     context = ServeContext(
         runtime=None,  # type: ignore[arg-type]
         state=ChatState(),
@@ -506,7 +506,7 @@ async def test_send_failure_denies_and_cleans_pending() -> None:
             raise ConnectionError("peer gone")
 
     handler = RelayApprovalHandler(ttl_seconds=1.0)
-    handler.bind_socket(_BrokenWS())
+    handler.bind_socket(_BrokenWS(), asyncio.Lock())
     result = await handler(_decision())
     assert result is False
     assert handler._pending == {}
@@ -602,3 +602,154 @@ async def test_dispatch_message_echoes_error_back_to_peer_on_exception() -> None
     assert len(ws.sent) == 1
     assert ws.sent[0]["event_type"] == "error"
     assert "kapow" in ws.sent[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Post-review fixes (Victor's comments)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_pops_before_setting_so_unbind_cannot_flip_allowed() -> None:
+    """Race regression: if unbind_socket fires between resolve() setting
+    box[allowed]=True and __call__ waking to read it, the pre-fix
+    unbind_socket would find the entry still in _pending and overwrite
+    allowed back to False — silently denying an approved call. Now
+    resolve() pops the entry atomically before mutating box, so unbind
+    can't see it.
+
+    Simulate the race by driving the ordering manually: resolve first
+    (approve), then unbind. The parked __call__ must return True.
+    """
+    ws = _FakeWS()
+    handler = RelayApprovalHandler(ttl_seconds=5.0)
+    handler.bind_socket(ws, asyncio.Lock())
+
+    task = asyncio.create_task(handler(_decision()))
+    await asyncio.sleep(0.05)
+    decision_id = ws.sent[0]["decision_id"]
+
+    # User approves — resolve() should pop the entry atomically.
+    handler.resolve(decision_id, allowed=True)
+    # Immediately after, a disconnect happens. unbind_socket must NOT
+    # find the resolved entry (already popped) and must NOT flip it.
+    handler.unbind_socket()
+
+    result = await task
+    assert result is True, (
+        "approve was silently flipped to deny — resolve() did not pop "
+        "before mutating, or unbind_socket found the stale entry"
+    )
+
+
+@pytest.mark.asyncio
+async def test_serve_context_send_lock_serializes_concurrent_sends() -> None:
+    """Fix #1 regression: every ws.send on the serve socket must go
+    through _safe_send, which acquires context.send_lock. Two
+    concurrent sends must not interleave at the byte-write level.
+    Assert that the lock is actually held by wrapping ws.send with a
+    counter that would spike above 1 if the lock leaked."""
+    from hexgate.cli.serve import ServeContext, _safe_send
+    from hexgate.cli.state import ChatState
+
+    concurrent_in_send = 0
+    max_seen_concurrent = 0
+
+    class _CountingWS:
+        async def send(self, _: str) -> None:
+            nonlocal concurrent_in_send, max_seen_concurrent
+            concurrent_in_send += 1
+            max_seen_concurrent = max(max_seen_concurrent, concurrent_in_send)
+            # Yield control so any second send that isn't lock-guarded
+            # gets the chance to interleave here.
+            await asyncio.sleep(0)
+            concurrent_in_send -= 1
+
+    ws = _CountingWS()
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=None,
+        send_lock=asyncio.Lock(),
+    )
+    await asyncio.gather(*[_safe_send(context, ws, f"m-{i}") for i in range(10)])
+    assert max_seen_concurrent == 1
+
+
+@pytest.mark.asyncio
+async def test_safe_send_falls_back_when_context_has_no_lock() -> None:
+    """When send_lock is None (test bypass of _serve_loop), _safe_send
+    still forwards to ws.send unchanged — otherwise it would hang."""
+    from hexgate.cli.serve import ServeContext, _safe_send
+    from hexgate.cli.state import ChatState
+
+    ws = _FakeWS()
+    context = ServeContext(
+        runtime=None,  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=None,
+        send_lock=None,
+    )
+    await _safe_send(context, ws, json.dumps({"type": "hello"}))
+    assert ws.sent == [{"type": "hello"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_lock_serializes_concurrent_chat_turns() -> None:
+    """Fix #2 regression: two 'chat' frames arriving back-to-back must
+    NOT both call ChatState.start_turn concurrently. Under the current
+    dispatch model each frame runs in its own task; the chat_lock on
+    the context is what keeps them serial. Assert by counting overlap
+    inside the chat branch — should stay at 1.
+    """
+    from hexgate.cli.serve import ServeContext, _handle_message
+    from hexgate.cli.state import ChatState
+
+    concurrent_in_chat = 0
+    max_seen_concurrent = 0
+
+    class _NoopWS:
+        async def send(self, _: str) -> None:
+            pass
+
+    async def _fake_stream_agent(agent, handler, inp):  # noqa: ARG001
+        nonlocal concurrent_in_chat, max_seen_concurrent
+        concurrent_in_chat += 1
+        max_seen_concurrent = max(max_seen_concurrent, concurrent_in_chat)
+        # Yield so a lock-free second chat would race in here.
+        await asyncio.sleep(0.01)
+        concurrent_in_chat -= 1
+        if False:  # pragma: no cover — never yields, keeps signature async iter
+            yield None
+
+    class _StubRuntime:
+        agent = object()
+        handler = object()
+
+    context = ServeContext(
+        runtime=_StubRuntime(),  # type: ignore[arg-type]
+        state=ChatState(),
+        api_key="test-key",
+        approval_handler=None,
+        send_lock=asyncio.Lock(),
+        chat_lock=asyncio.Lock(),
+    )
+
+    import hexgate.cli.serve as serve_mod
+
+    original = serve_mod.stream_agent
+    serve_mod.stream_agent = _fake_stream_agent
+    try:
+        ws = _NoopWS()
+        await asyncio.gather(
+            _handle_message(context, ws, {"type": "chat", "message": "first"}),
+            _handle_message(context, ws, {"type": "chat", "message": "second"}),
+        )
+    finally:
+        serve_mod.stream_agent = original
+
+    assert max_seen_concurrent == 1, (
+        "two chat frames overlapped — chat_lock did not serialize them"
+    )

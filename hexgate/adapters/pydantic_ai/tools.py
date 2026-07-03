@@ -13,26 +13,16 @@ from __future__ import annotations
 
 import copy
 import functools
-from inspect import isawaitable
 from typing import Any
 
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
 
+from hexgate.agents.approvals import resolve_approval_async
 from hexgate.agents.factory import ApprovalHandler
-from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
-
-
-async def _resolve_approval(handler: ApprovalHandler, decision: Decision) -> bool:
-    """Resolve a NEEDS_APPROVAL decision. ``bool`` handlers short-circuit."""
-    if isinstance(handler, bool):
-        return handler
-    result: Any = handler(decision)
-    if isawaitable(result):
-        result = await result  # type: ignore[assignment]
-    return bool(result)
 
 
 def wrap_tool(
@@ -55,7 +45,7 @@ def wrap_tool(
         if (
             decision.outcome is DecisionOutcome.NEEDS_APPROVAL
             and approval_handler is not None
-            and await _resolve_approval(approval_handler, decision)
+            and await resolve_approval_async(approval_handler, decision)
         ):
             return await original_call(args_dict, context)
         raise ModelRetry(decision.as_error_message())
