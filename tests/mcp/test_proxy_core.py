@@ -643,6 +643,47 @@ async def test_tools_raises_after_close(monkeypatch) -> None:
         _ = toolset.tools
 
 
+@pytest.mark.asyncio
+async def test_toolset_reset_closed_flag_on_reenter(monkeypatch) -> None:
+    """Regression for post-review finding: __aexit__ set _closed=True
+    but __aenter__ never reset it. A caller re-entering the same
+    MCPToolset instance in a second ``async with`` block would open
+    connections fine, but the first ``.proxies`` / ``.tools`` access
+    would raise "already exited" from the stale flag — the live
+    connection was unusable. __aenter__ now resets _closed at the top."""
+
+    class _NoopClient:
+        def __init__(self, config: MCPServerConfig) -> None:
+            self.config = config
+
+        async def __aenter__(self) -> "_NoopClient":
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> None:
+            pass
+
+        async def list_tools(self) -> list[Tool]:
+            return [_tool("ping")]
+
+    monkeypatch.setattr("hexgate.mcp.proxy.MCPClient", _NoopClient)
+
+    cfg = MCPServerConfig(name="a", transport="stdio", command="x")
+    toolset = MCPToolset(cfg)
+
+    async with toolset as mcp:
+        assert len(mcp.proxies) == 1
+
+    # First `with` closed it — proxies access must raise.
+    with pytest.raises(RuntimeError, match="already exited"):
+        _ = toolset.proxies
+
+    # Re-enter the same instance — must work again on the fresh
+    # connection, not raise from the stale _closed flag.
+    async with toolset as mcp:
+        assert len(mcp.proxies) == 1
+        assert mcp.proxies[0].qualified_name == "mcp-a-ping"
+
+
 # ---- .tools identity stability (code-review finding #1) --------------------
 
 

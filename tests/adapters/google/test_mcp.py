@@ -106,6 +106,61 @@ def test_declaration_coerces_empty_input_schema_to_minimal_object() -> None:
     }
 
 
+def test_declaration_coerces_non_empty_schema_missing_type() -> None:
+    """Regression for post-review finding: the old ``or {...}`` guard
+    only fired on falsy dicts. A non-empty schema missing a top-level
+    ``type`` (e.g. ``{"properties": {...}}`` or ``{"anyOf": [...]}``)
+    passed through unchanged and hit the exact Gemini rejection the
+    guard claimed to prevent. Now we inject ``type: "object"`` whenever
+    it's absent, keeping the caller's other keys."""
+    schema = {"properties": {"channel": {"type": "string"}}}
+    client = FakeMCPClient(slack_config())
+    proxy = build_proxy(client, MCPTool(name="partial", inputSchema=schema))
+    [wrapped] = wrap_mcp_toolset(toolset_stub(proxy))
+
+    declaration = wrapped._get_declaration()
+
+    assert declaration.parameters_json_schema["type"] == "object"
+    # Caller's `properties` map is preserved verbatim.
+    assert declaration.parameters_json_schema["properties"] == {
+        "channel": {"type": "string"}
+    }
+
+
+def test_declaration_coerces_schema_that_only_has_anyof() -> None:
+    """Second flavor of the type-missing case — a bare ``anyOf`` schema
+    still needs a top-level ``type`` for Gemini, and the caller's
+    ``anyOf`` must survive the coercion."""
+    schema = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+    client = FakeMCPClient(slack_config())
+    proxy = build_proxy(client, MCPTool(name="nullable", inputSchema=schema))
+    [wrapped] = wrap_mcp_toolset(toolset_stub(proxy))
+
+    declaration = wrapped._get_declaration()
+
+    assert declaration.parameters_json_schema["type"] == "object"
+    assert declaration.parameters_json_schema["anyOf"] == schema["anyOf"]
+
+
+def test_declaration_leaves_schema_with_explicit_type_alone() -> None:
+    """A well-formed schema (with a top-level ``type``) must NOT be
+    coerced or have its fields rewritten — otherwise a caller who
+    picked a non-object top-level (rare but valid) would be silently
+    overridden."""
+    schema = {
+        "type": "object",
+        "properties": {"foo": {"type": "string"}},
+        "required": ["foo"],
+    }
+    client = FakeMCPClient(slack_config())
+    proxy = build_proxy(client, MCPTool(name="fine", inputSchema=schema))
+    [wrapped] = wrap_mcp_toolset(toolset_stub(proxy))
+
+    declaration = wrapped._get_declaration()
+
+    assert declaration.parameters_json_schema == schema
+
+
 # ---- run_async roundtrip ---------------------------------------------------
 
 

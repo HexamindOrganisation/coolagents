@@ -139,6 +139,15 @@ class MCPToolset:
         # AsyncExitStack registers cleanup ATOMICALLY with __aenter__ — the
         # subprocess/HTTP transport can't be acquired-but-untracked even
         # under CancelledError between the lines.
+        #
+        # Reset the closed flag first so a caller re-entering the same
+        # toolset instance (the exit-clear comment on __aexit__ says
+        # this is intended) gets a working toolset. Without this reset,
+        # __aenter__ opens connections + populates _proxies, but the
+        # first .proxies / .tools access raises "already exited" from
+        # the stale flag — the agent can't be built on a live
+        # connection.
+        self._closed = False
         self._stack = contextlib.AsyncExitStack()
         try:
             for config in self._configs:
