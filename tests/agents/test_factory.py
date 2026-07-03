@@ -48,8 +48,8 @@ class FakeRequest(BaseModel):
     thread_id: str | None = None
 
 
-def test_load_system_prompt_reads_default_prompt_file() -> None:
-    """Load the default prompt file into prompt text."""
+def test_load_system_prompt_returns_default_inline_prompt() -> None:
+    """The default prompt is an inline string, returned as-is."""
     prompt = factory.load_system_prompt(factory.DEFAULT_SYSTEM_PROMPT)
 
     assert "helpful assistant" in prompt
