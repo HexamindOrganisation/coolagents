@@ -415,6 +415,133 @@ async def test_manifest_endpoint_round_trips_model_and_system_prompt(
     assert row["manifest"]["system_prompt"] == "be helpful"
 
 
+async def test_register_populates_agent_yaml_for_graph_page(
+    client: TestClient, session_factory
+) -> None:
+    """Regression: code-defined agents (POST /v1/agents) used to leave
+    ``Agent.agent_yaml`` as the empty string. The dashboard Graph tab
+    parses agent_yaml — ``yaml.load("")`` returns undefined, so every
+    freshly-registered agent silently vanished from /graph even though
+    /agents and /policies still showed it. register_manifest now
+    populates agent_yaml from the manifest on first create.
+    """
+    import yaml as _yaml
+
+    from hexgate_api.schemas import AgentManifest
+    from hexgate_api.features.agents.service import register_manifest
+
+    async with session_factory() as session:
+        manifest = AgentManifest.model_validate(
+            _sample_manifest(
+                "graph_smoke",
+                model="gpt-5.4",
+                system_prompt="be brief",
+            )
+        )
+        await register_manifest(
+            session, DEFAULT_PROJECT_ID, manifest, sign=keystore_mod.keystore.sign
+        )
+
+    resp = client.get(f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/graph_smoke")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    # agent_yaml must (a) be non-empty and (b) parse to a dict that the
+    # client's parseAgent would accept.
+    assert body["agent_yaml"].strip(), (
+        "agent_yaml was empty — Graph tab would drop this agent"
+    )
+    parsed = _yaml.safe_load(body["agent_yaml"])
+    assert isinstance(parsed, dict)
+    assert parsed["name"] == "graph_smoke"
+    assert parsed["model"] == "gpt-5.4"
+    assert parsed["tools"] == ["echo"]
+
+
+async def test_register_backfills_empty_agent_yaml_on_re_register(
+    client: TestClient, session_factory
+) -> None:
+    """A legacy Agent row with empty agent_yaml (created before this
+    fix) auto-heals on the next register — the ``or not agent.agent_yaml``
+    branch backfills the column without stomping an operator-edited
+    value.
+    """
+    from sqlmodel import select
+
+    from hexgate_api.models import Agent
+    from hexgate_api.schemas import AgentManifest
+    from hexgate_api.features.agents.service import register_manifest
+
+    async with session_factory() as session:
+        # Simulate a legacy agent: create it with agent_yaml="" (matches
+        # the pre-fix _get_or_create_agent shape).
+        legacy = Agent(
+            id="legacy-agent-id",
+            project_id=DEFAULT_PROJECT_ID,
+            name="legacy_agent",
+            agent_yaml="",
+            policy_yaml="version: 1\ndefault_policy: { mode: deny }\n",
+            system_md="",
+        )
+        session.add(legacy)
+        await session.commit()
+
+    async with session_factory() as session:
+        manifest = AgentManifest.model_validate(_sample_manifest("legacy_agent"))
+        await register_manifest(
+            session, DEFAULT_PROJECT_ID, manifest, sign=keystore_mod.keystore.sign
+        )
+
+    async with session_factory() as session:
+        agent = (
+            await session.exec(select(Agent).where(Agent.name == "legacy_agent"))
+        ).one()
+        assert agent.agent_yaml.strip(), (
+            "legacy agent_yaml was not backfilled on re-register"
+        )
+        assert "legacy_agent" in agent.agent_yaml
+
+
+async def test_register_preserves_operator_edited_agent_yaml(
+    client: TestClient, session_factory
+) -> None:
+    """If an operator hand-edited agent_yaml, a re-register must NOT
+    overwrite it — the backfill only kicks in when agent_yaml is empty.
+    """
+    from sqlmodel import select
+
+    from hexgate_api.models import Agent
+    from hexgate_api.schemas import AgentManifest
+    from hexgate_api.features.agents.service import register_manifest
+
+    OPERATOR_EDIT = "name: keep_me\nmodel: custom-model\ntools:\n  - custom\n"
+    async with session_factory() as session:
+        edited = Agent(
+            id="edited-agent-id",
+            project_id=DEFAULT_PROJECT_ID,
+            name="edited_agent",
+            agent_yaml=OPERATOR_EDIT,
+            policy_yaml="version: 1\ndefault_policy: { mode: deny }\n",
+            system_md="",
+        )
+        session.add(edited)
+        await session.commit()
+
+    async with session_factory() as session:
+        manifest = AgentManifest.model_validate(_sample_manifest("edited_agent"))
+        await register_manifest(
+            session, DEFAULT_PROJECT_ID, manifest, sign=keystore_mod.keystore.sign
+        )
+
+    async with session_factory() as session:
+        agent = (
+            await session.exec(select(Agent).where(Agent.name == "edited_agent"))
+        ).one()
+        assert agent.agent_yaml == OPERATOR_EDIT, (
+            "operator-edited agent_yaml was stomped on re-register"
+        )
+
+
 def test_manifest_endpoint_unregistered_agents_have_no_leakage(
     client: TestClient,
 ) -> None:

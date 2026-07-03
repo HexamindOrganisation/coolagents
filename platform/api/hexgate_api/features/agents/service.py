@@ -20,6 +20,7 @@ from hexgate_api.models import Agent, AgentVersion, Tool
 from hexgate_api.schemas import AgentManifest, ToolDefinition
 from hexgate_api.features.agents.seed_data import SEED_AGENTS
 from hexgate_api.features.agents.compiler import (
+    _agent_yaml_from_manifest,
     _default_policy_for_manifest,
     compile_bundle,
 )
@@ -238,6 +239,17 @@ async def register_manifest(
             agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
         # Already in session via _get_or_create_agent; the mutation flushes
         # at commit time below alongside the AgentVersion + Tool rows.
+
+    # Populate ``agent_yaml`` on first create AND backfill any legacy row
+    # whose column is still the empty string set by ``_get_or_create_agent``.
+    # The dashboard's Graph tab parses agent_yaml directly; an empty
+    # string turns the whole overview into "No agents yet" (agent shows
+    # up on /agents and /policies which read the manifest / policy_yaml
+    # respectively, but not on /graph). The ``not agent.agent_yaml``
+    # guard means a re-register auto-heals broken legacy data without
+    # stomping an operator-edited agent_yaml.
+    if agent_created or not agent.agent_yaml:
+        agent.agent_yaml = _agent_yaml_from_manifest(manifest)
 
     if not agent_created:
         existing = await _find_version_by_hash(session, agent.id, content_hash)

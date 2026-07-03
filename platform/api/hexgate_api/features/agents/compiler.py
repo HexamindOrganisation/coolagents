@@ -233,3 +233,32 @@ def _default_policy_for_manifest(manifest: AgentManifest) -> str:
   admin:
     inherits: [read_only]
 {admin_tools}"""
+
+
+def _agent_yaml_from_manifest(manifest: AgentManifest) -> str:
+    """Build the canonical ``agent.yaml`` body from a registered manifest.
+
+    Populates the ``Agent.agent_yaml`` column that the code-defined
+    registration path used to leave empty. Without a populated
+    agent_yaml the dashboard's Graph tab silently drops the agent —
+    ``yaml.load("")`` returns undefined, which ``parseAgent`` rejects,
+    which ``buildAgentView`` treats as an unparseable agent, which
+    ``buildOverviewGraph`` filters out, which produces the "No agents
+    yet" empty state even when the /agents and /policies pages show
+    the agent fine. Shape mirrors the seeded agents' YAML so the
+    dashboard's YAML editor and downstream tooling see a consistent
+    format across seed-vs-register paths.
+    """
+    lines = [f"name: {manifest.name}"]
+    if manifest.model:
+        lines.append(f"model: {manifest.model}")
+    if manifest.system_prompt:
+        # Reference the sidecar path the seed template uses, not the
+        # raw prompt body — matches the seed shape and keeps the yaml
+        # short + skimmable.
+        lines.append("system_prompt: system.md")
+    lines.append("tools:")
+    for tool in manifest.tools:
+        lines.append(f"  - {tool.name}")
+    lines.append("policy: policy.yaml")
+    return "\n".join(lines) + "\n"

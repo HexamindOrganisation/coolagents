@@ -24,6 +24,7 @@ from hexgate_api.schemas import (
     ToolDefinition,
 )
 from hexgate_api.features.agents.compiler import (
+    _agent_yaml_from_manifest,
     _classify_tool,
     _default_policy_for_manifest,
     _emit_tool_lines,
@@ -249,3 +250,68 @@ def test_default_policy_does_not_overlap_member_admin_with_read_only() -> None:
     # tools — the read is inherited, not restated.
     assert "web_search" not in payload["roles"]["member"].get("tools", {})
     assert "web_search" not in payload["roles"]["admin"].get("tools", {})
+
+
+# ---------------------------------------------------------------------------
+# _agent_yaml_from_manifest — populates the column code-registered agents
+# used to leave empty, unblocking the dashboard Graph tab
+# ---------------------------------------------------------------------------
+
+
+def test_agent_yaml_from_manifest_parses_to_expected_shape() -> None:
+    """The generated agent_yaml must be valid YAML with a top-level
+    ``name`` (required for the client's parseAgent) and a ``tools`` list.
+    Round-trip through yaml.safe_load to prove it."""
+    manifest = AgentManifest(
+        name="bot",
+        framework=AgentFramework.LANGCHAIN,
+        model="gpt-5.4",
+        system_prompt="Be helpful.",
+        tools=[
+            ToolDefinition(
+                name=n,
+                description=None,
+                input_schema=InputSchema(properties={}, required=[]),
+            )
+            for n in ("web_search", "read_file")
+        ],
+    )
+    payload = yaml.safe_load(_agent_yaml_from_manifest(manifest))
+    assert payload["name"] == "bot"
+    assert payload["model"] == "gpt-5.4"
+    assert payload["tools"] == ["web_search", "read_file"]
+    # ``system_prompt`` uses the sidecar-path convention (matches seed
+    # shape), not the raw prompt body.
+    assert payload["system_prompt"] == "system.md"
+    # ``policy`` references the sidecar too so any future filesystem
+    # dumper knows where the policy lives.
+    assert payload["policy"] == "policy.yaml"
+
+
+def test_agent_yaml_from_manifest_omits_optional_fields_when_none() -> None:
+    """A manifest without a model or system_prompt should still produce
+    valid YAML — those keys are skipped rather than emitted as ``null``,
+    which parseAgent-style loaders may prefer as ``''`` fallback."""
+    manifest = _manifest("ping")
+    # Sanity: our helper _manifest yields model=None, system_prompt=None.
+    assert manifest.model is None
+    assert manifest.system_prompt is None
+
+    payload = yaml.safe_load(_agent_yaml_from_manifest(manifest))
+    assert payload["name"] == "test_agent"
+    assert "model" not in payload
+    assert "system_prompt" not in payload
+    assert payload["tools"] == ["ping"]
+
+
+def test_agent_yaml_from_manifest_handles_zero_tools() -> None:
+    """A skeleton agent (no tools yet) still produces a parseable YAML
+    with an empty ``tools`` list — the dashboard Graph shows the agent
+    node with no outgoing tool edges rather than dropping it entirely."""
+    payload = yaml.safe_load(_agent_yaml_from_manifest(_manifest()))
+    assert payload["name"] == "test_agent"
+    # YAML's ``tools:`` with no children loads as None, which the
+    # client's parseAgent already tolerates (Array.isArray check falls
+    # to empty list). Assert both the None and empty-list-if-present
+    # shapes explicitly so a future formatter tweak stays honest.
+    assert payload.get("tools") in (None, [])
