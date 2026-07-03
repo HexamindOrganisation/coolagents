@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hexgate import AgentPolicy, create_agent, enforce_policy, register_agent
+from hexgate import AgentPolicy, create_agent, enforce_policy, register_agent_factory
 from hexgate.runtime import LocalWorkspace
 from hexgate.tools import bash, edit_file, glob, grep, read_file, write_file
 
@@ -89,4 +89,4 @@ def build_repo_operator(
     return enforce_policy(agent, _coding_agent_policy()), handler
 
 
-register_agent("repo_operator", build_repo_operator)
+register_agent_factory("repo_operator", build_repo_operator)

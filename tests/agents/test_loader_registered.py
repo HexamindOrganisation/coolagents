@@ -23,7 +23,7 @@ def test_list_registered_agents_tracks_registered_ids() -> None:
         """Return fake runtime pieces."""
         return "agent", "handler"
 
-    loader.register_agent("code_agent", factory)
+    loader.register_agent_factory("code_agent", factory)
 
     assert loader.list_registered_agents() == ["code_agent"]
 
@@ -37,7 +37,7 @@ def test_resolve_agent_source_resolves_registered_when_no_local(
         """Return fake runtime pieces."""
         return "agent", "handler"
 
-    loader.register_agent("code_agent", factory)
+    loader.register_agent_factory("code_agent", factory)
 
     assert loader.resolve_agent_source("code_agent", tmp_path) == "registered"
 
@@ -51,7 +51,7 @@ def test_load_registered_agent_passes_runtime_overrides_through() -> None:
         captured.update(kwargs)
         return "agent-instance", "handler-instance"
 
-    loader.register_agent("code_agent", factory)
+    loader.register_agent_factory("code_agent", factory)
 
     agent, handler = loader.load_agent(
         "code_agent",
@@ -73,6 +73,6 @@ def test_list_available_agents_includes_registered_ids() -> None:
         """Return fake runtime pieces."""
         return "agent", "handler"
 
-    loader.register_agent("code_agent", factory)
+    loader.register_agent_factory("code_agent", factory)
 
     assert "code_agent" in loader.list_available_agents()

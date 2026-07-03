@@ -18,10 +18,10 @@ from hexgate.agents.loader import (
     list_local_agents,
     list_registered_agents,
     load_registered_agent,
-    register_agent,
+    register_agent_factory,
     resolve_agent_source,
     resolve_tools,
-    unregister_agent,
+    unregister_agent_factory,
 )
 from hexgate.agents.models import AgentSpec
 
@@ -40,10 +40,10 @@ __all__ = [
     "load_local_agent_policy",
     "load_local_agent_spec",
     "load_registered_agent",
-    "register_agent",
+    "register_agent_factory",
     "resolve_agent_source",
     "resolve_tools",
     "stream_agent",
     "stream_agent_raw",
-    "unregister_agent",
+    "unregister_agent_factory",
 ]

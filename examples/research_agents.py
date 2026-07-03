@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from hexgate import AgentPolicy, create_agent, enforce_policy, register_agent
+from hexgate import AgentPolicy, create_agent, enforce_policy, register_agent_factory
 from hexgate.tools import edit_file, glob, grep, read_file, write_file
 
 # web_search / fetch are vendor-bound demo tools that ship in examples/, not the
@@ -72,4 +72,4 @@ def build_update_researcher(
     return enforce_policy(agent, _update_researcher_policy()), handler
 
 
-register_agent("update_researcher", build_update_researcher)
+register_agent_factory("update_researcher", build_update_researcher)

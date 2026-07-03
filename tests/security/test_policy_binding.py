@@ -271,7 +271,8 @@ def test_bad_signature_raises_never_downgrades() -> None:
 
 def test_404_propagates_with_status() -> None:
     """Registration is not the binding's job — a 404 surfaces as-is so the
-    caller can register (hexgate.register_agent) and resolve again."""
+    caller can register with the platform (``hexgate register``) and resolve
+    again."""
     _, pub = generate_keypair()
     fc = _FakeClient(pub)
     fc.serve_error(HexgateError("Hexgate API error 404 calling …", status=404))

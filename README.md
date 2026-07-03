@@ -395,7 +395,7 @@ from hexgate import (
     agent_tool,
     load_agent,
     load_hexgate_agent,
-    register_agent,
+    register_agent_factory,
     User,
 )
 ```
@@ -729,7 +729,7 @@ It demonstrates:
 - building one agent with `create_agent(...)` only
 - building another with `create_agent(...)` plus `enforce_policy(...)`
 - building a research agent with approval-gated file writes via `enforce_policy(..., approval_handler=...)`
-- registering it with `register_agent(...)`
+- registering it with `register_agent_factory(...)`
 - loading it through the shared `load_agent(...)` path
 
 For the CLI, you can import that script and then pick one of its registered agents:
@@ -755,12 +755,12 @@ hexgate chat --agent example_agent
 ```
 
 You can also load a code-defined agent by name after registering its factory
-with `register_agent` (see [Define agents in code](#-define-agents-in-code)):
+with `register_agent_factory` (see [Define agents in code](#-define-agents-in-code)):
 
 ```python
-from hexgate import load_agent, register_agent
+from hexgate import load_agent, register_agent_factory
 
-register_agent("my_agent", build_my_agent)
+register_agent_factory("my_agent", build_my_agent)
 agent, handler = load_agent("my_agent")
 ```
 

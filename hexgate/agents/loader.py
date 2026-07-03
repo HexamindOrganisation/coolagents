@@ -139,13 +139,20 @@ def list_local_agents(base_dir: str | Path | None = None) -> list[str]:
     return sorted(names)
 
 
-def register_agent(name: str, factory: AgentFactory) -> None:
-    """Register a code-defined agent factory under a stable id."""
+def register_agent_factory(name: str, factory: AgentFactory) -> None:
+    """Register a code-defined agent factory under a stable id.
+
+    Named ``register_agent_factory`` (not ``register_agent``) to avoid
+    confusion with :func:`hexgate.cli.register.register_agent`, which
+    publishes an agent to the Hexgate control plane (``hexgate register``).
+    This one only populates the in-process factory registry that
+    :func:`load_agent` resolves.
+    """
     REGISTERED_AGENTS[name] = factory
 
 
-def unregister_agent(name: str) -> None:
-    """Remove a previously registered code-defined agent."""
+def unregister_agent_factory(name: str) -> None:
+    """Remove a previously registered code-defined agent factory."""
     REGISTERED_AGENTS.pop(name, None)
 
 

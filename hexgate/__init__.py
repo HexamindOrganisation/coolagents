@@ -16,8 +16,8 @@ from hexgate.agents.loader import (
     load_hexgate_agent,
     load_local_agent,
     load_registered_agent,
-    register_agent,
-    unregister_agent,
+    register_agent_factory,
+    unregister_agent_factory,
 )
 from hexgate.cloud import HexgateClient, HexgateConfig
 from hexgate.manifest import AgentManifest, create_manifest
@@ -59,10 +59,10 @@ __all__ = [
     "load_hexgate_agent",
     "load_local_agent",
     "load_registered_agent",
-    "register_agent",
+    "register_agent_factory",
     "read_file",
     "stream_agent",
     "stream_agent_raw",
-    "unregister_agent",
+    "unregister_agent_factory",
     "write_file",
 ]
