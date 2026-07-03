@@ -71,6 +71,12 @@ def test_resolve_tools_raises_for_unknown_tools() -> None:
         loader.resolve_tools(["missing_tool"])
 
 
+def test_resolve_tools_hints_migration_for_relocated_tools() -> None:
+    """A relocated tool (web_search/fetch/refund_order) points at extra_tools."""
+    with pytest.raises(KeyError, match="extra_tools"):
+        loader.resolve_tools(["web_search"])
+
+
 def test_load_local_agent_resolves_spec_into_create_agent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

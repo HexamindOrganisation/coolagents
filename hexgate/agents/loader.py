@@ -44,6 +44,15 @@ BUILTIN_TOOLS = {
     "read_file": read_file,
     "write_file": write_file,
 }
+
+# Tools that used to ship in BUILTIN_TOOLS and now live in examples/. Referenced
+# only to turn an opaque KeyError into an actionable "pass it via extra_tools"
+# hint when an older agent.yaml still lists one of them.
+_RELOCATED_TOOLS = {
+    "web_search": "examples/tools/websearch.py",
+    "fetch": "examples/tools/fetch.py",
+    "refund_order": "examples/tools/refund.py",
+}
 AgentSource = Literal["local", "registered"]
 AgentFactory: TypeAlias = Callable[..., tuple[AgentGraph, CallbackHandler]]
 REGISTERED_AGENTS: dict[str, AgentFactory] = {}
@@ -209,7 +218,15 @@ def resolve_tools(
         try:
             resolved.append(registry[tool_name])
         except KeyError as exc:
-            raise KeyError(f'Unknown tool "{tool_name}"') from exc
+            message = f'Unknown tool "{tool_name}".'
+            relocated = _RELOCATED_TOOLS.get(tool_name)
+            if relocated is not None:
+                message += (
+                    f" It is no longer built in — it moved to {relocated}. "
+                    "Pass it via extra_tools=, e.g. "
+                    f'extra_tools={{"{tool_name}": {tool_name}}}.'
+                )
+            raise KeyError(message) from exc
     return resolved
 
 
