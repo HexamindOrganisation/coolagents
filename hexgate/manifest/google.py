@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hexgate.cli.register.models import (
+from hexgate.manifest.models import (
     AgentFramework,
     AgentManifest,
     InputProperty,

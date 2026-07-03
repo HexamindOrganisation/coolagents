@@ -19,8 +19,8 @@ from hexgate.agents.loader import (
     register_agent,
     unregister_agent,
 )
-from hexgate.cli.register import AgentManifest, create_manifest
 from hexgate.cloud import HexgateClient, HexgateConfig
+from hexgate.manifest import AgentManifest, create_manifest
 from hexgate.runtime import LocalWorkspace, ToolUseContext, User, Workspace
 from hexgate.security import AgentPolicy
 from hexgate.tools import (

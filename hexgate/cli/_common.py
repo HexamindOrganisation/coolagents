@@ -205,9 +205,9 @@ def build_runtime_from_local_agent(
     we'll announce to the relay's ``hello`` message).
     """
     from hexgate.agents.factory import enforce_policy
-    from hexgate.cli.register.manifest import create_manifest
     from hexgate.cli.register.register import post_manifest
     from hexgate.cloud.client import HexgateClient, HexgateConfig
+    from hexgate.manifest import create_manifest
     from hexgate.security.binding import platform_policy_from_payload
     from hexgate.tracing.langfuse import get_langfuse_handler
 

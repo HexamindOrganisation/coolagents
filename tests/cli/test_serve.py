@@ -409,9 +409,7 @@ def _patched_runtime_deps(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     def fake_get_handler(**kw: Any) -> object:
         return object()
 
-    monkeypatch.setattr(
-        "hexgate.cli.register.manifest.create_manifest", fake_create_manifest
-    )
+    monkeypatch.setattr("hexgate.manifest.create_manifest", fake_create_manifest)
     monkeypatch.setattr(
         "hexgate.cli.register.register.post_manifest", fake_post_manifest
     )
