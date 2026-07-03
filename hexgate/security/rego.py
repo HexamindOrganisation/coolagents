@@ -70,6 +70,7 @@ import json
 from typing import Any
 
 from hexgate.security.constraints import (
+    Call,
     Cmp,
     Count,
     Lit,
@@ -356,11 +357,24 @@ def _negated_node_to_rego(node: Node) -> str:
 
 
 def _node_to_rego(node: Node) -> str:
-    """Render one node as a Rego condition line. One node kind today (``Cmp``)."""
+    """Render one node as a Rego condition line (Cmp or Call)."""
     if isinstance(node, Cmp):
         return _cmp_to_rego(node)
+    if isinstance(node, Call):
+        return _call_to_rego(node)
     # Unreachable given parse_constraint's whitelist, but defensive.
     raise PolicySetError(f"cannot render node {node!r}")
+
+
+def _call_to_rego(node: Call) -> str:
+    """Render a string function as its Rego builtin call."""
+    ref = "input." + ".".join(node.arg.path)
+    value = json.dumps(node.value.value)
+    if node.fn == "matches":
+        # Rego's regex.match takes (pattern, value) and is unanchored — same
+        # as the pydantic engine's re.search.
+        return f"regex.match({value}, {ref})"
+    return f"{node.fn}({ref}, {value})"
 
 
 def _cmp_to_rego(node: Cmp) -> str:

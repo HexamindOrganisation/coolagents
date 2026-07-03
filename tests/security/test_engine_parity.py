@@ -269,3 +269,48 @@ _OPERAND_POLICY = {
 )
 def test_operand_parity(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_OPERAND_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# String functions (2b) — parity incl. the re.search vs regex.match hazard
+# ---------------------------------------------------------------------------
+
+_FUNC_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "sw": {"mode": "allow", "constraints": ['startswith(args.id, "inv_")']},
+                "ew": {"mode": "allow", "constraints": ['endswith(args.f, ".md")']},
+                "ct": {"mode": "allow", "constraints": ['contains(args.s, "ab")']},
+                "rx": {"mode": "allow", "constraints": ['matches(args.v, "[0-9]+")']},
+                "rxa": {
+                    "mode": "allow",
+                    "constraints": ['matches(args.v, "^inv_[0-9]+$")'],
+                },
+            }
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        ("sw", {"id": "inv_9"}, "allow"),
+        ("sw", {"id": "x"}, "deny"),
+        ("sw", {"id": 9}, "deny"),  # non-string
+        ("sw", {}, "deny"),  # missing
+        ("ew", {"f": "a.md"}, "allow"),
+        ("ew", {"f": "a.txt"}, "deny"),
+        ("ct", {"s": "xabx"}, "allow"),
+        ("ct", {"s": "xyz"}, "deny"),
+        # the hazard: matches is unanchored on BOTH engines (search, not fullmatch)
+        ("rx", {"v": "abc123"}, "allow"),
+        ("rx", {"v": "abc"}, "deny"),
+        ("rxa", {"v": "inv_9"}, "allow"),
+        ("rxa", {"v": "xinv_9"}, "deny"),  # anchors respected identically
+    ],
+)
+def test_function_parity(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_FUNC_POLICY, "default", tool, args, expect)

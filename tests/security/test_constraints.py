@@ -22,6 +22,7 @@ import pytest
 
 from hexgate.security import PolicyDeniedError
 from hexgate.security.constraints import (
+    Call,
     Cmp,
     ConstraintParseError,
     Count,
@@ -285,6 +286,68 @@ def test_parse_count_rejects_bad_inner_path() -> None:
 )
 def test_evaluate_count(src: str, args: dict, expected: bool) -> None:
     assert _eval(src, args) is expected
+
+
+# ---------------------------------------------------------------------------
+# String functions (2b) — startswith / endswith / contains / matches
+# ---------------------------------------------------------------------------
+
+
+def test_parse_call_builds_call_node() -> None:
+    node = parse_constraint('startswith(args.id, "inv_")')
+    assert isinstance(node, Call)
+    assert node.fn == "startswith"
+    assert node.arg == Ref(("args", "id"))
+    assert node.value == Lit("inv_")
+
+
+def test_parse_call_string_arg_may_contain_comma_and_parens() -> None:
+    node = parse_constraint('contains(args.s, "a, b (c)")')
+    assert node.value == Lit("a, b (c)")
+
+
+@pytest.mark.parametrize(
+    ("src", "args", "expected"),
+    [
+        ('startswith(args.id, "inv_")', {"id": "inv_9"}, True),
+        ('startswith(args.id, "inv_")', {"id": "x_inv_"}, False),
+        ('startswith(args.id, "inv_")', {"id": 42}, False),  # non-string → closed
+        ('startswith(args.id, "inv_")', {}, False),  # missing → closed
+        ('endswith(args.f, ".md")', {"f": "notes.md"}, True),
+        ('endswith(args.f, ".md")', {"f": "notes.txt"}, False),
+        ('contains(args.s, "ab")', {"s": "xabx"}, True),
+        ('contains(args.s, "ab")', {"s": "xyz"}, False),
+        ('contains(args.s, "ab")', {"s": ["ab"]}, False),  # list ≠ string contains
+        # matches is unanchored (re.search / regex.match)
+        ('matches(args.v, "[0-9]+")', {"v": "abc123"}, True),
+        ('matches(args.v, "[0-9]+")', {"v": "abc"}, False),
+        ('matches(args.v, "^inv_[0-9]+$")', {"v": "inv_9"}, True),
+        ('matches(args.v, "^inv_[0-9]+$")', {"v": "xinv_9"}, False),  # anchored
+    ],
+)
+def test_evaluate_functions(src: str, args: dict, expected: bool) -> None:
+    assert _eval(src, args) is expected
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "startswith(args.id)",  # missing second arg
+        "startswith(args.id, 5)",  # non-string literal
+        'startswith(args.0bad, "x")',  # bad field path
+        'matches(args.v, "(?=lookahead)")',  # RE2-incompatible lookaround
+        r'matches(args.v, "(a)\1")',  # RE2-incompatible backreference
+        'matches(args.v, "[unclosed")',  # invalid regex
+    ],
+)
+def test_parse_rejects_bad_calls(src: str) -> None:
+    with pytest.raises(ConstraintParseError):
+        parse_constraint(src)
+
+
+def test_matches_allows_re2_named_groups() -> None:
+    # Named groups are supported by both Python re and RE2 → must not be rejected.
+    parse_constraint('matches(args.v, "(?P<n>[0-9]+)")')
 
 
 # ---------------------------------------------------------------------------

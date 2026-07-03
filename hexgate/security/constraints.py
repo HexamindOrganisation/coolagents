@@ -7,11 +7,14 @@ change — only the executor below.
 
 Grammar (PEG-ish, single line per constraint):
 
-    constraint   := operand WS op WS operand
+    constraint   := call | comparison
+    comparison   := operand WS op WS operand
     op           := "==" | "!=" | "<=" | ">=" | "<" | ">"
                   | "in" | "not in"
     operand      := count | path | literal
     count        := "count(" path ")"            # element count (2d)
+    call         := FUNC "(" path "," WS STRING ")"   # string function (2b)
+    FUNC         := "startswith" | "endswith" | "contains" | "matches"
     path         := IDENT ("." IDENT)*           # e.g. args.amount (a field ref)
     literal      := STRING | NUMBER | "true" | "false" | "null" | list
     list         := "[" (literal ("," literal)*)? "]"
@@ -22,7 +25,8 @@ Grammar (PEG-ish, single line per constraint):
 For ``in`` / ``not in`` the right-hand side must be a list *literal*.
 A bare identifier on the right is a field reference (cross-field, 2a), so a
 forgotten-quotes typo (``== USD``) reads as a ref to an (absent) field and
-fails closed rather than erroring.
+fails closed rather than erroring. ``matches`` is an RE2 regex and is
+*unanchored* — use ``^…$`` for a full-string match.
 
 Concrete examples (all of these parse and evaluate today):
 
@@ -30,15 +34,15 @@ Concrete examples (all of these parse and evaluate today):
     args.currency == "USD"
     args.max >= args.min                         # cross-field (2a)
     count(args.recipients) <= 10                 # count (2d)
+    startswith(args.file_path, "src/")           # string function (2b)
+    matches(args.id, "^inv_[0-9]+$")             # regex (2b)
     args.template in ["refund_confirmed", "ticket_resolved"]
     args.priority not in ["urgent", "critical"]
-    args.confirmed == true
 
 What we deliberately do NOT support yet:
 
     * Boolean composition (AND / OR) — emit multiple constraint lines; the
       policy engine ANDs them.
-    * Function calls (`startswith`, `contains`, `matches`) — a later tier.
     * ``in`` against a field reference (``args.x in args.allowed``) — the
       right of ``in`` must be a list literal for now.
     * Negation as a prefix operator — use ``!=`` or ``not in``.
@@ -116,9 +120,24 @@ class Cmp:
         return self.right.value if isinstance(self.right, Lit) else self.right
 
 
-# The evaluator and Rego compiler dispatch on ``Node``. One member today; the
-# roadmap adds Call / Quant / And / Or / Not as siblings.
-Node = Cmp
+@dataclass(frozen=True, slots=True)
+class Call:
+    """A boolean function over a field, e.g. ``startswith(args.id, "inv_")``.
+
+    ``fn`` is one of ``startswith`` / ``endswith`` / ``contains`` / ``matches``;
+    each maps 1:1 onto a Rego builtin. ``value`` is always a string literal.
+    ``matches`` is an RE2 regex (unanchored — use ``^…$`` for a full match).
+    """
+
+    fn: str
+    arg: Ref
+    value: Lit
+    source: str  # raw text, for error messages
+
+
+# The evaluator and Rego compiler dispatch on ``Node``. The roadmap adds
+# Quant / And / Or / Not as further siblings.
+Node = Cmp | Call
 Constraint = Cmp  # back-compat alias for existing importers
 
 
@@ -126,6 +145,13 @@ _OP_TOKENS = ("<=", ">=", "==", "!=", "not in", "in", "<", ">")
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
 _COUNT_RE = re.compile(r"^count\((.+)\)$")
 _JSON_KEYWORDS = ("true", "false", "null")
+
+_FUNCS = ("startswith", "endswith", "contains", "matches")
+_FUNC_RE = re.compile(r"^([a-z]+)\((.*)\)$", re.DOTALL)
+# RE2 (Go regexp, what Rego runs) lacks backreferences and lookaround; reject
+# them so a pattern can't evaluate one way in pydantic (Python re) and another
+# in a WASM bundle.
+_RE2_INCOMPATIBLE = re.compile(r"\\[1-9]|\(\?[=!]|\(\?<[=!]")
 
 
 def parse_constraint(source: str) -> Node:
@@ -139,6 +165,11 @@ def parse_constraint(source: str) -> Node:
     text = source.strip()
     if not text:
         raise ConstraintParseError("empty constraint")
+
+    # A whole-line function call (startswith/…/matches) is a boolean on its own.
+    call = _try_parse_call(text, source)
+    if call is not None:
+        return call
 
     # Find the first matching operator outside of any string literal. Operands
     # never contain a bare operator token (paths are identifiers, literals are
@@ -193,6 +224,68 @@ def _parse_operand(text: str, source: str, side: str) -> Operand:
         raise ConstraintParseError(
             f"{side} of {source!r} is not a valid JSON literal: {exc.msg}"
         ) from exc
+
+
+def _try_parse_call(text: str, source: str) -> Call | None:
+    """Parse a whole-line ``fn(field, "literal")`` call, or return None.
+
+    Returns None when ``text`` isn't a call to a known function, so the caller
+    falls through to comparison parsing.
+    """
+    m = _FUNC_RE.match(text)
+    if m is None or m.group(1) not in _FUNCS:
+        return None
+    fn = m.group(1)
+    arg_raw, value_raw = _split_call_args(m.group(2), source, fn)
+    arg = Ref(_parse_path(arg_raw.strip(), source))
+    value = _parse_operand(value_raw.strip(), source, f"{fn}() second argument")
+    if not isinstance(value, Lit) or not isinstance(value.value, str):
+        raise ConstraintParseError(
+            f"{fn}() requires a string literal as its second argument in {source!r}"
+        )
+    if fn == "matches":
+        _validate_re2(value.value, source)
+    return Call(fn=fn, arg=arg, value=value, source=source)
+
+
+def _split_call_args(inner: str, source: str, fn: str) -> tuple[str, str]:
+    """Split ``field, value`` on the first top-level comma (outside strings)."""
+    in_string = escape = False
+    depth = 0
+    for i, ch in enumerate(inner):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "[{(":
+            depth += 1
+        elif ch in "]})":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return inner[:i], inner[i + 1 :]
+    raise ConstraintParseError(f"{fn}() expects 'field, value' arguments in {source!r}")
+
+
+def _validate_re2(pattern: str, source: str) -> None:
+    """Reject a regex that Python accepts but Rego's RE2 engine can't run."""
+    try:
+        re.compile(pattern)
+    except re.error as exc:
+        raise ConstraintParseError(
+            f"invalid regex {pattern!r} in {source!r}: {exc}"
+        ) from exc
+    if _RE2_INCOMPATIBLE.search(pattern):
+        raise ConstraintParseError(
+            f"regex {pattern!r} in {source!r} uses features RE2 does not support "
+            "(backreferences or lookaround)"
+        )
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:
@@ -272,10 +365,33 @@ def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
 
 
 def _eval(node: Node, context: dict[str, Any]) -> bool:
-    """Dispatch a node to its evaluator. One node kind today (``Cmp``)."""
+    """Dispatch a node to its evaluator."""
     if isinstance(node, Cmp):
         return _eval_cmp(node, context)
+    if isinstance(node, Call):
+        return _eval_call(node, context)
     raise ConstraintParseError(f"cannot evaluate node {node!r}")
+
+
+def _eval_call(node: Call, context: dict[str, Any]) -> bool:
+    """Evaluate a string function. Non-string / missing target fails closed.
+
+    ``matches`` uses ``re.search`` (unanchored) to mirror Rego's
+    ``regex.match``; a full-string match needs explicit ``^…$`` anchors.
+    """
+    x = _resolve_path(node.arg.path, context)
+    if not isinstance(x, str):
+        return False
+    v = node.value.value
+    if node.fn == "startswith":
+        return x.startswith(v)
+    if node.fn == "endswith":
+        return x.endswith(v)
+    if node.fn == "contains":
+        return v in x
+    if node.fn == "matches":
+        return re.search(v, x) is not None
+    return False  # unreachable given the _FUNCS whitelist
 
 
 def _eval_cmp(node: Cmp, context: dict[str, Any]) -> bool:

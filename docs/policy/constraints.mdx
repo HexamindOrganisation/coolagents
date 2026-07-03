@@ -28,6 +28,15 @@ A bare unquoted word on the right is read as a **field reference**, so a
 forgotten-quotes typo (`args.x == USD`) compares against the field `USD`
 (usually absent → deny) rather than the string `"USD"`. Quote strings.
 
+Whole-line **string functions** take a field and a string literal:
+
+| Function | Example | Notes |
+|---|---|---|
+| `startswith` | `startswith(args.file_path, "src/")` | |
+| `endswith` | `endswith(args.file_path, ".md")` | |
+| `contains` | `contains(args.subject, "urgent")` | Substring (string only) |
+| `matches` | `matches(args.id, "^inv_[0-9]+$")` | RE2 regex, **unanchored** — use `^…$` for a full match; backreferences / lookaround are rejected |
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
 both produce identical decisions.
