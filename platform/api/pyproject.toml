@@ -69,10 +69,10 @@ asyncio_mode = "auto"
 
 [tool.coverage.run]
 # Branch coverage catches missed else branches that line-coverage rolls
-# over. Source is the api/ surface only — exclude tests/, scripts/, and
+# over. Source is the hexgate_api package — exclude tests/, scripts/, and
 # the seeded ClickHouse init files (not Python).
 branch = true
-source = ["."]
+source = ["hexgate_api"]
 omit = [
     "tests/*",
     "*/__init__.py",

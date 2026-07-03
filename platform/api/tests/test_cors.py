@@ -5,7 +5,7 @@ Unit-tested directly since the middleware reads it once at import time.
 
 from __future__ import annotations
 
-import main
+from hexgate_api import main
 
 
 def test_cors_default_when_unset(monkeypatch) -> None:

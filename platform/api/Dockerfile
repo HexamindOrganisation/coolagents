@@ -82,6 +82,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # --proxy-headers: trust X-Forwarded-Proto/For from the box's reverse proxy
 # (TLS terminates upstream), so request.url is https for OAuth callbacks + link
 # generation. The proxy MUST set X-Forwarded-Proto: https.
-CMD ["uv", "run", "--no-sync", "uvicorn", "main:app", \
+CMD ["uv", "run", "--no-sync", "uvicorn", "hexgate_api.main:app", \
      "--host", "0.0.0.0", "--port", "8000", "--workers", "1", \
      "--proxy-headers", "--forwarded-allow-ips", "*"]

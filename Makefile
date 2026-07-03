@@ -192,11 +192,11 @@ platform-api-install: ## Install platform API deps (first time)
 
 .PHONY: platform-api
 platform-api: ## Run the platform API dev server (FastAPI on :8000, SQLite)
-	cd platform/api && uv run uvicorn main:app --reload --port 8000
+	cd platform/api && uv run uvicorn hexgate_api.main:app --reload --port 8000
 
 .PHONY: platform-api-pg
 platform-api-pg: postgres-up ## Run the platform API against local Postgres (starts PG first)
-	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run uvicorn main:app --reload --port 8000
+	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run uvicorn hexgate_api.main:app --reload --port 8000
 
 .PHONY: platform-api-test
 platform-api-test: ## Run the platform API test suite

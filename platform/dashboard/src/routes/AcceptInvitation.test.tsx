@@ -12,7 +12,7 @@
  *
  * Post-accept race cases (403/409 returned from the accept POST after
  * a successful preview) are covered by the backend integration tests
- * in platform/api/tests/test_invites.py — replicating them here would
+ * in platform/api/tests/domains/invitations/test_invites.py — replicating them here would
  * mostly test sonner's portal rendering, which jsdom + RTL can't reach
  * cleanly.
  */

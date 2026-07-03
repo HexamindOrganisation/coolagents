@@ -21,15 +21,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-import main
-from main import app
-from models import Agent, Organization, OrganizationMember, Project, User
-from services import (
-    DEFAULT_PROJECT_ID,
-    DEFAULT_USER_ID,
-    ensure_default_project,
-    new_id,
-)
+from hexgate_api.main import app
+from hexgate_api.models import Agent, Organization, OrganizationMember, Project, User
+from hexgate_api.core.ids import new_id
+from hexgate_api.seeds.defaults import ensure_default_project
+from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +154,9 @@ async def client(session_factory) -> TestClient:
         async with session_factory() as session:
             yield session
 
-    app.dependency_overrides[main.get_session] = override_session
+    from hexgate_api.core.db import get_session
+
+    app.dependency_overrides[get_session] = override_session
     try:
         yield TestClient(app)
     finally:

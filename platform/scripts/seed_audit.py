@@ -11,9 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / 'api'))
 
-from services import DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME
-from audit import _DECISION_COLUMNS, _DECISION_INSERT_SETTINGS
-from clickhouse import get_clickhouse
+from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME
+from hexgate_api.features.audit.service import (
+    _DECISION_COLUMNS,
+    _DECISION_INSERT_SETTINGS,
+)
+from hexgate_api.core.clickhouse import get_clickhouse
 
 # ── Agent & users ─────────────────────────────────────────────────────────────
 # Uses the dev default project id (imported above) so data is visible in the dashboard.

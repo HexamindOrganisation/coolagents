@@ -2,7 +2,7 @@
 
 Starts, in order, in one process tree:
 
-  1. Platform API (uvicorn ``main:app``) on :8000 — its lifespan creates a
+  1. Platform API (uvicorn ``hexgate_api.main:app``) on :8000 — its lifespan creates a
      fresh SQLite, seeds one org/user/project/agents, and (with HEXGATE_DEMO=1)
      serves the built dashboard same-origin + exposes /v1/demo-login.
   2. A minted HEXGATE_API_KEY for the seeded project (see provision.py).
@@ -92,7 +92,7 @@ def start_services(dash_url: str | None = None) -> dict[str, str]:
 
     # --- Platform API (background) --------------------------------------
     _spawn(
-        ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(API_PORT)],
+        ["uvicorn", "hexgate_api.main:app", "--host", "0.0.0.0", "--port", str(API_PORT)],
         cwd=API_DIR,
         env=env,
     )
