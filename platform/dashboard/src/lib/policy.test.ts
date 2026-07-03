@@ -632,26 +632,71 @@ describe("buildAgentView — manifest as source of truth", () => {
     expect(view!.model).toBe("gpt-4");
   });
 
-  it("falls back to agent_yaml parsing when manifest is explicit null", () => {
-    // manifests[agentName]?.manifest can be null (registered agent
-    // whose latest AgentVersion has manifest=null via legacy path).
-    // Same fallback as undefined.
-    const view = buildAgentView(
-      agent({
-        yaml: "name: x\ntools: []",
-        policy: FLAT_POLICY,
-      }),
-      null,
-    );
+  it("renders a bare agent when the envelope exists but its manifest is null", () => {
+    // Post-review regression: `AgentManifestView.manifest` is nullable
+    // (agent row exists, no persisted AgentVersion.manifest yet). The
+    // pre-fix collapse `?.manifest ?? null` sent this state through the
+    // agent_yaml fallback, which then dropped the agent because its
+    // agent_yaml was empty. Now we distinguish `null` (envelope
+    // present, manifest not yet registered) from `undefined` (no
+    // envelope, legacy agent) and render a bare node in the former
+    // case — the operator sees the agent exists and can register it.
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), null);
     expect(view).not.toBeNull();
+    expect(view!.name).toBe("graph_smoke");
+    expect(view!.tools).toEqual([]);
+    expect(view!.model).toBe("");
   });
 
-  it("previously-broken code-registered agent (empty agent_yaml, no manifest) returns null gracefully", () => {
-    // The exact fingerprint of the pre-fix bug: agent_yaml === "" AND
-    // no manifest info. buildAgentView returns null — the Graph filters
-    // it out, showing "No agents yet." The manifest path fixes real
-    // registered agents; a truly manifest-less agent with empty YAML
-    // has nothing to render and shouldn't crash the graph.
+  it("still returns null for an empty agent_yaml when no envelope was queried", () => {
+    // The truly-legacy path: no manifest lookup happened for this
+    // agent at all (either the caller has no manifests query wired,
+    // or the agent predates the manifest flow entirely). Empty
+    // agent_yaml means no signal that the agent is actually registered,
+    // so dropping it is the honest choice.
     expect(buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }))).toBeNull();
+  });
+
+  it("stringifies non-string tool.name values defensively", () => {
+    // Post-review regression: pre-fix parseAgent applied
+    // agent.tools.map(String) to guard against non-string entries.
+    // The manifest branch has to preserve that defense — a stray
+    // ToolDefinition whose `.name` is a number or object would
+    // otherwise flow unstringified into ReactFlow node/edge ids.
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), {
+      model: "gpt-5.4",
+      tools: [
+        { name: "web_search" },
+        { name: 42 as unknown as string },
+        { name: undefined as unknown as string },
+      ],
+    });
+    expect(view!.tools).toEqual(["web_search", "42", ""]);
+  });
+
+  it("renders a manifest agent even when its policy_yaml won't parse", () => {
+    // Post-review regression: buildAgentView used to return null on
+    // any parsePolicy failure, dropping otherwise-valid manifest
+    // agents from the graph. With manifest info, we fall back to a
+    // fail-closed default policy so the agent stays visible; the
+    // operator sees the node and can fix the broken policy_yaml in
+    // the editor instead of the agent silently vanishing.
+    const view = buildAgentView(
+      agent({ yaml: "", policy: ":::garbage yaml" }),
+      { model: "gpt-5.4", tools: [{ name: "web_search" }] },
+    );
+    expect(view).not.toBeNull();
+    expect(view!.tools).toEqual(["web_search"]);
+    // Fail-closed: default_policy.mode defaults to deny.
+    expect(view!.policy.default_policy.mode).toBe("deny");
+  });
+
+  it("still returns null when policy_yaml won't parse AND there's no manifest envelope", () => {
+    // Symmetry with the "empty agent_yaml, no envelope" case: without
+    // any manifest signal, a broken policy on a legacy agent is
+    // ambiguous enough that dropping is honest.
+    expect(
+      buildAgentView(agent({ yaml: "name: x", policy: ":::garbage" })),
+    ).toBeNull();
   });
 });

@@ -32,16 +32,42 @@ export interface OverviewGraph {
  * code-registered agents whose ``agent_yaml`` column is empty. Legacy
  * YAML-edited agents (no manifest entry) fall back to parsing
  * ``agent_yaml`` as before.
+ *
+ * The map preserves the three-way distinction ``buildAgentView`` needs:
+ * a missing envelope means "fall back to yaml", an envelope with a null
+ * manifest field means "render the agent as registered-but-no-tools",
+ * and a full manifest means "read tools + model from it". Collapsing
+ * those into one nullable path silently drops half-registered agents.
  */
 export function buildOverviewGraph(
   agents: AgentRead[],
   manifests?: AgentManifestView[],
 ): OverviewGraph {
-  const manifestByName = new Map<string, AgentManifestView>(
-    (manifests ?? []).map((m) => [m.name, m]),
-  );
+  const envelopeByName = new Map<string, AgentManifestView>();
+  for (const envelope of manifests ?? []) {
+    if (envelopeByName.has(envelope.name)) {
+      // Two envelopes with the same name would silently overwrite each
+      // other — the last-wins Map default hides a real data problem
+      // (join fan-out on the server, or a stale envelope from a
+      // pending rename). Log once so a broken response is visible in
+      // devtools rather than showing up as a wrong tool list.
+      console.warn(
+        `buildOverviewGraph: duplicate manifest envelope for agent ${envelope.name}; keeping the first, ignoring later entries`,
+      );
+      continue;
+    }
+    envelopeByName.set(envelope.name, envelope);
+  }
   const agentViews = agents
-    .map((a) => buildAgentView(a, manifestByName.get(a.name)?.manifest ?? null))
+    .map((a) => {
+      const envelope = envelopeByName.get(a.name);
+      // Preserve undefined (no envelope → yaml fallback) vs null
+      // (envelope with null manifest → render bare) — collapsing both
+      // to null was the bug the review flagged.
+      const manifestInfo =
+        envelope === undefined ? undefined : envelope.manifest;
+      return buildAgentView(a, manifestInfo);
+    })
     .filter((a): a is AgentView => a !== null);
 
   const uniqueTools = new Set<string>();

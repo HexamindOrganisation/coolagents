@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildOverviewGraph } from "./graph";
 import type { AgentManifestView, AgentRead } from "./api";
 
@@ -123,5 +123,49 @@ describe("buildOverviewGraph — manifest-fed tools unblock code-registered agen
     expect(graph.edges.filter((e) => e.source === "agent:skeleton")).toEqual(
       [],
     );
+  });
+
+  it("renders an agent whose envelope has manifest=null (registered, no version yet)", () => {
+    // Post-review regression: pre-fix `?.manifest ?? null` collapsed
+    // "no envelope" and "envelope with null manifest" into the same
+    // fallback. The latter is a real state per AgentManifestView docs
+    // (agent row exists, no persisted AgentVersion.manifest yet). We
+    // now render a bare agent node in that case so the operator sees
+    // the agent exists — dropping it silently would reproduce the
+    // exact "No agents yet" bug this PR set out to fix.
+    const envelope = {
+      name: "half_registered",
+      manifest: null,
+      version: null,
+      content_hash: null,
+      updated_at: "2026-07-03T00:00:00Z",
+    } as unknown as AgentManifestView;
+
+    const graph = buildOverviewGraph(
+      [agent("half_registered", "")],
+      [envelope],
+    );
+    expect(graph.agentViews).toHaveLength(1);
+    expect(graph.agentViews[0].name).toBe("half_registered");
+    expect(graph.agentViews[0].tools).toEqual([]);
+  });
+
+  it("warns and keeps the first envelope on duplicate manifest names", () => {
+    // Two envelopes for the same agent name would silently overwrite
+    // each other under a naive Map.set loop, hiding a real backend
+    // bug (join fan-out, stale envelope during rename). Log once and
+    // keep the first so devtools surfaces the problem.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const first = manifestFor("dupe", ["first_tool"]);
+      const second = manifestFor("dupe", ["second_tool"]);
+      const graph = buildOverviewGraph([agent("dupe", "")], [first, second]);
+      expect(graph.agentViews).toHaveLength(1);
+      expect(graph.agentViews[0].tools).toEqual(["first_tool"]);
+      expect(warnSpy).toHaveBeenCalledOnce();
+      expect(warnSpy.mock.calls[0][0]).toMatch(/duplicate manifest envelope/);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

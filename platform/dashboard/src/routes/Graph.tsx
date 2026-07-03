@@ -7,6 +7,7 @@ import {
   MiniMap,
   BackgroundVariant,
 } from "@xyflow/react";
+import { AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
 import { buildOverviewGraph } from "@/lib/graph";
@@ -32,10 +33,23 @@ export function GraphPage() {
     enabled: !!scope.projectId,
   });
 
+  // Wait for the manifests query to settle (success OR error) before
+  // building — otherwise a background refetch (post-register invalidate,
+  // window-focus refetch) would run the memo with the OLD manifests.data
+  // paired with the NEW agents.data. A code-registered agent freshly
+  // added in the invalidate cycle would flicker as missing from the
+  // graph until the manifests query catches up. On the isError branch we
+  // build with manifests.data === undefined intentionally — legacy
+  // agents still render and the banner below surfaces the failure so
+  // the user isn't left staring at an empty graph with no explanation.
+  const graphBuildBlocked =
+    manifests.isFetching && !manifests.isError && manifests.data === undefined;
+
   const { nodes, edges, agentViews } = useMemo(() => {
     if (!agents.data) return { nodes: [], edges: [], agentViews: [] };
+    if (graphBuildBlocked) return { nodes: [], edges: [], agentViews: [] };
     return buildOverviewGraph(agents.data, manifests.data);
-  }, [agents.data, manifests.data]);
+  }, [agents.data, manifests.data, graphBuildBlocked]);
 
   if (scope.status === "no-project") {
     return <NoProjectEmptyState resource="graph" />;
@@ -60,8 +74,22 @@ export function GraphPage() {
         </div>
       </div>
 
+      {/* Surface manifest-query failure explicitly. Without this, a 500
+          on listAgentManifests would silently drop every code-registered
+          agent and the user would see "No agents yet" with no error — the
+          exact bug this PR aimed to fix. */}
+      {manifests.isError && (
+        <div className="flex items-center gap-2 px-8 py-2 text-xs bg-deny/5 border-b border-deny/30 text-deny">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span>
+            Couldn't load registered manifests. Code-registered agents may be
+            missing from the graph. Refresh to retry.
+          </span>
+        </div>
+      )}
+
       <div className="flex-1 relative">
-        {agents.isLoading || manifests.isLoading ? (
+        {agents.isLoading || (manifests.isLoading && !manifests.isError) ? (
           <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
             Loading…
           </div>

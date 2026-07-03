@@ -317,45 +317,63 @@ export function mergedTools(policy: ParsedPolicy): Record<string, ToolPolicy> {
 
 /**
  * Build an :class:`AgentView` from an :class:`AgentRead` and, optionally,
- * that agent's registered manifest.
+ * that agent's registered-manifest envelope.
  *
  * ``agent_yaml`` is a legacy column from the pre-manifest dashboard flow
  * where users hand-edited YAML. Code-registered agents (``hexgate
  * register``) leave it empty — the source of truth for their tool list
- * lives on the AgentVersion.manifest instead. When ``manifest`` is
- * provided, its ``.tools`` and ``.model`` are used verbatim; the
- * ``agent_yaml`` fallback only applies to legacy agents.
+ * lives on the AgentVersion.manifest instead.
  *
- * Policy always parses from ``agent.policy_yaml`` — that's the operator's
- * editable policy document regardless of registration path.
+ * The ``manifestInfo`` argument is deliberately three-valued so the
+ * builder can distinguish three real cases that used to collapse into
+ * one "silently drop the agent" failure:
+ *
+ *   * ``undefined`` — caller has no manifest envelope for this agent
+ *     (either legacy dashboard hasn't queried manifests, or the agent
+ *     genuinely predates the manifest flow). Fall back to parsing
+ *     ``agent_yaml``.
+ *   * ``null`` — envelope exists on the manifests endpoint but its
+ *     ``.manifest`` field is null (agent row present, no persisted
+ *     ``AgentVersion.manifest`` yet — a real state per
+ *     ``AgentManifestView`` docs). Render the agent with the DB name
+ *     and no tools rather than falling to the empty-``agent_yaml``
+ *     path that would drop it entirely.
+ *   * object — normal case, read tools + model from the manifest.
+ *
+ * Policy parses from ``agent.policy_yaml``. If it can't parse but the
+ * caller had manifest info, we still render the agent with a fail-closed
+ * default policy — the operator can see the agent exists and fix the
+ * broken YAML in the Policies editor, instead of the agent silently
+ * vanishing from the graph.
  */
 export function buildAgentView(
   agent: AgentRead,
-  manifest?: {
+  manifestInfo?: {
     model: string | null;
     tools: readonly { name: string }[];
   } | null,
 ): AgentView | null {
   const parsedPolicy = parsePolicy(agent.policy_yaml);
-  if (!parsedPolicy) return null;
 
   let name: string;
   let model: string;
   let tools: string[];
+  const hasEnvelope = manifestInfo !== undefined;
 
-  if (manifest) {
-    // Prefer the registered manifest — it's the source of truth for
-    // code-defined agents. ``manifest.name`` isn't carried on the
-    // envelope (the enclosing view already has it), so fall back to
-    // AgentRead.name.
+  if (manifestInfo) {
+    // Registered agent with a persisted manifest — the common case.
     name = agent.name;
-    model = manifest.model ?? "";
-    tools = manifest.tools.map((t) => t.name);
+    model = manifestInfo.model ?? "";
+    tools = manifestInfo.tools.map((t) => String(t?.name ?? ""));
+  } else if (manifestInfo === null) {
+    // Registered agent whose latest AgentVersion has no manifest yet.
+    // Render as a bare node so the operator sees the agent exists —
+    // the tool list will appear once they run ``hexgate register``.
+    name = agent.name;
+    model = "";
+    tools = [];
   } else {
-    // No manifest → this is a legacy YAML-edited agent. Parse
-    // agent_yaml. Returns null if the YAML is unparseable or empty
-    // (empty is the pre-manifest register bug's fingerprint — Graph
-    // now avoids that path by preferring the manifest above).
+    // No envelope at all → legacy YAML-edited agent. Parse agent_yaml.
     const parsedAgent = parseAgent(agent.agent_yaml, agent.policy_yaml);
     if (!parsedAgent) return null;
     name = parsedAgent.name || agent.name;
@@ -363,14 +381,32 @@ export function buildAgentView(
     tools = [...parsedAgent.tools];
   }
 
+  // Fail-closed default policy when parse failed but the caller
+  // confirmed the agent is real (manifest envelope present). Legacy
+  // agents with unparseable policy_yaml continue to drop — they have
+  // no other signal that the agent is genuinely registered.
+  const effectivePolicy: ParsedPolicy = parsedPolicy ?? {
+    version: 1,
+    default_policy: { mode: "deny" },
+    tools: {},
+    roles: {},
+  };
+  if (!parsedPolicy && !hasEnvelope) return null;
+
   // Display tool list = manifest declaration OR agent.yaml declaration.
   // Role-only policy entries do NOT create callable tools — the runtime
   // registers tools from agent.tools (the SDK-decorated functions);
   // policy just gates them. Including role-only tools here would draw
   // phantom capability edges on the graph.
-  const merged = mergedTools(parsedPolicy);
+  const merged = mergedTools(effectivePolicy);
   const missingInPolicy = tools.filter((t) => !(t in merged));
-  return { name, model, tools, policy: parsedPolicy, missingInPolicy };
+  return {
+    name,
+    model,
+    tools,
+    policy: effectivePolicy,
+    missingInPolicy,
+  };
 }
 
 /**
