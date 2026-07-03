@@ -98,7 +98,7 @@ async def require_org_admin_or_self(
     against the caller's ``user.id`` to decide whether self-only
     permission is sufficient.
 
-    The last-owner guard fires inside :func:`hexgate_api.domains.members.service.remove_member`
+    The last-owner guard fires inside :func:`hexgate_api.features.members.service.remove_member`
     so either path is rejected when removal would orphan the org.
     """
     from hexgate_api.constants import ROLE_ADMIN, ROLE_OWNER

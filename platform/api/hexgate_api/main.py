@@ -7,20 +7,20 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from hexgate_api import health
-from hexgate_api.bootstrap.seed import ensure_default_project
+from hexgate_api.seeds.defaults import ensure_default_project
 from hexgate_api.core.clickhouse import ping as clickhouse_ping
 from hexgate_api.core.db import async_session_factory, init_db
 from hexgate_api.core.keystore import keystore
-from hexgate_api.domains.agents.router import router as agents_router
-from hexgate_api.domains.agents.service import backfill_bundles
-from hexgate_api.domains.audit.router import router as audit_router
-from hexgate_api.domains.auth.router import include_auth_routers, mount_oauth_routers
-from hexgate_api.domains.chat.router import router as chat_router
-from hexgate_api.domains.invitations.router import router as invitations_router
-from hexgate_api.domains.members.router import router as members_router
-from hexgate_api.domains.orgs.router import router as orgs_router
-from hexgate_api.domains.projects.router import router as projects_router
-from hexgate_api.domains.tokens.router import router as tokens_router
+from hexgate_api.features.agents.router import router as agents_router
+from hexgate_api.features.agents.service import backfill_bundles
+from hexgate_api.features.audit.router import router as audit_router
+from hexgate_api.features.auth.router import include_auth_routers, mount_oauth_routers
+from hexgate_api.features.chat.router import router as chat_router
+from hexgate_api.features.invitations.router import router as invitations_router
+from hexgate_api.features.members.router import router as members_router
+from hexgate_api.features.orgs.router import router as orgs_router
+from hexgate_api.features.projects.router import router as projects_router
+from hexgate_api.features.tokens.router import router as tokens_router
 
 # Load .env into os.environ before any HEXGATE_* read (CORS resolves at import
 # time). Real env vars still take precedence.
@@ -150,7 +150,7 @@ async def lifespan(app_: FastAPI):
         )
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
-    from hexgate_api.domains.auth.service import _cookie_secure, _dashboard_url
+    from hexgate_api.features.auth.service import _cookie_secure, _dashboard_url
 
     _log.info(
         "hexgate-api startup config: cors_origins=%s cookie_secure=%s dashboard_url=%s",

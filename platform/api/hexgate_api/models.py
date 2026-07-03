@@ -180,7 +180,7 @@ class Invitation(SQLModel, table=True):
     # case-insensitive even on SQLite (no native CI collations).
     email: str = Field(index=True)
     # Role granted on accept. Validated against the role-permissions
-    # matrix in hexgate_api.domains.members.service (_can_invite_role) — caller can't escalate above
+    # matrix in hexgate_api.features.members.service (_can_invite_role) — caller can't escalate above
     # their own role.
     role: str
     invited_by_user_id: str = Field(foreign_key="user.id")
@@ -258,7 +258,7 @@ class Agent(SQLModel, table=True):
     )
 
     # Compiled + signed WASM bundle, produced from policy_yaml at save time
-    # (see hexgate_api.domains.agents.compiler.compile_bundle). Null when opa is unavailable or the
+    # (see hexgate_api.features.agents.compiler.compile_bundle). Null when opa is unavailable or the
     # policy fails to compile — the SDK then falls back to the pydantic
     # engine on policy_yaml. The signature is over bundle_manifest's exact
     # bytes, signed by the platform's root key (the same key that signs

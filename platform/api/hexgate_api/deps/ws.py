@@ -19,7 +19,7 @@ from hexgate_api.core.biscuits import (
     verify_token,
 )
 from hexgate_api.models import OrganizationMember, Project, User
-from hexgate_api.domains.tokens.service import find_token_by_secret
+from hexgate_api.features.tokens.service import find_token_by_secret
 
 # Marker subprotocol the server echoes on a successful WS handshake. The
 # CLI client asserts it back so it knows the platform understands the
@@ -146,7 +146,7 @@ async def ws_require_org_member(
     # require_user_or_sdk_token (gone) and friends out of the cycle.
     from fastapi_users.db import SQLAlchemyUserDatabase
 
-    from hexgate_api.domains.auth.service import (
+    from hexgate_api.features.auth.service import (
         OAuthAccount,
         UserManager,
         get_jwt_strategy,

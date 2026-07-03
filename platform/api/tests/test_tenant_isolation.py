@@ -24,7 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.main import app
 from hexgate_api.models import Agent, Organization, OrganizationMember, Project, User
 from hexgate_api.core.ids import new_id
-from hexgate_api.bootstrap.seed import ensure_default_project
+from hexgate_api.seeds.defaults import ensure_default_project
 from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_USER_ID
 
 

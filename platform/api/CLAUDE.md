@@ -7,10 +7,10 @@ After you make changes, run: `make fmt-check && make platform-api-check`  # fmt-
 - `constants.py` — shared seed identity (`DEFAULT_*`) + role names (`ROLE_*`).
 - `core/` — infra: `db`, `keystore` (holds the process-wide signing singleton), `biscuits`, `clickhouse`, `relay`, `mailer`, `spa`, `ids`.
 - `deps/` — FastAPI dependency gates: `identity`, `tokens`, `org`, `project`, `ws`, `clickhouse`.
-- `bootstrap/seed.py` — first-boot triple-default seeding.
-- `domains/<x>/` — one vertical slice per context (`tokens`, `projects`, `members`, `orgs`, `invitations`, `agents`, `audit`, `chat`, `auth`), each a `router.py` + `service.py` (agents also `compiler.py`). Domain exceptions live in their `service.py`.
+- `seeds/defaults.py` — first-boot triple-default seeding (agent seed data lives in `features/agents/seed_data.py`).
+- `features/<x>/` — one vertical slice per context (`tokens`, `projects`, `members`, `orgs`, `invitations`, `agents`, `audit`, `chat`, `auth`), each a `router.py` + `service.py` (agents also `compiler.py`). Domain exceptions live in their `service.py`.
 - `schemas.py` / `models.py` — shared Pydantic DTOs / SQLModel tables.
-- `tests/` mirrors this: `tests/domains/<x>/`, `tests/core/`.
+- `tests/` mirrors this: `tests/features/<x>/`, `tests/core/`.
 
 ## Fixed UUIDs (`constants.py`)
 - Org: `00000000-0000-0000-0000-000000000001`
