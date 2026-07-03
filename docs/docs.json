@@ -48,6 +48,7 @@
             "pages": [
               "policy/yaml-shape",
               "policy/constraints",
+              "policy/in-code",
               "policy/wasm-bundles",
               "policy/signing",
               "policy/local-override"

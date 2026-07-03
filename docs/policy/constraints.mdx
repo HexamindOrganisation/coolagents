@@ -12,8 +12,21 @@ description: "Rego-compatible expressions evaluated against the call's arguments
 |---|---|---|
 | `==` `!=` | `args.currency == "USD"` | Strings use JSON double quotes |
 | `<` `<=` `>` `>=` | `args.amount <= 500` | Type-mismatched comparisons fail-closed |
-| `in` | `args.template in ["a", "b"]` | RHS must be a JSON list |
+| `in` | `args.template in ["a", "b"]` | RHS must be a JSON list literal |
 | `not in` | `args.priority not in ["urgent"]` | Two-word operator, treated as one |
+
+Each side of a comparison is an **operand** — a literal, a field path, or
+`count(...)`:
+
+| Operand | Example | Notes |
+|---|---|---|
+| Field path | `args.amount` | Missing path → fails closed (deny) |
+| Cross-field | `args.max >= args.min` | A bare path on the right is a field reference |
+| `count()` | `count(args.recipients) <= 10` | Length of a list / string / object |
+
+A bare unquoted word on the right is read as a **field reference**, so a
+forgotten-quotes typo (`args.x == USD`) compares against the field `USD`
+(usually absent → deny) rather than the string `"USD"`. Quote strings.
 
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —

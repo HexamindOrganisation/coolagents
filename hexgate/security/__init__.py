@@ -84,9 +84,21 @@ from hexgate.security.wasm_engine import (
     WasmEvalError,
     WasmPolicy,
 )
+from hexgate.security.builder import C, PolicyBuilder, RolePolicyBuilder
+from hexgate.security.testing import (
+    assert_allows,
+    assert_denies,
+    assert_needs_approval,
+)
 
 __all__ = [
     "AgentPolicy",
+    "C",
+    "PolicyBuilder",
+    "RolePolicyBuilder",
+    "assert_allows",
+    "assert_denies",
+    "assert_needs_approval",
     "BaseToolPolicy",
     "PolicyBinding",
     "PolicyBindingError",

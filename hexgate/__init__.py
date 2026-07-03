@@ -24,7 +24,15 @@ from hexgate.agents.loader import (
 from hexgate.cli.register import AgentManifest, create_manifest
 from hexgate.cloud import HexgateClient, HexgateConfig
 from hexgate.runtime import LocalWorkspace, ToolUseContext, User, Workspace
-from hexgate.security import AgentPolicy
+from hexgate.security import (
+    AgentPolicy,
+    C,
+    PolicyBuilder,
+    RolePolicyBuilder,
+    assert_allows,
+    assert_denies,
+    assert_needs_approval,
+)
 from hexgate.tools import (
     agent_tool,
     bash,
@@ -41,6 +49,12 @@ from hexgate.tools.websearch import web_search
 __all__ = [
     "AgentManifest",
     "AgentPolicy",
+    "C",
+    "PolicyBuilder",
+    "RolePolicyBuilder",
+    "assert_allows",
+    "assert_denies",
+    "assert_needs_approval",
     "HexgateClient",
     "HexgateConfig",
     "LocalWorkspace",
