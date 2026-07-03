@@ -223,3 +223,49 @@ def test_none_role_falls_back_to_default_both_engines() -> None:
     """A null caller role resolves to the default policy on both engines."""
     _assert_parity(_INHERITED, None, "web_search", {}, "allow")
     _assert_parity(_INHERITED, None, "read_file", {}, "deny")
+
+
+# ---------------------------------------------------------------------------
+# Cross-field refs (2a) + count() (2d) — parity through real opa->wasmtime
+# ---------------------------------------------------------------------------
+
+_OPERAND_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "range": {"mode": "allow", "constraints": ["args.max >= args.min"]},
+                "batch": {"mode": "allow", "constraints": ["count(args.items) <= 3"]},
+                "combo": {
+                    "mode": "allow",
+                    "constraints": ["args.hi >= args.lo", "count(args.tags) <= 2"],
+                },
+            }
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        # cross-field comparison
+        ("range", {"max": 10, "min": 5}, "allow"),
+        ("range", {"max": 5, "min": 5}, "allow"),  # equal
+        ("range", {"max": 3, "min": 5}, "deny"),
+        ("range", {"max": 10}, "deny"),  # right ref missing → fail closed
+        ("range", {"min": 5}, "deny"),  # left ref missing
+        ("range", {}, "deny"),
+        # count()
+        ("batch", {"items": [1, 2, 3]}, "allow"),
+        ("batch", {"items": [1, 2, 3, 4]}, "deny"),
+        ("batch", {"items": []}, "allow"),  # empty → 0
+        ("batch", {}, "deny"),  # missing → fail closed
+        # both together (AND)
+        ("combo", {"hi": 9, "lo": 1, "tags": ["a"]}, "allow"),
+        ("combo", {"hi": 1, "lo": 9, "tags": ["a"]}, "deny"),  # first fails
+        ("combo", {"hi": 9, "lo": 1, "tags": ["a", "b", "c"]}, "deny"),  # second fails
+    ],
+)
+def test_operand_parity(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_OPERAND_POLICY, "default", tool, args, expect)

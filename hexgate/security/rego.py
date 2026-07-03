@@ -69,7 +69,15 @@ import hashlib
 import json
 from typing import Any
 
-from hexgate.security.constraints import Cmp, Lit, Node, Operand, Ref, parse_constraint
+from hexgate.security.constraints import (
+    Cmp,
+    Count,
+    Lit,
+    Node,
+    Operand,
+    Ref,
+    parse_constraint,
+)
 from hexgate.security.models import AgentPolicy, BaseToolPolicy, FileToolPolicy
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
@@ -387,6 +395,8 @@ def _render(operand: Operand) -> str:
     """
     if isinstance(operand, Ref):
         return "input." + ".".join(operand.path)
+    if isinstance(operand, Count):
+        return f"count(input.{'.'.join(operand.ref.path)})"
     if isinstance(operand, Lit):
         return json.dumps(operand.value)
     raise PolicySetError(f"cannot render operand {operand!r}")

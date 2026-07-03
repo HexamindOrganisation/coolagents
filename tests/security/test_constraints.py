@@ -24,6 +24,7 @@ from hexgate.security import PolicyDeniedError
 from hexgate.security.constraints import (
     Cmp,
     ConstraintParseError,
+    Count,
     Lit,
     Ref,
     check_constraints,
@@ -213,6 +214,80 @@ def test_node_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cross-field references (2a) — a path on the right-hand side
+# ---------------------------------------------------------------------------
+
+
+def test_parse_cross_field_builds_ref_on_both_sides() -> None:
+    node = parse_constraint("args.max >= args.min")
+    assert isinstance(node.left, Ref) and node.left.path == ("args", "max")
+    assert node.op == ">="
+    assert isinstance(node.right, Ref) and node.right.path == ("args", "min")
+
+
+def test_parse_unquoted_word_is_a_ref_not_an_error() -> None:
+    """2a consequence: a bare word on the RHS is a field ref, not a bad string.
+
+    A forgotten-quotes typo (``== USD``) parses as a reference to field ``USD``
+    — which is (almost always) absent and so fails closed at evaluation.
+    """
+    node = parse_constraint("args.currency == USD")
+    assert isinstance(node.right, Ref) and node.right.path == ("USD",)
+
+
+@pytest.mark.parametrize(
+    ("src", "args", "expected"),
+    [
+        ("args.max >= args.min", {"max": 10, "min": 5}, True),
+        ("args.max >= args.min", {"max": 5, "min": 5}, True),
+        ("args.max >= args.min", {"max": 3, "min": 5}, False),
+        ("args.a == args.b", {"a": "x", "b": "x"}, True),
+        ("args.a == args.b", {"a": "x", "b": "y"}, False),
+        ("args.max >= args.min", {"max": 10}, False),  # right ref missing
+        ("args.max >= args.min", {"min": 5}, False),  # left ref missing
+        ("args.max >= args.min", {}, False),  # both missing
+    ],
+)
+def test_evaluate_cross_field(src: str, args: dict, expected: bool) -> None:
+    assert _eval(src, args) is expected
+
+
+# ---------------------------------------------------------------------------
+# count() operand (2d)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_count_builds_count_operand() -> None:
+    node = parse_constraint("count(args.recipients) <= 10")
+    assert isinstance(node.left, Count)
+    assert node.left.ref.path == ("args", "recipients")
+    assert node.op == "<="
+    assert node.right.value == 10
+
+
+def test_parse_count_rejects_bad_inner_path() -> None:
+    with pytest.raises(ConstraintParseError, match="invalid identifier"):
+        parse_constraint("count(args.0bad) <= 3")
+
+
+@pytest.mark.parametrize(
+    ("src", "args", "expected"),
+    [
+        ("count(args.items) <= 3", {"items": [1, 2, 3]}, True),
+        ("count(args.items) <= 3", {"items": [1, 2, 3, 4]}, False),
+        ("count(args.items) <= 3", {"items": []}, True),  # empty → 0
+        ("count(args.items) == 0", {"items": []}, True),
+        ("count(args.items) <= 3", {}, False),  # missing → fail closed
+        ("count(args.items) <= 3", {"items": 5}, False),  # not sized → fail closed
+        ("count(args.name) <= 5", {"name": "abcd"}, True),  # string length
+        ("count(args.a) >= count(args.b)", {"a": [1, 2], "b": [1]}, True),  # both count
+    ],
+)
+def test_evaluate_count(src: str, args: dict, expected: bool) -> None:
+    assert _eval(src, args) is expected
+
+
+# ---------------------------------------------------------------------------
 # Malformed input — must raise ConstraintParseError (never another exception)
 # ---------------------------------------------------------------------------
 
@@ -231,9 +306,8 @@ def test_node_is_frozen() -> None:
         ("args.0bad <= 50", "invalid identifier"),
         ("args. == 5", "invalid identifier"),
         ("args..x == 5", "invalid identifier"),
-        (".x == 5", "invalid identifier"),
+        (".x == 5", "not a valid JSON literal"),  # leading dot → not id-shaped
         ("args x == 5", "invalid identifier"),  # space in a path segment
-        ("args.x == USD", "JSON literal"),  # unquoted string
         ("args.x == 'single'", "JSON literal"),  # single quotes
         ("args.x == 5x", "JSON literal"),
         ("args.x == [1, 2", "JSON literal"),  # unterminated list

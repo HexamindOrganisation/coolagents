@@ -7,33 +7,40 @@ change — only the executor below.
 
 Grammar (PEG-ish, single line per constraint):
 
-    constraint   := lhs WS op WS rhs
-    lhs          := IDENT ("." IDENT)*           # e.g. args.amount
+    constraint   := operand WS op WS operand
     op           := "==" | "!=" | "<=" | ">=" | "<" | ">"
                   | "in" | "not in"
-    rhs          := scalar | list
-    scalar       := STRING | NUMBER | "true" | "false" | "null"
-    list         := "[" (rhs ("," rhs)*)? "]"
+    operand      := count | path | literal
+    count        := "count(" path ")"            # element count (2d)
+    path         := IDENT ("." IDENT)*           # e.g. args.amount (a field ref)
+    literal      := STRING | NUMBER | "true" | "false" | "null" | list
+    list         := "[" (literal ("," literal)*)? "]"
     STRING       := double-quoted string with backslash escapes
     NUMBER       := optional sign + integer or decimal
     IDENT        := [a-zA-Z_][a-zA-Z_0-9]*
+
+For ``in`` / ``not in`` the right-hand side must be a list *literal*.
+A bare identifier on the right is a field reference (cross-field, 2a), so a
+forgotten-quotes typo (``== USD``) reads as a ref to an (absent) field and
+fails closed rather than erroring.
 
 Concrete examples (all of these parse and evaluate today):
 
     args.amount <= 50
     args.currency == "USD"
+    args.max >= args.min                         # cross-field (2a)
+    count(args.recipients) <= 10                 # count (2d)
     args.template in ["refund_confirmed", "ticket_resolved"]
     args.priority not in ["urgent", "critical"]
     args.confirmed == true
-    args.region != "EU"
 
 What we deliberately do NOT support yet:
 
     * Boolean composition (AND / OR) — emit multiple constraint lines; the
       policy engine ANDs them.
-    * Function calls (`startswith`, `contains`, …) — wait for the OPA swap.
-    * Cross-fact comparisons (``refund_limit(N) and args.amount <= N``) —
-      M2's role-resolved facts will handle this directly.
+    * Function calls (`startswith`, `contains`, `matches`) — a later tier.
+    * ``in`` against a field reference (``args.x in args.allowed``) — the
+      right of ``in`` must be a list literal for now.
     * Negation as a prefix operator — use ``!=`` or ``not in``.
 
 The parser is a recursive-descent walker over a tiny token stream. ~40
@@ -69,7 +76,18 @@ class Ref:
     path: tuple[str, ...]
 
 
-Operand = Ref | Lit
+@dataclass(frozen=True, slots=True)
+class Count:
+    """The element count of a collection, e.g. ``count(args.recipients)``.
+
+    Evaluates to ``len`` of a list / string / object; anything else is
+    treated as missing (fail closed). Mirrors Rego's ``count`` builtin.
+    """
+
+    ref: Ref
+
+
+Operand = Ref | Count | Lit
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,21 +124,25 @@ Constraint = Cmp  # back-compat alias for existing importers
 
 _OP_TOKENS = ("<=", ">=", "==", "!=", "not in", "in", "<", ">")
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
+_COUNT_RE = re.compile(r"^count\((.+)\)$")
+_JSON_KEYWORDS = ("true", "false", "null")
 
 
 def parse_constraint(source: str) -> Node:
     """Parse one constraint line into a :class:`Node`.
 
-    Raises :class:`ConstraintParseError` for unsupported operators, bad
-    identifiers on the left, or non-literal right-hand sides.
+    Each side is an *operand*: a JSON literal, a field path (``args.amount``),
+    or ``count(<path>)``. A path on the right is a cross-field comparison
+    (``args.max >= args.min``). Raises :class:`ConstraintParseError` for
+    unsupported operators, bad identifiers, or malformed operands.
     """
     text = source.strip()
     if not text:
         raise ConstraintParseError("empty constraint")
 
-    # Find the first matching operator outside of any string literal. Since
-    # the LHS is restricted to dotted identifiers, we can scan token-by-token
-    # rather than worrying about strings on the left.
+    # Find the first matching operator outside of any string literal. Operands
+    # never contain a bare operator token (paths are identifiers, literals are
+    # JSON), so a left-to-right scan is unambiguous.
     op, op_index = _find_operator(text)
     if op is None:
         raise ConstraintParseError(
@@ -131,16 +153,46 @@ def parse_constraint(source: str) -> Node:
     lhs_raw = text[:op_index].rstrip()
     rhs_raw = text[op_index + len(op) :].lstrip()
 
-    path = _parse_path(lhs_raw, source)
-    value = _parse_rhs(rhs_raw, source)
+    left = _parse_operand(lhs_raw, source, "left-hand side")
+    right = _parse_operand(rhs_raw, source, "right-hand side")
 
-    if op in ("in", "not in") and not isinstance(value, list):
+    if op in ("in", "not in") and not (
+        isinstance(right, Lit) and isinstance(right.value, list)
+    ):
         raise ConstraintParseError(
-            f"{op!r} requires a list on the right in {source!r}, got "
-            f"{type(value).__name__}"
+            f"{op!r} requires a list literal on the right in {source!r}"
         )
 
-    return Cmp(left=Ref(path), op=op, right=Lit(value), source=source)
+    return Cmp(left=left, op=op, right=right, source=source)
+
+
+def _parse_operand(text: str, source: str, side: str) -> Operand:
+    """Parse one side of a comparison into an operand.
+
+    Precedence: ``count(<path>)`` → a field path → a JSON literal. An
+    identifier-shaped token (starts with a letter/underscore, not a JSON
+    keyword) is read as a field reference so cross-field comparisons work;
+    everything else is a JSON literal. A forgotten-quotes typo like
+    ``== USD`` therefore becomes a reference to a (usually absent) field,
+    which fails closed at evaluation rather than parsing.
+    """
+    text = text.strip()
+    if not text:
+        raise ConstraintParseError(f"missing {side} in {source!r}")
+
+    m = _COUNT_RE.match(text)
+    if m:
+        return Count(Ref(_parse_path(m.group(1).strip(), source)))
+
+    if (text[0].isalpha() or text[0] == "_") and text not in _JSON_KEYWORDS:
+        return Ref(_parse_path(text, source))
+
+    try:
+        return Lit(json.loads(text))
+    except json.JSONDecodeError as exc:
+        raise ConstraintParseError(
+            f"{side} of {source!r} is not a valid JSON literal: {exc.msg}"
+        ) from exc
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:
@@ -183,34 +235,15 @@ def _is_ident_char(ch: str) -> bool:
     return ch.isalnum() or ch == "_"
 
 
-def _parse_path(lhs: str, source: str) -> tuple[str, ...]:
-    if not lhs:
-        raise ConstraintParseError(f"missing left-hand side in {source!r}")
-    parts = lhs.split(".")
+def _parse_path(text: str, source: str) -> tuple[str, ...]:
+    """Parse a dotted field path into identifier segments (validated)."""
+    if not text:
+        raise ConstraintParseError(f"empty path in {source!r}")
+    parts = text.split(".")
     for part in parts:
         if not _IDENT_RE.match(part):
-            raise ConstraintParseError(
-                f"invalid identifier {part!r} in left-hand side of {source!r}"
-            )
+            raise ConstraintParseError(f"invalid identifier {part!r} in {source!r}")
     return tuple(parts)
-
-
-def _parse_rhs(rhs: str, source: str) -> Any:
-    """Parse the right-hand side as a JSON literal.
-
-    Using ``json.loads`` gives us strings (with proper escape handling),
-    numbers, booleans, and lists for free — at the price of requiring
-    double-quoted strings on the right, which is also what Rego wants.
-    Single quotes are not supported.
-    """
-    if not rhs:
-        raise ConstraintParseError(f"missing right-hand side in {source!r}")
-    try:
-        return json.loads(rhs)
-    except json.JSONDecodeError as exc:
-        raise ConstraintParseError(
-            f"right-hand side of {source!r} is not a valid JSON literal: {exc.msg}"
-        ) from exc
 
 
 def _resolve_path(path: tuple[str, ...], context: dict[str, Any]) -> Any:
@@ -231,6 +264,10 @@ def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
     """Resolve an operand to a concrete value (``_MISSING`` if a ref misses)."""
     if isinstance(operand, Lit):
         return operand.value
+    if isinstance(operand, Count):
+        seq = _resolve_path(operand.ref.path, context)
+        # count() of a sized collection → len; anything else fails closed.
+        return len(seq) if isinstance(seq, (list, str, dict)) else _MISSING
     return _resolve_path(operand.path, context)
 
 
