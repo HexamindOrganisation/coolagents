@@ -37,6 +37,25 @@ Whole-line **string functions** take a field and a string literal:
 | `contains` | `contains(args.subject, "urgent")` | Substring (string only) |
 | `matches` | `matches(args.id, "^inv_[0-9]+$")` | RE2 regex, **unanchored** — use `^…$` for a full match; backreferences / lookaround are rejected |
 
+**Quantifiers** constrain the elements of a list-valued argument. `.` is the
+current element (`.field` for a sub-field), usable in any condition:
+
+| Quantifier | Example | Notes |
+|---|---|---|
+| `every` | `every(args.files, startswith(., "/tmp/"))` | All elements must match; empty list is vacuously **true** |
+| `any` | `any(args.roles, . == "admin")` | At least one element matches; empty list is **false** |
+
+Element sub-fields and nesting work too:
+
+```yaml
+constraints:
+  - every(args.items, .price <= 100)
+  - every(args.groups, any(.members, . == "admin"))
+```
+
+A non-list collection (or a missing one) fails closed. `.` is only valid inside
+a quantifier body.
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
 both produce identical decisions.

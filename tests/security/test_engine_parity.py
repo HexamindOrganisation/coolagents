@@ -318,3 +318,60 @@ _FUNC_POLICY = {
 )
 def test_function_parity(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_FUNC_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# Quantifiers (2e) — every / any over list args, incl. nesting, via real opa
+# ---------------------------------------------------------------------------
+
+_QUANT_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "ev": {
+                    "mode": "allow",
+                    "constraints": ['every(args.files, startswith(., "/tmp/"))'],
+                },
+                "an": {
+                    "mode": "allow",
+                    "constraints": ['any(args.roles, . == "admin")'],
+                },
+                "sf": {
+                    "mode": "allow",
+                    "constraints": ["every(args.items, .price <= 100)"],
+                },
+                "ne": {
+                    "mode": "allow",
+                    "constraints": ['every(args.groups, any(.members, . == "admin"))'],
+                },
+            }
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        ("ev", {"files": ["/tmp/a", "/tmp/b"]}, "allow"),
+        ("ev", {"files": ["/tmp/a", "/etc/b"]}, "deny"),
+        ("ev", {"files": []}, "allow"),  # every over [] is vacuously true
+        ("ev", {"files": "notalist"}, "deny"),  # non-list fails closed
+        ("ev", {}, "deny"),  # missing collection
+        ("an", {"roles": ["user", "admin"]}, "allow"),
+        ("an", {"roles": ["user"]}, "deny"),
+        ("an", {"roles": []}, "deny"),  # any over [] is false
+        ("sf", {"items": [{"price": 50}, {"price": 80}]}, "allow"),
+        ("sf", {"items": [{"price": 200}]}, "deny"),
+        ("sf", {"items": [{"name": "x"}]}, "deny"),  # element sub-field missing
+        (
+            "ne",
+            {"groups": [{"members": ["a", "admin"]}, {"members": ["admin"]}]},
+            "allow",
+        ),
+        ("ne", {"groups": [{"members": ["a"]}, {"members": ["admin"]}]}, "deny"),
+    ],
+)
+def test_quantifier_parity(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_QUANT_POLICY, "default", tool, args, expect)

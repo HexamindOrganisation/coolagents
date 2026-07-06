@@ -7,14 +7,16 @@ change — only the executor below.
 
 Grammar (PEG-ish, single line per constraint):
 
-    constraint   := call | comparison
+    constraint   := quant | call | comparison
     comparison   := operand WS op WS operand
     op           := "==" | "!=" | "<=" | ">=" | "<" | ">"
                   | "in" | "not in"
-    operand      := count | path | literal
+    operand      := count | path | elem | literal
     count        := "count(" path ")"            # element count (2d)
-    call         := FUNC "(" path "," WS STRING ")"   # string function (2b)
+    call         := FUNC "(" (path|elem) "," WS STRING ")"   # string function (2b)
     FUNC         := "startswith" | "endswith" | "contains" | "matches"
+    quant        := ("every"|"any") "(" (path|elem) "," WS constraint ")"   # (2e)
+    elem         := "." | "." IDENT ("." IDENT)*   # current element, in a quant body
     path         := IDENT ("." IDENT)*           # e.g. args.amount (a field ref)
     literal      := STRING | NUMBER | "true" | "false" | "null" | list
     list         := "[" (literal ("," literal)*)? "]"
@@ -26,7 +28,9 @@ For ``in`` / ``not in`` the right-hand side must be a list *literal*.
 A bare identifier on the right is a field reference (cross-field, 2a), so a
 forgotten-quotes typo (``== USD``) reads as a ref to an (absent) field and
 fails closed rather than erroring. ``matches`` is an RE2 regex and is
-*unanchored* — use ``^…$`` for a full-string match.
+*unanchored* — use ``^…$`` for a full-string match. ``.`` is the current
+element inside a quantifier body and is rejected elsewhere. ``every`` over an
+empty list is vacuously true; ``any`` over an empty list is false.
 
 Concrete examples (all of these parse and evaluate today):
 
@@ -36,6 +40,8 @@ Concrete examples (all of these parse and evaluate today):
     count(args.recipients) <= 10                 # count (2d)
     startswith(args.file_path, "src/")           # string function (2b)
     matches(args.id, "^inv_[0-9]+$")             # regex (2b)
+    every(args.files, startswith(., "/tmp/"))    # quantifier (2e)
+    any(args.items, .price <= 100)               # quantifier over sub-field
     args.template in ["refund_confirmed", "ticket_resolved"]
     args.priority not in ["urgent", "critical"]
 
@@ -91,7 +97,18 @@ class Count:
     ref: Ref
 
 
-Operand = Ref | Count | Lit
+@dataclass(frozen=True, slots=True)
+class Elem:
+    """The current element inside a quantifier body — ``.`` or ``.field``.
+
+    ``path`` is empty for the element itself (``.``) or a dotted accessor into
+    it (``.price`` → ``("price",)``). Only meaningful within a :class:`Quant`.
+    """
+
+    path: tuple[str, ...]
+
+
+Operand = Ref | Count | Lit | Elem
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,20 +147,38 @@ class Call:
     """
 
     fn: str
-    arg: Ref
+    arg: Ref | Elem
     value: Lit
     source: str  # raw text, for error messages
 
 
+@dataclass(frozen=True, slots=True)
+class Quant:
+    """A quantifier over a list-valued operand — ``every`` / ``any``.
+
+    ``ref`` is the collection (a :class:`Ref`, or :class:`Elem` when nested
+    inside another quantifier); ``body`` is a sub-constraint evaluated with
+    ``.`` bound to each element. ``every`` over an empty list is vacuously
+    true; ``any`` over an empty list is false.
+    """
+
+    kind: str  # "every" | "any"
+    ref: Ref | Elem
+    body: Node
+    source: str
+
+
 # The evaluator and Rego compiler dispatch on ``Node``. The roadmap adds
-# Quant / And / Or / Not as further siblings.
-Node = Cmp | Call
+# And / Or / Not as further siblings.
+Node = Cmp | Call | Quant
 Constraint = Cmp  # back-compat alias for existing importers
 
 
 _OP_TOKENS = ("<=", ">=", "==", "!=", "not in", "in", "<", ">")
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
 _COUNT_RE = re.compile(r"^count\((.+)\)$")
+_QUANT_RE = re.compile(r"^(every|any)\((.*)\)$", re.DOTALL)
+_ELEM_KEY = "$elem"
 _JSON_KEYWORDS = ("true", "false", "null")
 
 _FUNCS = ("startswith", "endswith", "contains", "matches")
@@ -158,15 +193,28 @@ def parse_constraint(source: str) -> Node:
     """Parse one constraint line into a :class:`Node`.
 
     Each side is an *operand*: a JSON literal, a field path (``args.amount``),
-    or ``count(<path>)``. A path on the right is a cross-field comparison
-    (``args.max >= args.min``). Raises :class:`ConstraintParseError` for
-    unsupported operators, bad identifiers, or malformed operands.
+    ``count(<path>)``, or — inside a quantifier — the element ``.``. A path on
+    the right is a cross-field comparison (``args.max >= args.min``). Raises
+    :class:`ConstraintParseError` for unsupported operators, bad identifiers,
+    malformed operands, or an element ref (``.``) used outside a quantifier.
     """
+    node = _parse_node(source)
+    _reject_unscoped_elem(node, source, in_quant=False)
+    return node
+
+
+def _parse_node(source: str) -> Node:
+    """Parse a constraint into a node, without the top-level element-scope check
+    (so quantifier bodies can recurse and use ``.`` freely)."""
     text = source.strip()
     if not text:
         raise ConstraintParseError("empty constraint")
 
-    # A whole-line function call (startswith/…/matches) is a boolean on its own.
+    # A whole-line quantifier (every/any) or function call is a boolean on its
+    # own — check both before scanning for a comparison operator.
+    quant = _try_parse_quant(text, source)
+    if quant is not None:
+        return quant
     call = _try_parse_call(text, source)
     if call is not None:
         return call
@@ -211,6 +259,11 @@ def _parse_operand(text: str, source: str, side: str) -> Operand:
     if not text:
         raise ConstraintParseError(f"missing {side} in {source!r}")
 
+    # ``.`` / ``.field`` — the current quantifier element.
+    if text.startswith("."):
+        rest = text[1:]
+        return Elem(_parse_path(rest, source)) if rest else Elem(())
+
     m = _COUNT_RE.match(text)
     if m:
         return Count(Ref(_parse_path(m.group(1).strip(), source)))
@@ -226,6 +279,58 @@ def _parse_operand(text: str, source: str, side: str) -> Operand:
         ) from exc
 
 
+def _try_parse_quant(text: str, source: str) -> Quant | None:
+    """Parse a whole-line ``every(collection, condition)`` / ``any(...)``.
+
+    Returns None when ``text`` isn't a quantifier. The collection is a path
+    (or ``.field`` when nested); the condition is a full sub-constraint parsed
+    recursively, with ``.`` bound to each element.
+    """
+    m = _QUANT_RE.match(text)
+    if m is None:
+        return None
+    kind = m.group(1)
+    ref_raw, sep, body_raw = m.group(2).partition(",")
+    if not sep:
+        raise ConstraintParseError(
+            f"{kind}() expects 'collection, condition' arguments in {source!r}"
+        )
+    ref_text = ref_raw.strip()
+    if ref_text.startswith("."):
+        rest = ref_text[1:]
+        ref: Ref | Elem = Elem(_parse_path(rest, source)) if rest else Elem(())
+    else:
+        ref = Ref(_parse_path(ref_text, source))
+    return Quant(kind=kind, ref=ref, body=_parse_node(body_raw), source=source)
+
+
+def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
+    """Raise if an element ref (``.`` / ``.field``) appears outside a quantifier.
+
+    ``.`` only means "the current element", so it's only valid inside a
+    quantifier body (a quantifier's *collection* may be an element only when
+    that quantifier is itself nested inside another).
+    """
+
+    def bad() -> None:
+        raise ConstraintParseError(
+            f"'.' element reference is only valid inside a quantifier, in {source!r}"
+        )
+
+    if isinstance(node, Quant):
+        if isinstance(node.ref, Elem) and not in_quant:
+            bad()
+        _reject_unscoped_elem(node.body, source, in_quant=True)
+    elif isinstance(node, Cmp):
+        if not in_quant and (
+            isinstance(node.left, Elem) or isinstance(node.right, Elem)
+        ):
+            bad()
+    elif isinstance(node, Call):
+        if not in_quant and isinstance(node.arg, Elem):
+            bad()
+
+
 def _try_parse_call(text: str, source: str) -> Call | None:
     """Parse a whole-line ``fn(field, "literal")`` call, or return None.
 
@@ -237,7 +342,11 @@ def _try_parse_call(text: str, source: str) -> Call | None:
         return None
     fn = m.group(1)
     arg_raw, value_raw = _split_call_args(m.group(2), source, fn)
-    arg = Ref(_parse_path(arg_raw.strip(), source))
+    arg = _parse_operand(arg_raw.strip(), source, f"{fn}() first argument")
+    if not isinstance(arg, (Ref, Elem)):
+        raise ConstraintParseError(
+            f"{fn}() first argument must be a field path or '.' in {source!r}"
+        )
     value = _parse_operand(value_raw.strip(), source, f"{fn}() second argument")
     if not isinstance(value, Lit) or not isinstance(value.value, str):
         raise ConstraintParseError(
@@ -329,9 +438,12 @@ def _parse_path(text: str, source: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _resolve_path(path: tuple[str, ...], context: dict[str, Any]) -> Any:
-    """Walk ``path`` over ``context``; return ``_MISSING`` if any hop misses."""
-    cursor: Any = context
+_MISSING = object()
+
+
+def _walk(base: Any, path: tuple[str, ...]) -> Any:
+    """Walk a dotted ``path`` from ``base``; ``_MISSING`` if any hop misses."""
+    cursor: Any = base
     for part in path:
         if isinstance(cursor, dict) and part in cursor:
             cursor = cursor[part]
@@ -340,7 +452,9 @@ def _resolve_path(path: tuple[str, ...], context: dict[str, Any]) -> Any:
     return cursor
 
 
-_MISSING = object()
+def _resolve_path(path: tuple[str, ...], context: dict[str, Any]) -> Any:
+    """Walk ``path`` over the evaluation ``context``."""
+    return _walk(context, path)
 
 
 def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
@@ -351,6 +465,9 @@ def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
         seq = _resolve_path(operand.ref.path, context)
         # count() of a sized collection → len; anything else fails closed.
         return len(seq) if isinstance(seq, (list, str, dict)) else _MISSING
+    if isinstance(operand, Elem):
+        element = context.get(_ELEM_KEY, _MISSING)
+        return _MISSING if element is _MISSING else _walk(element, operand.path)
     return _resolve_path(operand.path, context)
 
 
@@ -360,7 +477,22 @@ def _eval(node: Node, context: dict[str, Any]) -> bool:
         return _eval_cmp(node, context)
     if isinstance(node, Call):
         return _eval_call(node, context)
+    if isinstance(node, Quant):
+        return _eval_quant(node, context)
     raise ConstraintParseError(f"cannot evaluate node {node!r}")
+
+
+def _eval_quant(node: Quant, context: dict[str, Any]) -> bool:
+    """Evaluate a quantifier. Non-list collection fails closed.
+
+    ``every`` over [] is vacuously true; ``any`` over [] is false — matching
+    Rego's ``every`` / ``some``.
+    """
+    seq = _resolve_operand(node.ref, context)
+    if not isinstance(seq, list):
+        return False
+    results = (_eval(node.body, {**context, _ELEM_KEY: el}) for el in seq)
+    return all(results) if node.kind == "every" else any(results)
 
 
 def _eval_call(node: Call, context: dict[str, Any]) -> bool:
@@ -369,7 +501,7 @@ def _eval_call(node: Call, context: dict[str, Any]) -> bool:
     ``matches`` uses ``re.search`` (unanchored) to mirror Rego's
     ``regex.match``; a full-string match needs explicit ``^…$`` anchors.
     """
-    x = _resolve_path(node.arg.path, context)
+    x = _resolve_operand(node.arg, context)
     if not isinstance(x, str):
         return False
     v = node.value.value

@@ -26,7 +26,9 @@ from hexgate.security.constraints import (
     Cmp,
     ConstraintParseError,
     Count,
+    Elem,
     Lit,
+    Quant,
     Ref,
     check_constraints,
     evaluate_constraint,
@@ -334,7 +336,7 @@ def test_parse_call_value_with_escaped_quote() -> None:
 
 @pytest.mark.parametrize("src", ["count( ) <= 1", 'startswith( , "x")'])
 def test_parse_rejects_empty_field_path(src: str) -> None:
-    with pytest.raises(ConstraintParseError, match="empty path"):
+    with pytest.raises(ConstraintParseError):
         parse_constraint(src)
 
 
@@ -383,6 +385,99 @@ def test_matches_allows_re2_named_groups() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Quantifiers (2e) — every / any over list args
+# ---------------------------------------------------------------------------
+
+
+def test_parse_quantifier_builds_quant_node() -> None:
+    node = parse_constraint('every(args.files, startswith(., "/tmp/"))')
+    assert isinstance(node, Quant)
+    assert node.kind == "every"
+    assert node.ref == Ref(("args", "files"))
+    assert isinstance(node.body, Call)
+    assert node.body.arg == Elem(())  # "." → the element
+
+
+def test_parse_quantifier_element_subfield() -> None:
+    node = parse_constraint("every(args.items, .price <= 100)")
+    assert node.body.left == Elem(("price",))
+    assert node.body.op == "<="
+
+
+def test_parse_nested_quantifier() -> None:
+    node = parse_constraint('every(args.groups, any(.members, . == "admin"))')
+    assert isinstance(node, Quant) and node.kind == "every"
+    assert isinstance(node.body, Quant) and node.body.kind == "any"
+    assert node.body.ref == Elem(("members",))  # nested collection is element-relative
+
+
+@pytest.mark.parametrize(
+    ("src", "args", "expected"),
+    [
+        (
+            'every(args.files, startswith(., "/tmp/"))',
+            {"files": ["/tmp/a", "/tmp/b"]},
+            True,
+        ),
+        (
+            'every(args.files, startswith(., "/tmp/"))',
+            {"files": ["/tmp/a", "/etc/b"]},
+            False,
+        ),
+        ('every(args.files, startswith(., "/tmp/"))', {"files": []}, True),  # vacuous
+        (
+            'every(args.files, startswith(., "/tmp/"))',
+            {"files": "nope"},
+            False,
+        ),  # non-list
+        ('every(args.files, startswith(., "/tmp/"))', {}, False),  # missing
+        ('any(args.roles, . == "admin")', {"roles": ["user", "admin"]}, True),
+        ('any(args.roles, . == "admin")', {"roles": ["user"]}, False),
+        ('any(args.roles, . == "admin")', {"roles": []}, False),  # empty → false
+        (
+            "every(args.items, .price <= 100)",
+            {"items": [{"price": 50}, {"price": 80}]},
+            True,
+        ),
+        ("every(args.items, .price <= 100)", {"items": [{"price": 200}]}, False),
+        (
+            "every(args.items, .price <= 100)",
+            {"items": [{"name": "x"}]},
+            False,
+        ),  # sub-field missing
+        ("any(args.nums, . <= 10)", {"nums": [50, 5]}, True),
+        (
+            'every(args.groups, any(.members, . == "admin"))',
+            {"groups": [{"members": ["a", "admin"]}, {"members": ["admin"]}]},
+            True,
+        ),
+        (
+            'every(args.groups, any(.members, . == "admin"))',
+            {"groups": [{"members": ["a"]}, {"members": ["admin"]}]},
+            False,
+        ),
+    ],
+)
+def test_evaluate_quantifier(src: str, args: dict, expected: bool) -> None:
+    assert _eval(src, args) is expected
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "every(args.files)",  # missing body
+        "any(args.files)",  # missing body
+        "every(args.0bad, . == 1)",  # bad collection path
+        "every(args.files, startswith(., 5))",  # bad body (non-string fn arg)
+        "every(args.files, . <=)",  # malformed body
+    ],
+)
+def test_parse_rejects_bad_quantifiers(src: str) -> None:
+    with pytest.raises(ConstraintParseError):
+        parse_constraint(src)
+
+
+# ---------------------------------------------------------------------------
 # Malformed input — must raise ConstraintParseError (never another exception)
 # ---------------------------------------------------------------------------
 
@@ -401,7 +496,7 @@ def test_matches_allows_re2_named_groups() -> None:
         ("args.0bad <= 50", "invalid identifier"),
         ("args. == 5", "invalid identifier"),
         ("args..x == 5", "invalid identifier"),
-        (".x == 5", "not a valid JSON literal"),  # leading dot → not id-shaped
+        (".x == 5", "quantifier"),  # element ref only valid inside every/any
         ("args x == 5", "invalid identifier"),  # space in a path segment
         ("args.x == 'single'", "JSON literal"),  # single quotes
         ("args.x == 5x", "JSON literal"),

@@ -73,9 +73,11 @@ from hexgate.security.constraints import (
     Call,
     Cmp,
     Count,
+    Elem,
     Lit,
     Node,
     Operand,
+    Quant,
     Ref,
     parse_constraint,
 )
@@ -113,10 +115,17 @@ def compile_to_rego(
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         source_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    # Quantifiers register named helper rules here (keyed by name for dedup);
+    # emitted after the role rules so the module stays self-contained.
+    helpers: dict[str, list[str]] = {}
+
     lines: list[str] = []
     lines.extend(_header(source_hash, package))
     lines.extend(_decision_scaffold())
-    lines.extend(_role_rules(policy_set))
+    lines.extend(_role_rules(policy_set, helpers))
+    for name in sorted(helpers):  # sorted → deterministic output
+        lines.extend(helpers[name])
+        lines.append("")
     lines.extend(_violations_sentinel())
     # Trailing newline — POSIX-friendly + a few editors complain otherwise.
     return "\n".join(lines) + "\n"
@@ -171,7 +180,7 @@ def _violations_sentinel() -> list[str]:
     ]
 
 
-def _role_rules(policy_set: PolicySet) -> list[str]:
+def _role_rules(policy_set: PolicySet, helpers: dict[str, list[str]]) -> list[str]:
     """Emit per-role allow / requires_approval / violations rules.
 
     Roles ordered alphabetically and tools within a role ordered the same
@@ -184,7 +193,7 @@ def _role_rules(policy_set: PolicySet) -> list[str]:
     for role in role_names:
         policy = policy_set.policy_for(role)
         role_guard = _role_guard(role, non_default)
-        rules = list(_rules_for_role(role, policy, role_guard))
+        rules = list(_rules_for_role(role, policy, role_guard, helpers))
         if not rules:
             # Pure deny — skip the section entirely to keep the output tight.
             continue
@@ -212,7 +221,12 @@ def _role_guard(role: str, non_default: list[str]) -> list[str]:
     return [f"    not input.role in {{{members}}}"]
 
 
-def _rules_for_role(role: str, policy: AgentPolicy, role_guard: list[str]) -> list[str]:
+def _rules_for_role(
+    role: str,
+    policy: AgentPolicy,
+    role_guard: list[str],
+    helpers: dict[str, list[str]],
+) -> list[str]:
     """Render rules for one resolved role (allow + violations per tool).
 
     Explicitly-listed tools each get their own ``input.tool == "X"`` rule;
@@ -227,10 +241,15 @@ def _rules_for_role(role: str, policy: AgentPolicy, role_guard: list[str]) -> li
         tool_guard = [f'    input.tool == "{_escape_string(tool_name)}"']
         out.extend(
             _gated_rules(
-                role, role_guard, tool_guard, policy.tools[tool_name], tool_name
+                role,
+                role_guard,
+                tool_guard,
+                policy.tools[tool_name],
+                tool_name,
+                helpers,
             )
         )
-    out.extend(_default_rules(role, role_guard, policy.default_policy, listed))
+    out.extend(_default_rules(role, role_guard, policy.default_policy, listed, helpers))
     return out
 
 
@@ -239,6 +258,7 @@ def _default_rules(
     role_guard: list[str],
     default_policy: BaseToolPolicy,
     listed: list[str],
+    helpers: dict[str, list[str]],
 ) -> list[str]:
     """Catch-all rules for ``default_policy`` — any tool not explicitly listed.
 
@@ -253,7 +273,9 @@ def _default_rules(
         tool_guard = [f"    not input.tool in {{{members}}}"]
     else:
         tool_guard = []  # nothing listed → the default applies to every tool
-    return _gated_rules(role, role_guard, tool_guard, default_policy, "<default>")
+    return _gated_rules(
+        role, role_guard, tool_guard, default_policy, "<default>", helpers
+    )
 
 
 def _gated_rules(
@@ -262,6 +284,7 @@ def _gated_rules(
     tool_guard: list[str],
     tool_policy: BaseToolPolicy,
     label: str,
+    helpers: dict[str, list[str]],
 ) -> list[str]:
     """Render the positive + per-constraint violation rules for one policy.
 
@@ -301,10 +324,10 @@ def _gated_rules(
 
     guard = [*role_guard, *tool_guard]
     out: list[str] = []
-    out.extend(_positive_rule(guard, head, parsed))
+    out.extend(_positive_rule(guard, head, parsed, helpers))
     out.append("")
     for raw, node in parsed:
-        out.extend(_violation_rule(guard, raw, node))
+        out.extend(_violation_rule(guard, raw, node, helpers))
         out.append("")
     return out
 
@@ -313,11 +336,12 @@ def _positive_rule(
     guard: list[str],
     head: str,
     parsed: list[tuple[str, Node]],
+    helpers: dict[str, list[str]],
 ) -> list[str]:
     """``allow if { <guard>; constraint1; constraint2; ... }``."""
     body = list(guard)
     for _, node in parsed:
-        body.append(f"    {_node_to_rego(node)}")
+        body.append(f"    {_node_to_rego(node, helpers)}")
     if not body:
         # Unconditional rule (only-default role, default_policy allow, no
         # tools/constraints) — an empty ``{}`` body is invalid Rego.
@@ -329,6 +353,7 @@ def _violation_rule(
     guard: list[str],
     raw_constraint: str,
     node: Node,
+    helpers: dict[str, list[str]],
 ) -> list[str]:
     """``violations contains <raw> if { <guard>; not constraint }``.
 
@@ -338,37 +363,80 @@ def _violation_rule(
     return [
         f"violations contains {_rego_string(raw_constraint)} if {{",
         *guard,
-        f"    {_negated_node_to_rego(node)}",
+        f"    {_negated_node_to_rego(node, helpers)}",
         "}",
     ]
 
 
-def _negated_node_to_rego(node: Node) -> str:
+def _negated_node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
     """Render the logical negation of a node — the violation-rule condition.
 
     For most comparisons this is ``not <cond>``. For ``not in`` the base
     rendering is *already* ``not X in Y``; its negation is the plain
     ``X in Y`` — emitting ``not not X in Y`` is a Rego parse error, so any
-    policy with a ``not in`` constraint would otherwise fail to compile.
+    policy with a ``not in`` constraint would otherwise fail to compile. A
+    quantifier negates via its helper reference (``not _q_<hash>``).
     """
     if isinstance(node, Cmp) and node.op == "not in":
         return f"{_render(node.left)} in {_render(node.right)}"
-    return f"not {_node_to_rego(node)}"
+    return f"not {_node_to_rego(node, helpers)}"
 
 
-def _node_to_rego(node: Node) -> str:
-    """Render one node as a Rego condition line (Cmp or Call)."""
+def _node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
+    """Render a top-level constraint node as one Rego condition token.
+
+    A ``Quant`` registers a named helper rule (so it can be negated cleanly in
+    the violation rule) and returns that name; other nodes render inline.
+    """
     if isinstance(node, Cmp):
         return _cmp_to_rego(node)
     if isinstance(node, Call):
         return _call_to_rego(node)
+    if isinstance(node, Quant):
+        return _register_quant_helper(node, helpers)
     # Unreachable given parse_constraint's whitelist, but defensive.
     raise PolicySetError(f"cannot render node {node!r}")
 
 
-def _call_to_rego(node: Call) -> str:
+def _node_hash(node: Node) -> str:
+    """Stable short id for a node — deterministic helper/loop-var names."""
+    return hashlib.sha256(repr(node).encode("utf-8")).hexdigest()[:10]
+
+
+def _register_quant_helper(node: Quant, helpers: dict[str, list[str]]) -> str:
+    """Emit ``_q_<hash> if { <quantifier> }`` once; return the rule name."""
+    name = f"_q_{_node_hash(node)}"
+    if name not in helpers:
+        body = _inline(node, None)
+        helpers[name] = [f"{name} if {{", *(f"    {line}" for line in body), "}"]
+    return name
+
+
+def _inline(node: Node, elem_var: str | None) -> list[str]:
+    """Render a node as Rego body line(s), with ``.`` bound to ``elem_var``.
+
+    Used inside quantifier bodies (and the top-level quantifier helper). A
+    quantifier expands to an ``every``/``some`` block; nested quantifiers are
+    inlined recursively since they close over the enclosing loop variable.
+    """
+    if isinstance(node, Cmp):
+        return [_cmp_to_rego(node, elem_var)]
+    if isinstance(node, Call):
+        return [_call_to_rego(node, elem_var)]
+    if isinstance(node, Quant):
+        var = f"__e_{_node_hash(node)}"
+        coll = _render(node.ref, elem_var)
+        body = _inline(node.body, var)
+        if node.kind == "every":
+            return [f"every {var} in {coll} {{", *(f"    {b}" for b in body), "}"]
+        # any → existential: bind the element, then assert the body holds.
+        return [f"some {var} in {coll}", *body]
+    raise PolicySetError(f"cannot render node {node!r}")
+
+
+def _call_to_rego(node: Call, elem_var: str | None = None) -> str:
     """Render a string function as its Rego builtin call."""
-    ref = "input." + ".".join(node.arg.path)
+    ref = _render(node.arg, elem_var)
     value = json.dumps(node.value.value)
     if node.fn == "matches":
         # Rego's regex.match takes (pattern, value) and is unanchored — same
@@ -377,15 +445,15 @@ def _call_to_rego(node: Call) -> str:
     return f"{node.fn}({ref}, {value})"
 
 
-def _cmp_to_rego(node: Cmp) -> str:
+def _cmp_to_rego(node: Cmp, elem_var: str | None = None) -> str:
     """Render a comparison as a Rego condition line.
 
     Path translation: ``args.amount`` → ``input.args.amount``. We always
     prefix ``input.`` so the rule body reads from the WASM evaluator's
     input dict (the conventional name in OPA's eval model).
     """
-    lhs = _render(node.left)
-    rhs = _render(node.right)
+    lhs = _render(node.left, elem_var)
+    rhs = _render(node.right, elem_var)
     op = node.op
     if op in _INFIX_OPS:
         return f"{lhs} {op} {rhs}"
@@ -399,18 +467,22 @@ def _cmp_to_rego(node: Cmp) -> str:
     raise PolicySetError(f"unsupported constraint operator {op!r}")
 
 
-def _render(operand: Operand) -> str:
+def _render(operand: Operand, elem_var: str | None = None) -> str:
     """Render an operand as Rego source.
 
-    A ``Ref`` becomes an ``input.``-prefixed accessor; a ``Lit`` becomes a
-    JSON literal (strings double-quoted with escapes, numbers bare, booleans
-    ``true``/``false``, lists bracketed — Rego's literal grammar is a superset
-    of JSON for these shapes).
+    A ``Ref`` becomes an ``input.``-prefixed accessor; an ``Elem`` becomes the
+    enclosing quantifier's loop variable (optionally with a sub-field); a
+    ``Lit`` becomes a JSON literal (Rego's literal grammar is a superset of
+    JSON for the shapes we accept).
     """
     if isinstance(operand, Ref):
         return "input." + ".".join(operand.path)
     if isinstance(operand, Count):
         return f"count(input.{'.'.join(operand.ref.path)})"
+    if isinstance(operand, Elem):
+        if elem_var is None:  # guarded by parse-time element-scope check
+            raise PolicySetError("element reference outside a quantifier")
+        return elem_var if not operand.path else elem_var + "." + ".".join(operand.path)
     if isinstance(operand, Lit):
         return json.dumps(operand.value)
     raise PolicySetError(f"cannot render operand {operand!r}")

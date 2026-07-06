@@ -453,6 +453,44 @@ def test_violation_value_uses_json_when_constraint_has_backtick() -> None:
     assert f"`{raw}`" not in rego  # not the backtick raw-string form
 
 
+def test_quantifier_emits_helper_rule() -> None:
+    """A quantifier compiles to a named helper the allow rule references and
+    the violation rule negates (``not _q_…`` — not an inline ``not every``)."""
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {
+                        "mode": "allow",
+                        "constraints": ['every(args.files, startswith(., "/tmp/"))'],
+                    }
+                }
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    assert re.search(r"_q_[0-9a-f]+ if \{\n\s+every __e_[0-9a-f]+ in ", rego)
+    [allow_body] = _allow_rules(rego)
+    assert re.search(r"_q_[0-9a-f]+", allow_body)  # allow references the helper
+    assert re.search(r"not _q_[0-9a-f]+", rego)  # violation negates the helper
+    assert "not every" not in rego and "not some" not in rego  # never inline-negated
+
+
+def test_quantifier_output_is_deterministic() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["any(args.r, . == 1)"]}
+                }
+            }
+        },
+    }
+    assert compile_to_rego(payload) == compile_to_rego(payload)
+
+
 def test_violations_sentinel_emitted_for_constraint_free_policy() -> None:
     """Policies with zero constraints still need `violations` defined —
     a `false`-bodied sentinel keeps the decision rule safe to build."""
