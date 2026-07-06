@@ -196,7 +196,7 @@ def _patched_loader(monkeypatch):
     monkeypatch.setattr(loader, "HexgateConfig", _FakeConfig)
     monkeypatch.setattr(loader, "create_agent", fake_create_agent)
     monkeypatch.setattr(loader, "enforce_policy", fake_enforce_policy)
-    monkeypatch.setattr(loader, "resolve_builtin_tools", lambda *a, **k: [])
+    monkeypatch.setattr(loader, "resolve_tools", lambda *a, **k: [])
     monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
     monkeypatch.delenv("HEXGATE_BUNDLE_REQUIRE_SIGNATURE", raising=False)
 

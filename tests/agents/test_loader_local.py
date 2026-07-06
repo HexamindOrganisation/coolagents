@@ -20,7 +20,7 @@ def _write_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "model: gpt-5.4",
                 "system_prompt: system.md",
                 "tools:",
-                "  - web_search",
+                "  - read_file",
                 "policy: policy.yaml",
             ]
         ),
@@ -33,7 +33,7 @@ def _write_agent_dir(agent_dir: Path, *, name: str) -> None:
                 "default_policy:",
                 "  mode: deny",
                 "tools:",
-                "  web_search:",
+                "  read_file:",
                 "    mode: allow",
             ]
         ),
@@ -58,11 +58,23 @@ def test_list_local_agents_reads_agents_subdirectory(tmp_path: Path) -> None:
     assert loader.list_local_agents(tmp_path) == ["project_agent"]
 
 
-def test_resolve_agent_source_prefers_local_over_builtin(tmp_path: Path) -> None:
-    """Prefer local agents when an id exists in both registries."""
-    _write_agent_dir(tmp_path / "researcher", name="researcher")
+def test_resolve_agent_source_resolves_local(tmp_path: Path) -> None:
+    """Resolve an on-disk agent dir to the ``local`` source."""
+    _write_agent_dir(tmp_path / "example_agent", name="example_agent")
 
-    assert loader.resolve_agent_source("researcher", tmp_path) == "local"
+    assert loader.resolve_agent_source("example_agent", tmp_path) == "local"
+
+
+def test_resolve_tools_raises_for_unknown_tools() -> None:
+    """Fail clearly when a referenced tool id is unknown."""
+    with pytest.raises(KeyError, match='Unknown tool "missing_tool"'):
+        loader.resolve_tools(["missing_tool"])
+
+
+def test_resolve_tools_hints_migration_for_relocated_tools() -> None:
+    """A relocated tool (web_search/fetch/refund_order) points at extra_tools."""
+    with pytest.raises(KeyError, match="extra_tools"):
+        loader.resolve_tools(["web_search"])
 
 
 def test_load_local_agent_resolves_spec_into_create_agent(
@@ -99,6 +111,6 @@ def test_load_local_agent_resolves_spec_into_create_agent(
 
     assert (agent, handler) == ("agent-instance", "handler-instance")
     assert captured["name"] == "example_agent"
-    assert [tool.name for tool in captured["tools"]] == ["web_search"]
+    assert [tool.name for tool in captured["tools"]] == ["read_file"]
     assert "local test agent" in captured["system_prompt"]
-    assert captured_policy["policy"].tools["web_search"].mode == "allow"
+    assert captured_policy["policy"].tools["read_file"].mode == "allow"

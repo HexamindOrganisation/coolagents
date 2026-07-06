@@ -60,8 +60,8 @@ def _(mo):
 @app.cell
 def _():
     # Plain LangChain tools — edit / add freely, then re-run this cell. (Built-ins
-    # exist too: `from hexgate.tools import web_search, fetch, read_file, ...` —
-    # note web_search needs LINKUP_API_KEY, fetch needs TAVILY_API_KEY.)
+    # exist too: `from hexgate.tools import read_file, write_file, bash, ...`.
+    # web_search / fetch moved to examples/tools/ — import them from there.)
     from langchain_core.tools import tool
 
     @tool

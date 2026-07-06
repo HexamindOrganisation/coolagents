@@ -119,7 +119,7 @@ demo-override: ## Build a deny-everything bundle + chat with HEXGATE_LOCAL_POLIC
 	@echo "→ Starting chat with HEXGATE_LOCAL_POLICY=/tmp/m2-deny-bundle"
 	@echo "  Try a prompt that would trigger web_search; expect a wasm-engine deny."
 	@echo ""
-	HEXGATE_LOCAL_POLICY=/tmp/m2-deny-bundle $(UV) hexgate chat --agent researcher --approval-mode auto-deny
+	HEXGATE_LOCAL_POLICY=/tmp/m2-deny-bundle $(UV) hexgate chat --agent example_agent --approval-mode auto-deny
 
 # -------- Platform infra (ClickHouse audit log) --------
 #
