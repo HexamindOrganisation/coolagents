@@ -21,7 +21,8 @@ shaping a system prompt.
 
 Same agent code, but the policy + decisions round-trip through the platform.
 You get auditable decisions in ClickHouse, the shared Playground UI, and live
-policy edits via the dashboard.
+policy edits via the dashboard. The platform is [Hexgate Cloud](/platform/hosted)
+by default (set `HEXGATE_API_KEY`, no infra) or [self-hosted](/platform/control-plane).
 
 **Reach for `serve` when** you're collaborating on an agent's behaviour,
 debugging a production-like trace, or demoing.

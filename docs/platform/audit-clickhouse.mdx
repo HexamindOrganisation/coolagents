@@ -3,10 +3,12 @@ title: "Audit log (ClickHouse)"
 description: "Policy decisions persisted for the audit dashboard."
 ---
 
-Policy decisions are written to a local ClickHouse instance for the audit
-dashboard. Requires Docker. For the conceptual overview see
-[audit trail](/concepts/audit-trail); for the engineering spec see
-[internals/audit-pipeline](/internals/audit-pipeline).
+When you self-host, policy decisions are written to a ClickHouse instance backing
+the audit dashboard. The commands below start a local one via Docker for dev and
+self-hosting; in production, point the platform at your own ClickHouse cluster.
+On [Hexgate Cloud](/platform/hosted) this is fully managed — nothing to run. For
+the conceptual overview see [audit trail](/concepts/audit-trail); for the
+engineering spec see [internals/audit-pipeline](/internals/audit-pipeline).
 
 ```bash
 make clickhouse-up        # start the server (first run also creates the schema)
@@ -18,11 +20,12 @@ make clickhouse-reset     # wipe and recreate (also re-applies the schema)
 Schema lives in `platform/clickhouse/init/schema.sql`.
 
 <Note>
-**Not a migration system.** That init directory is a POC scaffold — the Docker
-image runs it exactly once, on first container start with an empty data volume.
-Editing the SQL after that point is silently ignored on existing environments. To
-apply schema changes locally, either `make clickhouse-reset` (wipes data) or
-`make clickhouse-cli` and run the SQL by hand.
+**Schema init runs once.** The Docker image applies `init/schema.sql` exactly
+once, on first container start with an empty data volume — editing the SQL
+afterwards is ignored on existing environments. To apply a schema change, either
+`make clickhouse-reset` (wipes data) or connect with `make clickhouse-cli` and run
+the migration SQL by hand. In production, treat schema changes as a deliberate
+maintenance step against your ClickHouse cluster.
 </Note>
 
 The service binds to **127.0.0.1 only, on host ports 8124 (HTTP) and 9001

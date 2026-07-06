@@ -91,7 +91,7 @@ vars lives in the [environment reference](/reference/environment).
 **Connecting to Hexgate.** The key and the URL are coupled: a `fty_live_…` key
 only verifies against the platform instance that minted it.
 
-- **Hosted (default):** set `HEXGATE_API_KEY` to the key from [app.hexgate.ai](https://app.hexgate.ai). Leave `HEXGATE_API_URL` unset.
+- **[Hexgate Cloud](/platform/hosted) (default):** set `HEXGATE_API_KEY` to the key from [app.hexgate.ai](https://app.hexgate.ai). Leave `HEXGATE_API_URL` unset — it defaults to the cloud, so this is the zero-infra path.
 - **Self-hosted / local platform:** additionally set `HEXGATE_API_URL=http://localhost:8000` (or your host), and use a key minted by *that* platform.
 
 ## Two carve-outs worth knowing

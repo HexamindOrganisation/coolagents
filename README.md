@@ -28,9 +28,9 @@ Policy enforcement, signed policy bundles, per-request user scope, audit trail �
 Hexgate is two things that move together:
 
 - **`hexgate` — the SDK.** A Python runtime that gates every tool call through a typed `Decision` (allow / deny / approval-required), wraps your existing OpenAI / LangChain / Google ADK / Pydantic AI agent without rewriting it, and threads per-request user identity through tracing + audit.
-- **The Hexgate platform** *(optional)* — a FastAPI control plane + React dashboard for editing policy in a browser, minting per-project tokens, watching live decisions stream from a serving agent, and shipping signed WASM policy bundles to production.
+- **The Hexgate platform** *(optional)* — a FastAPI control plane + React dashboard for editing policy in a browser, minting per-project tokens, watching live decisions stream from a serving agent, and shipping signed WASM policy bundles to production. Available as **[Hexgate Cloud](https://app.hexgate.ai)** (hosted — set one env var, no infra) or self-hosted.
 
-You can use the SDK with nothing else (single-process REPL, YAML on disk). Or plug in the platform when you want auditable decisions in ClickHouse, a shared Playground UI, and live policy edits.
+You can use the SDK three ways: **local** (YAML/bundle on disk, no platform), **Hexgate Cloud** (remote enforcement + audit — just set `HEXGATE_API_KEY`), or **self-hosted** (run the control plane yourself). `HEXGATE_API_URL` defaults to `https://app.hexgate.ai`, so remote enforcement is one env var away.
 
 ```text
                       ┌─────────────────────────────────────────┐
@@ -73,7 +73,8 @@ Full documentation lives at **[docs.hexgate.ai](https://docs.hexgate.ai)**.
 | [User scope + roles](https://docs.hexgate.ai/concepts/user-scope) | Per-request identity, role resolution, biscuit attenuation. |
 | [CLI](https://docs.hexgate.ai/cli/chat) | `chat`, `serve`, `register`, `policy`. |
 | [MCP servers](https://docs.hexgate.ai/concepts/mcp) | Wrap any Model Context Protocol server as policy-enforced tools. |
-| [Self-hosting the platform](https://docs.hexgate.ai/platform/overview) | FastAPI control plane, dashboard, ClickHouse audit, Resend email. |
+| [Hexgate Cloud (hosted)](https://docs.hexgate.ai/platform/hosted) | Remote policy enforcement + audit with zero infra — get a key, set one env var. |
+| [Platform (self-hosted)](https://docs.hexgate.ai/platform/overview) | Run the control plane, dashboard, ClickHouse audit, and Resend email yourself. |
 
 ## Development
 

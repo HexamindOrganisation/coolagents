@@ -66,15 +66,21 @@
         ]
       },
       {
-        "tab": "Self-hosting",
+        "tab": "Platform",
         "groups": [
           {
             "group": "Platform",
             "pages": [
               "platform/overview",
+              "platform/hosted",
+              "platform/live-demo"
+            ]
+          },
+          {
+            "group": "Self-hosting",
+            "pages": [
               "platform/control-plane",
               "platform/dashboard",
-              "platform/live-demo",
               "platform/audit-clickhouse",
               "platform/email"
             ]
