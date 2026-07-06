@@ -4,8 +4,8 @@
 
 # Hexgate
 
-**Authorization infrastructure for AI agents.**
-Policy enforcement, signed policy bundles, per-request user scope, audit trail — for OpenAI Agents, LangChain, Google ADK, Pydantic AI, or a native runtime.
+**Runtime authorization for AI agents.**
+On every tool call, Hexgate decides whether *this user*, in *this role*, may run *this tool* with *these arguments* — allow, deny, or require approval. For OpenAI Agents, LangChain, Google ADK, Pydantic AI, or a native runtime.
 
 [**Website**](https://hexgate.ai) · [**Docs**](https://docs.hexgate.ai) · [PyPI](https://pypi.org/project/hexgate/) · [Discussions](https://github.com/HexamindOrganisation/hexgate/discussions)
 
@@ -27,39 +27,45 @@ Policy enforcement, signed policy bundles, per-request user scope, audit trail �
 
 Hexgate is two things that move together:
 
-- **`hexgate` — the SDK.** A Python runtime that gates every tool call through a typed `Decision` (allow / deny / approval-required), wraps your existing OpenAI / LangChain / Google ADK / Pydantic AI agent without rewriting it, and threads per-request user identity through tracing + audit.
+- **`hexgate` — the SDK.** A Python runtime that gates every tool call through a typed `Decision` (allow / deny / approval-required), resolving the caller's role at call time to pick which rules apply. Wraps your existing OpenAI / LangChain / Google ADK / Pydantic AI agent without rewriting it. Every decision is traced and audited with the caller's identity.
 - **The Hexgate platform** *(optional)* — a FastAPI control plane + React dashboard for editing policy in a browser, minting per-project tokens, watching live decisions stream from a serving agent, and shipping signed WASM policy bundles to production. Available as **[Hexgate Cloud](https://app.hexgate.ai)** (hosted — set one env var, no infra) or self-hosted.
 
 You can use the SDK three ways: **local** (YAML/bundle on disk, no platform), **Hexgate Cloud** (remote enforcement + audit — just set `HEXGATE_API_KEY`), or **self-hosted** (run the control plane yourself). `HEXGATE_API_URL` defaults to `https://app.hexgate.ai`, so remote enforcement is one env var away.
 
 ```text
-                      ┌─────────────────────────────────────────┐
-   your code  ───►    │   create_agent / wrap_*_agent / Runner  │
-                      │            ↓                            │
-                      │     PolicyEnforcer.decide(role, tool)   │
-                      │            ↓                            │
-                      │   allow · deny · approval_required      │
-                      └────────────────────┬────────────────────┘
-                                           │
-                  ┌────────────────────────┼─────────────────────────┐
-                  ▼                        ▼                         ▼
-        ┌────────────────┐       ┌──────────────────┐       ┌────────────────┐
-        │  Local policy  │       │ Signed WASM      │       │   Audit log    │
-        │  (YAML / dir,  │       │ bundle from      │       │   (ClickHouse  │
-        │  hot reload)   │       │ Hexgate cloud   │       │   via REST)    │
-        └────────────────┘       └──────────────────┘       └────────────────┘
+   end user (id + role)          tool call (name + args)
+            └───────────────┬────────────────┘
+                            ▼
+              PolicyEnforcer.decide()  ◄──  policy (local YAML / bundle
+                            ▼                or signed cloud bundle)
+            allow  ·  deny  ·  approval
+                            │
+                            ▼
+      audit log — who called what, and whether it was allowed
 ```
 
 ## Quickstart
 
 ```bash
 pip install hexgate
-cp .env.sample .env                       # fill in the keys you use
-hexgate chat --agent example_agent        # terminal REPL against the demo agent
 ```
 
-`hexgate chat` runs a single-process REPL with policy decisions rendered inline in
-the terminal — no platform, no Docker. See the [full quickstart →](https://docs.hexgate.ai/quickstart)
+**See it enforce — no API keys.** A policy gives each role different limits on the
+*same* tool; `hexgate policy test` decides a call offline (demo policy ships in `examples/`):
+
+```bash
+hexgate policy test examples/demo_policy.yaml --role support \
+    --tool refund_order --args '{"amount": 400, "currency": "USD"}'
+# ✗ DENY · support → refund_order(...)   — over support's $50 cap
+
+hexgate policy test examples/demo_policy.yaml --role billing \
+    --tool refund_order --args '{"amount": 400, "currency": "USD"}'
+# ✓ ALLOW · billing → refund_order(...)
+```
+
+Same tool, same request — **the caller's role and the arguments decide**, enforced
+outside the model. The [full quickstart →](https://docs.hexgate.ai/quickstart) puts
+this in front of a live agent.
 
 ## Documentation
 
