@@ -11,10 +11,10 @@ relay so the dashboard's [Playground](/platform/dashboard) can drive it. Policy
 edits in `/policies` take effect at the next chat-turn boundary.
 
 ```bash
-hexgate serve examples.customer_bot:agent
+hexgate serve my_app.agents:my_agent
 
 # CI / deliberate-deploy: error if not pre-registered
-hexgate serve examples.customer_bot:agent --no-auto-register
+hexgate serve my_app.agents:my_agent --no-auto-register
 ```
 
 The bridge works like Cloudflare Tunnel or ngrok — your local agent runtime is
@@ -57,7 +57,7 @@ agent's `.name` attribute (or the `name=` kwarg you passed to `create_react_agen
 HEXGATE_API_KEY=fty_live_<project>_<biscuit>
 HEXGATE_API_URL=http://localhost:8000       # optional; only when self-hosting the platform locally
 
-uv run hexgate serve examples.customer_bot:agent
+uv run hexgate serve my_app.agents:my_agent
 ```
 
 See the [platform overview](/platform/overview) for the full three-terminal

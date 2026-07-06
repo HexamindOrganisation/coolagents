@@ -51,11 +51,11 @@ Point [`hexgate serve`](/cli/serve) at the cloud and drive your locally-running
 agent from the browser Playground:
 
 ```bash
-HEXGATE_API_KEY=fty_live_... hexgate serve examples.customer_bot:agent
+HEXGATE_API_KEY=fty_live_... hexgate serve my_app.agents:my_agent
 ```
 
 On first serve the agent's manifest auto-registers and a starter role-aware policy
-is generated. Edit the policy in the dashboard's **Policies** page — the next chat
+is generated — you don't register it separately. Edit the policy in the dashboard's **Policies** page — the next chat
 turn picks it up, no restart.
 
 ## What you get

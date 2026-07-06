@@ -16,7 +16,7 @@ a system prompt. See [Which path do I pick?](/two-paths) for chat-vs-serve.
 ```bash
 hexgate chat --agent example_agent                                   # bundled demo agent
 hexgate chat --list-agents                                           # show resolvable agents
-hexgate chat --agent examples.customer_bot:agent                     # by module:attr spec
+hexgate chat --agent my_app.agents:my_agent                          # by module:attr spec
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
 hexgate chat --use examples/research_agents.py --agent update_researcher --approval-mode ask
 ```
@@ -27,7 +27,7 @@ and `hexgate <subcommand> --help` for each one's flags.
 ## Agent resolution
 
 `--agent` accepts either a plain agent id (`example_agent`) or a uvicorn-style
-`module.path:attr` spec (`examples.customer_bot:agent`). The CLI discovers agents
+`module.path:attr` spec (`my_app.agents:my_agent`). The CLI discovers agents
 from:
 
 - `./<agent_dir>/agent.yaml`, `./agents/<agent_dir>/agent.yaml`, `./examples/<agent_dir>/agent.yaml`

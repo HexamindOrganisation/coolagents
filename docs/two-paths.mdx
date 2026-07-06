@@ -35,5 +35,5 @@ debugging a production-like trace, or demoing.
 | `hexgate serve --agent ...` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
 
 Both commands accept either a plain agent id (`--agent example_agent`) or a
-uvicorn-style `module.path:attr` spec (`--agent examples.customer_bot:agent`),
+uvicorn-style `module.path:attr` spec (`--agent my_app.agents:my_agent`),
 so the same entry-point string works in both workflows.
