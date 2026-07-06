@@ -1,0 +1,111 @@
+---
+title: "Platform workflow"
+description: "From agent to enforced policy — mint a key, register, edit the policy, test, deploy."
+---
+
+The platform lets you author an agent's policy in a browser and enforce it in
+production without redeploying. This is the end-to-end sequence a developer
+follows. ([Platform overview](/platform/overview) covers *where* it runs — local,
+Hexgate Cloud, or self-hosted; this page covers *what you do*, in order.)
+
+```text
+  AUTHOR TIME (dashboard)                    RUN TIME (your deployed agent)
+  ───────────────────────                    ──────────────────────────────
+  register → starter policy                  HEXGATE_API_KEY set
+        │                                            │
+        ▼                                            ▼
+  edit /policies                             SDK pulls the signed bundle,
+  (roles × tools × args)  ──────────────►    refreshes each turn:
+                                             304 = reuse · 200 = new policy
+```
+
+## 1. Mint an API key
+
+On [Hexgate Cloud](/platform/hosted) (or your [self-hosted](/platform/control-plane)
+instance): sign up, open your project, go to **Tokens**, mint one, and set it:
+
+```bash
+# .env  (HEXGATE_API_URL defaults to https://app.hexgate.ai)
+HEXGATE_API_KEY=fty_live_<project>_<biscuit>
+```
+
+The key and URL are coupled — a `fty_live_…` key only verifies against the
+platform that minted it.
+
+## 2. Register your agent
+
+Push the agent's manifest (its tools, model, system prompt) to the platform. On
+**first** register, the platform auto-generates a **starter role-aware policy**
+from the tool list — a `read_only` mixin plus `default`, `member`, and `admin`
+roles, fail-closed (writes and shells gated). See [CLI: register](/cli/register).
+
+```bash
+hexgate register --agent my_app.agents:my_agent
+```
+
+<Note>
+**register vs serve.** You rarely call `register` by hand — [`hexgate
+serve`](/cli/serve) auto-registers on first run (idempotent; a content-hash
+short-circuits no-ops). Use an explicit `hexgate register` for CI or
+deliberate-deploy flows, paired with `hexgate serve --no-auto-register` to *fail*
+if the agent wasn't pre-registered.
+</Note>
+
+## 3. Edit the policy
+
+Open the dashboard's **/policies** page and shape the generated starter into your
+real rules: which **role** may call which **tool**, with which **argument**
+constraints (`args.amount <= 500`, …). See [Dashboard](/platform/dashboard),
+[policy YAML shape](/policy/yaml-shape), and [constraints](/policy/constraints).
+Re-registering later never overwrites your edits — it only updates the manifest
+snapshot.
+
+## 4. Test in the Playground (optional)
+
+Bring the agent up and drive it from the browser to watch decisions stream live:
+
+```bash
+hexgate serve my_app.agents:my_agent
+```
+
+Then open **/playground**, pick a role ("acting as…"), and send a message —
+allow / deny / approval-required render per tool call. Edit the policy in
+**/policies** and the **next turn** picks it up, no restart. See
+[CLI: serve](/cli/serve).
+
+## 5. Deploy with the policy enforced
+
+In production, your agent process just needs `HEXGATE_API_KEY` set. The SDK
+resolves the agent's policy from the platform and enforces it on every tool call —
+no policy files shipped in your image, no `enforce_policy(...)` call to remember:
+
+```python
+from hexgate import load_hexgate_agent, stream_agent, User
+
+agent, handler = load_hexgate_agent("my_agent")   # pulls the signed bundle
+
+async with User(user_id=request.user_id, role=request.role):
+    async for event in stream_agent(agent, handler, message):
+        ...
+```
+
+Existing framework agent instead? Wrap it once with an
+[adapter](/adapters/openai) — same behavior, the runner pulls the policy from the
+platform.
+
+**Edits reach production without a redeploy.** At the top of every turn the SDK
+calls the platform with an `If-None-Match` (the bundle's `wasm_hash`): a `304`
+reuses the cached WASM module, a `200` swaps in the new one. So a policy change in
+the dashboard lands on the next request your live agent serves — the code, model,
+and tool list stay fixed for the process lifetime; only the policy refreshes. See
+[policy decision](/concepts/policy-decision) for the refresh seam.
+
+## The two systems of record
+
+| | Source of truth | Changes via |
+|---|---|---|
+| **Code** — tools, model, system prompt | your Python (the manifest) | redeploy / re-register |
+| **Policy** — roles, tools, arg constraints | the platform | dashboard edit → next turn |
+
+That split is the point: operators tune authorization in the dashboard and it
+takes effect live, while developers own the agent's code.

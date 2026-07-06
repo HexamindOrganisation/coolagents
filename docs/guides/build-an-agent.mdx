@@ -71,7 +71,9 @@ async with User(user_id="alice", role="billing"):
 ```
 
 Same enforcement seam, same `User` scope. The difference is whose system of
-record holds the YAML — the dev's code vs the dashboard.
+record holds the YAML — the dev's code vs the dashboard. For the full
+platform-owned path (register → edit → test → deploy), see the
+[platform workflow](/platform/workflow).
 
 ## Env vars: that *is* the whole config surface
 

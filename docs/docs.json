@@ -72,6 +72,7 @@
             "group": "Platform",
             "pages": [
               "platform/overview",
+              "platform/workflow",
               "platform/hosted",
               "platform/live-demo"
             ]

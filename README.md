@@ -50,15 +50,35 @@ You can use the SDK three ways: **local** (YAML/bundle on disk, no platform), **
 pip install hexgate
 ```
 
-**See it enforce — no API keys.** A policy gives each role different limits on the
-*same* tool; `hexgate policy test` decides a call offline (demo policy ships in `examples/`):
+**See it enforce — no API keys.** Save a policy that gives two roles different
+limits on the *same* `refund_order` tool:
+
+```yaml
+# policy.yaml
+version: 1
+roles:
+  support:                                     # small USD refunds only
+    default_policy: { mode: deny }
+    tools:
+      refund_order:
+        mode: allow
+        constraints: [ "args.amount <= 50", 'args.currency == "USD"' ]
+  billing:                                     # larger refunds, major currencies
+    default_policy: { mode: deny }
+    tools:
+      refund_order:
+        mode: allow
+        constraints: [ "args.amount <= 500", 'args.currency in ["USD", "EUR"]' ]
+```
+
+`hexgate policy test` decides the **same $400 refund** for each role offline — no model, no keys:
 
 ```bash
-hexgate policy test examples/demo_policy.yaml --role support \
+hexgate policy test policy.yaml --role support \
     --tool refund_order --args '{"amount": 400, "currency": "USD"}'
 # ✗ DENY · support → refund_order(...)   — over support's $50 cap
 
-hexgate policy test examples/demo_policy.yaml --role billing \
+hexgate policy test policy.yaml --role billing \
     --tool refund_order --args '{"amount": 400, "currency": "USD"}'
 # ✓ ALLOW · billing → refund_order(...)
 ```
