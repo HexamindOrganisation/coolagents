@@ -559,3 +559,92 @@ _REGRESSION_POLICY = {
 )
 def test_fuzzer_found_divergences(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_REGRESSION_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# Enforcement-seam parity — PolicyEnforcer.decide() (what adapters call) over
+# BOTH engines, with a User role scope and complex constraints. The other
+# tests hit the engines directly; this exercises decide() + role resolution
+# from the User contextvar + Decision lifting.
+# ---------------------------------------------------------------------------
+
+_ENFORCE_POLICY = {
+    "version": 1,
+    "roles": {
+        "base": {
+            "is_mixin": True,
+            "consts": {"max_files": 3, "roots": ["/tmp", "/srv"]},
+        },
+        "default": {
+            "inherits": ["base"],
+            "tools": {
+                "write_batch": {
+                    "mode": "allow",
+                    "constraints": [
+                        "count(args.paths) <= consts.max_files",
+                        'every(args.paths, startswith(., "/tmp/"))',
+                    ],
+                },
+                "refund": {
+                    "mode": "approval_required",
+                    "constraints": ['args.amount <= 500 or role == "admin"'],
+                },
+            },
+        },
+        "admin": {
+            "inherits": ["base"],
+            "tools": {"refund": {"mode": "allow", "constraints": ['role == "admin"']}},
+        },
+    },
+}
+
+
+class _WasmEngine:
+    """PolicyEngine over compiled WASM — mirrors PolicyBundle.evaluate()."""
+
+    def __init__(self, wasm_bytes: bytes) -> None:
+        self._w = WasmPolicy.from_bytes(wasm_bytes)
+
+    def evaluate(self, *, role, tool, args):
+        from hexgate.security.policy import verdict_from_rego
+
+        role_ = role or "default"
+        return verdict_from_rego(
+            self._w.decide(role=role_, tool=tool, args=dict(args)),
+            tool_name=tool,
+            role=role_,
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "tool", "args", "expect"),
+    [
+        ("default", "write_batch", {"paths": ["/tmp/a", "/tmp/b"]}, "allow"),
+        ("default", "write_batch", {"paths": ["/tmp/a", "/etc/b"]}, "deny"),  # not /tmp
+        (
+            "default",
+            "write_batch",
+            {"paths": ["/tmp/1", "/tmp/2", "/tmp/3", "/tmp/4"]},
+            "deny",
+        ),  # >max
+        ("default", "refund", {"amount": 100}, "needs_approval"),
+        ("default", "refund", {"amount": 999}, "deny"),  # over cap, not admin
+        ("admin", "refund", {"amount": 999}, "allow"),  # admin bypasses via role fact
+    ],
+)
+def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) -> None:
+    from hexgate.runtime import User
+    from hexgate.security.enforcer import PolicyEnforcer
+
+    ps = load_policy_set_from_dict(_ENFORCE_POLICY)
+    wasm = _WasmEngine(_wasm_bytes(compile_to_rego(_ENFORCE_POLICY)))
+
+    py_enforcer = PolicyEnforcer(ps, agent_name="a")
+    wasm_enforcer = PolicyEnforcer(wasm, agent_name="a")
+
+    with User(user_id="u", role=role).sync_scope():
+        py = py_enforcer.decide(tool, args).outcome.value
+        wf = wasm_enforcer.decide(tool, args).outcome.value
+
+    assert py == wf, f"enforcer divergence {role}/{tool}/{args}: py={py} wasm={wf}"
+    assert py == expect
