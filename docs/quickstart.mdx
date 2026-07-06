@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Install hexgate and run the example agent in 60 seconds."
+description: "Install hexgate and watch a role + arguments decide a tool call — no API keys."
 ---
 
 <Steps>
@@ -18,18 +18,68 @@ description: "Install hexgate and run the example agent in 60 seconds."
     ```
   </Step>
 
+  <Step title="See it enforce — no API keys needed">
+    Save this policy as `policy.yaml`. It gives two roles different limits on the
+    **same** `refund_order` tool:
+
+    ```yaml
+    version: 1
+    roles:
+      support:                       # front-line: small USD refunds only
+        default_policy: { mode: deny }
+        tools:
+          refund_order:
+            mode: allow
+            constraints:
+              - args.amount <= 50
+              - args.currency == "USD"
+      billing:                       # larger refunds, major currencies
+        default_policy: { mode: deny }
+        tools:
+          refund_order:
+            mode: allow
+            constraints:
+              - args.amount <= 500
+              - args.currency in ["USD", "EUR"]
+    ```
+
+    Now ask Hexgate to decide the **same $400 refund** for each role. `hexgate
+    policy test` evaluates a policy offline — no model, no API keys:
+
+    ```bash
+    hexgate policy test policy.yaml --role support \
+        --tool refund_order --args '{"amount": 400, "currency": "USD"}'
+    # ✗ DENY · support → refund_order({"amount": 400, "currency": "USD"})
+    #   reason: Policy on "refund_order" denied: constraint failed — args.amount <= 50
+
+    hexgate policy test policy.yaml --role billing \
+        --tool refund_order --args '{"amount": 400, "currency": "EUR"}'
+    # ✓ ALLOW · billing → refund_order({"amount": 400, "currency": "EUR"})
+    ```
+
+    Same tool, same request — **the caller's role and the arguments decide.** That
+    is the whole idea. The limits live in the policy, outside the model, so a
+    confused or prompt-injected agent can't raise its own cap. See
+    [policy YAML shape](/policy/yaml-shape) and [constraints](/policy/constraints)
+    for the full grammar.
+  </Step>
+
   <Step title="Set up environment variables">
+    To run a live agent (next step), copy the sample env and fill in the keys the
+    example agent uses:
+
     ```bash
     cp .env.sample .env
     ```
 
-    Fill in the three keys for the example flow:
-
     ```bash
-    OPENAI_API_KEY=sk-...
-    LINKUP_API_KEY=...
-    TAVILY_API_KEY=...
+    OPENAI_API_KEY=sk-...     # the default model
+    LINKUP_API_KEY=...        # the built-in web_search tool
+    TAVILY_API_KEY=...        # the built-in fetch tool
     ```
+
+    None are required to boot — each is only read when you invoke the piece that
+    uses it. See the [environment reference](/reference/environment).
   </Step>
 
   <Step title="Run the chat REPL">
@@ -37,26 +87,35 @@ description: "Install hexgate and run the example agent in 60 seconds."
     hexgate chat --agent example_agent
     ```
 
-    The chat command sets `HEXGATE_LOCAL_MODE=1` automatically, so audit stays on
-    your machine. Denies and approval-required calls render as inline panels in
-    the terminal.
+    A single-process REPL with policy decisions rendered inline — denies and
+    approval-required calls show up as panels in the terminal. `hexgate chat` sets
+    `HEXGATE_LOCAL_MODE=1` automatically, so audit stays on your machine.
+
+    <Note>
+    The bundled `example_agent` uses a deliberately permissive policy (it just
+    allows `web_search` + `fetch`) so the first run is friction-free. To watch
+    role-based enforcement in a live agent, attach a role-aware policy with
+    [`HEXGATE_LOCAL_POLICY`](/policy/local-override) and run under a
+    [`User` scope](/concepts/user-scope), or explore the vertical examples in
+    `examples/` (`demo_policy.yaml`, `healthcare_policy.yaml`, `hr_policy.yaml`).
+    </Note>
   </Step>
 </Steps>
 
 ## Next steps
 
 <CardGroup cols={2}>
-  <Card title="Pick a path" icon="route" href="/two-paths">
-    Should you use `hexgate chat` or `hexgate serve`? Decide here.
+  <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
+    Roles, tools, modes, argument constraints, inheritance — the full spec.
+  </Card>
+  <Card title="User scope + roles" icon="user" href="/concepts/user-scope">
+    How the end user's identity + role reach the decision at call time.
   </Card>
   <Card title="Wrap an existing agent" icon="puzzle-piece" href="/adapters/openai">
     Got an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent? Wrap it once.
   </Card>
-  <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
-    YAML policy shape, constraints, role inheritance — the full spec.
-  </Card>
-  <Card title="User scope" icon="user" href="/concepts/user-scope">
-    Per-request user identity, role resolution, biscuit attenuation.
+  <Card title="Pick a path" icon="route" href="/two-paths">
+    Local `hexgate chat` vs platform-backed `hexgate serve` — decide here.
   </Card>
   <Card title="Go remote with Hexgate Cloud" icon="cloud" href="/platform/hosted">
     Remote policy enforcement + audit with zero infra — get a key, set one env var.
