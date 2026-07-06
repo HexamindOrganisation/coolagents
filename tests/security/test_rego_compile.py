@@ -428,16 +428,20 @@ def test_violation_rule_uses_raw_constraint_string() -> None:
 
 
 def test_violation_rule_body_negates_constraint() -> None:
-    """The rule body matches role/tool and asserts `not <constraint>`."""
+    """The violation body matches role/tool and negates a positive rule-ref
+    (`not _p_<hash>`) — not an inline expression — whose helper holds the
+    (type-guarded) comparison."""
     rego = compile_to_rego(_SUPPORT_BOT_POLICY)
-    # Pick out billing's amount violation rule and inspect.
     pattern = re.compile(
         r"violations contains `args\.amount <= 500` if \{\n(.*?)\n\}", re.DOTALL
     )
-    [body] = pattern.findall(rego)
-    assert 'input.role == "billing"' in body
+    body = next(b for b in pattern.findall(rego) if 'input.role == "billing"' in b)
     assert 'input.tool == "refund_order"' in body
-    assert "not input.args.amount <= 500" in body
+    m = re.search(r"not (_p_[0-9a-f]+)", body)
+    assert m, body
+    helper = re.search(rf"{m.group(1)} if \{{\n(.*?)\n\}}", rego, re.DOTALL).group(1)
+    assert "input.args.amount <= 500" in helper
+    assert "is_number(input.args.amount)" in helper
 
 
 def test_violation_value_uses_json_when_constraint_has_backtick() -> None:
@@ -726,8 +730,14 @@ def _predict_rego_allow(rego: str, role: str, tool: str, args: dict) -> bool:
         ok = True
         for line in rule.splitlines():
             stripped = line.strip()
-            # Skip guards (role/tool) and blanks — only args.* lines are constraints.
-            if not stripped or "input.role" in stripped or "input.tool" in stripped:
+            # Skip guards (role/tool), type guards, and blanks — only args.*
+            # comparison lines are constraints the predictor re-evaluates.
+            if (
+                not stripped
+                or "input.role" in stripped
+                or "input.tool" in stripped
+                or stripped.startswith(("is_number(", "is_string("))
+            ):
                 continue
             # Unwrap the ``not X in Y`` shape back into our grammar.
             if stripped.startswith("not input."):

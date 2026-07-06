@@ -716,29 +716,51 @@ def _eval_cmp(node: Cmp, context: dict[str, Any]) -> bool:
     if actual is _MISSING or expected is _MISSING:
         return False
     op = node.op
-    try:
-        if op == "==":
-            return actual == expected
-        if op == "!=":
-            return actual != expected
+    if op == "==":
+        return _json_eq(actual, expected)
+    if op == "!=":
+        return not _json_eq(actual, expected)
+    if op in ("<", "<=", ">", ">="):
+        # Ordered comparison is only defined for two numbers or two strings.
+        # Any other pairing (cross-type, bool, null, list…) fails closed — this
+        # matches the WASM engine's type guard and blocks a wrong-typed argument
+        # from slipping past a numeric gate. (bool is excluded even though it's
+        # an int subclass in Python — a bool in a `>` gate is an error.)
+        if not _ordered_comparable(actual, expected):
+            return False
         if op == "<":
             return actual < expected
         if op == "<=":
             return actual <= expected
         if op == ">":
             return actual > expected
-        if op == ">=":
-            return actual >= expected
-        if op == "in":
-            return actual in expected
-        if op == "not in":
-            return actual not in expected
-    except TypeError:
-        # Type-mismatched comparisons (e.g. str < int) → fail closed rather
-        # than raise; an arg of the wrong type shouldn't crash enforcement.
-        return False
+        return actual >= expected
+    if op == "in":
+        return isinstance(expected, list) and any(_json_eq(actual, e) for e in expected)
+    if op == "not in":
+        return isinstance(expected, list) and not any(
+            _json_eq(actual, e) for e in expected
+        )
     # Unreachable given _find_operator's whitelist, but keeps mypy happy.
     return False
+
+
+def _json_eq(a: Any, b: Any) -> bool:
+    """JSON-value equality — like Rego, ``bool`` is distinct from a number
+    (so ``True == 1`` is False, unlike Python's ``bool`` being an ``int``)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    return a == b
+
+
+def _ordered_comparable(a: Any, b: Any) -> bool:
+    """True only for two real numbers or two strings — the pairings ``<``/``>``
+    etc. are defined on. Excludes bool (an int subclass in Python)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return False
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return True
+    return isinstance(a, str) and isinstance(b, str)
 
 
 def evaluate_constraint(node: Node, context: dict[str, Any]) -> bool:

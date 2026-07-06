@@ -97,6 +97,7 @@ from hexgate.security.policy_set import (
 # Rego operators are mostly a superset of ours. ``not in`` needs special
 # handling because Rego writes it as ``not (x in y)``; we wrap the body.
 _INFIX_OPS = {"==", "!=", "<", "<=", ">", ">="}
+_ORDERED_OPS = {"<", "<=", ">", ">="}  # need a cross-type guard
 
 
 def compile_to_rego(
@@ -419,7 +420,11 @@ def _positive_rule(
     """``allow if { <guard>; constraint1; constraint2; ... }``."""
     body = list(guard)
     for _, node in parsed:
-        body.append(f"    {_node_to_rego(node, helpers)}")
+        if isinstance(node, (Cmp, Call)):
+            # may render to multiple lines (an ordered-comparison type guard)
+            body.extend(f"    {line}" for line in _inline(node, None, helpers))
+        else:
+            body.append(f"    {_node_to_rego(node, helpers)}")
     if not body:
         # Unconditional rule (only-default role, default_policy allow, no
         # tools/constraints) — an empty ``{}`` body is invalid Rego.
@@ -447,36 +452,49 @@ def _violation_rule(
 
 
 def _negated_node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
-    """Render the logical negation of a node — the violation-rule condition.
+    """Render the logical negation of a node (violation rule + ``not`` operator).
 
-    For most comparisons this is ``not <cond>``. For ``not in`` the base
-    rendering is *already* ``not X in Y``; its negation is the plain
-    ``X in Y`` — emitting ``not not X in Y`` is a Rego parse error, so any
-    policy with a ``not in`` constraint would otherwise fail to compile. A
-    quantifier negates via its helper reference (``not _q_<hash>``).
+    Always negates a *rule reference*, never an inline expression. This is the
+    crucial correctness point: pydantic treats a missing field as a hard False
+    (``not`` of it is True), but Rego's inline ``not (undefined < 1)`` fails
+    (denies). A rule ``_p if { <cond> }`` is 2-valued from the outside — it
+    fails cleanly on a missing field — so ``not _p`` matches pydantic for every
+    operator. It also sidesteps the invalid ``not not … in …`` for ``not in``.
+
+    Compound nodes already register their own helper, so negate that directly.
     """
-    if isinstance(node, Cmp) and node.op == "not in":
-        return f"{_render(node.left)} in {_render(node.right)}"
+    if isinstance(node, (Cmp, Call)):
+        return f"not {_register_pos_helper(node, helpers)}"
     return f"not {_node_to_rego(node, helpers)}"
 
 
-def _node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
-    """Render a top-level constraint node as one Rego condition token.
+def _register_pos_helper(node: Node, helpers: dict[str, list[str]]) -> str:
+    """Emit ``_p_<hash> if { <positive rendering> }`` once; return the name.
 
-    Compound nodes (Quant / And / Or / Not) register a named helper rule (so
-    they can be negated cleanly in the violation rule) and return that name;
-    Cmp / Call render inline.
+    Wrapping a leaf's positive form in a rule makes it 2-valued (a missing
+    field fails the rule rather than propagating ``undefined``), so callers can
+    negate it with a plain ``not _p_<hash>``.
     """
-    if isinstance(node, Cmp):
-        return _cmp_to_rego(node)
-    if isinstance(node, Call):
-        return _call_to_rego(node)
+    name = f"_p_{_node_hash(node)}"
+    if name not in helpers:
+        body = _inline(node, None, helpers)
+        helpers[name] = [f"{name} if {{", *(f"    {line}" for line in body), "}"]
+    return name
+
+
+def _node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
+    """Render a compound node as a single Rego helper reference.
+
+    Only compounds (Quant / And / Or / Not) go through here — each registers a
+    named helper so it can be negated cleanly. Cmp / Call may render to multiple
+    lines (type guards), so they go through :func:`_inline` instead.
+    """
     if isinstance(node, Quant):
         return _register_quant_helper(node, helpers)
     if isinstance(node, (And, Or, Not)):
         return _register_bool_helper(node, helpers)
-    # Unreachable given parse_constraint's whitelist, but defensive.
-    raise PolicySetError(f"cannot render node {node!r}")
+    # Unreachable — Cmp/Call are rendered via _inline.
+    raise PolicySetError(f"cannot render node {node!r} as a single token")
 
 
 def _node_hash(node: Node) -> str:
@@ -490,6 +508,23 @@ def _register_quant_helper(node: Quant, helpers: dict[str, list[str]]) -> str:
     if name not in helpers:
         body = _inline(node, None, helpers)
         helpers[name] = [f"{name} if {{", *(f"    {line}" for line in body), "}"]
+    return name
+
+
+def _register_quant_body_fn(
+    node: Quant, param: str, helpers: dict[str, list[str]]
+) -> str:
+    """Emit a parameterized predicate ``_qb_<hash>(e) if { <body> }``; return name.
+
+    ``param`` is the loop variable the caller binds the element to; the body is
+    rendered with ``.`` → ``param``. A function is 2-valued per element, so a
+    type error or missing sub-field fails that element instead of leaving the
+    quantifier body undefined.
+    """
+    name = f"_qb_{_node_hash(node)}"
+    if name not in helpers:
+        body = _inline(node.body, param, helpers)
+        helpers[name] = [f"{name}({param}) if {{", *(f"    {b}" for b in body), "}"]
     return name
 
 
@@ -530,17 +565,21 @@ def _inline(
     reference.
     """
     if isinstance(node, Cmp):
-        return [_cmp_to_rego(node, elem_var)]
+        return _cmp_to_rego(node, elem_var, helpers)
     if isinstance(node, Call):
         return [_call_to_rego(node, elem_var)]
     if isinstance(node, Quant):
         var = f"__e_{_node_hash(node)}"
         coll = _render(node.ref, elem_var)
-        body = _inline(node.body, var, helpers)
+        # The per-element predicate is a parameterized function, not an inline
+        # block: a function is 2-valued (a per-element type error / missing
+        # sub-field fails the element), so `every`/`some` match pydantic instead
+        # of Rego treating an undefined element body as vacuously satisfied.
+        fn = _register_quant_body_fn(node, var, helpers)
         if node.kind == "every":
-            return [f"every {var} in {coll} {{", *(f"    {b}" for b in body), "}"]
-        # any → existential: bind the element, then assert the body holds.
-        return [f"some {var} in {coll}", *body]
+            return [f"every {var} in {coll} {{ {fn}({var}) }}"]
+        # any → existential: bind the element, then assert the predicate holds.
+        return [f"some {var} in {coll}", f"{fn}({var})"]
     if isinstance(node, And):
         lines: list[str] = []
         for part in node.parts:
@@ -564,26 +603,86 @@ def _call_to_rego(node: Call, elem_var: str | None = None) -> str:
     return f"{node.fn}({ref}, {value})"
 
 
-def _cmp_to_rego(node: Cmp, elem_var: str | None = None) -> str:
-    """Render a comparison as a Rego condition line.
+def _cmp_to_rego(
+    node: Cmp, elem_var: str | None, helpers: dict[str, list[str]]
+) -> list[str]:
+    """Render a comparison as one or more Rego condition lines.
 
-    Path translation: ``args.amount`` → ``input.args.amount``. We always
-    prefix ``input.`` so the rule body reads from the WASM evaluator's
-    input dict (the conventional name in OPA's eval model).
+    Path translation: ``args.amount`` → ``input.args.amount``. Ordered
+    comparisons (``< <= > >=``) also emit a type guard so a cross-type pairing
+    fails closed (matching the pydantic engine) — without it Rego's total order
+    across types would, e.g., make ``"evil" > 10`` true and let a wrong-typed
+    argument slip past a numeric gate.
     """
     lhs = _render(node.left, elem_var)
     rhs = _render(node.right, elem_var)
     op = node.op
-    if op in _INFIX_OPS:
-        return f"{lhs} {op} {rhs}"
+    if op in ("==", "!="):
+        return [f"{lhs} {op} {rhs}"]
     if op == "in":
-        return f"{lhs} in {rhs}"
+        return [f"{lhs} in {rhs}"]
     if op == "not in":
         # Rego negates the whole ``in`` expression; semantically identical
         # to "not present in the set."
-        return f"not {lhs} in {rhs}"
+        return [f"not {lhs} in {rhs}"]
+    if op in _ORDERED_OPS:
+        return _ordered_cmp_rego(node, lhs, rhs, op, elem_var, helpers)
     # Unreachable given parse_constraint's whitelist, but defensive.
     raise PolicySetError(f"unsupported constraint operator {op!r}")
+
+
+def _numstr_hint(operand: Operand) -> str | None:
+    """The comparable type an operand pins ('number'/'string'), 'bad' for a
+    non-comparable literal (bool/null/list), or None when unknown (a ref)."""
+    if isinstance(operand, Count):
+        return "number"
+    if isinstance(operand, Lit):
+        v = operand.value
+        if isinstance(v, bool):
+            return "bad"
+        if isinstance(v, (int, float)):
+            return "number"
+        if isinstance(v, str):
+            return "string"
+        return "bad"
+    return None
+
+
+def _ordered_cmp_rego(
+    node: Cmp,
+    lhs: str,
+    rhs: str,
+    op: str,
+    elem_var: str | None,
+    helpers: dict[str, list[str]],
+) -> list[str]:
+    """Ordered comparison with a type guard so cross-type fails closed."""
+    hint_l, hint_r = _numstr_hint(node.left), _numstr_hint(node.right)
+    if "bad" in (hint_l, hint_r):
+        # ordered comparison against a non-number/string literal never holds
+        return ["false"]
+    known = hint_l or hint_r
+    if known is not None:
+        guards = [
+            f"is_{known}({rendered})"
+            for operand, rendered in ((node.left, lhs), (node.right, rhs))
+            if _numstr_hint(operand) is None  # a ref/const/elem of unknown type
+        ]
+        return [*guards, f"{lhs} {op} {rhs}"]
+    # Both sides unknown-typed (cross-field): require the same comparable type.
+    # Only reachable at the top level (quant bodies compare against a literal).
+    if elem_var is not None:
+        raise PolicySetError(
+            "cross-field ordered comparison inside a quantifier body is not "
+            "supported"
+        )
+    name = f"_ord_{_node_hash(node)}"
+    if name not in helpers:
+        helpers[name] = [
+            f"{name} if {{ is_number({lhs}); is_number({rhs}); {lhs} {op} {rhs} }}",
+            f"{name} if {{ is_string({lhs}); is_string({rhs}); {lhs} {op} {rhs} }}",
+        ]
+    return [name]
 
 
 def _render(operand: Operand, elem_var: str | None = None) -> str:

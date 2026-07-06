@@ -25,13 +25,14 @@ allow if {
 requires_approval if {
     input.role == "billing"
     input.tool == "issue_credit"
+    is_number(input.args.amount)
     input.args.amount <= 500
 }
 
 violations contains `args.amount <= 500` if {
     input.role == "billing"
     input.tool == "issue_credit"
-    not input.args.amount <= 500
+    not _p_b182706c06
 }
 
 allow if {
@@ -42,48 +43,50 @@ allow if {
 allow if {
     input.role == "billing"
     input.tool == "refund_order"
+    is_number(input.args.amount)
     input.args.amount <= 500
     input.args.currency == "USD"
     input.args.template in ["a", "b"]
     not input.args.priority in ["urgent"]
     input.args.confirmed == true
+    is_number(input.args.payment.amount)
     input.args.payment.amount <= 100
 }
 
 violations contains `args.amount <= 500` if {
     input.role == "billing"
     input.tool == "refund_order"
-    not input.args.amount <= 500
+    not _p_b182706c06
 }
 
 violations contains `args.currency == "USD"` if {
     input.role == "billing"
     input.tool == "refund_order"
-    not input.args.currency == "USD"
+    not _p_8bcb53951e
 }
 
 violations contains `args.template in ["a", "b"]` if {
     input.role == "billing"
     input.tool == "refund_order"
-    not input.args.template in ["a", "b"]
+    not _p_066518c099
 }
 
 violations contains `args.priority not in ["urgent"]` if {
     input.role == "billing"
     input.tool == "refund_order"
-    input.args.priority in ["urgent"]
+    not _p_e5bd576175
 }
 
 violations contains `args.confirmed == true` if {
     input.role == "billing"
     input.tool == "refund_order"
-    not input.args.confirmed == true
+    not _p_ce25e566f4
 }
 
 violations contains `args.payment.amount <= 100` if {
     input.role == "billing"
     input.tool == "refund_order"
-    not input.args.payment.amount <= 100
+    not _p_ee4b81b8b6
 }
 
 # ---- role: default -----------------------------------------------------
@@ -101,18 +104,45 @@ allow if {
 requires_approval if {
     input.role == "support"
     input.tool == "issue_credit"
+    is_number(input.args.amount)
     input.args.amount <= 500
 }
 
 violations contains `args.amount <= 500` if {
     input.role == "support"
     input.tool == "issue_credit"
-    not input.args.amount <= 500
+    not _p_b182706c06
 }
 
 allow if {
     input.role == "support"
     input.tool == "read_file"
+}
+
+_p_066518c099 if {
+    input.args.template in ["a", "b"]
+}
+
+_p_8bcb53951e if {
+    input.args.currency == "USD"
+}
+
+_p_b182706c06 if {
+    is_number(input.args.amount)
+    input.args.amount <= 500
+}
+
+_p_ce25e566f4 if {
+    input.args.confirmed == true
+}
+
+_p_e5bd576175 if {
+    not input.args.priority in ["urgent"]
+}
+
+_p_ee4b81b8b6 if {
+    is_number(input.args.payment.amount)
+    input.args.payment.amount <= 100
 }
 
 # Sentinel: keeps `violations` defined even when no constraint rules exist.

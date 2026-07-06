@@ -505,3 +505,57 @@ _BOOL_POLICY = {
 )
 def test_boolean_parity(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_BOOL_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# Regression: specific divergences the generative fuzzer (test_dsl_fuzz) found.
+# Kept as named, deterministic cases documenting each fix.
+# ---------------------------------------------------------------------------
+
+_REGRESSION_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "consts": {"cl": [1, 2, 3]},
+            "tools": {
+                # #1 not-of-missing: pydantic missing→false→not→allow; Rego inline
+                # `not (undefined < 1)` used to deny.
+                "notmiss": {"mode": "allow", "constraints": ["not (args.f < 1)"]},
+                # #2 type error inside a quantifier body: Rego `every` used to treat
+                # an undefined element body as satisfied (fail-open).
+                "qtype": {
+                    "mode": "allow",
+                    "constraints": ['every(args.items, .price < "x")'],
+                },
+                # #3 cross-type ordered comparison: `"evil" > 10` is true in Rego's
+                # total order (fail-open) but a TypeError→false in pydantic.
+                "ordtype": {"mode": "allow", "constraints": ["args.f > 10"]},
+                # bool vs number equality / membership (Python bool is int; Rego not).
+                "booleq": {"mode": "allow", "constraints": ["args.f == 1"]},
+                "boolin": {"mode": "allow", "constraints": ["args.f in consts.cl"]},
+            },
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        ("notmiss", {}, "allow"),  # f missing
+        ("notmiss", {"f": 0}, "deny"),  # 0 < 1 → not → deny
+        ("qtype", {"items": [{"price": 10}]}, "deny"),  # int < "x" → element false
+        (
+            "ordtype",
+            {"f": "evil"},
+            "deny",
+        ),  # wrong-typed arg must NOT pass a numeric gate
+        ("ordtype", {"f": 50}, "allow"),  # well-typed still works
+        ("booleq", {"f": True}, "deny"),  # True != 1
+        ("booleq", {"f": 1}, "allow"),
+        ("boolin", {"f": True}, "deny"),  # True not in [1,2,3]
+        ("boolin", {"f": 1}, "allow"),
+    ],
+)
+def test_fuzzer_found_divergences(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_REGRESSION_POLICY, "default", tool, args, expect)
