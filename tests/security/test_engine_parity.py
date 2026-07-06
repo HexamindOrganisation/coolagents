@@ -409,3 +409,52 @@ _CTX_POLICY = {
 )
 def test_role_tool_fact_parity(role: str, tool: str, args: dict, expect: str) -> None:
     _assert_parity(_CTX_POLICY, role, tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# Named constants (2f) — consts.<name>, incl. shared via a mixin
+# ---------------------------------------------------------------------------
+
+_CONST_POLICY = {
+    "version": 1,
+    "roles": {
+        # shared constants live in a mixin and are inherited (the DRY pattern)
+        "base": {
+            "is_mixin": True,
+            "consts": {
+                "max_refund": 500,
+                "prod_env": "production",
+                "repos": ["a", "b"],
+            },
+        },
+        "default": {
+            "inherits": ["base"],
+            "tools": {
+                "refund": {
+                    "mode": "allow",
+                    "constraints": ["args.amount <= consts.max_refund"],
+                },
+                "deploy": {
+                    "mode": "allow",
+                    "constraints": ["args.env == consts.prod_env"],
+                },
+                "pr": {"mode": "allow", "constraints": ["args.repo in consts.repos"]},
+            },
+        },
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        ("refund", {"amount": 100}, "allow"),
+        ("refund", {"amount": 999}, "deny"),
+        ("deploy", {"env": "production"}, "allow"),
+        ("deploy", {"env": "dev"}, "deny"),
+        ("pr", {"repo": "a"}, "allow"),
+        ("pr", {"repo": "z"}, "deny"),
+    ],
+)
+def test_const_parity(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_CONST_POLICY, "default", tool, args, expect)

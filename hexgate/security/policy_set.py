@@ -240,12 +240,14 @@ def _resolve_inheritance(
     if not own.inherits:
         return own
     merged_tools: dict[str, ToolPolicy] = {}
+    merged_consts: dict[str, object] = {}
     merged_default: BaseToolPolicy = own.default_policy
 
     # Merge parents left-to-right (later parents override earlier).
     for parent_name in own.inherits:
         parent = _resolve_inheritance(parent_name, raw, chain + [name])
         merged_tools.update(parent.tools)
+        merged_consts.update(parent.consts)
         merged_default = parent.default_policy
 
     # Self overrides everything from parents. Check ``model_fields_set`` rather
@@ -254,6 +256,7 @@ def _resolve_inheritance(
     # user's intent is to override, and silently inheriting an ``allow`` from a
     # parent would be fail-open.
     merged_tools.update(own.tools)
+    merged_consts.update(own.consts)
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy
 
@@ -263,4 +266,5 @@ def _resolve_inheritance(
         is_mixin=own.is_mixin,
         default_policy=merged_default,
         tools=merged_tools,
+        consts=merged_consts,
     )

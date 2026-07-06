@@ -61,6 +61,26 @@ Besides `args.*`, constraints can reference two **call-scope facts**: `role`
 `role == "admin"` or `tool == "refund_order"`. These mirror Rego's
 `input.role` / `input.tool`.
 
+## Named constants
+
+Define reusable values once in a `consts:` block and reference them as
+`consts.<name>` — a number, string, or list:
+
+```yaml
+consts:
+  max_refund: 500
+  managed_repos: ["hexgate", "hexkit"]
+
+tools:
+  refund:    { mode: allow, constraints: ["args.amount <= consts.max_refund"] }
+  create_pr: { mode: allow, constraints: ["args.repo in consts.managed_repos"] }
+```
+
+Change a value in one place and every tool/role that references it updates.
+Constants merge through `inherits:` like `tools`, so shared constants belong in
+a mixin. A `consts.<name>` that isn't defined is rejected at build (and denies
+on the pydantic engine); across roles a name must map to a single value.
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
 both produce identical decisions.

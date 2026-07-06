@@ -24,6 +24,7 @@ from hexgate.security import PolicyDeniedError
 from hexgate.security.constraints import (
     Call,
     Cmp,
+    ConstRef,
     ConstraintParseError,
     Count,
     Elem,
@@ -727,3 +728,52 @@ def test_check_exposes_role_and_tool_as_facts() -> None:
 def test_check_role_none_denies_role_constraint() -> None:
     with pytest.raises(PolicyDeniedError):
         check_constraints(['role == "admin"'], {}, "t", role=None)
+
+
+# ---------------------------------------------------------------------------
+# Named constants (2f) — consts.<name>
+# ---------------------------------------------------------------------------
+
+
+def test_parse_const_ref() -> None:
+    assert parse_constraint("args.amount <= consts.max_refund").right == ConstRef(
+        "max_refund"
+    )
+
+
+def test_parse_const_ref_on_in_rhs() -> None:
+    node = parse_constraint("args.repo in consts.repos")
+    assert node.op == "in"
+    assert node.right == ConstRef("repos")
+
+
+@pytest.mark.parametrize("src", ["args.x == consts.", "args.x == consts.a.b"])
+def test_parse_rejects_bad_const_ref(src: str) -> None:
+    with pytest.raises(ConstraintParseError):
+        parse_constraint(src)
+
+
+def test_check_resolves_consts() -> None:
+    check_constraints(
+        ["args.amount <= consts.cap"], {"amount": 100}, "t", consts={"cap": 500}
+    )
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(
+            ["args.amount <= consts.cap"], {"amount": 999}, "t", consts={"cap": 500}
+        )
+
+
+def test_check_const_membership() -> None:
+    check_constraints(
+        ["args.repo in consts.repos"], {"repo": "a"}, "t", consts={"repos": ["a", "b"]}
+    )
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(
+            ["args.repo in consts.repos"], {"repo": "z"}, "t", consts={"repos": ["a"]}
+        )
+
+
+def test_check_unknown_const_denies() -> None:
+    # Missing const → fails closed (the WASM compiler rejects it loudly).
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(["args.x == consts.nope"], {"x": 1}, "t", consts={})

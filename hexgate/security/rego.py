@@ -72,6 +72,7 @@ from typing import Any
 from hexgate.security.constraints import (
     Call,
     Cmp,
+    ConstRef,
     Count,
     Elem,
     Lit,
@@ -115,6 +116,11 @@ def compile_to_rego(
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         source_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    # Named constants become module-level ``name := value`` rules; collected
+    # globally (they must be consistent across roles — see _collect_consts).
+    consts = _collect_consts(policy_set)
+    _validate_const_refs(policy_set, consts)
+
     # Quantifiers register named helper rules here (keyed by name for dedup);
     # emitted after the role rules so the module stays self-contained.
     helpers: dict[str, list[str]] = {}
@@ -122,6 +128,7 @@ def compile_to_rego(
     lines: list[str] = []
     lines.extend(_header(source_hash, package))
     lines.extend(_decision_scaffold())
+    lines.extend(_const_rules(consts))
     lines.extend(_role_rules(policy_set, helpers))
     for name in sorted(helpers):  # sorted → deterministic output
         lines.extend(helpers[name])
@@ -129,6 +136,69 @@ def compile_to_rego(
     lines.extend(_violations_sentinel())
     # Trailing newline — POSIX-friendly + a few editors complain otherwise.
     return "\n".join(lines) + "\n"
+
+
+def _collect_consts(policy_set: PolicySet) -> dict[str, Any]:
+    """Merge every role's constants into one global map for the module.
+
+    Constants are module-level in Rego, so a name must map to a single value
+    across roles (the intended pattern is a shared mixin). A name bound to two
+    different values is a conflict — fail loud rather than pick one.
+    """
+    merged: dict[str, Any] = {}
+    for role in policy_set.roles:
+        for name, value in policy_set.policy_for(role).consts.items():
+            if name in merged and merged[name] != value:
+                raise PolicySetError(
+                    f"constant {name!r} has conflicting values across roles "
+                    f"({merged[name]!r} vs {value!r}); constants are global"
+                )
+            merged[name] = value
+    return merged
+
+
+def _validate_const_refs(policy_set: PolicySet, consts: dict[str, Any]) -> None:
+    """Reject a ``consts.<name>`` reference to an undefined constant."""
+    for role in policy_set.roles:
+        policy = policy_set.policy_for(role)
+        available = set(policy.consts)
+        tool_policies = [*policy.tools.values(), policy.default_policy]
+        for tool_policy in tool_policies:
+            for raw in tool_policy.constraints:
+                for name in _iter_const_refs(parse_constraint(raw)):
+                    if name not in available:
+                        raise PolicySetError(
+                            f"role {role!r}: constraint {raw!r} references "
+                            f"undefined constant consts.{name}"
+                        )
+    # `consts` (the global set) may legitimately be a superset; per-role checks
+    # above are what preserve pydantic/WASM parity.
+
+
+def _iter_const_refs(node: Node):
+    """Yield every ConstRef name reachable in a node (operands + nested)."""
+    if isinstance(node, Cmp):
+        for operand in (node.left, node.right):
+            if isinstance(operand, ConstRef):
+                yield operand.name
+    elif isinstance(node, Call):
+        if isinstance(node.arg, ConstRef):
+            yield node.arg.name
+    elif isinstance(node, Quant):
+        if isinstance(node.ref, ConstRef):
+            yield node.ref.name
+        yield from _iter_const_refs(node.body)
+
+
+def _const_rules(consts: dict[str, Any]) -> list[str]:
+    """Emit ``name := value`` module-level rules, sorted for determinism."""
+    if not consts:
+        return []
+    out = ["# ---- constants " + "-" * 50]
+    for name in sorted(consts):
+        out.append(f"{name} := {json.dumps(consts[name])}")
+    out.append("")
+    return out
 
 
 def _header(source_hash: str, package: str) -> list[str]:
@@ -483,6 +553,10 @@ def _render(operand: Operand, elem_var: str | None = None) -> str:
         if elem_var is None:  # guarded by parse-time element-scope check
             raise PolicySetError("element reference outside a quantifier")
         return elem_var if not operand.path else elem_var + "." + ".".join(operand.path)
+    if isinstance(operand, ConstRef):
+        # References a module-level ``<name> := <value>`` rule (validated +
+        # emitted by compile_to_rego).
+        return operand.name
     if isinstance(operand, Lit):
         return json.dumps(operand.value)
     raise PolicySetError(f"cannot render operand {operand!r}")

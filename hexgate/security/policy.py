@@ -68,7 +68,13 @@ def evaluate_tool_call(
         )
 
     try:
-        check_constraints(tool_policy.constraints, arguments, tool_name, role=role)
+        check_constraints(
+            tool_policy.constraints,
+            arguments,
+            tool_name,
+            role=role,
+            consts=policy.consts,
+        )
     except PolicyDeniedError as exc:
         return Verdict(outcome=DecisionOutcome.DENY, reason=str(exc))
 

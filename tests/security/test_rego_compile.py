@@ -491,6 +491,57 @@ def test_quantifier_output_is_deterministic() -> None:
     assert compile_to_rego(payload) == compile_to_rego(payload)
 
 
+def test_consts_emitted_as_module_rules() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "consts": {"cap": 500, "repos": ["a", "b"]},
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.n <= consts.cap"]}
+                },
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    assert "cap := 500" in rego
+    assert 'repos := ["a", "b"]' in rego
+    assert "input.args.n <= cap" in rego  # reference uses the const name
+
+
+def test_compile_rejects_unknown_const() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "consts": {"cap": 500},
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.x == consts.missing"]}
+                },
+            }
+        },
+    }
+    with pytest.raises(PolicySetError, match="undefined constant"):
+        compile_to_rego(payload)
+
+
+def test_compile_rejects_conflicting_consts_across_roles() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {"consts": {"cap": 500}, "tools": {}},
+            "billing": {
+                "consts": {"cap": 999},  # same name, different value → conflict
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.n <= consts.cap"]}
+                },
+            },
+        },
+    }
+    with pytest.raises(PolicySetError, match="conflicting values"):
+        compile_to_rego(payload)
+
+
 def test_violations_sentinel_emitted_for_constraint_free_policy() -> None:
     """Policies with zero constraints still need `violations` defined —
     a `false`-bodied sentinel keeps the decision rule safe to build."""

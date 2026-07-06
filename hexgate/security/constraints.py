@@ -11,8 +11,9 @@ Grammar (PEG-ish, single line per constraint):
     comparison   := operand WS op WS operand
     op           := "==" | "!=" | "<=" | ">=" | "<" | ">"
                   | "in" | "not in"
-    operand      := count | path | elem | literal
+    operand      := count | path | elem | constref | literal
     count        := "count(" path ")"            # element count (2d)
+    constref     := "consts." IDENT              # named policy constant (2f)
     call         := FUNC "(" (path|elem) "," WS STRING ")"   # string function (2b)
     FUNC         := "startswith" | "endswith" | "contains" | "matches"
     quant        := ("every"|"any") "(" (path|elem) "," WS constraint ")"   # (2e)
@@ -46,6 +47,8 @@ Concrete examples (all of these parse and evaluate today):
     matches(args.id, "^inv_[0-9]+$")             # regex (2b)
     every(args.files, startswith(., "/tmp/"))    # quantifier (2e)
     any(args.items, .price <= 100)               # quantifier over sub-field
+    args.amount <= consts.max_refund             # named constant (2f)
+    args.repo in consts.managed_repos            # constant list
     args.template in ["refund_confirmed", "ticket_resolved"]
     args.priority not in ["urgent", "critical"]
 
@@ -112,7 +115,18 @@ class Elem:
     path: tuple[str, ...]
 
 
-Operand = Ref | Count | Lit | Elem
+@dataclass(frozen=True, slots=True)
+class ConstRef:
+    """A reference to a named policy constant, e.g. ``consts.max_refund``.
+
+    Resolves to the constant's value (number / string / list / …) defined in
+    the policy's ``consts`` block. Unknown at eval time → fails closed.
+    """
+
+    name: str
+
+
+Operand = Ref | Count | Lit | Elem | ConstRef
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +196,9 @@ _OP_TOKENS = ("<=", ">=", "==", "!=", "not in", "in", "<", ">")
 _IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z_0-9]*$")
 _COUNT_RE = re.compile(r"^count\((.+)\)$")
 _QUANT_RE = re.compile(r"^(every|any)\((.*)\)$", re.DOTALL)
+_CONST_RE = re.compile(r"^consts\.([a-zA-Z_][a-zA-Z_0-9]*)$")
 _ELEM_KEY = "$elem"
+_CONSTS_KEY = "$consts"
 _JSON_KEYWORDS = ("true", "false", "null")
 
 _FUNCS = ("startswith", "endswith", "contains", "matches")
@@ -240,10 +256,12 @@ def _parse_node(source: str) -> Node:
     right = _parse_operand(rhs_raw, source, "right-hand side")
 
     if op in ("in", "not in") and not (
-        isinstance(right, Lit) and isinstance(right.value, list)
+        (isinstance(right, Lit) and isinstance(right.value, list))
+        or isinstance(right, ConstRef)
     ):
         raise ConstraintParseError(
-            f"{op!r} requires a list literal on the right in {source!r}"
+            f"{op!r} requires a list literal or consts.<name> on the right "
+            f"in {source!r}"
         )
 
     return Cmp(left=left, op=op, right=right, source=source)
@@ -267,6 +285,15 @@ def _parse_operand(text: str, source: str, side: str) -> Operand:
     if text.startswith("."):
         rest = text[1:]
         return Elem(_parse_path(rest, source)) if rest else Elem(())
+
+    # ``consts.<name>`` — a named policy constant (reserved prefix).
+    if text.startswith("consts."):
+        m = _CONST_RE.match(text)
+        if m is None:
+            raise ConstraintParseError(
+                f"invalid constant reference {text!r} in {source!r}"
+            )
+        return ConstRef(m.group(1))
 
     m = _COUNT_RE.match(text)
     if m:
@@ -472,6 +499,9 @@ def _resolve_operand(operand: Operand, context: dict[str, Any]) -> Any:
     if isinstance(operand, Elem):
         element = context.get(_ELEM_KEY, _MISSING)
         return _MISSING if element is _MISSING else _walk(element, operand.path)
+    if isinstance(operand, ConstRef):
+        consts = context.get(_CONSTS_KEY, {})
+        return consts.get(operand.name, _MISSING)
     return _resolve_path(operand.path, context)
 
 
@@ -568,6 +598,7 @@ def check_constraints(
     tool_name: str,
     *,
     role: str | None = None,
+    consts: dict[str, Any] | None = None,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
@@ -577,10 +608,16 @@ def check_constraints(
 
     ``role`` and the tool name are exposed to constraints as top-level
     ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
+    ``consts`` supplies the policy's named constants for ``consts.<name>``.
     """
     if not constraints:
         return
-    context = {"args": dict(arguments or {}), "role": role, "tool": tool_name}
+    context = {
+        "args": dict(arguments or {}),
+        "role": role,
+        "tool": tool_name,
+        _CONSTS_KEY: consts or {},
+    }
     for entry in constraints:
         parsed = parse_constraint(entry) if isinstance(entry, str) else entry
         if not evaluate_constraint(parsed, context):
