@@ -155,6 +155,25 @@ def test_assert_helpers_on_agent_policy() -> None:
     assert_needs_approval(policy, "edit_file")
 
 
+def test_assert_helpers_forward_role_on_agent_policy() -> None:
+    # An AgentPolicy (single role) with a `role`-scoped constraint: the assert
+    # helpers must thread `role=` through to evaluate_tool_call, else the role
+    # fact is None and admins are denied — diverging from the WASM engine.
+    policy = PolicyBuilder().allow("deploy", when=['role == "admin"']).build()
+    assert_allows(policy, "deploy", role="admin")
+    assert_denies(policy, "deploy", role="default")
+    assert_denies(policy, "deploy")  # no role → fact is None → deny
+
+
+def test_authorize_tool_call_forwards_role() -> None:
+    from hexgate.security import PolicyDeniedError, authorize_tool_call
+
+    policy = PolicyBuilder().allow("deploy", when=['role == "admin"']).build()
+    authorize_tool_call(policy, "deploy", role="admin")  # allowed, no raise
+    with pytest.raises(PolicyDeniedError):
+        authorize_tool_call(policy, "deploy", role="default")
+
+
 def test_assert_helpers_on_policy_set_with_role() -> None:
     ps = (
         RolePolicyBuilder()

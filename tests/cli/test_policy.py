@@ -112,6 +112,29 @@ def test_validate_reports_constraint_error(
     assert "no recognised operator" in err
 
 
+def test_validate_reports_constraint_error_in_default_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bad constraint in a role's default_policy gets the friendly role→tool
+    message too, not a raw schema ValidationError."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  default:\n"
+        "    default_policy:\n"
+        "      mode: deny\n"
+        "      constraints:\n"
+        "        - args.amount ~~ 50\n",
+        encoding="utf-8",
+    )
+    rc = _main_validate(_ns(source=str(bad)))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "default → <default>" in err
+    assert "no recognised operator" in err
+
+
 def test_validate_handles_missing_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

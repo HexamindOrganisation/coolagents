@@ -16,6 +16,10 @@ things up once you know the shape.
 | `in` | `args.template in ["a", "b"]` | RHS must be a JSON list literal |
 | `not in` | `args.priority not in ["urgent"]` | Two-word operator, treated as one |
 
+Types are compared strictly, matching Rego: a boolean is **not** a number, so
+`true == 1` is false and `true in [1]` is false (unlike Python's `True == 1`).
+Cross-type ordered comparisons (`"x" > 10`) never pass — they fail closed.
+
 Each side of a comparison is an **operand** — a literal, a field path, or
 `count(...)`:
 
@@ -36,7 +40,7 @@ Whole-line **string functions** take a field and a string literal:
 | `startswith` | `startswith(args.file_path, "src/")` | |
 | `endswith` | `endswith(args.file_path, ".md")` | |
 | `contains` | `contains(args.subject, "urgent")` | Substring (string only) |
-| `matches` | `matches(args.id, "^inv_[0-9]+$")` | RE2 regex, **unanchored** — use `^…$` for a full match; backreferences / lookaround are rejected |
+| `matches` | `matches(args.id, "^inv_[0-9]+$")` | RE2 regex, **unanchored** — use `^…$` for a full match; backreferences / lookaround are rejected; `\d` `\w` `\s` `\b` are **ASCII** (so `\d` is `[0-9]`, not Unicode digits) |
 
 **Quantifiers** constrain the elements of a list-valued argument. `.` is the
 current element (`.field` for a sub-field), usable in any condition:

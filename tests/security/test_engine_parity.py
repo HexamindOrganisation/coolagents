@@ -533,6 +533,19 @@ _REGRESSION_POLICY = {
                 # bool vs number equality / membership (Python bool is int; Rego not).
                 "booleq": {"mode": "allow", "constraints": ["args.f == 1"]},
                 "boolin": {"mode": "allow", "constraints": ["args.f in consts.cl"]},
+                # `not in` must use the same bool≠number rule as `in`: True is not
+                # a member of a numeric list on either engine (fail-open guard).
+                "boolnotin": {
+                    "mode": "allow",
+                    "constraints": ["args.f not in consts.cl"],
+                },
+                # regex \d must be ASCII on both engines (Python re defaults to
+                # Unicode; Rego's RE2 is ASCII). A Unicode-digit arg must not
+                # satisfy an ASCII \d gate on the pydantic engine.
+                "redigit": {
+                    "mode": "allow",
+                    "constraints": ['matches(args.id, "^\\\\d+$")'],
+                },
             },
         }
     },
@@ -555,6 +568,14 @@ _REGRESSION_POLICY = {
         ("booleq", {"f": 1}, "allow"),
         ("boolin", {"f": True}, "deny"),  # True not in [1,2,3]
         ("boolin", {"f": 1}, "allow"),
+        ("boolnotin", {"f": True}, "allow"),  # True not a member → not in → allow
+        ("boolnotin", {"f": 1}, "deny"),  # 1 is a member → not in false → deny
+        ("redigit", {"id": "123"}, "allow"),  # ASCII digits match \d
+        (
+            "redigit",
+            {"id": "١٢٣"},
+            "deny",
+        ),  # Arabic-Indic digits: ASCII \d must not match
     ],
 )
 def test_fuzzer_found_divergences(tool: str, args: dict, expect: str) -> None:

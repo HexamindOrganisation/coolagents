@@ -234,6 +234,13 @@ def test_backcompat_accessors_match_operands() -> None:
     assert node.value == node.right.value
 
 
+def test_backcompat_path_accessor_survives_pathless_left_operand() -> None:
+    # count(...) / consts.x have no field path — the legacy `.path` accessor
+    # must return () rather than raising AttributeError on new node kinds.
+    assert parse_constraint("count(args.items) <= 3").path == ()
+    assert parse_constraint("args.amount <= consts.max").path == ("args", "amount")
+
+
 def test_node_is_frozen() -> None:
     node = parse_constraint("args.x == 1")
     with pytest.raises((AttributeError, TypeError)):

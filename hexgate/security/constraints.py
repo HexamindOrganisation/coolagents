@@ -75,6 +75,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from hexgate.security.errors import PolicyDeniedError
@@ -151,8 +152,13 @@ class Cmp:
 
     @property
     def path(self) -> tuple[str, ...]:
-        """Back-compat accessor — the left path (left is a ``Ref`` today)."""
-        return self.left.path  # type: ignore[union-attr]
+        """Back-compat accessor — the left field path.
+
+        Returns ``()`` when the left operand carries no path (``count(...)`` or
+        ``consts.x``), so introspecting a new-style node can't raise
+        ``AttributeError`` on legacy callers that read ``.path``.
+        """
+        return getattr(self.left, "path", ())
 
     @property
     def value(self) -> Any:
@@ -237,6 +243,7 @@ _FUNC_RE = re.compile(r"^([a-z]+)\((.*)\)$", re.DOTALL)
 _RE2_INCOMPATIBLE = re.compile(r"\\[1-9]|\(\?[=!]|\(\?<[=!]")
 
 
+@lru_cache(maxsize=2048)
 def parse_constraint(source: str) -> Node:
     """Parse one constraint line into a :class:`Node`.
 
@@ -245,6 +252,11 @@ def parse_constraint(source: str) -> Node:
     the right is a cross-field comparison (``args.max >= args.min``). Raises
     :class:`ConstraintParseError` for unsupported operators, bad identifiers,
     malformed operands, or an element ref (``.``) used outside a quantifier.
+
+    Result-cached on the source string: nodes are immutable (frozen) and the
+    parse is pure, so the enforcement hot-path (``check_constraints`` runs on
+    every tool call) and the build path (validate + render parse the same
+    strings) reuse one parse instead of re-walking the grammar each time.
     """
     node = _parse_node(source)
     _reject_unscoped_elem(node, source, in_quant=False)
@@ -554,7 +566,7 @@ def _split_call_args(inner: str, source: str, fn: str) -> tuple[str, str]:
 def _validate_re2(pattern: str, source: str) -> None:
     """Reject a regex that Python accepts but Rego's RE2 engine can't run."""
     try:
-        re.compile(pattern)
+        re.compile(pattern, re.ASCII)
     except re.error as exc:
         raise ConstraintParseError(
             f"invalid regex {pattern!r} in {source!r}: {exc}"
@@ -700,7 +712,9 @@ def _eval_call(node: Call, context: dict[str, Any]) -> bool:
     if node.fn == "contains":
         return v in x
     if node.fn == "matches":
-        return re.search(v, x) is not None
+        # re.ASCII pins \d/\w/\s/\b to ASCII, matching Rego's RE2 (Go) engine —
+        # without it Python treats them as Unicode and diverges on non-ASCII args.
+        return re.search(v, x, re.ASCII) is not None
     return False  # unreachable given the _FUNCS whitelist
 
 

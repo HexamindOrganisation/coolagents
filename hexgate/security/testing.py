@@ -30,7 +30,7 @@ def _outcome(
 ) -> DecisionOutcome:
     if isinstance(policy, PolicySet):
         return policy.evaluate(role=role, tool=tool, args=args or {}).outcome
-    return evaluate_tool_call(policy, tool, args or {}).outcome
+    return evaluate_tool_call(policy, tool, args or {}, role=role).outcome
 
 
 def _check(

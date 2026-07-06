@@ -366,20 +366,25 @@ def _iter_raw_constraints(payload: dict) -> "list[tuple[str, str, str]]":
         if isinstance(roles, dict)
         else [(DEFAULT_ROLE_NAME, payload)]
     )
+
+    def _emit(role: str, tool_name: str, tool_policy: object) -> None:
+        raws = tool_policy.get("constraints") if isinstance(tool_policy, dict) else None
+        for raw in raws or []:
+            if isinstance(raw, str):
+                out.append((role, tool_name, raw))
+
     out: list[tuple[str, str, str]] = []
     for role, spec in specs:
-        tools = (spec or {}).get("tools") if isinstance(spec, dict) else None
-        if not isinstance(tools, dict):
+        if not isinstance(spec, dict):
             continue
-        for tool_name, tool_policy in tools.items():
-            raws = (
-                (tool_policy or {}).get("constraints")
-                if isinstance(tool_policy, dict)
-                else None
-            )
-            for raw in raws or []:
-                if isinstance(raw, str):
-                    out.append((role, tool_name, raw))
+        # The role's catch-all policy also carries constraints — report a bad
+        # expression there under "<default>" instead of letting the schema
+        # load raise a raw, unlocalized ValidationError.
+        _emit(role, "<default>", spec.get("default_policy"))
+        tools = spec.get("tools")
+        if isinstance(tools, dict):
+            for tool_name, tool_policy in tools.items():
+                _emit(role, tool_name, tool_policy)
     return out
 
 
