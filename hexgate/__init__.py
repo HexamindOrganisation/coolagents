@@ -10,19 +10,17 @@ from hexgate.agents.factory import (
 from hexgate.agents.loader import (
     clear_registered_agents,
     list_available_agents,
-    list_builtin_agents,
     list_local_agents,
     list_registered_agents,
     load_agent,
-    load_builtin_agent,
     load_hexgate_agent,
     load_local_agent,
     load_registered_agent,
-    register_agent,
-    unregister_agent,
+    register_agent_factory,
+    unregister_agent_factory,
 )
-from hexgate.cli.register import AgentManifest, create_manifest
 from hexgate.cloud import HexgateClient, HexgateConfig
+from hexgate.manifest import AgentManifest, create_manifest
 from hexgate.runtime import LocalWorkspace, ToolUseContext, User, Workspace
 from hexgate.security import AgentPolicy
 from hexgate.tools import (
@@ -32,11 +30,8 @@ from hexgate.tools import (
     glob,
     grep,
     read_file,
-    refund_order,
     write_file,
 )
-from hexgate.tools.fetch import fetch
-from hexgate.tools.websearch import web_search
 
 __all__ = [
     "AgentManifest",
@@ -54,25 +49,28 @@ __all__ = [
     "create_agent",
     "create_manifest",
     "enforce_policy",
-    "fetch",
     "glob",
     "grep",
     "invoke_agent",
     "list_available_agents",
-    "list_builtin_agents",
     "list_local_agents",
     "list_registered_agents",
     "load_agent",
-    "load_builtin_agent",
     "load_hexgate_agent",
     "load_local_agent",
     "load_registered_agent",
-    "register_agent",
+    "register_agent_factory",
     "read_file",
-    "refund_order",
     "stream_agent",
     "stream_agent_raw",
-    "unregister_agent",
-    "web_search",
+    "unregister_agent_factory",
     "write_file",
 ]
+
+
+def __getattr__(name: str) -> object:
+    from hexgate.tools._relocated import RELOCATED_TOOLS, relocated_import_error
+
+    if name in RELOCATED_TOOLS:
+        raise relocated_import_error(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

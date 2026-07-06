@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from hexgate.agents.factory import HexgateAgent
-from hexgate.cli.register.models import AgentManifest, AgentType
+from hexgate.manifest.models import AgentManifest, AgentType
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
@@ -27,23 +27,23 @@ def create_manifest(
     callers only import the SDK they actually use.
     """
     if isinstance(agent, HexgateAgent):
-        from hexgate.cli.register.hexgate import create_hexgate_manifest
+        from hexgate.manifest.native import create_hexgate_manifest
 
         return create_hexgate_manifest(agent, description=description)
 
     module = type(agent).__module__
     if module == "agents" or module.startswith("agents."):
-        from hexgate.cli.register.openai import create_openai_manifest
+        from hexgate.manifest.openai import create_openai_manifest
 
         return create_openai_manifest(agent, description=description)
 
     if module.startswith("google.adk"):
-        from hexgate.cli.register.google import create_google_manifest
+        from hexgate.manifest.google import create_google_manifest
 
         return create_google_manifest(agent, description=description)
 
     if module == "langgraph" or module.startswith("langgraph."):
-        from hexgate.cli.register.langchain import create_langchain_manifest
+        from hexgate.manifest.langchain import create_langchain_manifest
 
         if tools is None:
             raise ValueError(
@@ -58,7 +58,7 @@ def create_manifest(
         )
 
     if module == "pydantic_ai" or module.startswith("pydantic_ai."):
-        from hexgate.cli.register.pydantic_ai import create_pydantic_ai_manifest
+        from hexgate.manifest.pydantic_ai import create_pydantic_ai_manifest
 
         return create_pydantic_ai_manifest(agent, description=description)
 

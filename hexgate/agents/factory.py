@@ -54,7 +54,17 @@ ToolSpec: TypeAlias = BaseTool | Callable[..., Any] | dict[str, Any]
 AgentState: TypeAlias = dict[str, Any]
 AgentInput: TypeAlias = str | Sequence[object] | Mapping[str, object] | BaseModel
 ApprovalHandler: TypeAlias = bool | Callable[[Decision], bool | Awaitable[bool]]
-DEFAULT_SYSTEM_PROMPT = Path(__file__).parent / "prompts" / "agent_system.md"
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful assistant built on a tool-using agent runtime.\n\n"
+    "Your job is to answer clearly and directly, using the tools available to "
+    "you only when they materially improve accuracy.\n\n"
+    "Guidelines:\n"
+    "- Use tools when a task needs information or an action you can't do from "
+    "context alone.\n"
+    "- Prefer the fewest tool calls needed.\n"
+    "- Keep answers concise and well supported.\n"
+    "- Do not mention internal traces or runtime mechanics.\n"
+)
 
 
 def _build_langchain_agent(

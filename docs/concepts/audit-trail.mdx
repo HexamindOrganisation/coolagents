@@ -17,7 +17,7 @@ curl -X POST localhost:8000/v1/audit/decisions \
   -H "Content-Type: application/json" \
   -d '{"event_id":"9f1e3c5a-4d2b-4b8e-9c8a-1f4e2d8a7c3b",
        "occurred_at":"2026-05-29T14:00:00Z",
-       "agent_name":"researcher","tool_name":"read_file","outcome":"deny"}'
+       "agent_name":"example_agent","tool_name":"read_file","outcome":"deny"}'
 # → 202 {"event_id":"9f1e3c5a-..."}
 ```
 

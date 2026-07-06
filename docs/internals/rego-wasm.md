@@ -232,7 +232,7 @@ hexgate policy test examples/demo_policy.yaml \
 HEXGATE_LOCAL_POLICY=./bundle \
 HEXGATE_BUNDLE_PUBKEY_PATH=./keys/dev.public \
 HEXGATE_BUNDLE_REQUIRE_SIGNATURE=true \
-hexgate chat --agent researcher
+hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active: ./bundle (wasm_hash=..., signed)
 ```
 

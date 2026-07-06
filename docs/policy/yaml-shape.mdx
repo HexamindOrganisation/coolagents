@@ -13,9 +13,9 @@ default_policy:
   mode: deny
 
 tools:
-  web_search:
+  read_file:
     mode: allow
-  fetch:
+  glob:
     mode: allow
   refund_order:
     mode: allow
@@ -37,23 +37,23 @@ agent creation with `enforce_policy(...)`, which accepts either a Pydantic
 `AgentPolicy` or a YAML file path:
 
 ```python
-from hexgate import AgentPolicy, create_agent, enforce_policy, fetch, web_search
+from hexgate import AgentPolicy, create_agent, enforce_policy, grep, read_file
 
 policy = AgentPolicy.model_validate(
     {
         "version": 1,
         "default_policy": {"mode": "deny"},
         "tools": {
-            "web_search": {"mode": "allow"},
-            "fetch": {"mode": "allow"},
+            "read_file": {"mode": "allow"},
+            "grep": {"mode": "allow"},
         },
     }
 )
 
 agent, handler = create_agent(
     model="openai:gpt-5.4",
-    tools=[web_search, fetch],
-    system_prompt="You are a careful research assistant.",
+    tools=[read_file, grep],
+    system_prompt="You are a careful code assistant.",
 )
 
 agent = enforce_policy(agent, policy)

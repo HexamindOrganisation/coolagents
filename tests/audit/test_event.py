@@ -10,7 +10,7 @@ from hexgate.security.decision import Decision, DecisionOutcome
 
 def _decision(**overrides) -> Decision:
     base = dict(
-        outcome=DecisionOutcome.DENY, agent_name="researcher", tool_name="read_file"
+        outcome=DecisionOutcome.DENY, agent_name="example_agent", tool_name="read_file"
     )
     return Decision(**{**base, **overrides})
 
@@ -29,7 +29,7 @@ def test_as_payload_full_payload() -> None:
 
     assert wire["event_id"] == str(ev.event_id)
     assert wire["occurred_at"] == ev.occurred_at.isoformat()
-    assert wire["agent_name"] == "researcher"
+    assert wire["agent_name"] == "example_agent"
     assert wire["tool_name"] == "read_file"
     assert wire["outcome"] == "deny"
     assert wire["role"] == "analyst"

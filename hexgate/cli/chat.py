@@ -212,11 +212,10 @@ def _default_agent_name(base_dir: Path) -> str:
     available = list_available_agents(base_dir)
     if "example_agent" in available:
         return "example_agent"
-    if "researcher" in available:
-        return "researcher"
     if not available:
         raise RuntimeError(
-            "No agents found in the current project or builtin registry."
+            "No agents found. Add an agent directory (with agent.yaml) to the "
+            "project, register one in code, or pass --use / --agent explicitly."
         )
     return available[0]
 

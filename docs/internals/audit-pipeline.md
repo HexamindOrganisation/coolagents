@@ -111,7 +111,7 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
 {
   "event_id":    "0b9c…",          // str(UUID)
   "occurred_at": "2026-06-01T13:00:00+00:00",  // ISO 8601, tz-aware
-  "agent_name":  "researcher",
+  "agent_name":  "example_agent",
   "tool_name":   "read_file",
   "outcome":     "deny",
   "role":        "analyst",        // "" when no role

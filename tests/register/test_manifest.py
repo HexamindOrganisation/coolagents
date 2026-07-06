@@ -1,16 +1,16 @@
-from hexgate.cli.register.manifest import create_manifest
-from hexgate.cli.register.models import (
+from hexgate.manifest import create_manifest
+from hexgate.manifest.models import (
     AgentManifest,
     AgentFramework,
     InputProperty,
     InputSchema,
     ToolDefinition,
 )
-from hexgate.cli.register.hexgate import create_hexgate_manifest
-from hexgate.cli.register.openai import create_openai_manifest
-from hexgate.cli.register.google import create_google_manifest
-from hexgate.cli.register.langchain import create_langchain_manifest
-from hexgate.cli.register.pydantic_ai import create_pydantic_ai_manifest
+from hexgate.manifest.native import create_hexgate_manifest
+from hexgate.manifest.openai import create_openai_manifest
+from hexgate.manifest.google import create_google_manifest
+from hexgate.manifest.langchain import create_langchain_manifest
+from hexgate.manifest.pydantic_ai import create_pydantic_ai_manifest
 
 
 def test_agent_manifest_schema():
@@ -134,7 +134,7 @@ def test_google_manifest_extracts_mcp_tool_schema_from_json_schema():
     from mcp.types import Tool as MCPTool
 
     from hexgate.adapters.google.mcp import wrap_mcp_toolset
-    from hexgate.cli.register.google import _to_tool_definition
+    from hexgate.manifest.google import _to_tool_definition
     from hexgate.mcp import MCPServerConfig
     from hexgate.mcp.proxy import _ToolsetState
     from hexgate.mcp.proxy import _build_proxy as build

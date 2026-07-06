@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import importlib.util
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +22,6 @@ from hexgate.agents.loader import load_agent, resolve_agent_source
 from hexgate.config.env import resolve_api_key
 from hexgate.config.settings import Settings
 from hexgate.security.decision import Decision
-from hexgate.tools import fetch, web_search
 
 ApprovalMode = Literal["ask", "auto-approve", "auto-deny"]
 
@@ -40,36 +38,6 @@ class AgentRuntime:
     tools_by_name: dict[str, object]
 
 
-# Built-in tools that build_runtime wires into every agent, and the env var
-# each reads at call time. Keys are optional (the tools raise a clear error
-# when actually invoked), so a missing one is a startup *warning*, not a fail.
-_TOOL_ENV_KEYS = {"web_search": "LINKUP_API_KEY", "fetch": "TAVILY_API_KEY"}
-
-
-def _warn_missing_tool_keys(tools: list[Any]) -> None:
-    """Warn at startup when a wired-in tool's API key is unset.
-
-    ``build_runtime`` adds web_search/fetch to every agent, but their keys are
-    read only when the model calls the tool — so a missing key would otherwise
-    surface mid-conversation (and get paraphrased by the LLM). Surfacing it up
-    front restores discoverability without hard-failing a session that never
-    invokes the tool."""
-    missing = [
-        (t.name, _TOOL_ENV_KEYS[t.name])
-        for t in tools
-        if getattr(t, "name", None) in _TOOL_ENV_KEYS
-        and not os.environ.get(_TOOL_ENV_KEYS[t.name])
-    ]
-    if not missing:
-        return
-    console = Console(stderr=True)
-    for tool_name, env_key in missing:
-        console.print(
-            f"[yellow]⚠ {env_key} is unset — the built-in '{tool_name}' tool "
-            f"will error if the agent calls it.[/]"
-        )
-
-
 def build_runtime(
     settings: Settings,
     *,
@@ -84,9 +52,9 @@ def build_runtime(
 
     ``agent_name`` accepts two forms:
 
-    * Plain id (``"researcher"``) — resolved via local / registered /
-      builtin lookup, then enforced through the standard loader. This
-      is the existing path.
+    * Plain id (``"example_agent"``) — resolved via local / registered
+      lookup, then enforced through the standard loader. This is the
+      existing path.
     * uvicorn-style spec (``"examples.customer_bot:agent"``) — imported
       directly from the module and used as-is. Skips the name resolver
       entirely; the agent object is expected to be a fully-configured
@@ -117,8 +85,6 @@ def build_runtime(
             decision_observer=decision_observer,
         )
 
-    tools = [web_search, fetch]
-    _warn_missing_tool_keys(tools)
     resolved_model = model or settings.model
     agent, handler = load_agent(
         agent_name,
@@ -126,15 +92,15 @@ def build_runtime(
         model=resolved_model,
         session_id="hexgate-cli",
         tags=["hexgate", settings.search_engine, resolved_model, agent_name],
-        extra_tools={tool.name: tool for tool in tools},
         local_only=local_only,
         approval_handler=approval_handler,
         decision_observer=decision_observer,
     )
-    runtime_tools = list(getattr(agent, "tools", [])) + list(tools)
+    # The agent's tools come from its own definition (agent.yaml / factory);
+    # the CLI no longer injects a default toolset.
     tools_by_name = {
         getattr(tool, "name", getattr(tool, "__name__", "tool")): tool
-        for tool in runtime_tools
+        for tool in getattr(agent, "tools", [])
     }
     if not local_only and resolve_api_key():
         agent_source = "hexgate"
@@ -239,9 +205,9 @@ def build_runtime_from_local_agent(
     we'll announce to the relay's ``hello`` message).
     """
     from hexgate.agents.factory import enforce_policy
-    from hexgate.cli.register.manifest import create_manifest
     from hexgate.cli.register.register import post_manifest
     from hexgate.cloud.client import HexgateClient, HexgateConfig
+    from hexgate.manifest import create_manifest
     from hexgate.security.binding import platform_policy_from_payload
     from hexgate.tracing.langfuse import get_langfuse_handler
 

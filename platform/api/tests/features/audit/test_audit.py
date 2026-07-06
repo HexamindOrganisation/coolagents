@@ -52,7 +52,7 @@ def _event(**overrides) -> dict:
     base = {
         "event_id": str(uuid.uuid4()),
         "occurred_at": _now().isoformat(),
-        "agent_name": "researcher",
+        "agent_name": "example_agent",
         "tool_name": "read_file",
         "outcome": "deny",
     }
@@ -298,9 +298,9 @@ def test_scope_no_filters() -> None:
 
 
 def test_scope_agent_only() -> None:
-    where, params = audit._scope("p1", 24, agent="researcher")
+    where, params = audit._scope("p1", 24, agent="example_agent")
     assert where == _BASE_WHERE + ["agent_name = {agent:String}"]
-    assert params == {"pid": "p1", "hrs": 24, "agent": "researcher"}
+    assert params == {"pid": "p1", "hrs": 24, "agent": "example_agent"}
 
 
 def test_scope_role_only() -> None:
@@ -320,7 +320,7 @@ def test_scope_empty_role_filters_no_role_bucket() -> None:
 
 def test_scope_all_filters() -> None:
     where, params = audit._scope(
-        "p1", 720, agent="researcher", role="analyst", tool="read_file", user="Bob"
+        "p1", 720, agent="example_agent", role="analyst", tool="read_file", user="Bob"
     )
     assert where == _BASE_WHERE + [
         "agent_name = {agent:String}",
@@ -331,7 +331,7 @@ def test_scope_all_filters() -> None:
     assert params == {
         "pid": "p1",
         "hrs": 720,
-        "agent": "researcher",
+        "agent": "example_agent",
         "role": "analyst",
         "tool": "read_file",
         "user": "Bob",
@@ -448,8 +448,8 @@ def test_summarize_classifies_grouping_sets() -> None:
             ("", "", "", "", "allow", 1, 1, 1, 1, 0, 6),
             ("", "", "", "", "deny", 1, 1, 1, 1, 0, 4),
             # (agent_name, outcome)
-            ("researcher", "", "", "", "allow", 0, 1, 1, 1, 0, 6),
-            ("researcher", "", "", "", "deny", 0, 1, 1, 1, 0, 3),
+            ("example_agent", "", "", "", "allow", 0, 1, 1, 1, 0, 6),
+            ("example_agent", "", "", "", "deny", 0, 1, 1, 1, 0, 3),
             ("scraper", "", "", "", "deny", 0, 1, 1, 1, 0, 1),
             # (role, outcome) — empty role keeps its raw "" key on the wire
             ("", "analyst", "", "", "allow", 1, 0, 1, 1, 0, 6),
@@ -472,7 +472,7 @@ def test_summarize_classifies_grouping_sets() -> None:
     }
     # Breakdowns sorted by "all" desc; grand total must NOT leak into any.
     assert data["by_agent"] == [
-        {"key": "researcher", "all": 9, "allow": 6, "deny": 3, "needs_approval": 0},
+        {"key": "example_agent", "all": 9, "allow": 6, "deny": 3, "needs_approval": 0},
         {"key": "scraper", "all": 1, "allow": 0, "deny": 1, "needs_approval": 0},
     ]
     assert data["by_role"] == [
@@ -513,7 +513,7 @@ def _decision_row(total: int, **overrides) -> tuple:
         "event_id": str(uuid.uuid4()),
         "occurred_at": _now(),
         "received_at": _now(),
-        "agent_name": "researcher",
+        "agent_name": "example_agent",
         "agent_version_id": "v1",
         "session_id": "sess_1",
         "user_id": "u_1",

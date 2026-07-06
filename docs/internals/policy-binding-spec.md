@@ -358,9 +358,9 @@ enforced.hexgate_client = binding.client
 `prefetched` matters: the loader needs the payload for `agent_yaml` /
 `system_md` *before* the agent exists; passing it through keeps the load a
 single round trip. ~40 duplicated lines deleted; the two paths can no longer
-drift. `load_builtin_agent` / `load_local_agent` keep their current shape
-(static policy from disk + optional local-override source) but route the
-override resolution through the moved helpers.
+drift. `load_local_agent` keeps its current shape (static policy from disk +
+optional local-override source) but routes the override resolution through the
+moved helpers.
 
 **Back-compat invariants:** `_enforcer` and `_policy_source` remain readable
 attributes (tests and `with_tools` propagation rely on them). They become

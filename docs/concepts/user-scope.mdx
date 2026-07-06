@@ -126,9 +126,9 @@ role-scoped end-to-end walkthrough.
 - **Lazy attenuation.** `User.__aenter__` only pushes a contextvar — the
   cryptographic work happens inside `stream_agent` / `invoke_agent` the first
   time the agent runs. Errors surface at first agent call, not at scope entry.
-- **Local agents skip attenuation.** A `User` scope around a `load_local_agent` /
-  `load_builtin_agent` agent logs a warning and runs with no facts. The `default`
-  policy still applies — use `load_hexgate_agent` for the full signed chain.
+- **Local agents skip attenuation.** A `User` scope around a `load_local_agent`
+  agent logs a warning and runs with no facts. The `default` policy still applies
+  — use `load_hexgate_agent` for the full signed chain.
 - **Explicit override.** Passing `tool_use_context=` explicitly to `stream_agent`
   / `invoke_agent` wins over an active `User` scope. Useful for tests or one-off
   bypass.

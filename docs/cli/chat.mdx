@@ -1,10 +1,10 @@
 ---
 title: "hexgate chat"
-description: "Single-process REPL against a local or builtin agent."
+description: "Single-process REPL against a local or registered agent."
 ---
 
 `hexgate chat` is the inner-loop REPL — a single process against a local or
-builtin agent. No platform, no Docker, no browser. It sets `HEXGATE_LOCAL_MODE=1`
+registered agent. No platform, no Docker, no browser. It sets `HEXGATE_LOCAL_MODE=1`
 automatically so audit stays on your machine even if `HEXGATE_API_KEY` lives in
 your `.env` from an earlier session. Denies and approval-required calls render as
 inline panels in the terminal — the same `Decision` data the platform would log,
@@ -16,7 +16,6 @@ a system prompt. See [Which path do I pick?](/two-paths) for chat-vs-serve.
 ```bash
 hexgate chat --agent example_agent                                   # bundled demo agent
 hexgate chat --list-agents                                           # show resolvable agents
-hexgate chat --agent researcher                                      # by id (builtin)
 hexgate chat --agent examples.customer_bot:agent                     # by module:attr spec
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
 hexgate chat --use examples/research_agents.py --agent update_researcher --approval-mode ask
@@ -27,19 +26,19 @@ and `hexgate <subcommand> --help` for each one's flags.
 
 ## Agent resolution
 
-`--agent` accepts either a plain agent id (`researcher`) or a uvicorn-style
-`module.path:attr` spec (`examples.customer_bot:agent`). The CLI discovers local
-agents from:
+`--agent` accepts either a plain agent id (`example_agent`) or a uvicorn-style
+`module.path:attr` spec (`examples.customer_bot:agent`). The CLI discovers agents
+from:
 
-- builtin packaged agents like `researcher`
 - `./<agent_dir>/agent.yaml`, `./agents/<agent_dir>/agent.yaml`, `./examples/<agent_dir>/agent.yaml`
 - code-defined agents registered from a `--use` script (e.g. `examples/file_agents.py`)
 
 ## Keys the example agent uses
 
-Bootstrap no longer hard-requires these — each is only needed if you invoke the
-piece that reads it (see the [environment reference](/reference/environment)):
+The bundled `example_agent` uses the filesystem tools `read_file` / `glob` /
+`grep`, which need no API keys — only the model does:
 
 - `OPENAI_API_KEY` — the default `openai:gpt-5.4` model
-- `LINKUP_API_KEY` — the built-in `web_search` tool
-- `TAVILY_API_KEY` — the built-in `fetch` tool
+
+Bootstrap doesn't hard-require it; it's read when the agent is built (see the
+[environment reference](/reference/environment)).

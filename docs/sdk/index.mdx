@@ -14,20 +14,19 @@ docstrings are a planned follow-up.
 ```python
 from hexgate import (
     create_agent,
+    agent_tool,
+    enforce_policy,
     create_manifest,
     AgentManifest,
-    enforce_policy,
-    invoke_agent,
+    AgentPolicy,
     stream_agent,
     stream_agent_raw,
+    invoke_agent,
     load_agent,
-    load_builtin_agent,
-    list_builtin_agents,
+    load_local_agent,
+    load_registered_agent,
     load_hexgate_agent,
-    register_agent,
-    agent_tool,
-    web_search,
-    fetch,
+    register_agent_factory,
     User,
 )
 ```
@@ -45,7 +44,8 @@ from hexgate import (
 
 | Symbol | What it does |
 |---|---|
-| `enforce_policy(agent, policy, approval_handler=…)` | Apply a `AgentPolicy` or YAML path to an agent. Accepts an optional handler for `approval_required` outcomes. See [policy YAML shape](/policy/yaml-shape). |
+| `enforce_policy(agent, policy, approval_handler=…)` | Apply an `AgentPolicy` or YAML path to an agent. Accepts an optional handler for `approval_required` outcomes. See [policy YAML shape](/policy/yaml-shape). |
+| `AgentPolicy` | Pydantic model of a policy (roles, tools, modes, constraints). |
 
 ## Running agents
 
@@ -55,23 +55,32 @@ from hexgate import (
 | `stream_agent_raw(...)` | Lower-level streaming without normalization. |
 | `invoke_agent(...)` | Run to completion and return the final result. |
 
-## Loading agents
+## Loading & registering agents
 
 | Symbol | What it does |
 |---|---|
-| `load_agent(name)` | Resolve by name — platform when `HEXGATE_API_KEY` is set, else local/registered/builtin. |
+| `load_agent(name)` | Resolve by name — platform when `HEXGATE_API_KEY` is set, else local / registered. |
+| `load_local_agent(name)` | Load a directory agent (`./<dir>/agent.yaml`, `./examples/<dir>/agent.yaml`, …). |
+| `load_registered_agent(name)` | Load an agent registered in-process via a factory. |
 | `load_hexgate_agent(name)` | Fetch a named agent (+ roles) from the platform. See [user scope](/concepts/user-scope). |
-| `load_builtin_agent(name)` / `list_builtin_agents()` | Official starter agents shipped in `hexgate.builtin_agents`. |
-| `register_agent(...)` | Register a code-defined agent so `load_agent` can resolve it. |
+| `register_agent_factory(name, factory)` | Register a code-defined agent factory so `load_agent` / `load_registered_agent` can resolve it. |
 
-## Identity & built-in tools
+## Identity
 
 | Symbol | What it does |
 |---|---|
-| `User(user_id, role=…, session_id=…, ttl_seconds=…)` | Per-request scope context manager. See [user scope](/concepts/user-scope). |
-| `web_search` | Built-in search tool (needs `LINKUP_API_KEY`). |
-| `fetch` | Built-in URL fetch tool (needs `TAVILY_API_KEY`). |
+| `User(user_id, role=…, session_id=…, ttl_seconds=…)` | Per-request scope context manager — its `role` is the decision input. See [user scope](/concepts/user-scope). |
 
-Filesystem tools (`read_file`, `write_file`, `edit_file`, `glob`, `grep`, `bash`)
-are also importable from `hexgate`; the shell-backed ones run inside the
+## Built-in tools
+
+Filesystem tools are importable from `hexgate`: `read_file`, `write_file`,
+`edit_file`, `glob`, `grep`, `bash`. The shell-backed ones run inside the
 [workspace sandbox](/concepts/sandbox).
+
+<Note>
+`web_search`, `fetch`, and `refund_order` are **no longer built in** — they
+moved to `examples/tools/` (`websearch.py`, `fetch.py`, `refund.py`). Import them
+from there, or pass any custom tool to an agent via `extra_tools=`. A direct
+`from hexgate import web_search` raises an `ImportError` that points at the new
+location.
+</Note>

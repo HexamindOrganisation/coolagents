@@ -36,7 +36,7 @@ const counts = (all: number, allow: number, deny: number, appr = 0) => ({
 const SUMMARY = {
   totals: counts(10, 6, 4),
   by_agent: [
-    { key: "researcher", ...counts(9, 6, 3) },
+    { key: "example_agent", ...counts(9, 6, 3) },
     { key: "scraper", ...counts(1, 0, 1) },
   ],
   by_role: [
@@ -51,7 +51,7 @@ const ROW: AuditDecisionRow = {
   event_id: "evt-1",
   occurred_at: "2026-06-01T10:00:00Z",
   received_at: "2026-06-01T10:00:01Z",
-  agent_name: "researcher",
+  agent_name: "example_agent",
   agent_version_id: "v1",
   session_id: "sess-1",
   user_id: "u1",
@@ -195,20 +195,23 @@ describe("AuditPage", () => {
     ).toHaveLength(1);
     // Radix puts pointer-events:none on the value span — click the trigger.
     await user.click(screen.getByText("All agents").closest("button")!);
-    await user.click(await screen.findByRole("option", { name: "researcher" }));
+    await user.click(
+      await screen.findByRole("option", { name: "example_agent" }),
+    );
 
     await waitFor(() => {
       expect(
         calls.some(
           (u) =>
-            u.includes("/audit/decisions") && u.includes("agent=researcher"),
+            u.includes("/audit/decisions") && u.includes("agent=example_agent"),
         ),
       ).toBe(true);
     });
     // The scoped summary (KPIs/breakdown) narrows too.
     expect(
       calls.some(
-        (u) => u.includes("/audit/summary") && u.includes("agent=researcher"),
+        (u) =>
+          u.includes("/audit/summary") && u.includes("agent=example_agent"),
       ),
     ).toBe(true);
   });
@@ -386,7 +389,7 @@ describe("AuditPage", () => {
           filters: {
             ...EMPTY_AUDIT_FILTERS,
             customMode: true,
-            agent: "researcher",
+            agent: "example_agent",
             start_date: new Date(2026, 5, 1),
             end_date: new Date(2026, 5, 15),
           },

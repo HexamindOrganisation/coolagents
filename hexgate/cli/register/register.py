@@ -4,9 +4,9 @@ import json
 from typing import TYPE_CHECKING
 from urllib import error, request
 
-from hexgate.cli.register.manifest import create_manifest
-from hexgate.cli.register.models import AgentManifest, AgentType
 from hexgate.config.env import resolve_api_key, resolve_api_url
+from hexgate.manifest import create_manifest
+from hexgate.manifest.models import AgentManifest, AgentType
 
 if TYPE_CHECKING:
     from langchain_core.tools import BaseTool

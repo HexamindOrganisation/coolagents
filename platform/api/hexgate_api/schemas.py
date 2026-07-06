@@ -271,7 +271,7 @@ class ValidatePolicyResponse(BaseModel):
 
 
 # --- Agent manifest registration ---------------------------------------------
-# These mirror hexgate/cli/register/models.py so SDK and platform stay in sync.
+# These mirror hexgate/manifest/models.py so SDK and platform stay in sync.
 
 
 class AgentFramework(StrEnum):

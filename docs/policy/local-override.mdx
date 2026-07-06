@@ -16,11 +16,11 @@ rebuild between turns):
 ```bash
 # Pre-built bundle dir — rebuild it mid-session, next chat picks it up
 hexgate policy build policy.yaml --out ./bundle
-HEXGATE_LOCAL_POLICY=./bundle hexgate chat --agent researcher
+HEXGATE_LOCAL_POLICY=./bundle hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active (bundle-dir): ./bundle (wasm_hash=7e6d1f8b..., unsigned)
 
 # Raw yaml — edit policy.yaml in your editor, save, next chat sees the new policy
-HEXGATE_LOCAL_POLICY=./policy.yaml hexgate chat --agent researcher
+HEXGATE_LOCAL_POLICY=./policy.yaml hexgate chat --agent example_agent
 # [hexgate] HEXGATE_LOCAL_POLICY active (yaml): ./policy.yaml (wasm_hash=ab12..., unsigned)
 ```
 

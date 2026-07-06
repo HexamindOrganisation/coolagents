@@ -119,7 +119,7 @@ A small end-to-end example registry lives in `examples/file_agents.py` and
 - building one agent with `create_agent(...)` only
 - building another with `create_agent(...)` plus `enforce_policy(...)`
 - building a research agent with approval-gated file writes via `enforce_policy(..., approval_handler=...)`
-- registering it with `register_agent(...)` and loading it through `load_agent(...)`
+- registering it with `register_agent_factory(...)` and loading it through `load_agent(...)`
 
 ```bash
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
@@ -127,18 +127,9 @@ hexgate chat --use examples/file_agents.py --agent repo_editor
 hexgate chat --use examples/research_agents.py --agent update_researcher
 ```
 
-## Builtin and local agents
+## Local agents
 
-The package ships a small `hexgate.builtin_agents` directory for official starter
-agents (currently `researcher`):
-
-```python
-from hexgate import load_builtin_agent
-
-agent, handler = load_builtin_agent("researcher")
-```
-
-The CLI also discovers local agents from `./<agent_dir>/agent.yaml`,
+The CLI discovers local agents from `./<agent_dir>/agent.yaml`,
 `./agents/<agent_dir>/agent.yaml`, and `./examples/<agent_dir>/agent.yaml`. This
 repo ships a demo agent at `examples/example_agent/`, so from the project root:
 
