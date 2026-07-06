@@ -7,7 +7,11 @@ change — only the executor below.
 
 Grammar (PEG-ish, single line per constraint):
 
-    constraint   := quant | call | comparison
+    constraint   := or_expr
+    or_expr      := and_expr ("or" and_expr)*     # boolean OR (2c)
+    and_expr     := not_expr ("and" not_expr)*    # boolean AND (2c)
+    not_expr     := "not" not_expr | primary      # boolean NOT (2c)
+    primary      := "(" or_expr ")" | quant | call | comparison
     comparison   := operand WS op WS operand
     op           := "==" | "!=" | "<=" | ">=" | "<" | ">"
                   | "in" | "not in"
@@ -49,16 +53,17 @@ Concrete examples (all of these parse and evaluate today):
     any(args.items, .price <= 100)               # quantifier over sub-field
     args.amount <= consts.max_refund             # named constant (2f)
     args.repo in consts.managed_repos            # constant list
+    args.role_admin == true or args.amount <= 100    # boolean OR (2c)
+    not (args.env == "prod" and args.force == false)  # grouping + not (2c)
     args.template in ["refund_confirmed", "ticket_resolved"]
     args.priority not in ["urgent", "critical"]
 
 What we deliberately do NOT support yet:
 
-    * Boolean composition (AND / OR) — emit multiple constraint lines; the
-      policy engine ANDs them.
+    * Boolean composition (and/or/not) *inside* a quantifier body — e.g.
+      ``every(args.x, .a == 1 or .b == 2)`` — rejected on both engines.
     * ``in`` against a field reference (``args.x in args.allowed``) — the
-      right of ``in`` must be a list literal for now.
-    * Negation as a prefix operator — use ``!=`` or ``not in``.
+      right of ``in`` must be a list literal or ``consts.<name>`` for now.
 
 The parser is a recursive-descent walker over a tiny token stream. ~40
 LoC. Evaluator dispatches on the operator. Both are deliberately small so
@@ -186,9 +191,32 @@ class Quant:
     source: str
 
 
-# The evaluator and Rego compiler dispatch on ``Node``. The roadmap adds
-# And / Or / Not as further siblings.
-Node = Cmp | Call | Quant
+@dataclass(frozen=True, slots=True)
+class And:
+    """Boolean AND of sub-constraints — all must hold."""
+
+    parts: tuple["Node", ...]
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class Or:
+    """Boolean OR of sub-constraints — at least one must hold."""
+
+    parts: tuple["Node", ...]
+    source: str
+
+
+@dataclass(frozen=True, slots=True)
+class Not:
+    """Boolean negation of a sub-constraint."""
+
+    inner: "Node"
+    source: str
+
+
+# The evaluator and Rego compiler dispatch on ``Node``.
+Node = Cmp | Call | Quant | And | Or | Not
 Constraint = Cmp  # back-compat alias for existing importers
 
 
@@ -226,12 +254,46 @@ def parse_constraint(source: str) -> Node:
 def _parse_node(source: str) -> Node:
     """Parse a constraint into a node, without the top-level element-scope check
     (so quantifier bodies can recurse and use ``.`` freely)."""
-    text = source.strip()
-    if not text:
+    if not source.strip():
         raise ConstraintParseError("empty constraint")
+    return _parse_expr(source, source)
 
-    # A whole-line quantifier (every/any) or function call is a boolean on its
-    # own — check both before scanning for a comparison operator.
+
+def _parse_expr(text: str, source: str) -> Node:
+    """``or_expr`` — the lowest-precedence level."""
+    parts = _split_bool(text.strip(), "or")
+    if len(parts) > 1:
+        return Or(tuple(_parse_and_expr(p, source) for p in parts), source=text.strip())
+    return _parse_and_expr(text, source)
+
+
+def _parse_and_expr(text: str, source: str) -> Node:
+    """``and_expr`` — binds tighter than ``or``."""
+    parts = _split_bool(text.strip(), "and")
+    if len(parts) > 1:
+        return And(
+            tuple(_parse_not_expr(p, source) for p in parts), source=text.strip()
+        )
+    return _parse_not_expr(text, source)
+
+
+def _parse_not_expr(text: str, source: str) -> Node:
+    """``not_expr`` — a leading ``not`` negates the rest; else a primary."""
+    stripped = text.strip()
+    if re.match(r"^not(\s|\()", stripped):
+        return Not(_parse_not_expr(stripped[3:], source), source=stripped)
+    return _parse_primary(stripped, source)
+
+
+def _parse_primary(text: str, source: str) -> Node:
+    """A parenthesised group, a quantifier, a function call, or a comparison."""
+    text = text.strip()
+    if not text:
+        raise ConstraintParseError(f"empty sub-expression in {source!r}")
+    if _is_wholly_parenthesized(text):
+        return _parse_expr(text[1:-1], source)
+
+    # A whole quantifier (every/any) or function call is a boolean on its own.
     quant = _try_parse_quant(text, source)
     if quant is not None:
         return quant
@@ -265,6 +327,71 @@ def _parse_node(source: str) -> Node:
         )
 
     return Cmp(left=left, op=op, right=right, source=source)
+
+
+def _split_bool(text: str, keyword: str) -> list[str]:
+    """Split ``text`` on top-level ``keyword`` (``and``/``or``) occurrences.
+
+    Respects double-quoted strings and ``()``/``[]``/``{}`` nesting, and
+    requires word boundaries so ``and``/``or`` inside identifiers (``args.brand``,
+    ``args.order``) aren't split points. Returns a single-element list when the
+    keyword doesn't appear at the top level.
+    """
+    parts: list[str] = []
+    depth = 0
+    in_string = escape = False
+    start = i = 0
+    n, klen = len(text), len(keyword)
+    while i < n:
+        ch = text[i]
+        if escape:
+            escape = False
+        elif ch == "\\" and in_string:
+            escape = True
+        elif ch == '"':
+            in_string = not in_string
+        elif in_string:
+            pass
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif (
+            depth == 0
+            and text.startswith(keyword, i)
+            and (i == 0 or not _is_ident_char(text[i - 1]))
+            and (i + klen == n or not _is_ident_char(text[i + klen]))
+        ):
+            parts.append(text[start:i])
+            start = i = i + klen
+            continue
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def _is_wholly_parenthesized(text: str) -> bool:
+    """True when the whole string is one ``(...)`` group (not e.g. ``(a) or (b)``)."""
+    if not (text.startswith("(") and text.endswith(")")):
+        return False
+    depth = 0
+    in_string = escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+        elif ch == "\\" and in_string:
+            escape = True
+        elif ch == '"':
+            in_string = not in_string
+        elif in_string:
+            pass
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and i != len(text) - 1:
+                return False  # the opening paren closed before the end
+    return depth == 0
 
 
 def _parse_operand(text: str, source: str, side: str) -> Operand:
@@ -332,7 +459,23 @@ def _try_parse_quant(text: str, source: str) -> Quant | None:
         ref: Ref | Elem = Elem(_parse_path(rest, source)) if rest else Elem(())
     else:
         ref = Ref(_parse_path(ref_text, source))
-    return Quant(kind=kind, ref=ref, body=_parse_node(body_raw), source=source)
+    body = _parse_node(body_raw)
+    if _has_bool(body):
+        raise ConstraintParseError(
+            f"boolean composition (and/or/not) inside a quantifier body is not "
+            f"supported yet, in {source!r}"
+        )
+    return Quant(kind=kind, ref=ref, body=body, source=source)
+
+
+def _has_bool(node: Node) -> bool:
+    """True if ``node`` contains a boolean node (And/Or/Not), looking through
+    a nested quantifier body."""
+    if isinstance(node, (And, Or, Not)):
+        return True
+    if isinstance(node, Quant):
+        return _has_bool(node.body)
+    return False
 
 
 def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
@@ -360,6 +503,11 @@ def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
     elif isinstance(node, Call):
         if not in_quant and isinstance(node.arg, Elem):
             bad()
+    elif isinstance(node, And | Or):
+        for part in node.parts:
+            _reject_unscoped_elem(part, source, in_quant=in_quant)
+    elif isinstance(node, Not):
+        _reject_unscoped_elem(node.inner, source, in_quant=in_quant)
 
 
 def _try_parse_call(text: str, source: str) -> Call | None:
@@ -513,6 +661,12 @@ def _eval(node: Node, context: dict[str, Any]) -> bool:
         return _eval_call(node, context)
     if isinstance(node, Quant):
         return _eval_quant(node, context)
+    if isinstance(node, And):
+        return all(_eval(p, context) for p in node.parts)
+    if isinstance(node, Or):
+        return any(_eval(p, context) for p in node.parts)
+    if isinstance(node, Not):
+        return not _eval(node.inner, context)
     raise ConstraintParseError(f"cannot evaluate node {node!r}")
 
 

@@ -70,6 +70,7 @@ import json
 from typing import Any
 
 from hexgate.security.constraints import (
+    And,
     Call,
     Cmp,
     ConstRef,
@@ -77,7 +78,9 @@ from hexgate.security.constraints import (
     Elem,
     Lit,
     Node,
+    Not,
     Operand,
+    Or,
     Quant,
     Ref,
     parse_constraint,
@@ -188,6 +191,11 @@ def _iter_const_refs(node: Node):
         if isinstance(node.ref, ConstRef):
             yield node.ref.name
         yield from _iter_const_refs(node.body)
+    elif isinstance(node, (And, Or)):
+        for part in node.parts:
+            yield from _iter_const_refs(part)
+    elif isinstance(node, Not):
+        yield from _iter_const_refs(node.inner)
 
 
 def _const_rules(consts: dict[str, Any]) -> list[str]:
@@ -455,8 +463,9 @@ def _negated_node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
 def _node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
     """Render a top-level constraint node as one Rego condition token.
 
-    A ``Quant`` registers a named helper rule (so it can be negated cleanly in
-    the violation rule) and returns that name; other nodes render inline.
+    Compound nodes (Quant / And / Or / Not) register a named helper rule (so
+    they can be negated cleanly in the violation rule) and return that name;
+    Cmp / Call render inline.
     """
     if isinstance(node, Cmp):
         return _cmp_to_rego(node)
@@ -464,6 +473,8 @@ def _node_to_rego(node: Node, helpers: dict[str, list[str]]) -> str:
         return _call_to_rego(node)
     if isinstance(node, Quant):
         return _register_quant_helper(node, helpers)
+    if isinstance(node, (And, Or, Not)):
+        return _register_bool_helper(node, helpers)
     # Unreachable given parse_constraint's whitelist, but defensive.
     raise PolicySetError(f"cannot render node {node!r}")
 
@@ -477,17 +488,46 @@ def _register_quant_helper(node: Quant, helpers: dict[str, list[str]]) -> str:
     """Emit ``_q_<hash> if { <quantifier> }`` once; return the rule name."""
     name = f"_q_{_node_hash(node)}"
     if name not in helpers:
-        body = _inline(node, None)
+        body = _inline(node, None, helpers)
         helpers[name] = [f"{name} if {{", *(f"    {line}" for line in body), "}"]
     return name
 
 
-def _inline(node: Node, elem_var: str | None) -> list[str]:
+def _register_bool_helper(node: Node, helpers: dict[str, list[str]]) -> str:
+    """Emit a helper rule for a boolean node; return its name.
+
+    ``Or`` becomes one rule *per disjunct* under the same head (Rego rules with
+    a shared head are OR-ed); ``And`` is a single conjunction rule; ``Not`` is
+    ``not <negation-of-inner>``. The allow rule references the name and the
+    violation rule negates it (``not _c_<hash>``) — the correct De Morgan.
+    """
+    name = f"_c_{_node_hash(node)}"
+    if name in helpers:
+        return name
+    rules: list[str] = []
+    if isinstance(node, Or):
+        for part in node.parts:
+            body = _inline(part, None, helpers)
+            rules += [f"{name} if {{", *(f"    {b}" for b in body), "}"]
+    elif isinstance(node, And):
+        body = _inline(node, None, helpers)
+        rules += [f"{name} if {{", *(f"    {b}" for b in body), "}"]
+    else:  # Not
+        cond = _negated_node_to_rego(node.inner, helpers)
+        rules += [f"{name} if {{", f"    {cond}", "}"]
+    helpers[name] = rules
+    return name
+
+
+def _inline(
+    node: Node, elem_var: str | None, helpers: dict[str, list[str]]
+) -> list[str]:
     """Render a node as Rego body line(s), with ``.`` bound to ``elem_var``.
 
-    Used inside quantifier bodies (and the top-level quantifier helper). A
-    quantifier expands to an ``every``/``some`` block; nested quantifiers are
-    inlined recursively since they close over the enclosing loop variable.
+    Used inside quantifier bodies and helper-rule bodies. A quantifier expands
+    to an ``every``/``some`` block; ``And`` flattens to conjunction lines; an
+    ``Or`` / ``Not`` can't inline, so it registers its own helper and returns a
+    reference.
     """
     if isinstance(node, Cmp):
         return [_cmp_to_rego(node, elem_var)]
@@ -496,11 +536,20 @@ def _inline(node: Node, elem_var: str | None) -> list[str]:
     if isinstance(node, Quant):
         var = f"__e_{_node_hash(node)}"
         coll = _render(node.ref, elem_var)
-        body = _inline(node.body, var)
+        body = _inline(node.body, var, helpers)
         if node.kind == "every":
             return [f"every {var} in {coll} {{", *(f"    {b}" for b in body), "}"]
         # any → existential: bind the element, then assert the body holds.
         return [f"some {var} in {coll}", *body]
+    if isinstance(node, And):
+        lines: list[str] = []
+        for part in node.parts:
+            lines += _inline(part, elem_var, helpers)
+        return lines
+    if isinstance(node, Or):
+        return [_register_bool_helper(node, helpers)]
+    if isinstance(node, Not):
+        return [_negated_node_to_rego(node.inner, helpers)]
     raise PolicySetError(f"cannot render node {node!r}")
 
 

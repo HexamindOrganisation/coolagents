@@ -81,6 +81,21 @@ Constants merge through `inherits:` like `tools`, so shared constants belong in
 a mixin. A `consts.<name>` that isn't defined is rejected at build (and denies
 on the pydantic engine); across roles a name must map to a single value.
 
+## Boolean composition
+
+Combine conditions with `and`, `or`, `not`, and parentheses:
+
+```yaml
+constraints:
+  - args.amount <= 100 or role == "admin"
+  - not (args.env == "prod" and args.force == false)
+```
+
+Precedence is the usual `or` < `and` < `not`; use `()` to group. Multiple
+constraint *lines* are still AND-ed, so `and` is only needed to combine with an
+`or`. (Boolean ops inside a quantifier body — e.g.
+`every(args.x, .a == 1 or .b == 2)` — aren't supported yet.)
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
 both produce identical decisions.

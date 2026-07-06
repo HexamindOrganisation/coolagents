@@ -477,6 +477,32 @@ def test_quantifier_emits_helper_rule() -> None:
     assert "not every" not in rego and "not some" not in rego  # never inline-negated
 
 
+def test_or_emits_same_head_disjunct_rules() -> None:
+    """An `or` compiles to one helper rule per disjunct under the same head
+    (Rego OR), referenced by the allow rule and negated in the violation."""
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {
+                        "mode": "allow",
+                        "constraints": ["args.a == 1 or args.b == 2"],
+                    }
+                }
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    # two rules with the same _c_<hash> head (the disjuncts)
+    m = re.search(r"(_c_[0-9a-f]+) if", rego)
+    assert m
+    name = m.group(1)
+    assert rego.count(f"{name} if {{") == 2  # one per disjunct
+    assert f"not {name}" in rego  # violation negates the whole disjunction
+    assert "not not" not in rego
+
+
 def test_quantifier_output_is_deterministic() -> None:
     payload = {
         "version": 1,

@@ -458,3 +458,50 @@ _CONST_POLICY = {
 )
 def test_const_parity(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_CONST_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# Boolean composition (2c) — or / and / not / grouping, via real opa
+# ---------------------------------------------------------------------------
+
+_BOOL_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "oo": {"mode": "allow", "constraints": ["args.a == 1 or args.b == 2"]},
+                "aa": {"mode": "allow", "constraints": ["args.a == 1 and args.b == 2"]},
+                "grp": {
+                    "mode": "allow",
+                    "constraints": ["(args.a == 1 or args.b == 2) and args.c == 3"],
+                },
+                "nn": {
+                    "mode": "allow",
+                    "constraints": ["not (args.a == 1 or args.b == 2)"],
+                },
+                "ni": {"mode": "allow", "constraints": ["not args.x in [1, 2]"]},
+            }
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expect"),
+    [
+        ("oo", {"a": 1, "b": 9}, "allow"),
+        ("oo", {"a": 9, "b": 2}, "allow"),
+        ("oo", {"a": 9, "b": 9}, "deny"),
+        ("aa", {"a": 1, "b": 2}, "allow"),
+        ("aa", {"a": 1, "b": 9}, "deny"),
+        ("grp", {"a": 1, "b": 9, "c": 3}, "allow"),
+        ("grp", {"a": 1, "b": 9, "c": 9}, "deny"),  # group ok but c fails
+        ("grp", {"a": 9, "b": 9, "c": 3}, "deny"),  # group fails
+        ("nn", {"a": 9, "b": 9}, "allow"),  # not(or) — De Morgan
+        ("nn", {"a": 1, "b": 9}, "deny"),
+        ("ni", {"x": 5}, "allow"),
+        ("ni", {"x": 1}, "deny"),
+    ],
+)
+def test_boolean_parity(tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_BOOL_POLICY, "default", tool, args, expect)

@@ -22,6 +22,7 @@ import pytest
 
 from hexgate.security import PolicyDeniedError
 from hexgate.security.constraints import (
+    And,
     Call,
     Cmp,
     ConstRef,
@@ -29,6 +30,8 @@ from hexgate.security.constraints import (
     Count,
     Elem,
     Lit,
+    Not,
+    Or,
     Quant,
     Ref,
     check_constraints,
@@ -777,3 +780,66 @@ def test_check_unknown_const_denies() -> None:
     # Missing const → fails closed (the WASM compiler rejects it loudly).
     with pytest.raises(PolicyDeniedError):
         check_constraints(["args.x == consts.nope"], {"x": 1}, "t", consts={})
+
+
+# ---------------------------------------------------------------------------
+# Boolean composition (2c) — or / and / not / grouping
+# ---------------------------------------------------------------------------
+
+
+def test_parse_or_and_not_structure() -> None:
+    assert isinstance(parse_constraint("args.a == 1 or args.b == 2"), Or)
+    assert isinstance(parse_constraint("args.a == 1 and args.b == 2"), And)
+    assert isinstance(parse_constraint("not args.a == 1"), Not)
+
+
+def test_parse_precedence_or_binds_loosest() -> None:
+    # A or B and C  ==  A or (B and C)
+    node = parse_constraint("args.a == 1 or args.b == 2 and args.c == 3")
+    assert isinstance(node, Or)
+    assert isinstance(node.parts[1], And)
+
+
+def test_parse_parens_override_precedence() -> None:
+    node = parse_constraint("(args.a == 1 or args.b == 2) and args.c == 3")
+    assert isinstance(node, And)
+    assert isinstance(node.parts[0], Or)
+
+
+def test_parse_and_or_not_matched_inside_identifiers() -> None:
+    # "and"/"or" inside field names must not be split points.
+    assert isinstance(parse_constraint("args.brand == 1 or args.order == 2"), Or)
+    assert isinstance(parse_constraint("args.brand == 1"), Cmp)
+
+
+@pytest.mark.parametrize(
+    ("src", "args", "expected"),
+    [
+        ("args.a == 1 or args.b == 2", {"a": 1, "b": 9}, True),
+        ("args.a == 1 or args.b == 2", {"a": 9, "b": 2}, True),
+        ("args.a == 1 or args.b == 2", {"a": 9, "b": 9}, False),
+        ("args.a == 1 and args.b == 2", {"a": 1, "b": 2}, True),
+        ("args.a == 1 and args.b == 2", {"a": 1, "b": 9}, False),
+        # precedence: A or (B and C)
+        ("args.a==1 or args.b==2 and args.c==3", {"a": 1, "b": 9, "c": 9}, True),
+        ("args.a==1 or args.b==2 and args.c==3", {"a": 9, "b": 2, "c": 9}, False),
+        # grouping
+        ("(args.a==1 or args.b==2) and args.c==3", {"a": 1, "b": 9, "c": 3}, True),
+        ("(args.a==1 or args.b==2) and args.c==3", {"a": 1, "b": 9, "c": 9}, False),
+        # not + De Morgan
+        ("not args.a == 1", {"a": 2}, True),
+        ("not args.a == 1", {"a": 1}, False),
+        ("not (args.a==1 or args.b==2)", {"a": 9, "b": 9}, True),
+        ("not (args.a==1 or args.b==2)", {"a": 1, "b": 9}, False),
+        # not with a not-in comparison inside
+        ("not args.x not in [1, 2]", {"x": 1}, True),
+    ],
+)
+def test_evaluate_boolean(src: str, args: dict, expected: bool) -> None:
+    assert _eval(src, args) is expected
+
+
+def test_parse_rejects_bool_inside_quantifier_body() -> None:
+    # Deferred: boolean composition inside a quantifier body (both engines).
+    with pytest.raises(ConstraintParseError, match="quantifier body"):
+        parse_constraint("every(args.items, .a == 1 or .b == 2)")
