@@ -21,7 +21,7 @@ policy files carry **rules** (what they can do).
 ```python
 from hexgate import User, load_hexgate_agent, stream_agent
 
-agent, handler = load_hexgate_agent("support-bot")          # client + roles attached at load
+agent, handler = load_hexgate_agent("support_bot")          # client + roles attached at load
 
 async with User(user_id="alice", role="billing", ttl_seconds=300):
     async for event in stream_agent(agent, handler, "refund customer 30"):
@@ -42,7 +42,7 @@ from fastapi import FastAPI
 from hexgate import User, load_hexgate_agent, stream_agent
 
 app = FastAPI()
-agent, handler = load_hexgate_agent("support-bot")          # at startup
+agent, handler = load_hexgate_agent("support_bot")          # at startup
 
 @app.middleware("http")
 async def attach_user(request, call_next):

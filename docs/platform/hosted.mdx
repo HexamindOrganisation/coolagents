@@ -35,7 +35,7 @@ no other code change. This is [Shape B](/guides/build-an-agent#shape-b-i-want-th
 ```python
 from hexgate import load_hexgate_agent, stream_agent, User
 
-agent, handler = load_hexgate_agent("support-bot")
+agent, handler = load_hexgate_agent("support_bot")   # the seeded agent; note the underscore
 
 async with User(user_id="alice", role="billing"):
     async for event in stream_agent(agent, handler, "refund customer 30"):

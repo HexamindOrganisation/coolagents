@@ -14,7 +14,7 @@ Reach for `chat` when you're authoring a policy YAML, tweaking a tool, or shapin
 a system prompt. See [Which path do I pick?](/two-paths) for chat-vs-serve.
 
 ```bash
-hexgate chat --agent example_agent                                   # bundled demo agent
+hexgate chat --agent example_agent                                   # demo agent in the repo's examples/ (run from the repo root)
 hexgate chat --list-agents                                           # show resolvable agents
 hexgate chat --agent my_app.agents:my_agent                          # by module:attr spec
 hexgate chat --use examples/file_agents.py --agent workspace_explorer
@@ -35,8 +35,9 @@ from:
 
 ## Keys the example agent uses
 
-The bundled `example_agent` uses the filesystem tools `read_file` / `glob` /
-`grep`, which need no API keys — only the model does:
+The `example_agent` (in the repo's `examples/example_agent/`, resolved when you
+run from the repo root) uses the filesystem tools `read_file` / `glob` / `grep`,
+which need no API keys — only the model does:
 
 - `OPENAI_API_KEY` — the default `openai:gpt-5.4` model
 

@@ -39,8 +39,10 @@ reachable from the dashboard without exposing a port.
   a `200` swaps in the new bundle. Dashboard edits take effect at turn boundaries
   without restarting the process or re-wrapping the tools.
 - Streams every `StreamEvent` (text deltas, tool start/end, run end) back as JSON.
-- Auto-approves any `approval_required` tools — there's no TTY in serve mode for
-  prompts (planned: dashboard-side approval UI).
+- Routes `approval_required` tool calls per `--approval-mode` (default `ask`):
+  `ask` sends the request to the connected Playground for a human to decide;
+  `auto-approve` / `auto-deny` skip the round-trip and apply the outcome directly
+  (script / CI mode).
 - Reconnects with exponential backoff on socket drop.
 
 <Note>

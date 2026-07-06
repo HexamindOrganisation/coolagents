@@ -1,6 +1,6 @@
 ---
 title: "Environment variables"
-description: "Every HEXGATE_* variable and the provider keys the built-in tools read."
+description: "The HEXGATE_* variables and provider keys you'll set in practice, and what each one switches on."
 ---
 
 Copy `.env.sample` to `.env`. **None of these are required to boot** — set the
@@ -18,15 +18,30 @@ raises a key-named error when the agent is built.
 | `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Tracing (optional). |
 | `LANGFUSE_HOST` | Optional Langfuse host override. |
 
+## SDK defaults
+
+| Env var | Purpose |
+|---|---|
+| `HEXGATE_DEFAULT_MODEL` | Model used when you don't pass `model=` explicitly (default `openai:gpt-5.4`). |
+| `HEXGATE_DEFAULT_SEARCH_ENGINE` | Engine for the `web_search` example tool (default `linkup`). |
+
 ## Platform connection
 
 | Env var | Purpose |
 |---|---|
-| `HEXGATE_API_KEY` | `fty_live_…` / `fty_test_…` token. Wakes up the platform path; without it, adapters and `load_agent` fall back to local / builtin resolution. |
+| `HEXGATE_API_KEY` | `fty_live_…` / `fty_test_…` token. Wakes up the platform path; without it, adapters and `load_agent` fall back to local / registered resolution. |
 | `HEXGATE_API_URL` | Platform endpoint. Defaults to Hexgate Cloud (`https://app.hexgate.ai`). Set to `http://localhost:8000` only when self-hosting locally — the key must be minted by whichever platform this points at. |
+| `HEXGATE_LOCAL_MODE` | Truthy value forces local audit and shorts the platform auto-bind path, even when `HEXGATE_API_KEY` is set. `hexgate chat` sets this automatically. |
+| `HEXGATE_BIND_AGENTS` | Truthy value opts a code-built agent into the platform path at construction time (requires `HEXGATE_API_KEY` — the platform path is otherwise opt-in). |
 
 The key and the URL are coupled: a `fty_live_…` key only verifies against the
 platform instance that minted it.
+
+<Note>
+`HEXGATE_API_KEY` was renamed from `HEXGATE_KEY`, which is **no longer read**. If
+you're upgrading, rename it in your `.env` — an old `HEXGATE_KEY` is silently
+ignored and the platform path never wakes up.
+</Note>
 
 ## Policy-bundle enforcement
 

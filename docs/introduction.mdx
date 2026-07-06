@@ -32,6 +32,8 @@ roles:
         constraints:
           - args.amount <= 50
           - args.currency == "USD"
+      issue_credit:                # support can request; a human confirms
+        mode: approval_required
   billing:                       # larger refunds, major currencies
     default_policy: { mode: deny }
     tools:

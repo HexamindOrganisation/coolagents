@@ -80,7 +80,8 @@ Filesystem tools are importable from `hexgate`: `read_file`, `write_file`,
 <Note>
 `web_search`, `fetch`, and `refund_order` are **no longer built in** — they
 moved to `examples/tools/` (`websearch.py`, `fetch.py`, `refund.py`). Import them
-from there, or pass any custom tool to an agent via `extra_tools=`. A direct
-`from hexgate import web_search` raises an `ImportError` that points at the new
-location.
+from there. For a code-defined agent, pass the tool in `create_agent(..., tools=[...])`;
+for a YAML-loaded agent, satisfy a tool named in the YAML via
+`load_agent(name, extra_tools={...})`. A direct `from hexgate import web_search`
+raises an `ImportError` that points at the new location.
 </Note>

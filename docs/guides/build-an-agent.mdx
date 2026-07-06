@@ -79,7 +79,7 @@ platform-owned path (register → edit → test → deploy), see the
 
 | What dev sets | What changes |
 |---|---|
-| `HEXGATE_API_KEY=fty_live_<project>_…` | Wakes up the platform path. Without it, adapters / `load_agent` fall back to local / builtin. |
+| `HEXGATE_API_KEY=fty_live_<project>_…` | Wakes up the platform path. Without it, adapters / `load_agent` fall back to local / registered. |
 | `HEXGATE_API_URL=https://app.hexgate.ai` *(optional)* | Platform endpoint. Defaults to Hexgate Cloud. Set to `http://localhost:8000` only when self-hosting locally — your key must be minted by whichever platform this points at. |
 | `HEXGATE_LOCAL_POLICY=./policy.yaml` *or* `./bundle/` | Dev escape hatch: enforce a policy from disk, hot-reload on save. Wins over the platform's bundle. |
 | `HEXGATE_BUNDLE_SIGN_KEY_PATH=./keys/dev.private` *(optional)* | Sign locally-recompiled yaml so `bundle.is_signed` reads True. |
