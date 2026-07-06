@@ -43,6 +43,8 @@ def evaluate_tool_call(
     policy: AgentPolicy,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    role: str | None = None,
 ) -> Verdict:
     """Return a :class:`Verdict` for a proposed tool call (pydantic engine).
 
@@ -66,7 +68,7 @@ def evaluate_tool_call(
         )
 
     try:
-        check_constraints(tool_policy.constraints, arguments, tool_name)
+        check_constraints(tool_policy.constraints, arguments, tool_name, role=role)
     except PolicyDeniedError as exc:
         return Verdict(outcome=DecisionOutcome.DENY, reason=str(exc))
 

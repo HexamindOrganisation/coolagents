@@ -32,6 +32,10 @@ fails closed rather than erroring. ``matches`` is an RE2 regex and is
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
 
+Besides ``args.*``, two call-scope facts are in scope: ``role`` (the caller's
+role) and ``tool`` (the tool being invoked) — mirroring Rego's ``input.role``
+/ ``input.tool``. E.g. ``role == "admin"`` or ``tool == "refund_order"``.
+
 Concrete examples (all of these parse and evaluate today):
 
     args.amount <= 50
@@ -562,16 +566,21 @@ def check_constraints(
     constraints: list[str | Node],
     arguments: dict[str, Any] | None,
     tool_name: str,
+    *,
+    role: str | None = None,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
     Caller passes raw source strings (typical YAML path) or pre-parsed
     nodes. Source strings are parsed once per call here for simplicity —
     caches can be added later if profiling demands it.
+
+    ``role`` and the tool name are exposed to constraints as top-level
+    ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
     """
     if not constraints:
         return
-    context = {"args": dict(arguments or {})}
+    context = {"args": dict(arguments or {}), "role": role, "tool": tool_name}
     for entry in constraints:
         parsed = parse_constraint(entry) if isinstance(entry, str) else entry
         if not evaluate_constraint(parsed, context):

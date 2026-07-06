@@ -56,6 +56,11 @@ constraints:
 A non-list collection (or a missing one) fails closed. `.` is only valid inside
 a quantifier body.
 
+Besides `args.*`, constraints can reference two **call-scope facts**: `role`
+(the caller's role) and `tool` (the tool being invoked) — e.g.
+`role == "admin"` or `tool == "refund_order"`. These mirror Rego's
+`input.role` / `input.tool`.
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
 both produce identical decisions.

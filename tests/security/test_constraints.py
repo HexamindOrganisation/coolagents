@@ -712,3 +712,18 @@ def test_check_error_message_carries_verbatim_source() -> None:
     raw = "args.amount   <=   50"  # unusual spacing preserved in the message
     with pytest.raises(PolicyDeniedError, match="args.amount   <=   50"):
         check_constraints([raw], {"amount": 999}, "refund")
+
+
+def test_check_exposes_role_and_tool_as_facts() -> None:
+    """role / tool are top-level facts, mirroring Rego's input.role / input.tool."""
+    check_constraints(['role == "admin"'], {}, "any_tool", role="admin")  # passes
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(['role == "admin"'], {}, "any_tool", role="user")
+    check_constraints(['tool == "refund"'], {}, "refund", role="x")  # tool from name
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(['tool == "refund"'], {}, "other", role="x")
+
+
+def test_check_role_none_denies_role_constraint() -> None:
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(['role == "admin"'], {}, "t", role=None)

@@ -76,7 +76,7 @@ class PolicySet:
         Resolves the role's policy and runs the pydantic engine."""
         from hexgate.security.policy import evaluate_tool_call
 
-        return evaluate_tool_call(self.policy_for(role), tool, dict(args))
+        return evaluate_tool_call(self.policy_for(role), tool, dict(args), role=role)
 
     @property
     def roles(self) -> list[str]:

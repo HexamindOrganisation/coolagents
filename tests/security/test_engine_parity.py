@@ -25,7 +25,6 @@ import shutil
 import pytest
 
 from hexgate.security import WasmPolicy, compile_to_wasm, load_policy_set_from_dict
-from hexgate.security.policy import evaluate_tool_call
 from hexgate.security.rego import compile_to_rego
 
 pytestmark = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on PATH")
@@ -33,7 +32,9 @@ pytestmark = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on 
 
 def _py_outcome(policy: dict, role: str | None, tool: str, args: dict) -> str:
     ps = load_policy_set_from_dict(policy)
-    return evaluate_tool_call(ps.policy_for(role), tool, args).outcome.value
+    # Route through PolicySet.evaluate (the real engine entry) so role/tool are
+    # threaded into the constraint context, matching what the runtime does.
+    return ps.evaluate(role=role, tool=tool, args=args).outcome.value
 
 
 @functools.lru_cache(maxsize=None)
@@ -375,3 +376,36 @@ _QUANT_POLICY = {
 )
 def test_quantifier_parity(tool: str, args: dict, expect: str) -> None:
     _assert_parity(_QUANT_POLICY, "default", tool, args, expect)
+
+
+# ---------------------------------------------------------------------------
+# role / tool facts in constraints (2g) — parity with Rego input.role/input.tool
+# ---------------------------------------------------------------------------
+
+_CTX_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "t": {"mode": "allow", "constraints": ['role == "admin"']},
+                "r": {"mode": "allow", "constraints": ['tool == "r"']},
+            }
+        },
+        "admin": {
+            "tools": {"t": {"mode": "allow", "constraints": ['role == "admin"']}}
+        },
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("role", "tool", "args", "expect"),
+    [
+        ("admin", "t", {}, "allow"),  # role == "admin" holds
+        ("default", "t", {}, "deny"),  # role != "admin"
+        (None, "t", {}, "deny"),  # null role
+        ("default", "r", {}, "allow"),  # tool == "r" holds (tool from the call)
+    ],
+)
+def test_role_tool_fact_parity(role: str, tool: str, args: dict, expect: str) -> None:
+    _assert_parity(_CTX_POLICY, role, tool, args, expect)
