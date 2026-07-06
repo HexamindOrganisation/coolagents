@@ -47,6 +47,7 @@
             "group": "Policy",
             "pages": [
               "policy/yaml-shape",
+              "policy/writing-conditions",
               "policy/constraints",
               "policy/in-code",
               "policy/wasm-bundles",
