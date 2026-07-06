@@ -3,26 +3,135 @@ title: "User scope"
 description: "Per-request user identity, role resolution, biscuit attenuation."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — User Scope + Roles](https://github.com/HexamindOrganisation/hexgate#-user-scope--roles).
-</Note>
+Real backends serve many users, and different users get different capabilities.
+Hexgate splits that into two pieces:
 
-## TL;DR
+- **`User`** — the per-request scope. Marks "this invocation acts on behalf of
+  alice, in role X." Async context manager; pushes a fact-bearing Biscuit through
+  the agent runtime.
+- **Role policies** — one `policy.yaml` per role, optionally inheriting from a
+  base mixin. The runtime picks the right one at call time based on the active
+  `User.role`.
 
-`User` is the per-request scope. Marks "this invocation acts on behalf of alice,
-in role X." Async context manager; pushes a fact-bearing Biscuit through the
-agent runtime.
+The two are deliberately decoupled: tokens carry **identity** (who is calling),
+policy files carry **rules** (what they can do).
+
+## Minimal example
 
 ```python
 from hexgate import User, load_hexgate_agent, stream_agent
 
-agent, handler = load_hexgate_agent("support-bot")
+agent, handler = load_hexgate_agent("support-bot")          # client + roles attached at load
 
 async with User(user_id="alice", role="billing", ttl_seconds=300):
-    async for event in stream_agent(agent, handler, "refund 30"):
+    async for event in stream_agent(agent, handler, "refund customer 30"):
         ...
 ```
 
-The runtime mints the per-request token, picks the `billing` role's policy, and
-evaluates its constraints against each tool call.
+No manual `attenuate_for_user`, `extract_facts`, or `ToolUseContext` plumbing at
+the call site. The runtime mints the per-request token, picks the `billing`
+role's policy file, and evaluates its constraints against each tool call.
+
+## FastAPI middleware pattern
+
+The cleanest production shape — set the scope once in middleware, every endpoint
+runs in the right user's role:
+
+```python
+from fastapi import FastAPI
+from hexgate import User, load_hexgate_agent, stream_agent
+
+app = FastAPI()
+agent, handler = load_hexgate_agent("support-bot")          # at startup
+
+@app.middleware("http")
+async def attach_user(request, call_next):
+    auth = await authenticate(request)                       # your auth
+    async with User(
+        user_id=auth.id,
+        role=auth.role,                                       # e.g. "billing"
+        session_id=request.state.session_id,
+        ttl_seconds=300,
+    ):
+        return await call_next(request)
+
+@app.post("/chat")
+async def chat(req):
+    async for event in stream_agent(agent, handler, req.message):
+        yield event                                          # already scoped
+```
+
+## `User` fields
+
+| Field | Type | Required | Effect |
+|---|---|---|---|
+| `user_id` | `str` | ✅ | Becomes `user("alice")` in the attenuated Biscuit. |
+| `role` | `str?` | optional | Becomes `role("billing")` in the Biscuit. Selects which role policy file applies at tool-call time. Fall-back: the `default` role. |
+| `session_id` | `str?` | optional | Trace tagging — surfaces on Langfuse spans. |
+| `ttl_seconds` | `int?` | optional | Embeds a `check if time($t), $t < now+ttl` predicate so the token can't outlive the request. |
+
+## Role policies — one file per role
+
+Agents that need per-role behaviour ship a `policies/` directory instead of a
+single `policy.yaml`:
+
+```text
+agent/
+├── agent.yaml
+├── system.md
+└── policies/
+    ├── default.yaml          # fallback when User.role is None / unknown
+    ├── read_only.yaml        # mixin — is_mixin: true
+    ├── support.yaml          # inherits: [read_only]
+    └── billing.yaml          # inherits: [read_only, support]
+```
+
+Each role file is a complete `AgentPolicy`. Inheritance is left-to-right, child
+wins on conflicts:
+
+```yaml
+# policies/read_only.yaml  (mixin — safe base)
+version: 1
+is_mixin: true
+default_policy:
+  mode: deny
+tools:
+  view_orders:  { mode: allow }
+  list_tickets: { mode: allow }
+```
+
+```yaml
+# policies/billing.yaml
+version: 1
+inherits: [read_only]
+tools:
+  refund_order:
+    mode: allow
+    constraints:
+      - args.amount <= 500
+      - args.currency == "USD"
+  wire_transfer:
+    mode: approval_required
+    constraints:
+      - args.amount <= 100000
+```
+
+See [constraints](/policy/constraints) for the expression grammar and a
+role-scoped end-to-end walkthrough.
+
+## Notes
+
+- **Single-file policies still work.** A legacy `policy.yaml` is treated as the
+  `default` role — no migration needed.
+- **Lazy attenuation.** `User.__aenter__` only pushes a contextvar — the
+  cryptographic work happens inside `stream_agent` / `invoke_agent` the first
+  time the agent runs. Errors surface at first agent call, not at scope entry.
+- **Local agents skip attenuation.** A `User` scope around a `load_local_agent` /
+  `load_builtin_agent` agent logs a warning and runs with no facts. The `default`
+  policy still applies — use `load_hexgate_agent` for the full signed chain.
+- **Explicit override.** Passing `tool_use_context=` explicitly to `stream_agent`
+  / `invoke_agent` wins over an active `User` scope. Useful for tests or one-off
+  bypass.
+- **Sync callers.** `User` exposes both `async with user:` and
+  `user.sync_scope()`. The async form is the primary API; the sync mirror exists
+  for CLI loops and `Runner.run_sync`-style callers.

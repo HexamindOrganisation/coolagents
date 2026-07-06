@@ -3,11 +3,6 @@ title: "MCP servers (proxy)"
 description: "Auto-wrap third-party Model Context Protocol servers as policy-enforced tools."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — MCP servers](https://github.com/HexamindOrganisation/hexgate#-mcp-servers-proxy).
-</Note>
-
 Hexgate's `hexgate.mcp` module wraps any [MCP](https://modelcontextprotocol.io) server as framework-native tool objects so they go through the same policy enforcement, audit, and approval flow as native tool functions. Zero glue code: connect the server, every tool it exposes auto-registers under a `mcp-<server>-<tool>` namespace. Wire the tools through whichever adapter your agent is built on (LangChain, OpenAI Agents, Pydantic AI, Google ADK).
 
 ## Usage
@@ -49,6 +44,14 @@ roles:
         mode: allow
         constraints: ["args.repo == 'hexgate'"]
 ```
+
+## Transports
+
+Both transports are supported: **stdio** (`command` + `args` + `env` for
+subprocess MCP servers) and **streamable HTTP** (`url` + `headers` for remote
+endpoints). The toolset is an async context manager — opening connects + lists
+every server's catalog; closing tears down transports symmetrically (with
+cleanup on partial-open failures).
 
 ## Adapter coverage
 

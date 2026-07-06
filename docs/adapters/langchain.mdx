@@ -4,23 +4,88 @@ description: "wrap_langchain_agent — policy-gated tools, in-place installation
 ---
 
 <Note>
-**Page stub.** Full content lives in the
-[README — LangChain / LangGraph](https://github.com/HexamindOrganisation/hexgate#langchain--langgraph--wrap_langchain_agent).
+New to the adapters? Start with the [wrapping overview and comparison
+table](/adapters/openai#overview-how-framework-wrapping-works).
 </Note>
 
-## TL;DR
+`wrap_langchain_agent` builds a `PolicyEnforcer` once and installs it on each tool
+in place (`install_enforcer_on_tool`) so the same instances inside the compiled
+graph become policy-gated. It returns a `HexgateLangchainAgent` proxy that opens a
+`User` scope and injects a Langfuse callback into every `invoke` / `ainvoke` /
+`stream` / `astream` / `astream_events` call. The `user` is supplied **per call**,
+so a single wrapped agent can serve many users concurrently — role resolution
+happens at call time from the contextvar.
 
 ```python
-from hexgate.adapters.langchain import wrap_langchain_agent
-from hexgate.runtime import User
+import asyncio
+from dotenv import load_dotenv
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
 
-agent = wrap_langchain_agent(agent=graph, tools=TOOLS, api_key="sk-...")
-result = await agent.ainvoke(
-    {"messages": [{"role": "user", "content": "What is the weather in Tokyo?"}]},
-    user=User(user_id="alice", role="member"),
-)
+from hexgate.runtime import User
+from hexgate.adapters.langchain import wrap_langchain_agent
+
+
+@tool
+def get_weather(city: str) -> str:
+    """Return a weather report for a city."""
+    return f"The weather in {city} is 21°C and sunny."
+
+
+@tool
+def delete_user(user_id: str) -> str:
+    """Delete a user account. Destructive."""
+    return f"User {user_id} deleted."
+
+
+TOOLS = [get_weather, delete_user]
+
+
+async def main():
+    load_dotenv()
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    graph = create_react_agent(llm, TOOLS)
+
+    agent = wrap_langchain_agent(
+        agent=graph,
+        tools=TOOLS,          # same list passed to create_react_agent — wrapped in place
+        api_key="sk-...",     # or rely on HEXGATE_API_KEY
+    )
+
+    result = await agent.ainvoke(
+        {"messages": [{"role": "user", "content": "What is the weather in Tokyo?"}]},
+        user=User(user_id="langchain_user_1", role="member", session_id="session_abc"),
+    )
+    print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-Builds a `PolicyEnforcer` once and installs it on each tool in place so the same
-instances inside the compiled graph become policy-gated. Returns a
-`HexgateLangchainAgent` proxy that opens a `User` scope per call.
+## Under the hood
+
+- `wrap_langchain_agent` builds a `PolicySet` for the agent, constructs one
+  `PolicyEnforcer(policy_set, agent_name=…)`, and calls
+  `install_enforcer_on_tools(tools, enforcer=…)` to mutate each tool's `func` and
+  `coroutine` with enforcer-gated closures. `handle_tool_error` is forced to
+  `True`. Installation is idempotent — re-installing rebinds the captured
+  originals to the new enforcer without stacking gates.
+- Each invocation method on `HexgateLangchainAgent` takes `user=` and opens an
+  `async with user:` (or `user.sync_scope()` for sync) around the delegated
+  `CompiledStateGraph` call. The active `User` is pushed onto a contextvar; the
+  guards read it at tool-call time to resolve the matching role's policy.
+- A non-allow `Decision` is rendered as `{"ok": False, "error":
+  decision.as_error_payload()}` so the LangChain runtime surfaces the structured
+  dict as the tool result instead of raising.
+- The wrapper also enters `propagate_attributes(...)` and merges a Langfuse
+  `CallbackHandler` into the `RunnableConfig.callbacks` for the duration of the
+  call. Anything not explicitly proxied falls through via `__getattr__`.
+
+<Note>
+Because LangChain BYO-graph tools are mutated in place by design, the same
+`tools` list you pass to `create_react_agent` flows through already gated — the
+wrapper holds the policy.
+</Note>

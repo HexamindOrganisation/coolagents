@@ -3,21 +3,50 @@ title: "Audit log (ClickHouse)"
 description: "Policy decisions persisted for the audit dashboard."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Audit log](https://github.com/HexamindOrganisation/hexgate#audit-log-clickhouse).
-Engineering spec at [internals/audit-pipeline](/internals/audit-pipeline).
-</Note>
+Policy decisions are written to a local ClickHouse instance for the audit
+dashboard. Requires Docker. For the conceptual overview see
+[audit trail](/concepts/audit-trail); for the engineering spec see
+[internals/audit-pipeline](/internals/audit-pipeline).
 
 ```bash
 make clickhouse-up        # start the server (first run also creates the schema)
 make clickhouse-cli       # interactive SQL shell
 make clickhouse-down      # stop (keeps data)
-make clickhouse-reset     # wipe and recreate
+make clickhouse-reset     # wipe and recreate (also re-applies the schema)
 ```
 
+Schema lives in `platform/clickhouse/init/schema.sql`.
+
+<Note>
+**Not a migration system.** That init directory is a POC scaffold — the Docker
+image runs it exactly once, on first container start with an empty data volume.
+Editing the SQL after that point is silently ignored on existing environments. To
+apply schema changes locally, either `make clickhouse-reset` (wipes data) or
+`make clickhouse-cli` and run the SQL by hand.
+</Note>
+
 The service binds to **127.0.0.1 only, on host ports 8124 (HTTP) and 9001
-(native)** so it coexists with any other local ClickHouse instance.
+(native)** rather than ClickHouse's default 8123/9000, so it coexists with any
+other local ClickHouse instance (e.g. a Langfuse-bundled one).
+
+## Ingest endpoint
+
+Once both `make clickhouse-up` and `make platform-api` are running, the ingest
+endpoint `POST /v1/audit/decisions` accepts one decision per request:
+
+```bash
+curl -X POST localhost:8000/v1/audit/decisions \
+  -H "Authorization: Bearer fty_test_..." \
+  -H "Content-Type: application/json" \
+  -d '{"event_id":"9f1e3c5a-4d2b-4b8e-9c8a-1f4e2d8a7c3b",
+       "occurred_at":"2026-05-29T14:00:00Z",
+       "agent_name":"researcher","tool_name":"read_file","outcome":"deny"}'
+# → 202 {"event_id":"9f1e3c5a-..."}
+```
+
+Integration tests (`pytest -m integration`) round-trip rows through the live
+ClickHouse — opt-in so the default `make platform-api-test` stays
+offline-friendly.
 
 ## Seed data
 
@@ -26,4 +55,7 @@ make seed-audit         # insert 820 rows of mock audit data
 make seed-audit-clear   # delete seed rows
 ```
 
-Inserts 800 normal rows spread over 30 days (Alice, Bob, Charlie across all tools) plus 20 anomaly rows where Bob probes restricted tools (`refund_customer`, `create_ticket`) with a default role in a 5-minute window 10 days ago.
+Inserts 800 normal rows spread over 30 days (Alice, Bob, Charlie across all
+tools) plus 20 anomaly rows where Bob probes restricted tools
+(`refund_customer`, `create_ticket`) with a default role in a 5-minute window 10
+days ago.

@@ -1,0 +1,161 @@
+---
+title: "Build an agent"
+description: "From create_agent to a policy-gated, user-scoped runtime — the two shapes and the whole config surface."
+---
+
+## Core primitives
+
+The two main primitives are `create_agent(...)` and `@agent_tool(...)`. Use them
+when you want to define everything directly in Python.
+
+```python
+from hexgate import agent_tool, create_agent
+
+
+@agent_tool(name="my_lookup")
+async def my_lookup(query: str) -> dict:
+    """Look up something useful."""
+    return {"query": query, "results": []}
+
+agent, handler = create_agent(
+    model="openai:gpt-5.4",
+    tools=[my_lookup],
+    system_prompt="You are a helpful research assistant.",
+)
+```
+
+## Two shapes
+
+Devs pick one of two shapes. Both end up at the same enforcement seam — they
+differ only in **where the policy comes from**.
+
+### Shape A — "I have an existing framework agent"
+
+Dev wrote an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent. They
+wrap it once and they're done:
+
+```python
+from hexgate.adapters.openai import HexgateRunner   # or .langchain.wrap_langchain_agent, .google.HexgateRunner, .pydantic_ai.wrap_pydantic_agent
+from hexgate.runtime import User
+
+runner = HexgateRunner()                            # picks up HEXGATE_API_KEY from env
+await runner.run(
+    my_agent,
+    "refund 30",
+    user=User(user_id="alice", role="billing"),     # per-call scope
+)
+```
+
+That's it. They get:
+
+- Tool-call enforcement at every tool boundary (`PolicyEnforcer.decide()`)
+- Role resolution from the active `User.role` at call time
+- Per-request biscuit attenuation
+- Langfuse traces tagged with the caller's identity
+
+See [Framework adapters](/adapters/openai) for the per-framework wrapping details.
+
+### Shape B — "I want the platform to own the agent's YAML"
+
+Dev authored the agent's `agent.yaml` / `policy.yaml` / `system.md` in the
+dashboard. The SDK fetches them:
+
+```python
+from hexgate import load_hexgate_agent, stream_agent, User
+
+agent, handler = load_hexgate_agent("default")      # explicit name — the SDK's loader requires it
+
+async with User(user_id="alice", role="billing"):
+    async for ev in stream_agent(agent, handler, "refund 30"):
+        ...
+```
+
+Same enforcement seam, same `User` scope. The difference is whose system of
+record holds the YAML — the dev's code vs the dashboard.
+
+## Env vars: that *is* the whole config surface
+
+| What dev sets | What changes |
+|---|---|
+| `HEXGATE_API_KEY=fty_live_<project>_…` | Wakes up the platform path. Without it, adapters / `load_agent` fall back to local / builtin. |
+| `HEXGATE_API_URL=https://app.hexgate.ai` *(optional)* | Platform endpoint. Defaults to Hexgate Cloud. Set to `http://localhost:8000` only when self-hosting locally — your key must be minted by whichever platform this points at. |
+| `HEXGATE_LOCAL_POLICY=./policy.yaml` *or* `./bundle/` | Dev escape hatch: enforce a policy from disk, hot-reload on save. Wins over the platform's bundle. |
+| `HEXGATE_BUNDLE_SIGN_KEY_PATH=./keys/dev.private` *(optional)* | Sign locally-recompiled yaml so `bundle.is_signed` reads True. |
+| `HEXGATE_BUNDLE_PUBKEY_PATH=./keys/prod.public` *(optional)* | Verify a pre-built bundle dir against this pubkey on every reload. |
+| `HEXGATE_BUNDLE_REQUIRE_SIGNATURE=true` *(optional)* | Strict mode — refuse any unsigned or unverifiable bundle at startup. |
+
+No config object to instantiate, no `enforce_policy(...)` call to remember on the
+platform path. The adapter / loader threads it all through. The full list of env
+vars lives in the [environment reference](/reference/environment).
+
+**Connecting to Hexgate.** The key and the URL are coupled: a `fty_live_…` key
+only verifies against the platform instance that minted it.
+
+- **Hosted (default):** set `HEXGATE_API_KEY` to the key from [app.hexgate.ai](https://app.hexgate.ai). Leave `HEXGATE_API_URL` unset.
+- **Self-hosted / local platform:** additionally set `HEXGATE_API_URL=http://localhost:8000` (or your host), and use a key minted by *that* platform.
+
+## Two carve-outs worth knowing
+
+1. **Per-call identity stays explicit.** `User` is the one piece the adapter
+   can't infer from env, because it's per-request, not per-process. One line
+   wrapping each call (`user=User(...)` kwarg on adapters, `async with User(...)`
+   for native). See [User scope](/concepts/user-scope).
+2. **`approval_required` tools.** If the policy uses that mode, dev decides what
+   happens — pass `approval_handler=` (True / False / callable) when wrapping.
+   Default for `hexgate serve` is auto-approve; for `hexgate chat` it prompts the
+   TTY. See [Approval-required tool calls](/concepts/approval-required).
+
+Everything else — fetch, verify, hot-reload, role selection, signature check,
+decision rendering, tracing — the runtime handles.
+
+## Define agents in code and resolve them by name
+
+If you want the CLI and shared loader to resolve a `create_agent(...)` agent by
+name, register it first and then load it through `load_agent(...)`.
+
+A small end-to-end example registry lives in `examples/file_agents.py` and
+`examples/research_agents.py`. It demonstrates:
+
+- building one agent with `create_agent(...)` only
+- building another with `create_agent(...)` plus `enforce_policy(...)`
+- building a research agent with approval-gated file writes via `enforce_policy(..., approval_handler=...)`
+- registering it with `register_agent(...)` and loading it through `load_agent(...)`
+
+```bash
+hexgate chat --use examples/file_agents.py --agent workspace_explorer
+hexgate chat --use examples/file_agents.py --agent repo_editor
+hexgate chat --use examples/research_agents.py --agent update_researcher
+```
+
+## Builtin and local agents
+
+The package ships a small `hexgate.builtin_agents` directory for official starter
+agents (currently `researcher`):
+
+```python
+from hexgate import load_builtin_agent
+
+agent, handler = load_builtin_agent("researcher")
+```
+
+The CLI also discovers local agents from `./<agent_dir>/agent.yaml`,
+`./agents/<agent_dir>/agent.yaml`, and `./examples/<agent_dir>/agent.yaml`. This
+repo ships a demo agent at `examples/example_agent/`, so from the project root:
+
+```bash
+hexgate chat --agent example_agent
+```
+
+## Stream results
+
+For direct Python usage, the simplest runtime path is:
+
+```python
+from hexgate import stream_agent
+
+async for event in stream_agent(agent, handler, "latest AI breakthroughs"):
+    ...
+```
+
+`stream_agent(...)` yields normalized events for assistant text deltas, tool
+lifecycle, and final run completion.

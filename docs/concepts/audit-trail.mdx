@@ -3,14 +3,24 @@ title: "Audit trail"
 description: "Every Decision posted to ClickHouse via /v1/audit/decisions."
 ---
 
-<Note>
-**Page stub.** Engineering spec lives at [internals/audit-pipeline](/internals/audit-pipeline).
-</Note>
-
-## TL;DR
-
-When `HEXGATE_API_KEY` is set and local mode is off, every `Decision` the enforcer
-returns is fired-and-forgotten to `/v1/audit/decisions`. The platform's
+When `HEXGATE_API_KEY` is set and local mode is off, every `Decision` the
+enforcer returns is fired-and-forgotten to `/v1/audit/decisions`. The platform's
 ClickHouse table stores one row per decision; the dashboard's audit page
-visualises them. Local mode (set by `hexgate chat`) keeps events on your
-machine.
+visualises them. Local mode (set automatically by [`hexgate chat`](/cli/chat))
+keeps events on your machine instead.
+
+One decision per request:
+
+```bash
+curl -X POST localhost:8000/v1/audit/decisions \
+  -H "Authorization: Bearer fty_test_..." \
+  -H "Content-Type: application/json" \
+  -d '{"event_id":"9f1e3c5a-4d2b-4b8e-9c8a-1f4e2d8a7c3b",
+       "occurred_at":"2026-05-29T14:00:00Z",
+       "agent_name":"researcher","tool_name":"read_file","outcome":"deny"}'
+# → 202 {"event_id":"9f1e3c5a-..."}
+```
+
+See [Audit log (ClickHouse)](/platform/audit-clickhouse) for the self-hosting
+setup and [internals/audit-pipeline](/internals/audit-pipeline) for the
+engineering spec.

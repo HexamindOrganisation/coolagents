@@ -3,12 +3,36 @@ title: "Local override (HEXGATE_LOCAL_POLICY)"
 description: "Point an agent at a YAML file or bundle dir; hot-reload on save."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Local enforcement](https://github.com/HexamindOrganisation/hexgate#local-enforcement--hexgate_local_policy).
-</Note>
+Point an agent at a local source and every tool call routes through the
+[WASM engine](/policy/wasm-bundles) instead of pydantic — no platform needed. Two
+shapes are accepted, and both **hot-reload on save** (no restart, no manual
+rebuild between turns):
 
 | `HEXGATE_LOCAL_POLICY=…` | What happens | When to use |
 |---|---|---|
-| **`./bundle/`** | Stat the bundle manifest each turn; reload if its mtime changed. | Production-shaped local testing. |
-| **`./policy.yaml`** | Stat the yaml each turn; recompile via `opa` when its mtime changed. | The tight dev loop. |
+| **`./bundle/`** (output of `hexgate policy build`) | Stat the bundle manifest each turn; reload if its mtime changed. | Production-shaped local testing — exercises the exact signed-bundle path. |
+| **`./policy.yaml`** | Stat the yaml each turn; recompile via `opa` when its mtime changed. | The tight dev loop — edit yaml, save, ask again. No build step. |
+
+```bash
+# Pre-built bundle dir — rebuild it mid-session, next chat picks it up
+hexgate policy build policy.yaml --out ./bundle
+HEXGATE_LOCAL_POLICY=./bundle hexgate chat --agent researcher
+# [hexgate] HEXGATE_LOCAL_POLICY active (bundle-dir): ./bundle (wasm_hash=7e6d1f8b..., unsigned)
+
+# Raw yaml — edit policy.yaml in your editor, save, next chat sees the new policy
+HEXGATE_LOCAL_POLICY=./policy.yaml hexgate chat --agent researcher
+# [hexgate] HEXGATE_LOCAL_POLICY active (yaml): ./policy.yaml (wasm_hash=ab12..., unsigned)
+```
+
+The bundle's integrity (files match the manifest) is verified on every reload — a
+stale or corrupt bundle fails immediately, not at the first tool call. Yaml
+sources default to **unsigned**; see [signing](/policy/signing) to sign each
+recompile.
+
+<Note>
+**Same refresh seam as the platform.** Under the hood both sources implement
+`PolicySource.fetch()`; the agent runtime calls it at the top of every turn and
+only swaps the active policy when the returned bundle is a new instance.
+Unchanged → identity match → no work. That's the same hot-reload path
+[`hexgate serve`](/cli/serve) uses for platform-edited YAML.
+</Note>

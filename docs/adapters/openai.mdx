@@ -3,25 +3,105 @@ title: "OpenAI Agents SDK"
 description: "Wrap an Agent with HexgateRunner — drop-in replacement for agents.Runner."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — OpenAI Agents SDK](https://github.com/HexamindOrganisation/hexgate#openai-agents-sdk--hexgaterunner).
-</Note>
+## Overview — how framework wrapping works
 
-## TL;DR
+In addition to its native `create_agent(...)` runtime, `hexgate` ships adapters
+that wrap agents built with **OpenAI Agents SDK**, **LangChain / LangGraph**,
+**Google ADK**, or **Pydantic AI** to add two things without touching the agent's
+logic:
 
-```python
-from hexgate.adapters.openai import HexgateRunner
-from hexgate.runtime import User
+1. **Tool-call policy enforcement.** Each tool the agent can invoke is gated by a
+   `PolicyEnforcer` that returns a typed `Decision` (allow / deny / needs-approval)
+   per call. Non-allow outcomes render as a `[policy_denied]` / `[approval_required]`
+   marker the model sees as tool output (or, for pydantic_ai, a `ModelRetry`)
+   rather than aborting the run, so the agent can recover.
+2. **User-aware observability.** Every run is traced through Langfuse with the
+   active [`User`](/concepts/user-scope)'s identity (user id, session id, role)
+   propagated onto the spans.
 
-runner = HexgateRunner()                            # picks up HEXGATE_API_KEY
-result = await runner.run(
-    agent,
-    "What's the weather in Cherbourg?",
-    user=User(user_id="alice", role="member"),
-)
-```
+The four integrations differ in shape because the underlying SDKs do:
+
+| | OpenAI Agents SDK | LangChain / LangGraph | Google ADK | Pydantic AI |
+| --- | --- | --- | --- | --- |
+| Entry point | `HexgateRunner` (replaces `Runner`) | `wrap_langchain_agent` (returns a proxy) | `HexgateRunner` (replaces `Runner`) | `wrap_pydantic_agent` (returns a proxy) |
+| Tool wrapping | Copies each `FunctionTool`, replaces `on_invoke_tool` | Mutates each `BaseTool` in place (`install_enforcer_on_tool`), sets `handle_tool_error=True` | Copies each `BaseTool` (normalizing bare callables to `FunctionTool`), replaces `run_async` | Copies each `Tool` and overrides `function_schema.call` |
+| Denial behavior | Returns `decision.as_error_message()` as tool output | Returns `{"ok": False, "error": decision.as_error_payload()}` | Returns `decision.as_error_message()` as tool output | Raises `ModelRetry(decision.as_error_message())` |
+| Tracing | `OpenAIAgentsInstrumentor` + `propagate_attributes` | Langfuse `CallbackHandler` in each `RunnableConfig` + `propagate_attributes` | `GoogleADKInstrumentor` + `propagate_attributes` | `Agent.instrument_all()` + `propagate_attributes` |
+| Per-call identity | `user: User` on `run` / `run_sync` / `run_streamed` | `user: User` on `invoke` / `ainvoke` / `stream` / `astream` / `astream_events` | `user: User` on `run` / `run_async` | `user: User` on `run` / `run_sync` / `run_stream` / `iter` |
+
+Role resolution happens **at call time** from the active `User` contextvar — one
+wrapped agent serves many users concurrently because the scope is per-call. All
+adapters resolve the API key the same way: from the explicit `api_key=` argument,
+falling back to the `HEXGATE_API_KEY` environment variable.
+
+## `HexgateRunner`
 
 `HexgateRunner` is a drop-in replacement for `agents.Runner`. It wraps the
 agent's tools with a `PolicyEnforcer` at construction time and opens a `User`
-scope around each `run` / `run_sync` / `run_streamed` call.
+scope around each `Runner.run` / `run_sync` / `run_streamed` call so role
+resolution happens at call time.
+
+```python
+import asyncio
+from agents import Agent, function_tool
+from dotenv import load_dotenv
+
+from hexgate.runtime import User
+from hexgate.adapters.openai import HexgateRunner
+
+
+@function_tool
+def get_weather(city: str) -> str:
+    return f"{city}: sunny, 23°C"
+
+
+async def main():
+    load_dotenv()
+
+    agent = Agent(
+        name="Weather Agent",
+        instructions="Use get_weather when asked about weather.",
+        tools=[get_weather],
+        model="gpt-4o-mini",
+    )
+
+    runner = HexgateRunner()  # picks up HEXGATE_API_KEY from env
+    result = await runner.run(
+        agent,
+        "What's the weather in Cherbourg?",
+        user=User(user_id="user_1", session_id="session_1", role="member"),
+    )
+    print(result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Under the hood
+
+- `HexgateRunner.run` calls `wrap_openai_agent`, which builds a `PolicySet` for
+  `(api_key, agent.name, tool_names)`, constructs one `PolicyEnforcer`, and returns
+  a `dataclasses.replace`'d copy of the agent with policy-gated tool copies — your
+  original `agent` is untouched.
+- The runner opens an `async with user:` scope around the underlying `Runner.run*`
+  call. When the model calls a tool, the guard asks `enforcer.decide(...)` for a
+  `Decision`. On non-allow, it returns `decision.as_error_message()` — a
+  `[policy_denied]` or `[approval_required]` markered string the model can
+  interpret and recover from.
+- The run executes inside `propagate_attributes(user_id=..., session_id=...,
+  metadata={"user_role": ...})`, so Langfuse spans carry the caller identity.
+
+`run_sync` and `run_streamed` work the same way.
+
+## Runnable example
+
+`examples/openai_demo.py` — `HexgateRunner` (OpenAI Agents SDK) end-to-end.
+
+<Note>
+Demo files end in `_demo.py` so their filenames don't shadow the installed
+packages they import (`agents`, `google`, `langchain`, `openai`, `pydantic_ai`).
+Without the suffix, running a script inside `examples/` would put the directory
+on `sys.path[0]` and Python would import the demo files instead of the real
+packages.
+</Note>

@@ -1,0 +1,54 @@
+---
+title: "Environment variables"
+description: "Every HEXGATE_* variable and the provider keys the built-in tools read."
+---
+
+Copy `.env.sample` to `.env`. **None of these are required to boot** — set the
+ones whose feature you use. A missing key surfaces when that feature runs: the
+built-in tools raise their own clear error at call time, and the model provider
+raises a key-named error when the agent is built.
+
+## Provider / tool keys
+
+| Env var | Purpose |
+|---|---|
+| `OPENAI_API_KEY` | Default `openai:gpt-5.4` model. Skip it if you pass your own model. |
+| `LINKUP_API_KEY` | Built-in `web_search` tool. |
+| `TAVILY_API_KEY` | Built-in `fetch` tool. |
+| `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` | Tracing (optional). |
+| `LANGFUSE_HOST` | Optional Langfuse host override. |
+
+## Platform connection
+
+| Env var | Purpose |
+|---|---|
+| `HEXGATE_API_KEY` | `fty_live_…` / `fty_test_…` token. Wakes up the platform path; without it, adapters and `load_agent` fall back to local / builtin resolution. |
+| `HEXGATE_API_URL` | Platform endpoint. Defaults to Hexgate Cloud (`https://app.hexgate.ai`). Set to `http://localhost:8000` only when self-hosting locally — the key must be minted by whichever platform this points at. |
+
+The key and the URL are coupled: a `fty_live_…` key only verifies against the
+platform instance that minted it.
+
+## Policy-bundle enforcement
+
+All optional — see [WASM bundles](/policy/wasm-bundles) and
+[local override](/policy/local-override).
+
+| Env var | Purpose |
+|---|---|
+| `HEXGATE_LOCAL_POLICY` | Path to a bundle directory **or** a `policy.yaml`; routes enforcement through the WASM engine and hot-reloads on save. |
+| `HEXGATE_BUNDLE_PUBKEY_PATH` | base64url Ed25519 public key used to verify a bundle's signature. |
+| `HEXGATE_BUNDLE_SIGN_KEY_PATH` | base64url Ed25519 private key used to sign locally-compiled yaml sources (so `bundle.is_signed` is True). |
+| `HEXGATE_BUNDLE_REQUIRE_SIGNATURE` | `true` to refuse unsigned or unverifiable bundles (default: warn only). |
+| `HEXGATE_OPA_BIN` | Override the `opa` binary location (default: search `PATH`). |
+
+## Self-hosted platform (control plane)
+
+Read from the real environment or `platform/api/.env`. See
+[control plane](/platform/control-plane) and [email](/platform/email).
+
+| Env var | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres DSN. Unset → local SQLite. Bare `postgres://` URLs are normalized to the `asyncpg` driver. |
+| `RESEND_API_KEY` | Resend API key — enables `ResendEmailSender` when paired with `HEXGATE_EMAIL_FROM`. |
+| `HEXGATE_EMAIL_FROM` | From-address on a verified Resend domain, e.g. `"Hexgate <noreply@yourdomain.com>"`. |
+| `HEXGATE_DASHBOARD_URL` | Link host embedded inside verification / reset emails. |

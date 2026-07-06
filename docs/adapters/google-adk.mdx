@@ -4,26 +4,102 @@ description: "HexgateRunner — wraps google.adk.runners.Runner with policy + ob
 ---
 
 <Note>
-**Page stub.** Full content lives in the
-[README — Google ADK](https://github.com/HexamindOrganisation/hexgate#google-adk--hexgaterunner).
+New to the adapters? Start with the [wrapping overview and comparison
+table](/adapters/openai#overview-how-framework-wrapping-works).
 </Note>
 
-## TL;DR
+The Google ADK wrapper exposes its own `HexgateRunner`. It's constructed up front
+with the agent, app name, and session service (mirroring the ADK `Runner`
+constructor) — the underlying ADK `Runner` is built once and reused since role
+resolution happens at call time. `run` / `run_async` then yield ADK events.
 
 ```python
-from hexgate.adapters.google import HexgateRunner
+import asyncio
+from datetime import datetime
+
+from dotenv import load_dotenv
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
+
 from hexgate.runtime import User
+from hexgate.adapters.google import HexgateRunner
 
-runner = HexgateRunner(
-    agent=agent,
-    app_name="my-app",
-    session_service=InMemorySessionService(),
-)
 
-async for event in runner.run_async(new_message=msg, user=User(user_id="alice", role="user")):
-    ...
+def get_weather(city: str) -> str:
+    """Get the current weather for a given city."""
+    return f"{city}: sunny, 23°C, humidity 50%, wind 10 m/s"
+
+
+def get_current_time() -> str:
+    """Return the current local time as an ISO-8601 string."""
+    return datetime.now().isoformat()
+
+
+async def main():
+    load_dotenv()
+
+    agent = Agent(
+        name="google_runner_example_agent",
+        model=LiteLlm(model="openai/gpt-4o"),
+        instruction="Use get_current_time and get_weather when asked.",
+        tools=[get_current_time, get_weather],
+    )
+
+    user = User(user_id="google_user_1", session_id="google_session_1", role="user")
+
+    session_service = InMemorySessionService()
+    await session_service.create_session(
+        app_name="google_runner_example",
+        user_id=user.user_id,
+        session_id=user.session_id,
+    )
+
+    runner = HexgateRunner(
+        agent=agent,
+        app_name="google_runner_example",
+        session_service=session_service,
+    )  # picks up HEXGATE_API_KEY from env
+
+    user_msg = types.Content(
+        role="user", parts=[types.Part(text="What is the weather in New Delhi?")]
+    )
+
+    async for event in runner.run_async(new_message=user_msg, user=user):
+        if event.is_final_response():
+            print(event.content.parts[0].text)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-Wraps `google.adk.runners.Runner` once at construction. Tool execution stays in
-the calling thread's contextvar scope (PR #30 fixed a worker-thread leak that
-dropped the User role at tool-call sites).
+## Under the hood
+
+- At construction, `HexgateRunner` calls `wrap_google_agent`, which builds a
+  `PolicySet`, constructs one `PolicyEnforcer`, and returns
+  `agent.model_copy(update={"tools": guarded_tools})` — your original `agent` is
+  untouched.
+- Each tool is normalized first: bare callables in `agent.tools` are wrapped into
+  `FunctionTool` (matching what ADK does internally) so the guard has a stable
+  `BaseTool` surface. Each tool is then `copy.copy`'d and its `run_async` replaced
+  with an enforcer-gated version.
+- Each `run` / `run_async` call opens a `User` scope (`user.sync_scope()` /
+  `async with user:`) and dispatches to the cached underlying `Runner`. On
+  non-allow, the guard returns `decision.as_error_message()` so the ADK runtime
+  forwards it to the model as the tool output instead of aborting the run.
+- Observability is set up lazily on each call: `GoogleADKInstrumentor().instrument()`
+  plus `nest_asyncio.apply()` (ADK's runner spins its own loop), and the run
+  executes inside `propagate_attributes(user_id=..., session_id=...,
+  metadata={"user_role": ...}, tags=["google.runner.run.<agent_name>"])`.
+
+<Note>
+Tool execution stays in the calling thread's contextvar scope (PR #30 fixed a
+worker-thread leak that previously dropped the `User` role at tool-call sites).
+</Note>
+
+## Runnable example
+
+`examples/google_demo.py` — `HexgateRunner` (Google ADK) end-to-end with
+`InMemorySessionService`.

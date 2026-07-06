@@ -3,16 +3,64 @@ title: "hexgate register"
 description: "Push a manifest to the platform."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — hexgate register](https://github.com/HexamindOrganisation/hexgate#hexgate-register--push-a-manifest-to-the-platform).
-</Note>
+Register a code-defined agent's manifest with the Hexgate platform. `--agent`
+takes a Python import path of the form `module.path:attribute`, the same shape as
+ASGI/WSGI entrypoints. The CLI imports the module, grabs the agent object, and
+POSTs its manifest to `${HEXGATE_API_URL}/v1/agents` using `${HEXGATE_API_KEY}`
+as the bearer token.
 
 ```bash
 hexgate register --agent examples.customer_bot:agent
 hexgate register --agent my_app.agents:my_agent --description "Customer support bot"
 ```
 
-`--agent` takes a Python import path `module.path:attribute`. The CLI imports
-the module, grabs the agent object, and POSTs its manifest to
-`${HEXGATE_API_URL}/v1/agents` using `${HEXGATE_API_KEY}` as the bearer token.
+On first register, the platform auto-generates a starter role-aware policy from
+the manifest's tool list (`read_only` mixin + `default` + `member` + `admin`) and
+signs a WASM bundle so `hexgate serve` runs against real enforcement from the
+first request. Edit the policy in the dashboard's `/policies` page; subsequent
+re-registers preserve those edits — only the manifest snapshot grows.
+
+## LangGraph compiled graphs
+
+LangGraph compiled graphs don't expose their tool nodes — nor the model or system
+prompt baked into them — after compilation, so when registering one you pass each
+of those pieces explicitly. Only `--tools` is required; `--model` and
+`--system-prompt` just populate the matching manifest fields so the dashboard can
+show them:
+
+```bash
+hexgate register \
+    --agent my_app.agents:graph \
+    --tools my_app.tools:my_tools \
+    --model gpt-4o-mini \
+    --system-prompt prompts/support.md
+```
+
+For everyone else — agents built with `hexgate.create_agent(...)`, OpenAI Agents,
+Pydantic AI, Google ADK — the manifest reads tools, model, and system prompt
+directly off the object. No flags needed.
+
+`--system-prompt` accepts either a literal string or a path to a `.md` / `.txt` /
+`.jinja` file (read as text at register time).
+
+**Supported frameworks:** OpenAI Agents SDK, Google ADK, Pydantic AI,
+LangChain/LangGraph, Hexgate agents.
+
+## Build a manifest programmatically — `create_manifest`
+
+If you need the manifest object without POSTing it — to inspect it, persist it
+elsewhere, diff it across versions, or wire it into a custom registration flow —
+call `create_manifest` directly:
+
+```python
+from hexgate import create_manifest
+
+manifest = create_manifest(agent, description="Customer support bot")
+print(manifest.model_dump())
+```
+
+`create_manifest` dispatches on the framework of `agent` (the same set `hexgate
+register` accepts). For LangGraph you must pass `tools=` explicitly, and may pass
+`model=` / `system_prompt=`. The return value is an `AgentManifest` (a Pydantic
+model, re-exported from `hexgate`) — the same schema the platform stores and the
+dashboard renders.

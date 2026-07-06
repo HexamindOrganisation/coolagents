@@ -3,20 +3,60 @@ title: "Control plane (FastAPI)"
 description: "REST + WebSocket endpoints, SQLite by default."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Backend (platform/api/)](https://github.com/HexamindOrganisation/hexgate#backend-platformapi).
-</Note>
+FastAPI over SQLite. Run with:
 
 ```bash
 cd platform/api
 uv run uvicorn hexgate_api.main:app --reload --port 8000
 ```
 
-Endpoints:
+The default `support-bot` project is seeded on first boot with two agents —
+`default` (broad access, side-effects gated by `approval_required`) and
+`read_only` (everything mutating denied).
 
-- `POST /v1/projects/:id/tokens` — mint a dev token
-- `GET /v1/projects/:id/agents` — list agents
+## Endpoints
+
+- `POST /v1/projects/:id/tokens` — mint a dev token (returned in full once)
+- `GET /v1/projects/:id/tokens` — list dev tokens (masked)
+- `DELETE /v1/projects/:id/tokens/:tid` — revoke
+- `GET /v1/projects/:id/agents` — list agents with their YAMLs
+- `GET /v1/projects/:id/agents/:name` — read one agent
 - `PUT /v1/projects/:id/agents/:name` — save agent / policy / system YAMLs
 - `WS /v1/projects/:id/serve` — producer socket (the `hexgate serve` CLI dials here)
-- `WS /v1/projects/:id/chat` — consumer socket (dashboard Playground dials here)
+- `WS /v1/projects/:id/chat` — consumer socket (the dashboard Playground dials here)
+
+The SQLite DB lives at `platform/api/hexgate.db`. Delete it and restart to wipe
+state.
+
+## Database — SQLite or Postgres
+
+`make platform-api` uses a local **SQLite** file — zero setup, fine for dev and
+the test suite. Set `DATABASE_URL` to run on **Postgres** instead (what
+deployments use); bare `postgres://` URLs are normalized to the `asyncpg` driver.
+A local Postgres is in the dev compose:
+
+```bash
+make platform-api-pg      # starts Postgres (Docker) + runs the API against it
+# equivalent to:
+make postgres-up          # start Postgres, wait until healthy
+DATABASE_URL=postgresql+asyncpg://hexgate:hexgate-dev-password@localhost:5433/hexgate make platform-api
+make postgres-reset       # wipe ONLY the Postgres data volume
+```
+
+<Note>
+**No migration system.** The schema is created with `create_all`, so a model
+change means resetting the volume (`make postgres-reset`), not migrating — data
+is treated as disposable. A managed Postgres (e.g. Scaleway) needs SSL in the
+DSN, e.g. `…/hexgate?ssl=require`.
+</Note>
+
+`DATABASE_URL` is read from the real environment or `platform/api/.env`. The
+opt-in `tests/test_postgres_smoke.py` is the only test that exercises the Postgres
+path (the rest run on SQLite); it runs when `DATABASE_URL` points at Postgres.
+
+## Readiness
+
+Once both `make clickhouse-up` and `make platform-api` are running, `GET /ready`
+reports `"clickhouse": "ok"` (the `/health` liveness probe stays
+dependency-free). See [Audit log](/platform/audit-clickhouse) for the ingest
+endpoint.

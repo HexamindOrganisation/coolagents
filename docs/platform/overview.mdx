@@ -3,17 +3,56 @@ title: "Platform overview"
 description: "FastAPI control plane + React dashboard + ClickHouse audit."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Hexgate Platform](https://github.com/HexamindOrganisation/hexgate#-hexgate-platform).
-</Note>
-
-The platform is an optional control plane that hosts agent definitions, dev
+The platform is an **optional** control plane that hosts agent definitions, dev
 tokens, and a live debug surface. The SDK works fully without it
-(`load_local_agent`, `load_builtin_agent` keep their semantics) — but with it
-you get:
+(`load_local_agent`, `load_builtin_agent` keep their semantics) — but with it you
+get:
 
-- A web dashboard for editing agent YAMLs and viewing the project graph
+- A web [dashboard](/platform/dashboard) for editing agent YAMLs and viewing the project graph
 - Mintable dev tokens (`fty_test_*`, `fty_live_*`) that authenticate the SDK
 - A live Playground that streams tool calls and decisions from your running agent
-- Turn-level policy refresh — edit YAML in the UI, the next chat picks it up
+- **Turn-level policy refresh** — edit YAML in the UI, the next chat picks it up
+
+## Run it locally — three terminals
+
+```bash
+make demo-platform     # prints the 3-terminal recipe below
+```
+
+```bash
+# Terminal 1 — backend (FastAPI + SQLite on :8000)
+make platform-api
+
+# Terminal 2 — dashboard (Vite + React on :5173)
+make dashboard
+
+# Terminal 3 — mint a token, then serve your local agent
+#   1. Open http://localhost:5173/tokens, click "Mint new token", copy the value.
+#   2. Add to your .env:  HEXGATE_API_KEY=fty_live_...
+#   3. Pick the agent's Python entrypoint (module:attr — uvicorn-style):
+make serve                                          # default — examples.customer_bot:agent
+# or, for a different agent:
+uv run hexgate serve my_app.agents:my_agent
+```
+
+First-time setup (each sub-project has its own deps):
+
+```bash
+make platform-api-install   # uv sync inside platform/api/
+make dashboard-install      # pnpm install inside platform/dashboard/
+```
+
+Then open `http://localhost:5173/playground` — type a message, watch the live
+stream of tool calls and policy decisions from your local agent.
+
+On first serve, [`hexgate serve`](/cli/serve) auto-registers the agent's manifest
+(the server generates a starter role-aware policy from the tool list). Subsequent
+serves short-circuit if the manifest hasn't changed; pass `--no-auto-register`
+for CI / deliberate-deployment flows.
+
+## The pieces
+
+- [Control plane (FastAPI)](/platform/control-plane) — REST + WebSocket endpoints, SQLite or Postgres.
+- [Dashboard](/platform/dashboard) — Vite + React policy editor, Playground, tokens.
+- [Audit log (ClickHouse)](/platform/audit-clickhouse) — persisted decisions for the audit page.
+- [Outbound email (Resend)](/platform/email) — verification + password-reset delivery.
