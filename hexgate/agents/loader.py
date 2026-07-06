@@ -34,6 +34,7 @@ from hexgate.tools import (
     read_file,
     write_file,
 )
+from hexgate.tools._relocated import RELOCATED_TOOLS as _RELOCATED_TOOLS
 from hexgate.tracing.langfuse import CallbackHandler
 
 BUILTIN_TOOLS = {
@@ -45,14 +46,10 @@ BUILTIN_TOOLS = {
     "write_file": write_file,
 }
 
-# Tools that used to ship in BUILTIN_TOOLS and now live in examples/. Referenced
-# only to turn an opaque KeyError into an actionable "pass it via extra_tools"
-# hint when an older agent.yaml still lists one of them.
-_RELOCATED_TOOLS = {
-    "web_search": "examples/tools/websearch.py",
-    "fetch": "examples/tools/fetch.py",
-    "refund_order": "examples/tools/refund.py",
-}
+# ``_RELOCATED_TOOLS`` (imported above) maps tools that used to ship in
+# BUILTIN_TOOLS to their new home under examples/. Used here only to turn an
+# opaque KeyError into an actionable "pass it via extra_tools" hint when an
+# older agent.yaml still lists one of them.
 AgentSource = Literal["local", "registered"]
 AgentFactory: TypeAlias = Callable[..., tuple[AgentGraph, CallbackHandler]]
 REGISTERED_AGENTS: dict[str, AgentFactory] = {}

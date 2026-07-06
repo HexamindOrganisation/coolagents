@@ -13,3 +13,11 @@ __all__ = [
     "read_file",
     "write_file",
 ]
+
+
+def __getattr__(name: str) -> object:
+    from hexgate.tools._relocated import RELOCATED_TOOLS, relocated_import_error
+
+    if name in RELOCATED_TOOLS:
+        raise relocated_import_error(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
