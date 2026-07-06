@@ -99,6 +99,10 @@ export function buildOverviewGraph(
         name: view.name,
         model: view.model,
         toolCount: view.tools.length,
+        // Broken-policy signal — the AgentNode component can surface
+        // this as a warning marker instead of the caller thinking the
+        // fail-closed empty policy is the operator's real one.
+        policyParseFailed: view.policyParseFailed,
       },
       draggable: false,
     });
@@ -115,7 +119,11 @@ export function buildOverviewGraph(
       },
     });
 
-    // agent → tools
+    // agent → tools. Skip when policy_yaml couldn't parse — otherwise
+    // every edge would draw deny (from the fail-closed empty policy)
+    // and tell an operator with a transient YAML typo that their real
+    // policy is broken.
+    if (view.policyParseFailed) return;
     for (const toolName of view.tools) {
       const mode = effectiveMode(view, toolName);
       edges.push({
@@ -134,9 +142,11 @@ export function buildOverviewGraph(
     // Determine the "worst" mode for the left strip on the tool node.
     // Shares MODE_STRENGTH ordering with parsePolicy's cross-role merge
     // via the exported worstMode helper — one source of truth for
-    // "which mode wins when they disagree."
+    // "which mode wins when they disagree." Skip agents whose policy
+    // failed to parse — their fail-closed empty policy would return
+    // deny for every tool and poison the aggregate.
     const modesForTool: Mode[] = agentViews
-      .filter((v) => v.tools.includes(toolName))
+      .filter((v) => !v.policyParseFailed && v.tools.includes(toolName))
       .map((v) => effectiveMode(v, toolName));
     const mode = worstMode(modesForTool) ?? "default";
     nodes.push({

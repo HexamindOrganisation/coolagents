@@ -168,4 +168,71 @@ describe("buildOverviewGraph — manifest-fed tools unblock code-registered agen
       warnSpy.mockRestore();
     }
   });
+
+  it("skips tool edges when the agent's policy_yaml won't parse", () => {
+    // Post-review regression: rendering a parse-failed agent against
+    // the fail-closed empty policy caused every tool edge to draw in
+    // deny styling, telling the operator their real policy was
+    // rejecting everything when the real problem was a YAML parse
+    // error. Graph now skips the tool-edge loop for parse-failed
+    // agents; the agent node still appears (carrying the
+    // policyParseFailed flag) so the operator can spot + fix it in
+    // the Policies editor.
+    const broken = {
+      name: "broken_bot",
+      agent_yaml: "",
+      policy_yaml: ":::garbage yaml",
+    } as unknown as AgentRead;
+    const graph = buildOverviewGraph(
+      [broken],
+      [manifestFor("broken_bot", ["web_search", "fetch"])],
+    );
+
+    expect(graph.agentViews).toHaveLength(1);
+    expect(graph.agentViews[0].policyParseFailed).toBe(true);
+    // Agent node exists, carries the flag for the UI to render a warning.
+    const agentNode = graph.nodes.find((n) => n.id === "agent:broken_bot");
+    expect(agentNode).toBeDefined();
+    expect(
+      (agentNode!.data as { policyParseFailed?: boolean }).policyParseFailed,
+    ).toBe(true);
+    // No tool edges emitted from this agent — misleading deny paint
+    // suppressed at the source.
+    expect(graph.edges.filter((e) => e.source === "agent:broken_bot")).toEqual(
+      [],
+    );
+  });
+
+  it("excludes parse-failed agents from the tool-node worst-case aggregate", () => {
+    // The tool-node's left strip encodes worst-case mode across every
+    // agent that references it. If we let a parse-failed agent's
+    // fail-closed empty policy contribute, every shared tool would
+    // display deny — poisoning the aggregate for well-formed agents
+    // that also reference the same tool. Filter the parse-failed ones
+    // out of the aggregate.
+    const ok = {
+      name: "ok_bot",
+      agent_yaml: "",
+      policy_yaml: FLAT_POLICY,
+    } as unknown as AgentRead;
+    const broken = {
+      name: "broken_bot",
+      agent_yaml: "",
+      policy_yaml: ":::garbage",
+    } as unknown as AgentRead;
+    const graph = buildOverviewGraph(
+      [ok, broken],
+      [
+        manifestFor("ok_bot", ["web_search"]),
+        manifestFor("broken_bot", ["web_search"]),
+      ],
+    );
+
+    const toolNode = graph.nodes.find((n) => n.id === "tool:web_search");
+    expect(toolNode).toBeDefined();
+    // FLAT_POLICY has web_search: allow, so the well-formed agent's
+    // vote should win — the parse-failed one's fail-closed deny would
+    // overpower it if it weren't filtered.
+    expect((toolNode!.data as { mode: string }).mode).toBe("allow");
+  });
 });

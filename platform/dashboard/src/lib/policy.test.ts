@@ -699,4 +699,47 @@ describe("buildAgentView — manifest as source of truth", () => {
       buildAgentView(agent({ yaml: "name: x", policy: ":::garbage" })),
     ).toBeNull();
   });
+
+  it("marks policyParseFailed and suppresses missingInPolicy on parse failure", () => {
+    // Post-post-review regression: the first fix rendered a
+    // parse-failed agent against the fail-closed empty policy, which
+    // then landed every tool in `missingInPolicy` and painted every
+    // edge deny — misleading the operator into rewriting a policy
+    // that was actually just mid-typing. AgentView now carries
+    // `policyParseFailed` so graph consumers can render a distinct
+    // broken-policy state, and `missingInPolicy` is empty so no false
+    // "your policy doesn't cover these tools" story is told.
+    const view = buildAgentView(
+      agent({ yaml: "", policy: ":::garbage yaml" }),
+      { model: "gpt-5.4", tools: [{ name: "web_search" }, { name: "fetch" }] },
+    );
+    expect(view).not.toBeNull();
+    expect(view!.policyParseFailed).toBe(true);
+    // Suppressed — otherwise both tools would be flagged as unpoliced
+    // when the real problem is a YAML parse error.
+    expect(view!.missingInPolicy).toEqual([]);
+  });
+
+  it("policyParseFailed is false for a well-formed policy", () => {
+    // Sanity: normal agents don't accidentally get flagged as broken.
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), {
+      model: "gpt-5.4",
+      tools: [{ name: "web_search" }],
+    });
+    expect(view!.policyParseFailed).toBe(false);
+  });
+
+  it("degrades gracefully when manifest.tools is not an array", () => {
+    // Post-post-review regression: a manifest whose `.tools` field
+    // arrives null or non-array (backend serialization bug, partial
+    // record) used to throw TypeError from .map inside the useMemo,
+    // tearing down the entire Graph page. Now the Array.isArray guard
+    // degrades to an empty tool list — the agent still renders.
+    const view = buildAgentView(agent({ yaml: "", policy: FLAT_POLICY }), {
+      model: "gpt-5.4",
+      tools: null as unknown as { name: string }[],
+    });
+    expect(view).not.toBeNull();
+    expect(view!.tools).toEqual([]);
+  });
 });

@@ -55,6 +55,14 @@ export interface AgentView {
   /** Tools that appear in agent.yaml but have no policy entry (neither
    *  at flat top level nor in any role) → default_policy applies. */
   missingInPolicy: string[];
+  /** True when ``policy_yaml`` couldn't be parsed. The ``policy`` field
+   *  above is then a fail-closed placeholder (default_policy=deny, no
+   *  tools, no roles) — do NOT render it as if it were the operator's
+   *  policy: every tool would appear as denied + missing-in-policy,
+   *  which is a strictly wrong story to tell about a transient YAML
+   *  parse error. Graph consumers should render the agent node with a
+   *  broken-policy marker and skip tool edges. */
+  policyParseFailed: boolean;
 }
 
 function isMode(x: unknown): x is Mode {
@@ -364,7 +372,15 @@ export function buildAgentView(
     // Registered agent with a persisted manifest — the common case.
     name = agent.name;
     model = manifestInfo.model ?? "";
-    tools = manifestInfo.tools.map((t) => String(t?.name ?? ""));
+    // ``Array.isArray`` guard: a manifest whose ``tools`` field arrives
+    // null or non-array (backend serialization bug, partial record,
+    // schema drift) used to blow up ``.map`` inside the ``useMemo`` and
+    // tear down the whole Graph page. Degrade to an empty tool list
+    // instead — the agent still renders and the operator can see it
+    // exists.
+    tools = Array.isArray(manifestInfo.tools)
+      ? manifestInfo.tools.map((t) => String(t?.name ?? ""))
+      : [];
   } else if (manifestInfo === null) {
     // Registered agent whose latest AgentVersion has no manifest yet.
     // Render as a bare node so the operator sees the agent exists —
@@ -398,14 +414,22 @@ export function buildAgentView(
   // registers tools from agent.tools (the SDK-decorated functions);
   // policy just gates them. Including role-only tools here would draw
   // phantom capability edges on the graph.
+  const policyParseFailed = parsedPolicy === null;
   const merged = mergedTools(effectivePolicy);
-  const missingInPolicy = tools.filter((t) => !(t in merged));
+  // Suppress the "missing in policy" list when the policy itself failed
+  // to parse — otherwise every manifest tool would land in there and
+  // paint the graph as fully-denied, misleading the operator into
+  // rewriting a policy that was actually fine (mid-typing YAML, etc.).
+  const missingInPolicy = policyParseFailed
+    ? []
+    : tools.filter((t) => !(t in merged));
   return {
     name,
     model,
     tools,
     policy: effectivePolicy,
     missingInPolicy,
+    policyParseFailed,
   };
 }
 

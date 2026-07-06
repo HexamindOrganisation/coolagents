@@ -33,17 +33,24 @@ export function GraphPage() {
     enabled: !!scope.projectId,
   });
 
-  // Wait for the manifests query to settle (success OR error) before
-  // building — otherwise a background refetch (post-register invalidate,
-  // window-focus refetch) would run the memo with the OLD manifests.data
-  // paired with the NEW agents.data. A code-registered agent freshly
+  // Wait for the manifests query to settle before building — otherwise
+  // a background refetch (post-register invalidate, window-focus
+  // refetch) would run the memo with the OLD manifests.data paired
+  // with the NEW agents.data, and a code-registered agent freshly
   // added in the invalidate cycle would flicker as missing from the
-  // graph until the manifests query catches up. On the isError branch we
-  // build with manifests.data === undefined intentionally — legacy
-  // agents still render and the banner below surfaces the failure so
-  // the user isn't left staring at an empty graph with no explanation.
+  // graph until manifests catches up.
+  //
+  // The `dataUpdatedAt` timestamps are what catches the refetch race —
+  // an earlier version gated on `manifests.data === undefined`, which
+  // is only true on the FIRST fetch, so a background refetch with a
+  // stale cached array slipped past the guard. Comparing the two
+  // update timestamps holds the memo whenever agents is "newer" than
+  // manifests and manifests is trying to catch up.
   const graphBuildBlocked =
-    manifests.isFetching && !manifests.isError && manifests.data === undefined;
+    manifests.isFetching &&
+    !manifests.isError &&
+    (manifests.data === undefined ||
+      manifests.dataUpdatedAt < agents.dataUpdatedAt);
 
   const { nodes, edges, agentViews } = useMemo(() => {
     if (!agents.data) return { nodes: [], edges: [], agentViews: [] };
@@ -54,6 +61,20 @@ export function GraphPage() {
   if (scope.status === "no-project") {
     return <NoProjectEmptyState resource="graph" />;
   }
+
+  // Only surface the manifest-load banner when there is genuinely no
+  // cached data to fall back to. React Query keeps the last-good array
+  // on refetch failure, so a good load followed by a background 500
+  // still renders a complete graph — showing the red banner in that
+  // case would be a false alarm that erodes trust.
+  const showManifestError = manifests.isError && manifests.data === undefined;
+  // Distinguish "no agents in this project" from "agents exist but
+  // couldn't render because manifests failed to load and every agent
+  // is code-registered (empty agent_yaml)." Two contradictory messages
+  // ("No agents yet" + error banner) confused the user; this splits
+  // them into one honest empty-state per case.
+  const agentsExistButBlocked =
+    showManifestError && (agents.data?.length ?? 0) > 0;
 
   return (
     <div className="-mx-8 -my-6 h-[calc(100vh-56px)] flex flex-col">
@@ -74,11 +95,7 @@ export function GraphPage() {
         </div>
       </div>
 
-      {/* Surface manifest-query failure explicitly. Without this, a 500
-          on listAgentManifests would silently drop every code-registered
-          agent and the user would see "No agents yet" with no error — the
-          exact bug this PR aimed to fix. */}
-      {manifests.isError && (
+      {showManifestError && (
         <div className="flex items-center gap-2 px-8 py-2 text-xs bg-deny/5 border-b border-deny/30 text-deny">
           <AlertTriangle className="size-3.5 shrink-0" />
           <span>
@@ -94,8 +111,10 @@ export function GraphPage() {
             Loading…
           </div>
         ) : agentViews.length === 0 ? (
-          <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-            No agents yet.
+          <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground text-center px-8">
+            {agentsExistButBlocked
+              ? "Agents exist in this project, but the manifests endpoint failed so they can't be drawn. Refresh to retry."
+              : "No agents yet."}
           </div>
         ) : (
           <ReactFlow
