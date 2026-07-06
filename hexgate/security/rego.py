@@ -673,8 +673,7 @@ def _ordered_cmp_rego(
     # Only reachable at the top level (quant bodies compare against a literal).
     if elem_var is not None:
         raise PolicySetError(
-            "cross-field ordered comparison inside a quantifier body is not "
-            "supported"
+            "cross-field ordered comparison inside a quantifier body is not supported"
         )
     name = f"_ord_{_node_hash(node)}"
     if name not in helpers:
