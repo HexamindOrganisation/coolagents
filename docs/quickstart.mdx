@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Install hexgate and watch a role + arguments decide a tool call — no API keys."
+description: "Watch a role + arguments decide a tool call — first offline, then in your own agent."
 ---
 
 <Steps>
@@ -43,8 +43,8 @@ description: "Install hexgate and watch a role + arguments decide a tool call �
               - args.currency in ["USD", "EUR"]
     ```
 
-    Now ask Hexgate to decide the **same $400 refund** for each role. `hexgate
-    policy test` evaluates a policy offline — no model, no API keys:
+    Ask Hexgate to decide the **same $400 refund** for each role. `hexgate policy
+    test` evaluates a policy offline — no model, no API keys:
 
     ```bash
     hexgate policy test policy.yaml --role support \
@@ -57,47 +57,59 @@ description: "Install hexgate and watch a role + arguments decide a tool call �
     # ✓ ALLOW · billing → refund_order({"amount": 400, "currency": "EUR"})
     ```
 
-    Same tool, same request — **the caller's role and the arguments decide.** That
-    is the whole idea. The limits live in the policy, outside the model, so a
-    confused or prompt-injected agent can't raise its own cap. See
-    [policy YAML shape](/policy/yaml-shape) and [constraints](/policy/constraints)
-    for the full grammar.
+    Same tool, same request — **the caller's role and the arguments decide.** The
+    limits live in the policy, outside the model, so a confused or prompt-injected
+    agent can't raise its own cap.
   </Step>
 
-  <Step title="Set up environment variables">
-    To run a live agent (next step), copy the sample env and fill in the keys the
-    example agent uses:
+  <Step title="Enforce it in a live agent">
+    Now put the same policy in front of a real agent. Build one with
+    `create_agent`, apply the policy with `enforce_policy`, and run the **same
+    request** under two roles — the role comes from the `User` scope:
 
-    ```bash
-    cp .env.sample .env
+    ```python
+    import asyncio
+    from hexgate import agent_tool, create_agent, enforce_policy, stream_agent, User
+
+
+    @agent_tool(name="refund_order")
+    async def refund_order(order_id: str, amount: float, currency: str = "USD") -> str:
+        """Issue a refund against an order."""
+        return f"Refunded {amount} {currency} on {order_id}"
+
+    agent, handler = create_agent(
+        model="openai:gpt-5.4",
+        tools=[refund_order],
+        system_prompt="You are a support agent. Use refund_order to issue refunds.",
+    )
+    agent = enforce_policy(agent, "policy.yaml")   # the role-aware policy from step 2
+
+    async def refund_as(role: str):
+        print(f"\n[{role}]")
+        async with User(user_id="u-1", role=role):
+            async for event in stream_agent(agent, handler, "Refund $400 on order O-42"):
+                ...  # render events however you like
+
+    asyncio.run(refund_as("support"))   # refund_order blocked → model sees [policy_denied]
+    asyncio.run(refund_as("billing"))   # refund_order allowed → the refund runs
     ```
 
     ```bash
-    OPENAI_API_KEY=sk-...     # the default model
-    LINKUP_API_KEY=...        # the built-in web_search tool
-    TAVILY_API_KEY=...        # the built-in fetch tool
+    export OPENAI_API_KEY=sk-...
+    python support_demo.py
     ```
 
-    None are required to boot — each is only read when you invoke the piece that
-    uses it. See the [environment reference](/reference/environment).
-  </Step>
-
-  <Step title="Run the chat REPL">
-    ```bash
-    hexgate chat --agent example_agent
-    ```
-
-    A single-process REPL with policy decisions rendered inline — denies and
-    approval-required calls show up as panels in the terminal. `hexgate chat` sets
-    `HEXGATE_LOCAL_MODE=1` automatically, so audit stays on your machine.
+    Same agent, same request — under `support` the model's `refund_order($400)`
+    call is **blocked** by the policy (over the $50 cap) and it receives a
+    `[policy_denied]` marker it can recover from; under `billing` it goes through.
+    That's `enforce_policy` + the per-call `User` doing the work — no platform, no
+    extra services.
 
     <Note>
-    The bundled `example_agent` uses a deliberately permissive policy (it just
-    allows `web_search` + `fetch`) so the first run is friction-free. To watch
-    role-based enforcement in a live agent, attach a role-aware policy with
-    [`HEXGATE_LOCAL_POLICY`](/policy/local-override) and run under a
-    [`User` scope](/concepts/user-scope), or explore the vertical examples in
-    `examples/` (`demo_policy.yaml`, `healthcare_policy.yaml`, `hr_policy.yaml`).
+    **Already have an agent?** You don't rewrite it — you wrap it. An OpenAI Agents
+    SDK / LangChain / Google ADK / Pydantic AI agent is gated with a single
+    adapter call (e.g. `HexgateRunner` is a drop-in for `agents.Runner`). See
+    [Framework adapters](/adapters/openai).
     </Note>
   </Step>
 </Steps>
@@ -105,22 +117,22 @@ description: "Install hexgate and watch a role + arguments decide a tool call �
 ## Next steps
 
 <CardGroup cols={2}>
+  <Card title="Wrap your framework's agent" icon="puzzle-piece" href="/adapters/openai">
+    OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI — same one-wrapper pattern.
+  </Card>
   <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
     Roles, tools, modes, argument constraints, inheritance — the full spec.
   </Card>
   <Card title="User scope + roles" icon="user" href="/concepts/user-scope">
     How the end user's identity + role reach the decision at call time.
   </Card>
-  <Card title="Wrap an existing agent" icon="puzzle-piece" href="/adapters/openai">
-    Got an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent? Wrap it once.
-  </Card>
-  <Card title="Pick a path" icon="route" href="/two-paths">
-    Local `hexgate chat` vs platform-backed `hexgate serve` — decide here.
+  <Card title="Try the terminal REPL" icon="terminal" href="/cli/chat">
+    `hexgate chat --agent example_agent` — a local agent with inline decision panels.
   </Card>
   <Card title="Go remote with Hexgate Cloud" icon="cloud" href="/platform/hosted">
     Remote policy enforcement + audit with zero infra — get a key, set one env var.
   </Card>
-  <Card title="Try the live demo" icon="play" href="/platform/live-demo">
-    Edit an agent and chat with it in your browser — no install. Bring your own key.
+  <Card title="Pick a path" icon="route" href="/two-paths">
+    Local `hexgate chat` vs platform-backed `hexgate serve` — decide here.
   </Card>
 </CardGroup>
