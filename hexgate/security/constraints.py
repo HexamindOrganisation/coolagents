@@ -30,9 +30,10 @@ Grammar (PEG-ish, single line per constraint):
     IDENT        := [a-zA-Z_][a-zA-Z_0-9]*
 
 For ``in`` / ``not in`` the right-hand side must be a list *literal*.
-A bare identifier on the right is a field reference (cross-field, 2a), so a
-forgotten-quotes typo (``== USD``) reads as a ref to an (absent) field and
-fails closed rather than erroring. ``matches`` is an RE2 regex and is
+A *dotted* identifier is a field reference (cross-field, 2a: ``args.max``); a
+*bare* identifier is rejected unless it's a fact (``role`` / ``tool``), so a
+forgotten-quotes typo (``== USD``) errors at load instead of silently reading
+as a ref to an absent field. ``matches`` is an RE2 regex and is
 *unanchored* — use ``^…$`` for a full-string match. ``.`` is the current
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
@@ -234,13 +235,22 @@ _CONST_RE = re.compile(r"^consts\.([a-zA-Z_][a-zA-Z_0-9]*)$")
 _ELEM_KEY = "$elem"
 _CONSTS_KEY = "$consts"
 _JSON_KEYWORDS = ("true", "false", "null")
+# Call-scope facts usable as a bare (undotted) identifier. Every other bare
+# word is either a field (must be dotted, e.g. args.x) or a forgotten-quotes
+# string — so a lone non-fact identifier is rejected rather than read as a ref.
+_FACTS = ("role", "tool")
 
 _FUNCS = ("startswith", "endswith", "contains", "matches")
 _FUNC_RE = re.compile(r"^([a-z]+)\((.*)\)$", re.DOTALL)
-# RE2 (Go regexp, what Rego runs) lacks backreferences and lookaround; reject
-# them so a pattern can't evaluate one way in pydantic (Python re) and another
-# in a WASM bundle.
-_RE2_INCOMPATIBLE = re.compile(r"\\[1-9]|\(\?[=!]|\(\?<[=!]")
+# RE2 (Go regexp, what Rego runs) lacks several constructs Python's `re`
+# accepts; reject them so a pattern can't evaluate one way in pydantic and
+# another (or undefined → deny) in a WASM bundle. Verified against `opa eval`:
+# each of these is undefined under RE2 while Python matches.
+#   \1..\9        numeric backreference        (?P=name)  named backreference
+#   (?=..)(?!..)  lookahead                    (?<=)(?<!) lookbehind
+#   \Z            Python end-anchor (RE2 uses \z, rejects \Z)
+#   (?#..)        inline comment               (?(..)..)  conditional
+_RE2_INCOMPATIBLE = re.compile(r"\\[1-9]|\\Z|\(\?[=!]|\(\?<[=!]|\(\?P=|\(\?#|\(\?\(")
 
 
 @lru_cache(maxsize=2048)
@@ -439,7 +449,17 @@ def _parse_operand(text: str, source: str, side: str) -> Operand:
         return Count(Ref(_parse_path(m.group(1).strip(), source)))
 
     if (text[0].isalpha() or text[0] == "_") and text not in _JSON_KEYWORDS:
-        return Ref(_parse_path(text, source))
+        path = _parse_path(text, source)
+        # A lone identifier is only valid as a fact (role/tool); anything else
+        # is a forgotten-quotes typo (`== USD`) that would otherwise parse as a
+        # ref to an absent field and fail closed with no config-time error.
+        if len(path) == 1 and path[0] not in _FACTS:
+            raise ConstraintParseError(
+                f"bare identifier {text!r} in {source!r} is neither a field path "
+                f'nor a fact — did you forget quotes? Use "{text}" for a string '
+                f"or args.{text} for a field"
+            )
+        return Ref(path)
 
     try:
         return Lit(json.loads(text))
@@ -488,6 +508,31 @@ def _has_bool(node: Node) -> bool:
     if isinstance(node, Quant):
         return _has_bool(node.body)
     return False
+
+
+def iter_const_refs(node: Node):
+    """Yield every ``consts.<name>`` name reachable in a node (operands + nested).
+
+    Shared by the Rego compiler and the pydantic load path so both reject the
+    same undefined-constant references at load — see
+    :meth:`PolicySet.__init__`.
+    """
+    if isinstance(node, Cmp):
+        for operand in (node.left, node.right):
+            if isinstance(operand, ConstRef):
+                yield operand.name
+    elif isinstance(node, Call):
+        if isinstance(node.arg, ConstRef):
+            yield node.arg.name
+    elif isinstance(node, Quant):
+        if isinstance(node.ref, ConstRef):
+            yield node.ref.name
+        yield from iter_const_refs(node.body)
+    elif isinstance(node, (And, Or)):
+        for part in node.parts:
+            yield from iter_const_refs(part)
+    elif isinstance(node, Not):
+        yield from iter_const_refs(node.inner)
 
 
 def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
@@ -574,7 +619,8 @@ def _validate_re2(pattern: str, source: str) -> None:
     if _RE2_INCOMPATIBLE.search(pattern):
         raise ConstraintParseError(
             f"regex {pattern!r} in {source!r} uses features RE2 does not support "
-            "(backreferences or lookaround)"
+            "(backreferences, lookaround, \\Z anchor, inline comments, or "
+            "conditionals) — the WASM engine would diverge"
         )
 
 

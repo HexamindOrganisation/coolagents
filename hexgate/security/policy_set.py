@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from hexgate.security.constraints import iter_const_refs, parse_constraint
 from hexgate.security.decision import Verdict
 from hexgate.security.models import AgentPolicy, BaseToolPolicy, ToolPolicy
 
@@ -60,6 +61,7 @@ class PolicySet:
             raise PolicySetError(
                 f"PolicySet missing required '{DEFAULT_ROLE_NAME}' role"
             )
+        _validate_const_refs(policies)
         self._policies = policies
 
     def policy_for(self, role: str | None) -> AgentPolicy:
@@ -88,6 +90,27 @@ class PolicySet:
 
     def __repr__(self) -> str:
         return f"PolicySet(roles={self.roles!r})"
+
+
+def _validate_const_refs(policies: Mapping[str, AgentPolicy]) -> None:
+    """Reject a ``consts.<name>`` reference to a constant not defined for its role.
+
+    Runs at :class:`PolicySet` construction so the pydantic engine and the Rego
+    compiler agree on whether a policy is valid — otherwise an undefined const
+    loads cleanly and denies at runtime on pydantic, but fails the WASM build.
+    Constraints are already grammar-validated at model load; this is the
+    cross-reference check that needs the role's resolved ``consts``.
+    """
+    for role, policy in policies.items():
+        available = set(policy.consts)
+        for tool_policy in (*policy.tools.values(), policy.default_policy):
+            for raw in tool_policy.constraints:
+                for name in iter_const_refs(parse_constraint(raw)):
+                    if name not in available:
+                        raise PolicySetError(
+                            f"role {role!r}: constraint {raw!r} references "
+                            f"undefined constant consts.{name}"
+                        )
 
 
 def load_policy_set(source: str | Path | AgentPolicy | None) -> PolicySet:

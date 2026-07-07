@@ -122,8 +122,9 @@ def compile_to_rego(
 
     # Named constants become module-level ``name := value`` rules; collected
     # globally (they must be consistent across roles — see _collect_consts).
+    # Undefined-const references are already rejected by PolicySet construction
+    # (load_policy_set_from_dict above), so both engines agree on validity.
     consts = _collect_consts(policy_set)
-    _validate_const_refs(policy_set, consts)
 
     # Quantifiers register named helper rules here (keyed by name for dedup);
     # emitted after the role rules so the module stays self-contained.
@@ -159,44 +160,6 @@ def _collect_consts(policy_set: PolicySet) -> dict[str, Any]:
                 )
             merged[name] = value
     return merged
-
-
-def _validate_const_refs(policy_set: PolicySet, consts: dict[str, Any]) -> None:
-    """Reject a ``consts.<name>`` reference to an undefined constant."""
-    for role in policy_set.roles:
-        policy = policy_set.policy_for(role)
-        available = set(policy.consts)
-        tool_policies = [*policy.tools.values(), policy.default_policy]
-        for tool_policy in tool_policies:
-            for raw in tool_policy.constraints:
-                for name in _iter_const_refs(parse_constraint(raw)):
-                    if name not in available:
-                        raise PolicySetError(
-                            f"role {role!r}: constraint {raw!r} references "
-                            f"undefined constant consts.{name}"
-                        )
-    # `consts` (the global set) may legitimately be a superset; per-role checks
-    # above are what preserve pydantic/WASM parity.
-
-
-def _iter_const_refs(node: Node):
-    """Yield every ConstRef name reachable in a node (operands + nested)."""
-    if isinstance(node, Cmp):
-        for operand in (node.left, node.right):
-            if isinstance(operand, ConstRef):
-                yield operand.name
-    elif isinstance(node, Call):
-        if isinstance(node.arg, ConstRef):
-            yield node.arg.name
-    elif isinstance(node, Quant):
-        if isinstance(node.ref, ConstRef):
-            yield node.ref.name
-        yield from _iter_const_refs(node.body)
-    elif isinstance(node, (And, Or)):
-        for part in node.parts:
-            yield from _iter_const_refs(part)
-    elif isinstance(node, Not):
-        yield from _iter_const_refs(node.inner)
 
 
 def _const_rules(consts: dict[str, Any]) -> list[str]:

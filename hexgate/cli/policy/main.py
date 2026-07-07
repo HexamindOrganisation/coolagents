@@ -348,6 +348,16 @@ def _main_validate(args: argparse.Namespace) -> int:
         print(f"policy schema: {exc}", file=sys.stderr)
         return 1
 
+    # Run the full Rego compile (minus the opa/wasm step) so validate is a
+    # strict subset of build — catches const conflicts, file_scope-in-wasm, and
+    # any other build-time rejection. Otherwise validate could pass a policy
+    # the platform build then refuses, giving false confidence in CI.
+    try:
+        compile_to_rego(payload)
+    except (PolicySetError, ConstraintParseError, ValidationError) as exc:
+        print(f"policy build: {exc}", file=sys.stderr)
+        return 1
+
     print("✓ Policy parses cleanly.")
     return 0
 
@@ -473,7 +483,12 @@ def _test_via_pydantic(
 ) -> int:
     """Run the decision through the in-process constraint evaluator."""
     policy: AgentPolicy = policy_set.policy_for(role)
-    return _render_verdict(evaluate_tool_call(policy, tool, tool_args), label)
+    # Forward role so role-scoped constraints (role == "admin") decide the same
+    # as the wasm path and production — omitting it here made `policy test
+    # --engine pydantic` diverge from --engine wasm on exactly those rules.
+    return _render_verdict(
+        evaluate_tool_call(policy, tool, tool_args, role=role), label
+    )
 
 
 def _test_via_wasm(

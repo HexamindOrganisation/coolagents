@@ -259,14 +259,20 @@ def test_parse_cross_field_builds_ref_on_both_sides() -> None:
     assert isinstance(node.right, Ref) and node.right.path == ("args", "min")
 
 
-def test_parse_unquoted_word_is_a_ref_not_an_error() -> None:
-    """2a consequence: a bare word on the RHS is a field ref, not a bad string.
+def test_parse_bare_unquoted_word_is_rejected() -> None:
+    """A forgotten-quotes typo (``== USD``) errors at load rather than parsing
+    as a ref to an absent field ``USD`` (which would silently fail closed)."""
+    with pytest.raises(ConstraintParseError, match="did you forget quotes"):
+        parse_constraint("args.currency == USD")
 
-    A forgotten-quotes typo (``== USD``) parses as a reference to field ``USD``
-    — which is (almost always) absent and so fails closed at evaluation.
-    """
-    node = parse_constraint("args.currency == USD")
-    assert isinstance(node.right, Ref) and node.right.path == ("USD",)
+
+def test_parse_bare_fact_identifier_is_allowed() -> None:
+    """role / tool are the only valid bare (undotted) identifiers — as a fact on
+    either side of a comparison."""
+    node = parse_constraint("args.owner == role")
+    assert isinstance(node.right, Ref) and node.right.path == ("role",)
+    node2 = parse_constraint('role == "admin"')
+    assert isinstance(node2.left, Ref) and node2.left.path == ("role",)
 
 
 @pytest.mark.parametrize(
@@ -383,6 +389,12 @@ def test_evaluate_functions(src: str, args: dict, expected: bool) -> None:
         'matches(args.v, "(?=lookahead)")',  # RE2-incompatible lookaround
         r'matches(args.v, "(a)\1")',  # RE2-incompatible backreference
         'matches(args.v, "[unclosed")',  # invalid regex
+        # These parse + match in Python re but are undefined under RE2 (verified
+        # against `opa eval`) — must be rejected so the engines can't diverge.
+        r'matches(args.v, "abc\\Z")',  # Python \Z end-anchor (RE2 uses \z)
+        'matches(args.v, "(?P<n>x)(?P=n)")',  # named backreference
+        'matches(args.v, "ab(?#comment)")',  # inline comment
+        'matches(args.v, "(a)(?(1)b)")',  # conditional
     ],
 )
 def test_parse_rejects_bad_calls(src: str) -> None:
@@ -391,7 +403,8 @@ def test_parse_rejects_bad_calls(src: str) -> None:
 
 
 def test_matches_allows_re2_named_groups() -> None:
-    # Named groups are supported by both Python re and RE2 → must not be rejected.
+    # Named group *definitions* work on both Python re and RE2 (only the
+    # backreference (?P=n) is RE2-incompatible) → must not be rejected.
     parse_constraint('matches(args.v, "(?P<n>[0-9]+)")')
 
 
