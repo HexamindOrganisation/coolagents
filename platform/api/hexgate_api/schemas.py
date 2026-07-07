@@ -385,8 +385,25 @@ class DecisionEvent(AuditEnvelope):
     arguments: Optional[dict] = None
 
 
+class LlmInvocationEvent(AuditEnvelope):
+    """One LLM invocation; mirrors the llm_invocation table."""
+
+    model: str = Field(min_length=1, max_length=256)
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    latency_ms: int = Field(ge=0)
+    status: str = Field(default="success", max_length=64)
+    error_code: str = Field(default="", max_length=64)
+
+
 class DecisionAccepted(BaseModel):
     """Response shape for POST /v1/audit/decisions."""
+
+    event_id: UUID
+
+
+class LlmInvocationAccepted(BaseModel):
+    """Response shape for POST /v1/audit/llm-invocations."""
 
     event_id: UUID
 
