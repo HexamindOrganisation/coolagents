@@ -7,8 +7,7 @@
 **Runtime authorization for AI agents.**
 On every tool call, Hexgate decides whether *this user*, in *this role*, may run *this tool* with *these arguments* — allow, deny, or require approval. For OpenAI Agents, LangChain, Google ADK, Pydantic AI, or a native runtime.
 
-[**Website**](https://hexgate.ai) · [**Docs**](https://docs.hexgate.ai) · [PyPI](https://pypi.org/project/hexgate/) · [Discussions](https://github.com/HexamindOrganisation/hexgate/discussions)
-
+[**Website**](https://hexgate.ai) · [**Docs**](https://docs.hexgate.ai) · [PyPI](https://pypi.org/project/hexgate/)
 [![PyPI](https://img.shields.io/pypi/v/hexgate?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/hexgate/)
 [![CI](https://github.com/HexamindOrganisation/hexgate/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/HexamindOrganisation/hexgate/actions/workflows/tests.yml)
 [![codecov](https://codecov.io/gh/HexamindOrganisation/hexgate/branch/main/graph/badge.svg?flag=sdk)](https://codecov.io/gh/HexamindOrganisation/hexgate)
@@ -27,7 +26,7 @@ On every tool call, Hexgate decides whether *this user*, in *this role*, may run
 
 Hexgate is two things that move together:
 
-- **`hexgate` — the SDK.** A Python runtime that gates every tool call through a typed `Decision` (allow / deny / approval-required), resolving the caller's role at call time to pick which rules apply. Wraps your existing OpenAI / LangChain / Google ADK / Pydantic AI agent without rewriting it. Every decision is traced and audited with the caller's identity.
+- **`hexgate` — the SDK.** A Python runtime that gates every tool call through a typed `Decision` (allow / deny / approval-required), resolving the caller's role at call time to apply that role's rules. Wrap an existing agent without rewriting it, or build one natively — every decision is traced and audited with the caller's identity. [See supported frameworks →](https://docs.hexgate.ai/adapters/openai)
 - **The Hexgate platform** *(optional)* — a FastAPI control plane + React dashboard for editing policy in a browser, minting per-project tokens, watching live decisions stream from a serving agent, and shipping signed WASM policy bundles to production. Available as **[Hexgate Cloud](https://app.hexgate.ai)** (hosted — set one env var, no infra) or self-hosted.
 
 You can use the SDK three ways: **local** (YAML/bundle on disk, no platform), **Hexgate Cloud** (remote enforcement + audit — just set `HEXGATE_API_KEY`), or **self-hosted** (run the control plane yourself). `HEXGATE_API_URL` defaults to `https://app.hexgate.ai`, so remote enforcement is one env var away.
