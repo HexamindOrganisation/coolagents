@@ -43,12 +43,17 @@ roles, fail-closed (writes and shells gated). See [CLI: register](/cli/register)
 hexgate register --agent my_app.agents:my_agent
 ```
 
+Or register from code — same manifest, same platform call:
+
+```python
+from hexgate.cli.register import register_agent
+
+register_agent(my_agent)   # pushes the manifest to the platform
+```
+
 <Note>
-**register vs serve.** You rarely call `register` by hand — [`hexgate
-serve`](/cli/serve) auto-registers on first run (idempotent; a content-hash
-short-circuits no-ops). Use an explicit `hexgate register` for CI or
-deliberate-deploy flows, paired with `hexgate serve --no-auto-register` to *fail*
-if the agent wasn't pre-registered.
+**register vs serve.** You rarely call `register` yourself —
+[`hexgate serve`](/cli/serve) auto-registers the agent on first run.
 </Note>
 
 ## 3. Edit the policy
