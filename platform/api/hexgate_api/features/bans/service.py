@@ -7,7 +7,7 @@ ban per target, enforced here (SQLite has no reliable partial unique index).
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api.constants import BAN_TYPE_AGENT
+from hexgate_api.constants import BAN_TYPE_AGENT, BAN_TYPE_USER
 from hexgate_api.core.ids import new_id
 from hexgate_api.models import Ban, utcnow
 
@@ -35,7 +35,7 @@ async def _active_ban_for_target(
     ]
     if ban_type == BAN_TYPE_AGENT:
         conditions.append(Ban.target_agent_name == target_agent_name)
-    else:
+    elif ban_type == BAN_TYPE_USER:
         conditions.append(Ban.target_user_id == target_user_id)
     return (await session.exec(select(Ban).where(*conditions))).first()
 

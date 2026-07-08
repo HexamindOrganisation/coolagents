@@ -484,19 +484,6 @@ class LlmInvocationAccepted(BaseModel):
     event_id: UUID
 
 
-class BanEnforcementRow(BaseModel):
-    """A ``ban_enforcement`` row for the Kill Switch page (consumed in Phase 3)."""
-
-    event_id: UUID
-    occurred_at: datetime
-    agent_name: str
-    user_id: str = ""
-    session_id: str = ""
-    ban_type: str
-    ban_id: str
-    reason: str = ""
-
-
 # --- Audit dashboard read models (mirror audit.py return shapes) -------------
 
 AuditWindow = Literal["24h", "7d", "30d", "90d"]

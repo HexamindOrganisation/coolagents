@@ -39,7 +39,7 @@ ROLE_ADMIN = "admin"
 ROLE_MEMBER = "member"
 ALL_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER}
 
-# Kill-switch ban targets — strings, validated at the API layer (like roles).
+# Kill-switch ban target kinds. BanCreate validates the wire value; these
+# name the two kinds for service branching.
 BAN_TYPE_AGENT = "agent"
 BAN_TYPE_USER = "user"
-ALL_BAN_TYPES = {BAN_TYPE_AGENT, BAN_TYPE_USER}

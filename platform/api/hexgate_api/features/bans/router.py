@@ -9,6 +9,14 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.core.db import get_session
 from hexgate_api.deps.project import require_project_admin
 from hexgate_api.deps.tokens import require_project
+from hexgate_api.features.bans.service import (
+    BanConflictError,
+    BanNotFoundError,
+    active_bans_for_project,
+    create_ban,
+    list_bans,
+    revoke_ban,
+)
 from hexgate_api.models import Ban, OrganizationMember, User
 from hexgate_api.schemas import BanCreate, BanFeedEntry, BanRead
 
@@ -48,8 +56,6 @@ async def api_create_ban(
     session: AsyncSession = Depends(get_session),
 ) -> BanRead:
     """Create a ban (admin/owner); 409 if one already targets this agent/user."""
-    from hexgate_api.features.bans.service import BanConflictError, create_ban
-
     caller, _member = membership
     try:
         ban = await create_ban(
@@ -74,8 +80,6 @@ async def api_list_bans(
     session: AsyncSession = Depends(get_session),
 ) -> list[BanRead]:
     """List a project's bans (admin/owner); active-only unless ``include_revoked``."""
-    from hexgate_api.features.bans.service import list_bans
-
     rows = await list_bans(
         session, project_id=project_id, include_revoked=include_revoked
     )
@@ -90,8 +94,6 @@ async def api_revoke_ban(
     session: AsyncSession = Depends(get_session),
 ) -> Response:
     """Revoke a ban (admin/owner) → 204; 404 if not in this project."""
-    from hexgate_api.features.bans.service import BanNotFoundError, revoke_ban
-
     caller, _member = membership
     try:
         await revoke_ban(
@@ -113,8 +115,6 @@ async def api_list_active_bans_by_token(
     if_none_match: str | None = Header(default=None, alias="If-None-Match"),
 ) -> list[BanFeedEntry] | Response:
     """SDK active-ban feed for the token's project; ETag → 304 when unchanged."""
-    from hexgate_api.features.bans.service import active_bans_for_project
-
     rows = await active_bans_for_project(session, project_id=project_id)
     entries = [_feed_entry(b) for b in rows]
     body = json.dumps([e.model_dump() for e in entries], sort_keys=True).encode()

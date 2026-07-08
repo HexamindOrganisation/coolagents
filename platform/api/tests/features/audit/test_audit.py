@@ -261,24 +261,6 @@ def test_ban_enforcement_future_occurred_at_rejected(client: TestClient) -> None
     assert "future" in r.json()["detail"]
 
 
-def test_list_ban_enforcements_maps_rows(fake_clickhouse: MagicMock) -> None:
-    from hexgate_api.features.audit.service import list_ban_enforcements
-
-    event_id = uuid.uuid4()
-    occurred = _now()
-    fake_clickhouse.query.return_value = MagicMock(
-        result_rows=[
-            (event_id, occurred, "researcher", "u1", "s1", "user", "ban_x", "spam")
-        ]
-    )
-    rows = list_ban_enforcements(fake_clickhouse, project_id="p1", since_hours=24)
-    assert len(rows) == 1
-    assert rows[0].ban_type == "user"
-    assert rows[0].ban_id == "ban_x"
-    assert rows[0].agent_name == "researcher"
-    assert rows[0].reason == "spam"
-
-
 def test_oversized_hint_rejected(client: TestClient) -> None:
     big = {"globs": "y" * (audit.MAX_HINT_BYTES + 100)}
     r = client.post("/v1/audit/decisions", json=_event(hint=big))
