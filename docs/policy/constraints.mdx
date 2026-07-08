@@ -3,6 +3,10 @@ title: "Constraints reference"
 description: "Every operator, function, and quantifier the condition grammar accepts."
 ---
 
+Each tool can carry a `constraints:` list of string expressions evaluated against
+the call's arguments. **Every constraint must pass** for the call to authorize
+(implicit AND).
+
 <Note>
 New here? Start with **[Writing conditions](/policy/writing-conditions)** — a
 guided, example-first walkthrough. This page is the terse reference to look
@@ -101,6 +105,32 @@ constraint *lines* are still AND-ed, so `and` is only needed to combine with an
 `or`. (Boolean ops inside a quantifier body — e.g.
 `every(args.x, .a == 1 or .b == 2)` — aren't supported yet.)
 
+## End to end
+
+With this `billing` role policy and `async with User(user_id="alice",
+role="billing")`:
+
+```yaml
+tools:
+  refund_order:
+    mode: allow
+    constraints:
+      - args.amount <= 500
+      - args.currency == "USD"
+  wire_transfer:
+    mode: approval_required
+    constraints:
+      - args.amount <= 100000
+```
+
+- `refund_order(amount=200, currency="USD")` → ✅ allowed
+- `refund_order(amount=600, currency="USD")` → ❌ denied — constraint `args.amount <= 500`
+- `refund_order(amount=200, currency="EUR")` → ❌ denied — constraint `args.currency == "USD"`
+- `wire_transfer(amount=50000)` → ✋ requires approval (mode = `approval_required`)
+
+Switch to `role="default"` and `refund_order` is missing from that policy — it
+falls through to `default_policy.mode` (deny).
+
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA
 Rego unchanged, and the pydantic engine evaluates the same strings in-process —
-both produce identical decisions.
+both produce identical decisions (there's a parity test suite that proves it).

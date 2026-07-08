@@ -3,10 +3,8 @@ title: "Policy YAML shape"
 description: "version, default_policy, tools, modes, constraints."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Policy Shape](https://github.com/HexamindOrganisation/hexgate#-policy-shape).
-</Note>
+Enforcement is **deny-by-default**: the policy file lists what's allowed. Each
+tool gets a mode and an optional list of [constraints](/policy/constraints).
 
 ```yaml
 version: 1
@@ -26,4 +24,48 @@ tools:
       - args.currency == "USD"
 ```
 
-Modes: `allow`, `deny`, `approval_required`. Every constraint must pass (implicit AND).
+## Modes
+
+- `allow`
+- `deny`
+- `approval_required` — see [Approval-required tool calls](/concepts/approval-required)
+
+## Applying a policy in code
+
+`create_agent(...)` stays close to LangChain; policy enforcement is applied after
+agent creation with `enforce_policy(...)`, which accepts either a Pydantic
+`AgentPolicy` or a YAML file path:
+
+```python
+from hexgate import AgentPolicy, create_agent, enforce_policy, grep, read_file
+
+policy = AgentPolicy.model_validate(
+    {
+        "version": 1,
+        "default_policy": {"mode": "deny"},
+        "tools": {
+            "read_file": {"mode": "allow"},
+            "grep": {"mode": "allow"},
+        },
+    }
+)
+
+agent, handler = create_agent(
+    model="openai:gpt-5.4",
+    tools=[read_file, grep],
+    system_prompt="You are a careful code assistant.",
+)
+
+agent = enforce_policy(agent, policy)
+```
+
+The same agent code can stay simple in development, while deployment systems
+inject policy later.
+
+## Per-role policies
+
+Agents that need per-role behaviour ship a `policies/` directory (one file per
+role, with inheritance) instead of a single `policy.yaml`. A legacy single-file
+`policy.yaml` is treated as the `default` role — no migration needed. See
+[User scope + roles](/concepts/user-scope#role-policies-one-file-per-role) for the
+multi-file shape and inheritance rules.

@@ -3,25 +3,52 @@ title: "Signing & verification"
 description: "Ed25519 keypair, detached signatures, REQUIRE_SIGNATURE matrix."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Signing & verification](https://github.com/HexamindOrganisation/hexgate#signing--verification).
-</Note>
+Production bundles are signed so the runtime can prove a bundle is genuine before
+trusting it. The integrity hash chain catches accidental corruption; the
+signature catches a malicious author who edits a file *and* updates the manifest
+to match.
+
+## Generate a keypair and sign
 
 ```bash
-hexgate policy keygen --out ./keys/dev
+hexgate policy keygen --out ./keys/dev          # → dev.private (0600) + dev.public
 hexgate policy build policy.yaml --out ./bundle --sign-key ./keys/dev.private
+# → ./bundle/policy.bundle.json.sig
 ```
 
-At runtime:
+## Verify at runtime
+
+Point the verifier at the public key:
 
 ```bash
 HEXGATE_LOCAL_POLICY=./bundle \
 HEXGATE_BUNDLE_PUBKEY_PATH=./keys/dev.public \
 HEXGATE_BUNDLE_REQUIRE_SIGNATURE=true \
 hexgate chat --agent example_agent
+# [hexgate] HEXGATE_LOCAL_POLICY active (bundle-dir): ./bundle (wasm_hash=..., signed)
 ```
+
+`HEXGATE_BUNDLE_REQUIRE_SIGNATURE` controls strictness — the permissive default
+(load rather than refuse) keeps local dev frictionless; opt into refusal for
+CI/prod:
+
+| Bundle | `PUBKEY_PATH` set | `REQUIRE_SIGNATURE` | Outcome |
+|---|---|---|---|
+| signed | yes | either | verify; **refuse if it fails** |
+| signed | no | `false` | load with warning (can't verify) |
+| signed | no | `true` | **refuse** (no key to check against) |
+| unsigned | — | `false` (default) | **load silently** (no warning) |
+| unsigned | — | `true` | **refuse** |
 
 Keys are raw Ed25519, base64url-encoded — the same format the platform's JWKS
 endpoint publishes, so production verification reuses the public key your SDK
-already trusts for biscuit tokens.
+already trusts for biscuit tokens. One root key, two artifacts.
+
+<Note>
+`*.private` and `*.pem` are in `.gitignore` so a signing key never lands in
+version control. Public keys (`*.public`) are safe to commit.
+</Note>
+
+For a YAML source (rather than a pre-built bundle dir), set
+`HEXGATE_BUNDLE_SIGN_KEY_PATH=./keys/dev.private` so each recompile is signed and
+downstream gates that check `bundle.is_signed` see what they expect.

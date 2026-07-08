@@ -1,22 +1,86 @@
 ---
 title: "Control plane (FastAPI)"
-description: "REST + WebSocket endpoints, SQLite by default."
+description: "Self-host the REST + WebSocket API. SQLite for dev, Postgres for production."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Backend (platform/api/)](https://github.com/HexamindOrganisation/hexgate#backend-platformapi).
-</Note>
+The control plane is the FastAPI service that stores agent definitions and tokens
+and relays the serve/chat WebSockets. Prefer not to run it yourself? Use
+[Hexgate Cloud](/platform/hosted) — it's the same service, hosted. Self-host when
+you need it inside your own infrastructure.
+
+## Run it
 
 ```bash
 cd platform/api
 uv run uvicorn hexgate_api.main:app --reload --port 8000
 ```
 
-Endpoints:
+The default `support-bot` project is seeded on first boot with three agents —
+`default` (broad access, side-effects gated by `approval_required`),
+`read_only` (everything mutating denied), and `support_bot` (the role-aware demo
+that returns different answers per `support` / `billing` role).
 
-- `POST /v1/projects/:id/tokens` — mint a dev token
-- `GET /v1/projects/:id/agents` — list agents
+## Database — SQLite for dev, Postgres for production
+
+`make platform-api` uses a local **SQLite** file — zero setup, ideal for dev and
+the test suite. For production, set `DATABASE_URL` to a **Postgres** DSN; bare
+`postgres://` URLs are normalized to the `asyncpg` driver. A local Postgres is in
+the dev compose:
+
+```bash
+make platform-api-pg      # starts Postgres (Docker) + runs the API against it
+# equivalent to:
+make postgres-up          # start Postgres, wait until healthy
+DATABASE_URL=postgresql+asyncpg://hexgate:hexgate-dev-password@localhost:5433/hexgate make platform-api
+make postgres-reset       # wipe ONLY the Postgres data volume
+```
+
+`DATABASE_URL` is read from the real environment or `platform/api/.env`. A managed
+Postgres (e.g. Scaleway, RDS) needs SSL in the DSN, e.g. `…/hexgate?ssl=require`.
+The SQLite DB lives at `platform/api/hexgate.db`; delete it and restart to wipe
+dev state.
+
+<Note>
+**Schema management.** Tables are created with SQLAlchemy `create_all` — there is
+no migration runner yet, so a model change is applied by recreating the schema
+(`make postgres-reset` locally), not by an incremental migration. Plan schema
+upgrades as a maintenance step until a migration tool is wired in. The opt-in
+`tests/test_postgres_smoke.py` exercises the Postgres path; the rest of the suite
+runs on SQLite.
+</Note>
+
+## Endpoints
+
+- `POST /v1/projects/:id/tokens` — mint a dev token (returned in full once)
+- `GET /v1/projects/:id/tokens` — list dev tokens (masked)
+- `DELETE /v1/projects/:id/tokens/:tid` — revoke
+- `GET /v1/projects/:id/agents` — list agents with their YAMLs
+- `GET /v1/projects/:id/agents/:name` — read one agent
 - `PUT /v1/projects/:id/agents/:name` — save agent / policy / system YAMLs
-- `WS /v1/projects/:id/serve` — producer socket (the `hexgate serve` CLI dials here)
-- `WS /v1/projects/:id/chat` — consumer socket (dashboard Playground dials here)
+- `POST /v1/agents` — register a manifest (`hexgate register` / `serve` auto-register)
+- `GET /v1/agents/:name` — read an agent's current policy (the `hexgate serve` fetch)
+- `WS /v1/serve` — producer socket (the `hexgate serve` CLI dials here)
+- `WS /v1/projects/:id/chat` — consumer socket (the dashboard Playground dials here)
+
+The `/v1/agents…` and `/v1/serve` routes are **not** project-scoped in the path —
+the project is resolved from the bearer token (carried in the WebSocket
+subprotocol for `serve`), so a `fty_live_…` key both authenticates *and* selects
+the project. Only the dashboard-facing routes (`/projects/:id/…`, `chat`) take an
+explicit project id.
+
+## Health & readiness
+
+`GET /health` is a dependency-free liveness probe. `GET /ready` reports
+downstream health — once ClickHouse is up it returns `"clickhouse": "ok"`. See
+[audit log](/platform/audit-clickhouse) for the audit store and
+[email](/platform/email) for outbound mail configuration.
+
+## Point the SDK at your instance
+
+```bash
+HEXGATE_API_KEY=fty_live_...           # minted by THIS platform
+HEXGATE_API_URL=https://your-host      # your control plane (defaults to app.hexgate.ai)
+```
+
+The key and URL are coupled: a `fty_live_…` key only verifies against the platform
+instance that minted it.

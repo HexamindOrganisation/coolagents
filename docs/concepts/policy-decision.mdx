@@ -3,18 +3,62 @@ title: "Policy decision"
 description: "The Decision object — allow, deny, approval-required — at the heart of every tool call."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Where enforcement actually happens](https://github.com/HexamindOrganisation/hexgate#where-enforcement-actually-happens).
-This page will be migrated and expanded.
-</Note>
-
-## TL;DR
-
-Every tool call routes through a `PolicyEnforcer` that returns a typed `Decision`:
+Every tool call routes through a `PolicyEnforcer` that returns a typed `Decision`.
+Deny-by-default; the [policy file](/policy/yaml-shape) lists what's allowed.
 
 - **`allow`** — the original tool runs unchanged.
-- **`deny`** — the framework sees a `[policy_denied]` marker as the tool result; the model can recover.
-- **`approval_required`** — calls a dev-supplied handler, or returns an `[approval_required]` marker.
+- **`deny`** — the framework sees a `[policy_denied]` marker as the tool result;
+  the model can recover.
+- **`approval_required`** — calls a dev-supplied handler, or returns an
+  `[approval_required]` marker (see [approval-required tool calls](/concepts/approval-required)).
 
-The decision is built from `(role, tool_name, arguments)` against the active policy bundle.
+The decision is built from the tool name and its arguments against the active
+policy bundle. The caller's role is a third input, but it isn't passed at the
+call site — `decide` resolves it internally from the active [`User`
+scope](/concepts/user-scope) via a contextvar.
+
+## Where enforcement actually happens
+
+Walk through one tool call:
+
+1. The model emits a tool call. The framework's tool dispatcher invokes the tool.
+2. The tool is *not the dev's original* — it's a copy the adapter made, whose body
+   starts with `enforcer.decide(tool_name, args)`. The role isn't a parameter —
+   `decide` reads it from the active `User` contextvar (`get_current_user()`),
+   so the call site only supplies the tool name and its arguments.
+3. `PolicyEnforcer.decide` reads `self.policy` — either a `PolicySet` (pydantic
+   engine, default fallback) or a `PolicyBundle` (WASM engine, what production
+   runs).
+4. Decision is `allow` → the original tool runs. `deny` → returns a
+   `[policy_denied]` marker the model sees as the tool result.
+   `approval_required` → either calls the dev-supplied approval handler or returns
+   an `[approval_required]` marker.
+5. **Before step 2, every turn:** `refresh_policy()` delegates to
+   `self._binding.refresh()` (a `PolicyBinding`), which calls
+   `self._binding.source.fetch()`. If the source returns a new bundle instance,
+   the binding swaps `enforcer.policy` in place. Tools don't get re-wrapped — they
+   hold a reference to the enforcer, not the bundle.
+
+The binding's `source` (`agent._binding.source`) is set automatically by the
+loader based on env:
+
+- `HEXGATE_LOCAL_POLICY` set → `YamlPolicySource` or `BundleDirPolicySource` (mtime-driven refresh)
+- `HEXGATE_API_KEY` set, no local override → `PlatformPolicySource` (ETag / `304 Not Modified` refresh)
+- Neither → no source attached; enforcement uses whatever was loaded once
+
+## What the per-turn refresh covers
+
+Only the policy bundle. `system_prompt`, the manifest's tool list, and the model
+id are read once at agent construction and stay fixed for the lifetime of the
+process. Edit those on the dashboard and the change lands at the next `hexgate
+serve` restart — not at the next turn. The split is deliberate: policy is the
+operator's primary lever (and the one that needs to be auditable per-decision),
+while the manifest is an author-time concept.
+
+## `approval_required` without a handler
+
+- **No handler attached** — behaves like a graceful block: the tool returns a
+  structured `ok: False` result with `error_type: "approval_required"` so the
+  agent can try a fallback instead of crashing.
+- **Handler attached** (via `enforce_policy(..., approval_handler=...)`) — the
+  host decides whether to allow the action at runtime.

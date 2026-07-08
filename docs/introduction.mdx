@@ -1,25 +1,74 @@
 ---
 title: "Introduction"
-description: "Authorization infrastructure for AI agents — policy enforcement, signed bundles, per-request user scope, audit trail."
+description: "Runtime authorization for AI agents — decide who can run which tool, in which role, with which arguments."
 ---
 
-**Hexgate** gates every tool call your AI agent makes through a typed `Decision`
-(allow / deny / approval-required) and threads per-request user identity through
-tracing and audit. Drop it in front of an OpenAI Agents / LangChain / Google ADK /
-Pydantic AI agent without rewriting the agent.
+**Hexgate is runtime authorization for AI agents.** On every tool call, it decides
+whether **this end user**, acting in **this role**, may run **this tool** with
+**these arguments** — and returns `allow`, `deny`, or `approval_required`. Drop it
+in front of an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent without
+rewriting the agent.
+
+The decision has three inputs and one output:
+
+```text
+  end user (id + role)  ×  tool call (name + args)  ──►  allow · deny · approval
+```
+
+## Same request, different answer
+
+Authorization isn't a property of the agent — it's a property of *who is calling*
+and *what they're trying to do*. A support agent and a billing agent can share the
+exact same code and the exact same `refund_order` tool, yet get different answers,
+because a **policy** maps roles → tools → argument limits:
+
+```yaml
+roles:
+  support:                       # front-line: small USD refunds only
+    default_policy: { mode: deny }
+    tools:
+      refund_order:
+        mode: allow
+        constraints:
+          - args.amount <= 50
+          - args.currency == "USD"
+      issue_credit:                # support can request; a human confirms
+        mode: approval_required
+  billing:                       # larger refunds, major currencies
+    default_policy: { mode: deny }
+    tools:
+      refund_order:
+        mode: allow
+        constraints:
+          - args.amount <= 500
+          - args.currency in ["USD", "EUR"]
+```
+
+The **same** `refund_order($400)` call resolves differently per caller:
+
+| Caller | Tool call | Decision | Why |
+|---|---|---|---|
+| `support` | `refund_order(amount=400, currency="USD")` | ✗ **deny** | over support's `amount <= 50` cap |
+| `billing` | `refund_order(amount=400, currency="EUR")` | ✓ **allow** | within billing's `amount <= 500` |
+| `support` | `issue_credit(amount=50)` | ⚠ **approval_required** | needs a human's OK |
+
+The caps live in the policy, **outside the model** — so a prompt-injected or
+confused agent can't talk its way past `amount <= 500`. It never even sees the
+tool result for a denied call; it gets a `[policy_denied]` marker it can recover
+from.
 
 <CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
-    Install the SDK, run a chat REPL against the example agent in 60 seconds.
+  <Card title="See it enforce (no keys)" icon="rocket" href="/quickstart">
+    Install, then watch a role + arguments decide a tool call in one command.
   </Card>
-  <Card title="Two paths" icon="route" href="/two-paths">
-    Chat (single-process REPL) vs. serve (platform-backed) — pick the right one.
+  <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
+    Roles, tools, modes, and argument constraints — the full policy shape.
+  </Card>
+  <Card title="User scope + roles" icon="user" href="/concepts/user-scope">
+    How the end user's identity + role reach the decision at call time.
   </Card>
   <Card title="Framework adapters" icon="puzzle-piece" href="/adapters/openai">
-    OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI — same enforcement seam.
-  </Card>
-  <Card title="Policy bundles" icon="shield" href="/policy/wasm-bundles">
-    Compile YAML to signed WASM, hot-reload on save, verify on every load.
+    OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI — wrap once.
   </Card>
 </CardGroup>
 
@@ -27,40 +76,39 @@ Pydantic AI agent without rewriting the agent.
 
 Hexgate is two things that move together:
 
-- **`hexgate` — the SDK.** A Python runtime that gates every tool call through
-  a typed `Decision`, wraps your existing agent without rewriting it, and threads
-  per-request user identity through tracing + audit.
-- **The Hexgate platform** *(optional)* — a FastAPI control plane + React
-  dashboard for editing policy in a browser, minting per-project tokens, watching
-  live decisions stream from a serving agent, and shipping signed WASM policy
-  bundles to production.
+- **`hexgate` — the SDK.** A Python runtime that intercepts every tool call and
+  runs it through a `PolicyEnforcer`, resolving the caller's role at call time and
+  returning a typed `Decision`. It wraps your existing agent without rewriting it.
+- **The Hexgate platform** *(optional)* — a control plane + dashboard for editing
+  policy in a browser, minting per-project tokens, watching live decisions stream
+  from a serving agent, and shipping signed policy bundles to production. Available
+  as **[Hexgate Cloud](/platform/hosted)** (hosted — set one env var) or
+  self-hosted.
 
-You can use the SDK with nothing else (single-process REPL, YAML on disk). Or
-plug in the platform when you want auditable decisions in ClickHouse, a shared
-Playground UI, and live policy edits.
+Two things feed the decision, and one thing records it:
+
+- The **end user's identity and role** are a **decision input** — carried
+  per-request via [`User`](/concepts/user-scope), they select which role's rules
+  apply. (They also tag traces, but that's secondary.)
+- The **policy** supplies the rules — a [YAML file or signed WASM
+  bundle](/policy/wasm-bundles), loaded locally or from the platform.
+- Every decision is written to an [**audit trail**](/concepts/audit-trail): who
+  called what, and whether it was allowed.
 
 ## The decision path
 
 ```text
-                      ┌─────────────────────────────────────────┐
-   your code  ───►    │   create_agent / wrap_*_agent / Runner  │
-                      │            ↓                            │
-                      │     PolicyEnforcer.decide(role, tool)   │
-                      │            ↓                            │
-                      │   allow · deny · approval_required      │
-                      └────────────────────┬────────────────────┘
-                                           │
-                  ┌────────────────────────┼─────────────────────────┐
-                  ▼                        ▼                         ▼
-        ┌────────────────┐       ┌──────────────────┐       ┌────────────────┐
-        │  Local policy  │       │ Signed WASM      │       │   Audit log    │
-        │  (YAML / dir,  │       │ bundle from      │       │   (ClickHouse  │
-        │  hot reload)   │       │ Hexgate cloud   │       │   via REST)    │
-        └────────────────┘       └──────────────────┘       └────────────────┘
+     end user (id + role)          tool call (name + args)
+              └───────────────┬────────────────┘
+                              ▼
+                PolicyEnforcer.decide()  ◄──  policy
+                              ▼                (local YAML / bundle,
+              allow  ·  deny  ·  approval        or signed cloud bundle)
+                              │
+                              ▼
+        audit log — who called what, and whether it was allowed
 ```
 
-<Note>
-This documentation site is freshly scaffolded. Most page bodies are placeholders
-pointing back to the [README](https://github.com/HexamindOrganisation/hexgate#readme)
-until the migration completes.
-</Note>
+New here? [Install and see a policy decide a tool call](/quickstart) in 60
+seconds — no API keys — then [pick a path](/two-paths) between the local chat REPL
+and the platform-backed serve loop.

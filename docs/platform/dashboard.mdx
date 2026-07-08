@@ -3,18 +3,15 @@ title: "Dashboard"
 description: "Vite + React + shadcn/ui. Policy editor, Playground, tokens."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Dashboard](https://github.com/HexamindOrganisation/hexgate#dashboard-platformdashboard).
-</Note>
+Vite + React + Tailwind + shadcn/ui + React Flow.
 
 ```bash
 cd platform/dashboard
-pnpm install
+pnpm install        # first time
 pnpm dev
 ```
 
-Routes:
+## Routes
 
 - `/` — overview KPIs
 - `/agents` — file-tree YAML editor + live mini-graph per agent
@@ -22,3 +19,20 @@ Routes:
 - `/playground` — chat with a serving agent, watch tool decisions stream live
 - `/tokens` — mint, list, revoke dev tokens
 - `/settings` — project settings
+
+The dev server proxies `/v1/*` (HTTP and WebSocket) to `localhost:8000`, so HMR
+works through the same origin as the API.
+
+## Editing policy live
+
+The `/policies` page lets you edit each agent's policy. [`hexgate
+serve`](/cli/serve) re-fetches at every turn boundary, so your edits take effect
+on the next chat message without a restart. Under the hood the refresh is an
+`If-None-Match` round-trip: a `304` reuses the cached WASM module, a `200` swaps
+in the new bundle.
+
+<Note>
+Want to try the dashboard without installing anything? The hosted
+[live demo](/platform/live-demo) lets you edit an agent and chat with it in the
+browser — bring your own model key.
+</Note>

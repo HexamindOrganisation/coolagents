@@ -4,24 +4,80 @@ description: "wrap_pydantic_agent — gates every tool through PolicyEnforcer."
 ---
 
 <Note>
-**Page stub.** Full content lives in the
-[README — Pydantic AI](https://github.com/HexamindOrganisation/hexgate#pydantic-ai--wrap_pydantic_agent).
+New to the adapters? Start with the [wrapping overview and comparison
+table](/adapters/openai#overview-how-framework-wrapping-works).
 </Note>
 
-## TL;DR
+`wrap_pydantic_agent` returns a `HexgatePydanticAgent` proxy backed by a clone of
+the original agent whose tools are gated by a freshly built `PolicyEnforcer`.
+Tools registered via the `Agent(...)` constructor or via `@agent.tool` /
+`@agent.tool_plain` are all picked up. The `user` is supplied **per call**, so a
+single wrapped agent can serve many users concurrently — role resolution happens
+at call time from the contextvar.
 
 ```python
-from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
-from hexgate.runtime import User
+import asyncio
+from dotenv import load_dotenv
+from pydantic_ai import Agent
 
-agent = wrap_pydantic_agent(agent=pydantic_agent, api_key="sk-...")
-result = await agent.run(
-    "What is the weather in Tokyo?",
-    user=User(user_id="alice", role="member"),
-)
+from hexgate.runtime import User
+from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
+
+
+async def main():
+    load_dotenv()
+
+    agent = Agent("openai:gpt-4o-mini")
+
+    @agent.tool_plain
+    def get_weather(city: str) -> str:
+        """Return a weather report for a city."""
+        return f"The weather in {city} is 21°C and sunny."
+
+    @agent.tool_plain
+    def delete_user(user_id: str) -> str:
+        """Delete a user account. Destructive."""
+        return f"User {user_id} deleted."
+
+    agent = wrap_pydantic_agent(
+        agent=agent,
+        api_key="sk-...",  # or rely on HEXGATE_API_KEY
+    )
+
+    result = await agent.run(
+        "What is the weather in Tokyo?",
+        user=User(
+            user_id="pydantic_ai_user_1",
+            role="member",
+            session_id="pydantic_ai_session_1",
+        ),
+    )
+    print(result.output)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
-Returns a `HexgatePydanticAgent` proxy backed by a clone whose tools are gated
-by a freshly built `PolicyEnforcer`. Non-allow decisions raise `ModelRetry` so
-pydantic-ai surfaces the policy outcome back to the model as a tool-result
-message.
+## Under the hood
+
+- `wrap_pydantic_agent` builds a `PolicySet`, constructs one `PolicyEnforcer`,
+  reads tools off the agent's internal `_function_toolset`, copies each tool with
+  an enforcer-gated `function_schema.call`, and returns a shallow-copied agent
+  whose toolset holds those gated copies — your original `agent` is untouched, so
+  it can be reused or wrapped again independently.
+- Each invocation method on `HexgatePydanticAgent` (`run` / `run_sync` /
+  `run_stream` / `iter`) takes `user=` and opens a `User` scope around the
+  delegated `Agent` call. The contextvar is per-task, so concurrent `run` calls
+  for different users do not see each other's policies.
+- A non-allow `Decision` raises `ModelRetry(decision.as_error_message())`;
+  pydantic_ai surfaces it back to the model as a tool-result message —
+  `[policy_denied]` / `[approval_required]` markers in the same shape as the
+  OpenAI / Google adapters — instead of aborting the run.
+- Identity propagation uses `propagate_attributes(...)` so Langfuse spans carry
+  the caller identity. Global tracing is enabled via `Agent.instrument_all()` on
+  construction.
+
+## Runnable example
+
+`examples/pydantic_ai_demo.py` — `wrap_pydantic_agent` (Pydantic AI) end-to-end.
