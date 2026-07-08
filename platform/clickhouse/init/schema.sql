@@ -22,7 +22,14 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     -- Decision-specific
     tool_name           LowCardinality(String),
     role                LowCardinality(String) DEFAULT '',
-    outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3),
+    -- 'banned' = kill-switch refusal at the invoke gate (override, not a
+    -- policy decision). Appended last so existing rows keep their codes and
+    -- the ORDER BY stays valid. This init file only applies on a fresh volume;
+    -- an existing cluster needs a one-off (metadata-only) migration:
+    --   ALTER TABLE hexgate_audit.policy_decision
+    --     MODIFY COLUMN outcome
+    --     Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3, 'banned' = 4);
+    outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3, 'banned' = 4),
     error_type          LowCardinality(String) DEFAULT '',
     reason              String,
     violations          Array(String),
