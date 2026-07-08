@@ -27,6 +27,28 @@ def test_policy_set_requires_default_role() -> None:
         PolicySet({"support": AgentPolicy()})
 
 
+def test_policy_set_rejects_undefined_const_ref() -> None:
+    """A constraint referencing an undefined constant is rejected at construction
+    — the pydantic load path now agrees with the Rego compiler on validity,
+    instead of loading cleanly then denying at runtime."""
+    pol = AgentPolicy(
+        consts={"cap": 500},
+        tools={
+            "t": BaseToolPolicy(mode="allow", constraints=["args.x == consts.gone"])
+        },
+    )
+    with pytest.raises(PolicySetError, match="undefined constant consts.gone"):
+        PolicySet({"default": pol})
+
+
+def test_policy_set_accepts_defined_const_ref() -> None:
+    pol = AgentPolicy(
+        consts={"cap": 500},
+        tools={"t": BaseToolPolicy(mode="allow", constraints=["args.x <= consts.cap"])},
+    )
+    PolicySet({"default": pol})  # no raise
+
+
 def test_load_policy_set_from_agent_policy_wraps_in_default() -> None:
     """An :class:`AgentPolicy` becomes the single ``default`` role."""
     ap = AgentPolicy(tools={"refund": BaseToolPolicy(mode="allow")})

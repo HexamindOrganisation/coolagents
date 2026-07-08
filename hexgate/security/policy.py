@@ -43,6 +43,8 @@ def evaluate_tool_call(
     policy: AgentPolicy,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    role: str | None = None,
 ) -> Verdict:
     """Return a :class:`Verdict` for a proposed tool call (pydantic engine).
 
@@ -66,7 +68,13 @@ def evaluate_tool_call(
         )
 
     try:
-        check_constraints(tool_policy.constraints, arguments, tool_name)
+        check_constraints(
+            tool_policy.constraints,
+            arguments,
+            tool_name,
+            role=role,
+            consts=policy.consts,
+        )
     except PolicyDeniedError as exc:
         return Verdict(outcome=DecisionOutcome.DENY, reason=str(exc))
 
@@ -104,13 +112,18 @@ def authorize_tool_call(
     policy: AgentPolicy,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    role: str | None = None,
 ) -> None:
     """Raise when a tool call is denied or requires approval.
 
     Thin raise-on-deny wrapper over :func:`evaluate_tool_call`, kept for
     callers (the CLI, direct API users) that prefer the exception contract.
+    ``role`` is forwarded so ``role``-scoped constraints see the caller's
+    role — omitting it here would diverge from the WASM engine, which always
+    receives ``input.role``.
     """
-    _raise_for_verdict(evaluate_tool_call(policy, tool_name, arguments))
+    _raise_for_verdict(evaluate_tool_call(policy, tool_name, arguments, role=role))
 
 
 def evaluate_tool_call_wasm(

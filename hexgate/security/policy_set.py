@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from hexgate.security.constraints import iter_const_refs, parse_constraint
 from hexgate.security.decision import Verdict
 from hexgate.security.models import AgentPolicy, BaseToolPolicy, ToolPolicy
 
@@ -60,6 +61,7 @@ class PolicySet:
             raise PolicySetError(
                 f"PolicySet missing required '{DEFAULT_ROLE_NAME}' role"
             )
+        _validate_const_refs(policies)
         self._policies = policies
 
     def policy_for(self, role: str | None) -> AgentPolicy:
@@ -76,7 +78,7 @@ class PolicySet:
         Resolves the role's policy and runs the pydantic engine."""
         from hexgate.security.policy import evaluate_tool_call
 
-        return evaluate_tool_call(self.policy_for(role), tool, dict(args))
+        return evaluate_tool_call(self.policy_for(role), tool, dict(args), role=role)
 
     @property
     def roles(self) -> list[str]:
@@ -88,6 +90,27 @@ class PolicySet:
 
     def __repr__(self) -> str:
         return f"PolicySet(roles={self.roles!r})"
+
+
+def _validate_const_refs(policies: Mapping[str, AgentPolicy]) -> None:
+    """Reject a ``consts.<name>`` reference to a constant not defined for its role.
+
+    Runs at :class:`PolicySet` construction so the pydantic engine and the Rego
+    compiler agree on whether a policy is valid — otherwise an undefined const
+    loads cleanly and denies at runtime on pydantic, but fails the WASM build.
+    Constraints are already grammar-validated at model load; this is the
+    cross-reference check that needs the role's resolved ``consts``.
+    """
+    for role, policy in policies.items():
+        available = set(policy.consts)
+        for tool_policy in (*policy.tools.values(), policy.default_policy):
+            for raw in tool_policy.constraints:
+                for name in iter_const_refs(parse_constraint(raw)):
+                    if name not in available:
+                        raise PolicySetError(
+                            f"role {role!r}: constraint {raw!r} references "
+                            f"undefined constant consts.{name}"
+                        )
 
 
 def load_policy_set(source: str | Path | AgentPolicy | None) -> PolicySet:
@@ -240,12 +263,14 @@ def _resolve_inheritance(
     if not own.inherits:
         return own
     merged_tools: dict[str, ToolPolicy] = {}
+    merged_consts: dict[str, object] = {}
     merged_default: BaseToolPolicy = own.default_policy
 
     # Merge parents left-to-right (later parents override earlier).
     for parent_name in own.inherits:
         parent = _resolve_inheritance(parent_name, raw, chain + [name])
         merged_tools.update(parent.tools)
+        merged_consts.update(parent.consts)
         merged_default = parent.default_policy
 
     # Self overrides everything from parents. Check ``model_fields_set`` rather
@@ -254,6 +279,7 @@ def _resolve_inheritance(
     # user's intent is to override, and silently inheriting an ``allow`` from a
     # parent would be fail-open.
     merged_tools.update(own.tools)
+    merged_consts.update(own.consts)
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy
 
@@ -263,4 +289,5 @@ def _resolve_inheritance(
         is_mixin=own.is_mixin,
         default_policy=merged_default,
         tools=merged_tools,
+        consts=merged_consts,
     )

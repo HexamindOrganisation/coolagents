@@ -112,6 +112,72 @@ def test_validate_reports_constraint_error(
     assert "no recognised operator" in err
 
 
+def test_validate_reports_constraint_error_in_default_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bad constraint in a role's default_policy gets the friendly role→tool
+    message too, not a raw schema ValidationError."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  default:\n"
+        "    default_policy:\n"
+        "      mode: deny\n"
+        "      constraints:\n"
+        "        - args.amount ~~ 50\n",
+        encoding="utf-8",
+    )
+    rc = _main_validate(_ns(source=str(bad)))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "default → <default>" in err
+    assert "no recognised operator" in err
+
+
+def test_validate_catches_undefined_const_like_build(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """validate is a subset of build: an undefined const ref fails validate too,
+    not just at platform build time."""
+    p = tmp_path / "c.yaml"
+    p.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  default:\n"
+        "    consts: {cap: 500}\n"
+        "    tools:\n"
+        "      t: {mode: allow, constraints: ['args.x <= consts.missing']}\n",
+        encoding="utf-8",
+    )
+    rc = _main_validate(_ns(source=str(p)))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "undefined constant" in err
+
+
+def test_validate_catches_file_scope_in_wasm_like_build(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """file_scope on a non-deny tool is a build-time rejection; validate must
+    surface it rather than printing "parses cleanly"."""
+    p = tmp_path / "fs.yaml"
+    p.write_text(
+        "version: 1\n"
+        "roles:\n"
+        "  default:\n"
+        "    tools:\n"
+        "      read_file:\n"
+        "        mode: allow\n"
+        "        file_scope: {allowed_paths: ['/srv/*']}\n",
+        encoding="utf-8",
+    )
+    rc = _main_validate(_ns(source=str(p)))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "file_scope" in err
+
+
 def test_validate_handles_missing_file(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -396,6 +462,63 @@ def test_test_allows_when_constraints_pass(
     out = capsys.readouterr().out
     assert rc == 0
     assert "ALLOW" in out
+
+
+_ROLE_GATED_POLICY = """\
+version: 1
+roles:
+  default:
+    tools:
+      deploy:
+        mode: allow
+        constraints:
+          - role == "admin"
+  admin:
+    tools:
+      deploy:
+        mode: allow
+        constraints:
+          - role == "admin"
+"""
+
+
+def test_test_pydantic_forwards_role(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`policy test --engine pydantic --role admin` on a role-scoped constraint
+    must ALLOW — the pydantic path forwards role like wasm/production do."""
+    p = tmp_path / "roles.yaml"
+    p.write_text(_ROLE_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="admin",
+            tool="deploy",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ALLOW" in out
+
+
+def test_test_pydantic_role_denies_non_admin(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p = tmp_path / "roles.yaml"
+    p.write_text(_ROLE_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="deploy",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "DENY" in capsys.readouterr().out
 
 
 def test_test_denies_when_constraint_fails(

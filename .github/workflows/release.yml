@@ -106,7 +106,14 @@ jobs:
 
       - name: Install OPA
         run: |
-          curl -fsSL -o opa https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+          # Per-attempt stall guards + retries against GitHub releases — see
+          # tests.yml for why --max-time (not just --retry-max-time) matters.
+          curl -fsSL \
+            --connect-timeout 15 --max-time 120 \
+            --speed-limit 1024 --speed-time 20 \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            -o opa \
+            https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_linux_amd64_static
           chmod +x opa
           sudo mv opa /usr/local/bin/opa
           opa version

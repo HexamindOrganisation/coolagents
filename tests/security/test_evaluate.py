@@ -10,6 +10,7 @@ path can't. The wrapper's exception contract is covered by
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from hexgate.security import (
     AgentPolicy,
@@ -17,7 +18,6 @@ from hexgate.security import (
     Verdict,
     evaluate_tool_call,
 )
-from hexgate.security.constraints import ConstraintParseError
 
 
 def _policy(spec: dict) -> AgentPolicy:
@@ -91,17 +91,10 @@ def test_evaluate_out_of_scope_path_denies_with_hint() -> None:
     assert verdict.hint is not None
 
 
-def test_evaluate_propagates_malformed_constraint() -> None:
-    """A bad constraint is a config error, not a denial — it must raise."""
-    with pytest.raises(ConstraintParseError):
-        evaluate_tool_call(
-            _policy(
-                {
-                    "tools": {
-                        "refund": {"mode": "allow", "constraints": ["args.amount <="]}
-                    }
-                }
-            ),
-            "refund",
-            {"amount": 10},
+def test_malformed_constraint_rejected_at_load() -> None:
+    """A bad constraint is a config error, not a denial — the model-level
+    grammar validator now rejects it at policy load, before any tool call."""
+    with pytest.raises(ValidationError):
+        _policy(
+            {"tools": {"refund": {"mode": "allow", "constraints": ["args.amount <="]}}}
         )
