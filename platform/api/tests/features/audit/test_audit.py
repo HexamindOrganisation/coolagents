@@ -469,29 +469,72 @@ def test_summarize_classifies_grouping_sets() -> None:
         "allow": 6,
         "deny": 4,
         "needs_approval": 0,
+        "banned": 0,
     }
     # Breakdowns sorted by "all" desc; grand total must NOT leak into any.
     assert data["by_agent"] == [
-        {"key": "researcher", "all": 9, "allow": 6, "deny": 3, "needs_approval": 0},
-        {"key": "scraper", "all": 1, "allow": 0, "deny": 1, "needs_approval": 0},
+        {
+            "key": "researcher",
+            "all": 9,
+            "allow": 6,
+            "deny": 3,
+            "needs_approval": 0,
+            "banned": 0,
+        },
+        {
+            "key": "scraper",
+            "all": 1,
+            "allow": 0,
+            "deny": 1,
+            "needs_approval": 0,
+            "banned": 0,
+        },
     ]
     assert data["by_role"] == [
-        {"key": "analyst", "all": 6, "allow": 6, "deny": 0, "needs_approval": 0},
-        {"key": "", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
+        {
+            "key": "analyst",
+            "all": 6,
+            "allow": 6,
+            "deny": 0,
+            "needs_approval": 0,
+            "banned": 0,
+        },
+        {"key": "", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0, "banned": 0},
     ]
     assert data["by_tool"] == [
-        {"key": "read_file", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
+        {
+            "key": "read_file",
+            "all": 4,
+            "allow": 0,
+            "deny": 4,
+            "needs_approval": 0,
+            "banned": 0,
+        },
     ]
     assert data["by_user"] == [
-        {"key": "Alice", "all": 6, "allow": 6, "deny": 0, "needs_approval": 0},
-        {"key": "Bob", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
+        {
+            "key": "Alice",
+            "all": 6,
+            "allow": 6,
+            "deny": 0,
+            "needs_approval": 0,
+            "banned": 0,
+        },
+        {
+            "key": "Bob",
+            "all": 4,
+            "allow": 0,
+            "deny": 4,
+            "needs_approval": 0,
+            "banned": 0,
+        },
     ]
 
 
 def test_summarize_empty_result() -> None:
     data = summarize(_summary_result([]), project_id="p1", since_hours=24)
     assert data == {
-        "totals": {"all": 0, "allow": 0, "deny": 0, "needs_approval": 0},
+        "totals": {"all": 0, "allow": 0, "deny": 0, "needs_approval": 0, "banned": 0},
         "by_agent": [],
         "by_role": [],
         "by_tool": [],
