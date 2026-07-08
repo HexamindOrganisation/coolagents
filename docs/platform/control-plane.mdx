@@ -57,8 +57,16 @@ runs on SQLite.
 - `GET /v1/projects/:id/agents` — list agents with their YAMLs
 - `GET /v1/projects/:id/agents/:name` — read one agent
 - `PUT /v1/projects/:id/agents/:name` — save agent / policy / system YAMLs
-- `WS /v1/projects/:id/serve` — producer socket (the `hexgate serve` CLI dials here)
+- `POST /v1/agents` — register a manifest (`hexgate register` / `serve` auto-register)
+- `GET /v1/agents/:name` — read an agent's current policy (the `hexgate serve` fetch)
+- `WS /v1/serve` — producer socket (the `hexgate serve` CLI dials here)
 - `WS /v1/projects/:id/chat` — consumer socket (the dashboard Playground dials here)
+
+The `/v1/agents…` and `/v1/serve` routes are **not** project-scoped in the path —
+the project is resolved from the bearer token (carried in the WebSocket
+subprotocol for `serve`), so a `fty_live_…` key both authenticates *and* selects
+the project. Only the dashboard-facing routes (`/projects/:id/…`, `chat`) take an
+explicit project id.
 
 ## Health & readiness
 

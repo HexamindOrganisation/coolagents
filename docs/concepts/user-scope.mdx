@@ -32,34 +32,52 @@ No manual `attenuate_for_user`, `extract_facts`, or `ToolUseContext` plumbing at
 the call site. The runtime mints the per-request token, picks the `billing`
 role's policy file, and evaluates its constraints against each tool call.
 
-## FastAPI middleware pattern
+## FastAPI pattern
 
-The cleanest production shape — set the scope once in middleware, every endpoint
-runs in the right user's role:
+The scope must enclose the **streaming iteration itself**, because the role is
+resolved lazily — read on each tool call as the agent runs (see [Notes](#notes)).
+The robust shape is to open the `User` scope *inside the generator* that produces
+the response:
 
 ```python
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from hexgate import User, load_hexgate_agent, stream_agent
 
 app = FastAPI()
 agent, handler = load_hexgate_agent("support_bot")          # at startup
 
-@app.middleware("http")
-async def attach_user(request, call_next):
-    auth = await authenticate(request)                       # your auth
-    async with User(
-        user_id=auth.id,
-        role=auth.role,                                       # e.g. "billing"
-        session_id=request.state.session_id,
-        ttl_seconds=300,
-    ):
-        return await call_next(request)
-
 @app.post("/chat")
-async def chat(req):
-    async for event in stream_agent(agent, handler, req.message):
-        yield event                                          # already scoped
+async def chat(request: Request, req: ChatRequest):
+    auth = await authenticate(request)                       # your auth
+
+    async def scoped_events():
+        # scope wraps the iteration, so every tool call sees the role
+        async with User(
+            user_id=auth.id,
+            role=auth.role,                                   # e.g. "billing"
+            session_id=request.state.session_id,
+            ttl_seconds=300,
+        ):
+            async for event in stream_agent(agent, handler, req.message):
+                yield event
+
+    return StreamingResponse(scoped_events())
 ```
+
+<Warning>
+**Don't scope auth in `@app.middleware("http")`.** Starlette's
+`BaseHTTPMiddleware` returns the response *before* the `StreamingResponse` body is
+iterated, so a `async with User(...): return await call_next(request)` exits the
+scope before the first event is produced. Because hexgate resolves the role at
+tool-call time, every call during streaming then reads `role=None` and silently
+falls back to the `default` policy — a silent authorization downgrade, no error
+raised. Scope inside the generator (above), or use a pure **ASGI** middleware that
+wraps the `send` channel — not `BaseHTTPMiddleware`.
+</Warning>
+
+For a non-streaming endpoint, `async with User(...): return await
+invoke_agent(...)` is fine — the agent runs to completion inside the scope.
 
 ## `User` fields
 
