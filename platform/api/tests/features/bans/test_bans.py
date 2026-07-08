@@ -282,10 +282,10 @@ def test_revoke_ban_cross_project_404(client: TestClient) -> None:
 
 def test_feed_returns_active_bans_only_minimal_shape(client: TestClient) -> None:
     pid = _make_project(client)
-    client.post(
+    active = client.post(
         f"/v1/projects/{pid}/bans",
         json={"ban_type": "agent", "target_agent_name": "a1", "reason": "why"},
-    )
+    ).json()
     revoked = client.post(
         f"/v1/projects/{pid}/bans",
         json={"ban_type": "user", "target_user_id": "u-gone"},
@@ -297,14 +297,16 @@ def test_feed_returns_active_bans_only_minimal_shape(client: TestClient) -> None
     assert r.status_code == 200
     entries = r.json()
     assert len(entries) == 1
-    # Minimal shape: no id / created_by / timestamps leak to the SDK.
+    # Carries ban_id (so enforcement events link back); no created_by/timestamps.
     assert set(entries[0].keys()) == {
+        "ban_id",
         "ban_type",
         "target_agent_name",
         "target_user_id",
         "reason",
     }
     assert entries[0]["target_agent_name"] == "a1"
+    assert entries[0]["ban_id"] == active["id"]
 
 
 def test_feed_etag_304_then_changes(client: TestClient) -> None:

@@ -205,8 +205,10 @@ class BanRead(BaseModel):
 
 
 class BanFeedEntry(BaseModel):
-    """Minimal ``GET /v1/bans`` shape — no id/created_by/timestamps leak to the SDK."""
+    """``GET /v1/bans`` shape — carries ``ban_id`` so the SDK gate can echo it
+    into a ``BanEnforcementEvent``; no created_by/timestamps leak."""
 
+    ban_id: str
     ban_type: str
     target_agent_name: Optional[str]
     target_user_id: Optional[str]

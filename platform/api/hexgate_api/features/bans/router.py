@@ -32,6 +32,7 @@ def _ban_read(ban: Ban) -> BanRead:
 
 def _feed_entry(ban: Ban) -> BanFeedEntry:
     return BanFeedEntry(
+        ban_id=ban.id,
         ban_type=ban.ban_type,
         target_agent_name=ban.target_agent_name,
         target_user_id=ban.target_user_id,
