@@ -166,12 +166,8 @@ class ProjectUpdate(BaseModel):
 
 
 class BanCreate(BaseModel):
-    """``POST /v1/projects/{project_id}/bans`` body.
-
-    Exactly one target is set and it must match ``ban_type``: an ``agent``
-    ban carries ``target_agent_name``; a ``user`` ban carries
-    ``target_user_id``. The mismatched field must be omitted (validated
-    here so a bad shape is a 422 before it reaches the service)."""
+    """``POST /v1/projects/{project_id}/bans`` body — exactly one target,
+    matching ``ban_type`` (enforced below, so a bad shape is a 422)."""
 
     ban_type: str = Field(pattern="^(agent|user)$")
     target_agent_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
@@ -194,8 +190,7 @@ class BanCreate(BaseModel):
 
 
 class BanRead(BaseModel):
-    """Dashboard wire shape for a ban row — includes the audit trail
-    (who created it, when, whether it's been revoked)."""
+    """A ban row for the dashboard, with its created/revoked audit trail."""
 
     id: str
     project_id: str
@@ -210,9 +205,7 @@ class BanRead(BaseModel):
 
 
 class BanFeedEntry(BaseModel):
-    """Minimal shape served to the SDK on ``GET /v1/bans`` — only what the
-    invoke-time gate needs to refuse and explain. Deliberately omits ``id``,
-    ``created_by``, and timestamps (no control-plane detail leaks to the SDK)."""
+    """Minimal ``GET /v1/bans`` shape — no id/created_by/timestamps leak to the SDK."""
 
     ban_type: str
     target_agent_name: Optional[str]
@@ -470,11 +463,7 @@ class DecisionAccepted(BaseModel):
 
 
 class BanEnforcementEvent(AuditEnvelope):
-    """One execution refused by a kill-switch ban, logged from the SDK's
-    invoke-time gate. Sibling of :class:`DecisionEvent` on the shared audit
-    envelope; mirrors the ``ban_enforcement`` table. No tool/outcome — the refusal
-    happens before any tool call, and every ``ban_enforcement`` row is a ban enforcement by
-    definition."""
+    """One kill-switch ban enforcement; mirrors the ban_enforcement table."""
 
     ban_type: str = Field(pattern="^(agent|user)$")
     ban_id: str = Field(min_length=1, max_length=64)
@@ -494,8 +483,7 @@ class LlmInvocationAccepted(BaseModel):
 
 
 class BanEnforcementRow(BaseModel):
-    """One ``ban_enforcement`` row — powers the Kill Switch page's "recent blocked
-    attempts" (consumed in Phase 3)."""
+    """A ``ban_enforcement`` row for the Kill Switch page (consumed in Phase 3)."""
 
     event_id: UUID
     occurred_at: datetime

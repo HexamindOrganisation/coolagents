@@ -109,12 +109,8 @@ async def ingest_ban_enforcement(
     session: AsyncSession = Depends(get_session),
     clickhouse_client=Depends(require_clickhouse),
 ) -> BanEnforcementAccepted:
-    """Ingest one kill-switch ban enforcement — an execution refused at the SDK's
-    invoke gate. Sibling of the decision ingest; project_id (bearer),
-    received_at (CH default), and agent_version_id (platform lookup) are
-    server-resolved. Idempotent on event_id via the ReplacingMergeTree engine
-    (retry with the SAME event_id; a fresh id turns a retry into a duplicate).
-    """
+    """Ingest one ban enforcement (bearer). project_id / received_at /
+    agent_version_id are server-resolved; idempotent on event_id."""
     try:
         validate_event_window(body.occurred_at)
     except AuditEventOutOfWindow as exc:

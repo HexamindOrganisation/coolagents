@@ -304,36 +304,23 @@ class Tool(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# Kill switch — operator-controlled hard blocks that override policy.
-#
-# A ``Ban`` refuses execution outright, evaluated at a new invoke-time gate in
-# the SDK (before the LLM runs) rather than inside the per-tool policy engine.
-# Two targets in v1: an agent (all execution of one agent) or a user_id (all
-# execution by one end-user, across every agent in the project). Tool-level
-# bans are intentionally out of scope — that overlaps with a policy ``deny``.
+# Kill switch — operator hard blocks that override policy at the SDK's
+# invoke-time gate. v1 targets: a whole agent or a whole user_id.
 # ---------------------------------------------------------------------------
 
 
 class Ban(SQLModel, table=True):
-    """A hard block that overrides policy for one agent or one user_id.
+    """A hard block overriding policy for one agent or user_id, project-scoped.
 
-    Scoped to a project (matches the SDK's project-scoped bearer auth).
-    ``ban_type`` is a string (not an Enum) for the same reason as roles —
-    new target kinds without a migration; validated at the API layer.
-
-    A ban is *active* while ``revoked_at`` is null; revoking is a soft
-    delete that preserves the audit trail (who created / revoked it, when).
-    The row itself is the control-plane record — there is no separate admin
-    audit log. At most one active ban per target is enforced at the service
-    layer (like :class:`Invitation`), not via a partial unique index, which
-    SQLite doesn't reliably support.
+    Active while ``revoked_at`` is null; revoke is a soft delete keeping the
+    who/when trail (the row is the audit record). One active ban per target,
+    enforced in the service like :class:`Invitation` (no SQLite partial index).
     """
 
     id: str = Field(primary_key=True)  # new_id(Ban) -> "ban_…"
     project_id: str = Field(foreign_key="project.id", index=True)
     ban_type: str = Field(index=True)  # "agent" | "user"
-    # Exactly one target is set, matching ban_type. A user ban leaves
-    # target_agent_name null — it applies to every agent in the project.
+    # Exactly one set, matching ban_type; a user ban leaves this null.
     target_agent_name: Optional[str] = Field(default=None, index=True)
     target_user_id: Optional[str] = Field(default=None, index=True)
     reason: Optional[str] = None

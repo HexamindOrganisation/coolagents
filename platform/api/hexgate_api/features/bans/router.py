@@ -1,9 +1,4 @@
-"""Ban endpoints — dashboard CRUD (cookie, project-admin) + SDK active feed (bearer).
-
-The dashboard routes manage bans under a project; the SDK route serves the
-active ban set for the token's project with an ETag so the invoke-time gate
-can poll cheaply. A ban overrides policy, so managing one is admin/owner-only.
-"""
+"""Ban endpoints — dashboard CRUD (cookie, project-admin) + SDK active feed (bearer)."""
 
 import hashlib
 import json
@@ -51,9 +46,7 @@ async def api_create_ban(
     membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> BanRead:
-    """Create a ban in a project. Admin or owner only — a ban overrides
-    policy and stops execution. 409 if an active ban already targets the
-    same agent/user (edit the existing one instead of stacking)."""
+    """Create a ban (admin/owner); 409 if one already targets this agent/user."""
     from hexgate_api.features.bans.service import BanConflictError, create_ban
 
     caller, _member = membership
@@ -79,8 +72,7 @@ async def api_list_bans(
     _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> list[BanRead]:
-    """List bans in a project (active only unless ``include_revoked``).
-    Admin or owner only — the same gate that manages them."""
+    """List a project's bans (admin/owner); active-only unless ``include_revoked``."""
     from hexgate_api.features.bans.service import list_bans
 
     rows = await list_bans(
@@ -96,8 +88,7 @@ async def api_revoke_ban(
     membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Revoke (soft-delete) a ban. Admin or owner only. 404 if the ban
-    doesn't exist in this project. Returns 204, like member removal."""
+    """Revoke a ban (admin/owner) → 204; 404 if not in this project."""
     from hexgate_api.features.bans.service import BanNotFoundError, revoke_ban
 
     caller, _member = membership
@@ -120,12 +111,7 @@ async def api_list_active_bans_by_token(
     session: AsyncSession = Depends(get_session),
     if_none_match: str | None = Header(default=None, alias="If-None-Match"),
 ) -> list[BanFeedEntry] | Response:
-    """SDK-facing active-ban feed — project comes from the bearer token.
-
-    The invoke-time gate polls this per run; the ETag lets an unchanged ban
-    set return ``304`` in one short round-trip. Decoupled from the agent
-    policy ETag so toggling a ban doesn't invalidate policy caches.
-    """
+    """SDK active-ban feed for the token's project; ETag → 304 when unchanged."""
     from hexgate_api.features.bans.service import active_bans_for_project
 
     rows = await active_bans_for_project(session, project_id=project_id)

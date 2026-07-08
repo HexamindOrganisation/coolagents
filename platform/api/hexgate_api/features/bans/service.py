@@ -1,10 +1,7 @@
-"""Ban persistence: create / list / revoke (dashboard) + active feed (SDK).
+"""Ban persistence: create / list / revoke + the active feed for the SDK.
 
-A ban overrides policy — it refuses execution of one agent, or of one
-end-user across every agent in the project. *Active* means ``revoked_at``
-is null; revoke is a soft delete that keeps the who/when trail on the row.
-At most one active ban per target is enforced here (SQLite has no reliable
-partial unique index), mirroring the invitation dedup pattern.
+Active = ``revoked_at`` is null; revoke is a soft delete. At most one active
+ban per target, enforced here (SQLite has no reliable partial unique index).
 """
 
 from sqlmodel import select
@@ -53,9 +50,8 @@ async def create_ban(
     target_user_id: str | None,
     reason: str | None,
 ) -> Ban:
-    """Insert an active ban. Raises :class:`BanConflictError` if an active
-    ban already targets the same agent/user in this project (the operator
-    likely wants to edit the existing one, not stack duplicates)."""
+    """Insert an active ban; :class:`BanConflictError` if one already targets
+    this agent/user in the project."""
     existing = await _active_ban_for_target(
         session,
         project_id=project_id,
@@ -87,8 +83,7 @@ async def list_bans(
     project_id: str,
     include_revoked: bool = False,
 ) -> list[Ban]:
-    """Bans in a project, newest first. Active-only unless
-    ``include_revoked`` (the dashboard's default view hides revoked ones)."""
+    """Bans in a project, newest first; active-only unless ``include_revoked``."""
     conditions = [Ban.project_id == project_id]
     if not include_revoked:
         conditions.append(Ban.revoked_at.is_(None))  # type: ignore[union-attr]
@@ -103,12 +98,8 @@ async def revoke_ban(
     ban_id: str,
     revoked_by_user_id: str,
 ) -> Ban:
-    """Soft-delete a ban (stamp ``revoked_at`` / ``revoked_by_user_id``).
-
-    Scoped by ``project_id`` so one project can't revoke another's ban.
-    Raises :class:`BanNotFoundError` if the id is unknown in this project.
-    Idempotent: re-revoking an already-revoked ban leaves it unchanged.
-    """
+    """Soft-delete a ban, project-scoped so no cross-project revoke.
+    :class:`BanNotFoundError` if unknown here; idempotent if already revoked."""
     ban = (
         await session.exec(
             select(Ban).where(Ban.id == ban_id, Ban.project_id == project_id)
@@ -129,8 +120,7 @@ async def revoke_ban(
 async def active_bans_for_project(
     session: AsyncSession, *, project_id: str
 ) -> list[Ban]:
-    """Active bans served to the SDK feed, in a stable order (by id) so the
-    ETag is deterministic across requests."""
+    """Active bans for the SDK feed, ordered by id for a deterministic ETag."""
     stmt = (
         select(Ban)
         .where(

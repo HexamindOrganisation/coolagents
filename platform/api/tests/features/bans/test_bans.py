@@ -1,14 +1,5 @@
-"""Tests for the kill-switch ban feature.
-
-Covers the dashboard CRUD routes (``POST/GET /projects/{id}/bans``,
-``DELETE …/{ban_id}``) under cookie + project-admin auth, the SDK active-ban
-feed (``GET /v1/bans``) with ETag/304, and tenant isolation (one project
-can't see or revoke another's bans). Also pins the audit-side contract that
-came with the ``banned`` outcome: a ban event carries no tool_name, and
-``banned`` never counts toward deny-rate anomalies.
-
-Fixtures mirror test_projects.py / test_orgs.py.
-"""
+"""Tests for the kill-switch ban feature: dashboard CRUD, the SDK active-ban
+feed (ETag/304), and tenant isolation. Fixtures mirror test_projects.py."""
 
 from __future__ import annotations
 

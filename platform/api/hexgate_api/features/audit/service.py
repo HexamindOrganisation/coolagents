@@ -168,9 +168,7 @@ def insert_ban_enforcement(
     project_id: str,
     agent_version_id: str,
 ) -> None:
-    """Write one ban enforcement to ban_enforcement. Raises ClickHouseError on insert failure;
-    it propagates so the caller maps it to a transport error. No payload caps —
-    a ban enforcement carries no arguments/hint blobs."""
+    """Write one row to ban_enforcement (no payload caps — no arguments/hint blobs)."""
     row = [
         event.event_id,
         event.occurred_at,
@@ -199,8 +197,7 @@ def list_ban_enforcements(
     since_hours: int,
     limit: int = 50,
 ) -> list[BanEnforcementRow]:
-    """Recent ban enforcements for a project (newest first). Its own table, so it never
-    touches the policy-decision aggregations or their totals."""
+    """Recent ban enforcements for a project, newest first."""
     sql = (
         "SELECT event_id, occurred_at, agent_name, user_id, session_id, "
         "ban_type, ban_id, reason FROM ban_enforcement "
