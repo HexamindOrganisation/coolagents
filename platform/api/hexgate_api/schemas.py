@@ -442,7 +442,11 @@ class AuditOutcome(StrEnum):
 class DecisionEvent(AuditEnvelope):
     """One policy decision; mirrors the policy_decision table."""
 
-    tool_name: str = Field(min_length=1, max_length=256)
+    # Required for allow/deny/needs_approval. A kill-switch ``banned`` event is
+    # refused at the invoke gate before any tool call, so it carries no tool —
+    # the empty value is legal only for that outcome (see the validator below),
+    # not a field-level min_length that would forbid it outright.
+    tool_name: str = Field(default="", max_length=256)
     outcome: AuditOutcome
     role: str = Field(default="", max_length=256)
     error_type: str = Field(default="", max_length=64)
@@ -454,6 +458,14 @@ class DecisionEvent(AuditEnvelope):
     # Byte caps enforced after serialization in audit.insert_decision.
     hint: Optional[dict] = None
     arguments: Optional[dict] = None
+
+    @model_validator(mode="after")
+    def _require_tool_unless_banned(self) -> "DecisionEvent":
+        # Every outcome except a kill-switch ban names the tool it decided on;
+        # ``banned`` is refused before any tool runs, so it alone may omit it.
+        if self.outcome != AuditOutcome.BANNED and not self.tool_name:
+            raise ValueError("tool_name is required unless outcome is 'banned'")
+        return self
 
 
 class DecisionAccepted(BaseModel):
