@@ -7,8 +7,8 @@ from typing import Any
 
 import pytest
 
-import hexgate.audit as audit_mod
 from hexgate.audit import AuditEvent
+from hexgate.tracing import _senders
 from hexgate.runtime.context import User
 from hexgate.security.decision import DecisionOutcome, Verdict
 from hexgate.security.enforcer import PolicyEnforcer
@@ -33,9 +33,9 @@ class _CapturingSender:
 
 @pytest.fixture(autouse=True)
 def _reset_audit_senders() -> None:
-    audit_mod._senders.clear()
+    _senders._senders.clear()
     yield
-    audit_mod._senders.clear()
+    _senders._senders.clear()
 
 
 def test_no_sender_means_no_emit() -> None:

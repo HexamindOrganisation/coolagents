@@ -155,11 +155,11 @@ def test_auto_mode_respects_hexgate_local_mode(
     create_agent under local mode stays bare — the user explicitly asked
     for no platform IO from this process."""
     import hexgate.cloud.client as client_mod
-    from hexgate import audit
+    from hexgate.tracing._senders import _LOCAL_MODE_ENV
 
     monkeypatch.setenv("HEXGATE_API_KEY", "fty_test_demo_dummybiscuit")
     monkeypatch.setenv("HEXGATE_BIND_AGENTS", "1")
-    monkeypatch.setenv(audit._LOCAL_MODE_ENV, "1")
+    monkeypatch.setenv(_LOCAL_MODE_ENV, "1")
     # The platform must never be contacted — fail hard if a client is built.
     monkeypatch.setattr(
         client_mod,
@@ -182,9 +182,9 @@ def test_bind_policy_true_overrides_hexgate_local_mode(
 ) -> None:
     """``bind_policy=True`` is the explicit-caller form — local mode shouldn't
     silently veto it. The kill switch only short-circuits the auto-detect path."""
-    from hexgate import audit
+    from hexgate.tracing._senders import _LOCAL_MODE_ENV
 
-    monkeypatch.setenv(audit._LOCAL_MODE_ENV, "1")
+    monkeypatch.setenv(_LOCAL_MODE_ENV, "1")
     monkeypatch.setattr(
         factory,
         "_bind_policy",

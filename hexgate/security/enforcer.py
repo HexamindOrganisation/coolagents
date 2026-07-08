@@ -13,9 +13,10 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from hexgate.audit import AuditEvent, AuditSender, configure
+from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_user
 from hexgate.security.decision import Decision, PolicyEngine
+from hexgate.tracing._senders import AuditSender
 
 _log = logging.getLogger(__name__)
 
