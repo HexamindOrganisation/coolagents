@@ -38,3 +38,9 @@ ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
 ROLE_MEMBER = "member"
 ALL_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER}
+
+# Kill-switch ban targets — strings (not Enum) for the same reason as roles:
+# validated at the API layer where clients send the value as a request field.
+BAN_TYPE_AGENT = "agent"
+BAN_TYPE_USER = "user"
+ALL_BAN_TYPES = {BAN_TYPE_AGENT, BAN_TYPE_USER}
