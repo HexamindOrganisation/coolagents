@@ -3,16 +3,64 @@ title: "hexgate serve"
 description: "Bridge a local agent to the platform's WebSocket relay."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — hexgate serve](https://github.com/HexamindOrganisation/hexgate#hexgate-serve--bridge-a-local-agent-to-the-platforms-relay).
-</Note>
+`hexgate serve` takes the **same** `module:attr` spec as [`hexgate
+register`](/cli/register). The CLI imports the agent, derives the manifest in one
+call, auto-registers on the platform (idempotent — content-hash short-circuits
+no-ops), fetches the operator's policy from the cloud, and opens the WebSocket
+relay so the dashboard's [Playground](/platform/dashboard) can drive it. Policy
+edits in `/policies` take effect at the next chat-turn boundary.
 
 ```bash
-hexgate serve examples.customer_bot:agent
-hexgate serve examples.customer_bot:agent --no-auto-register
+hexgate serve my_app.agents:my_agent
+
+# CI / deliberate-deploy: error if not pre-registered
+hexgate serve my_app.agents:my_agent --no-auto-register
 ```
 
-Takes the same `module:attr` spec as `hexgate register`. Imports the agent,
-derives the manifest, auto-registers, fetches policy, and opens the WebSocket
-relay so the dashboard's Playground can drive it.
+The bridge works like Cloudflare Tunnel or ngrok — your local agent runtime is
+reachable from the dashboard without exposing a port.
+
+## Behaviour
+
+- Loads the agent object from the `module:attr` spec — same form as `hexgate
+  register`. The agent's name, tools, model, and system prompt come from the
+  object directly (no flags duplicating what's already in code).
+- Auto-registers the manifest on first run via `POST /v1/agents` (idempotent).
+  Skip with `--no-auto-register` for CI / deliberate deployments.
+- Fetches the operator's policy from `GET /v1/agents/{name}`. Local code is
+  authoritative for code; the platform is authoritative for policy.
+- Connects `wss://${HEXGATE_API_URL}/v1/serve` with the bearer percent-encoded
+  into the WebSocket subprotocol (the WS handshake grammar doesn't allow `=`
+  padding in plain headers). Server echoes `hexgate.v1` to confirm the contract.
+- Sends a `hello` frame announcing the agent name (the dashboard's "Serving"
+  indicator reads this).
+- On each inbound `chat` message, **refreshes the active policy** before running.
+  Refresh is an `If-None-Match` round-trip: a `304` reuses the cached WASM module,
+  a `200` swaps in the new bundle. Dashboard edits take effect at turn boundaries
+  without restarting the process or re-wrapping the tools.
+- Streams every `StreamEvent` (text deltas, tool start/end, run end) back as JSON.
+- Routes `approval_required` tool calls per `--approval-mode` (default `ask`):
+  `ask` sends the request to the connected Playground for a human to decide;
+  `auto-approve` / `auto-deny` skip the round-trip and apply the outcome directly
+  (script / CI mode).
+- Reconnects with exponential backoff on socket drop.
+
+<Note>
+There is no `HEXGATE_AGENT_NAME` env var, `--agent` flag, or `--use` flag on
+`serve` — the `module:attr` spec carries everything. The name lives in the
+agent's `.name` attribute (or the `name=` kwarg you passed to `create_react_agent`
+/ `create_agent`).
+</Note>
+
+## Env vars
+
+```bash
+# in your .env
+HEXGATE_API_KEY=fty_live_<project>_<biscuit>
+HEXGATE_API_URL=http://localhost:8000       # optional; only when self-hosting the platform locally
+
+uv run hexgate serve my_app.agents:my_agent
+```
+
+See the [platform overview](/platform/overview) for the full three-terminal
+local setup.

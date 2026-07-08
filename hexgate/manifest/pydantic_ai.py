@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from hexgate.cli.register.models import (
+from hexgate.manifest.models import (
     AgentFramework,
     AgentManifest,
     InputProperty,
@@ -80,7 +80,7 @@ def _extract_system_prompt(agent: Agent) -> str | None:
             "pydantic_ai Agent exposes neither _system_prompts nor "
             "_instructions; the manifest will have system_prompt=None. "
             "This usually means pydantic_ai renamed the internals — update "
-            "hexgate.cli.register.pydantic_ai._extract_system_prompt."
+            "hexgate.manifest.pydantic_ai._extract_system_prompt."
         )
         return None
     parts: list[str] = []

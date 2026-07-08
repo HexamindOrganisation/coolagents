@@ -7,7 +7,7 @@ The two quickstarts aren't competing — they answer different questions.
 
 ## Inner loop — `hexgate chat`
 
-A single-process REPL against a local or builtin agent. No platform, no Docker,
+A single-process REPL against a local or registered agent. No platform, no Docker,
 no browser. The chat command sets `HEXGATE_LOCAL_MODE=1` automatically so audit
 stays on your machine even if `HEXGATE_API_KEY` lives in your `.env` from an earlier
 session. Denies and approval-required calls render as inline panels in the
@@ -21,7 +21,8 @@ shaping a system prompt.
 
 Same agent code, but the policy + decisions round-trip through the platform.
 You get auditable decisions in ClickHouse, the shared Playground UI, and live
-policy edits via the dashboard.
+policy edits via the dashboard. The platform is [Hexgate Cloud](/platform/hosted)
+by default (set `HEXGATE_API_KEY`, no infra) or [self-hosted](/platform/control-plane).
 
 **Reach for `serve` when** you're collaborating on an agent's behaviour,
 debugging a production-like trace, or demoing.
@@ -31,8 +32,10 @@ debugging a production-like trace, or demoing.
 | Path | Needs platform? | Audit destination | Policy edits visible at | Best for |
 |------|-----------------|-------------------|--------------------------|----------|
 | `hexgate chat --agent ...` | No | Local terminal panel | Edit + restart (hot-reload only when `HEXGATE_LOCAL_POLICY` is set) | Inner loop, policy authoring |
-| `hexgate serve --agent ...` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
+| `hexgate serve module.path:attr` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
 
-Both commands accept either a plain agent id (`--agent researcher`) or a
-uvicorn-style `module.path:attr` spec (`--agent examples.customer_bot:agent`),
-so the same entry-point string works in both workflows.
+`hexgate chat` takes `--agent`, accepting either a plain agent id
+(`--agent example_agent`) or a uvicorn-style `module.path:attr` spec
+(`--agent my_app.agents:my_agent`). `hexgate serve` takes the spec as a
+positional argument (`hexgate serve my_app.agents:my_agent`) — there's no
+`--agent` flag on `serve`. The same `module.path:attr` entry-point works in both.

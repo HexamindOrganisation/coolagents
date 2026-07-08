@@ -1,0 +1,75 @@
+---
+title: "Hexgate Cloud (hosted)"
+description: "The zero-infra path to remote policy enforcement and audit — set one env var."
+---
+
+**Hexgate Cloud** is the hosted platform at
+[app.hexgate.ai](https://app.hexgate.ai). It's the fastest way to run your agent
+against remote policy enforcement: no control plane to run, no ClickHouse to
+operate — you get a token and set one environment variable.
+
+Because `HEXGATE_API_URL` **defaults to `https://app.hexgate.ai`**, the hosted
+path needs only `HEXGATE_API_KEY`. Self-hosting is the same SDK code with
+`HEXGATE_API_URL` repointed at your own control plane — see the
+[platform overview](/platform/overview) for the full comparison.
+
+## Get a key
+
+1. Sign up at [app.hexgate.ai](https://app.hexgate.ai).
+2. Create a project (or open the one seeded for you).
+3. Go to **Tokens**, click **Mint new token**, and copy the value (`fty_live_…`).
+   It's shown in full once.
+4. Add it to your environment:
+
+   ```bash
+   # .env
+   HEXGATE_API_KEY=fty_live_<project>_<biscuit>
+   # HEXGATE_API_URL is unset — defaults to https://app.hexgate.ai
+   ```
+
+## Use it from the SDK
+
+With the key set, any adapter or loader routes policy + audit through the cloud —
+no other code change. This is [Shape B](/guides/build-an-agent#shape-b-i-want-the-platform-to-own-the-agents-yaml):
+
+```python
+from hexgate import load_hexgate_agent, stream_agent, User
+
+agent, handler = load_hexgate_agent("support_bot")   # the seeded agent; note the underscore
+
+async with User(user_id="alice", role="billing"):
+    async for event in stream_agent(agent, handler, "refund customer 30"):
+        ...
+```
+
+Or wrap an existing framework agent ([Shape A](/guides/build-an-agent#shape-a-i-have-an-existing-framework-agent)) — the
+adapter picks up `HEXGATE_API_KEY` from the environment automatically.
+
+## Serve a local agent to the cloud dashboard
+
+Point [`hexgate serve`](/cli/serve) at the cloud and drive your locally-running
+agent from the browser Playground:
+
+```bash
+HEXGATE_API_KEY=fty_live_... hexgate serve my_app.agents:my_agent
+```
+
+On first serve the agent's manifest auto-registers and a starter role-aware policy
+is generated — you don't register it separately. Edit the policy in the dashboard's **Policies** page — the next chat
+turn picks it up, no restart.
+
+## What you get
+
+- Remote [policy decisions](/concepts/policy-decision) evaluated against your
+  project's signed [WASM bundles](/policy/wasm-bundles)
+- An [audit trail](/concepts/audit-trail) of every decision, queryable in the
+  dashboard
+- A browser policy editor + [Playground](/platform/dashboard)
+- Turn-level policy refresh — edit in the UI, the next chat turn enforces it
+
+## When to self-host instead
+
+Reach for [self-hosting](/platform/control-plane) when you need the control plane
+and audit data inside your own infrastructure — data residency, air-gapped
+environments, or compliance requirements that keep decision logs on-premises. It's
+the same platform, run by you.

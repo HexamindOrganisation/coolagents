@@ -3,16 +3,51 @@ title: "hexgate policy"
 description: "validate, show-rego, test, build, keygen — policy authoring CLI."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — The hexgate policy CLI](https://github.com/HexamindOrganisation/hexgate#the-hexgate-policy-cli).
-</Note>
+The `hexgate policy` subcommands author, inspect, and compile policies without a
+running platform. See [WASM bundles](/policy/wasm-bundles) for what `build`
+produces and [signing](/policy/signing) for `keygen`.
 
 ```bash
+# Validate a policy.yaml without the network — parse + check every constraint
 hexgate policy validate policy.yaml
+
+# See the Rego your YAML compiles to (stdout)
 hexgate policy show-rego policy.yaml
+
+# Dry-run a single decision. --engine wasm compiles + evaluates in wasmtime
+# (matching production); the default pydantic engine needs no opa.
 hexgate policy test policy.yaml --role billing --tool refund_order \
     --args '{"amount": 200, "currency": "USD"}' --engine wasm
+
+# Compile a bundle: writes {stem}.yaml + .rego + .wasm + .bundle.json
 hexgate policy build policy.yaml --out ./bundle
-hexgate policy keygen --out ./keys/dev
+
+# Generate an Ed25519 keypair for signing bundles
+hexgate policy keygen --out ./keys/dev          # → dev.private (0600) + dev.public
+```
+
+## Prerequisite — `opa`
+
+The WASM compile step shells out to the [Open Policy
+Agent](https://www.openpolicyagent.org/) binary. Install it once:
+
+```bash
+brew install opa            # macOS
+# or see https://www.openpolicyagent.org/docs/latest/#running-opa
+```
+
+Without `opa` on `PATH`, `hexgate policy build --no-wasm` still emits the yaml +
+rego (no `.wasm`), and the pydantic engine keeps working. Override the binary
+location with `HEXGATE_OPA_BIN`.
+
+## Reading a denied `test`
+
+On a denied decision, `test` prints the reason; the wasm engine additionally
+lists each violated constraint string verbatim:
+
+```text
+✗ DENY · billing → refund_order({"amount": 700})
+  reason: Policy denied tool "refund_order": args.amount <= 500
+  violations:
+    • args.amount <= 500
 ```

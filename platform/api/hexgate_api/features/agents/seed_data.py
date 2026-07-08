@@ -13,6 +13,11 @@ to tell the story of policy-driven control in a demo.
 
 from hexgate_api.constants import DEFAULT_AGENT_NAME
 
+# The tool ids referenced below (web_search, fetch, refund_order, ...) are
+# illustrative: seeds are only compiled to policy WASM and rendered on the
+# /graph canvas — never resolved through the SDK's resolve_tools / BUILTIN_TOOLS.
+# So they can name tools that live in examples/ (or nowhere) without breaking
+# any executed path; don't prune them to match the SDK's builtin surface.
 _ALL_TOOLS_YAML = """
   - web_search
   - fetch

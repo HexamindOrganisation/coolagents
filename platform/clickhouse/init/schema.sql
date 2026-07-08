@@ -67,3 +67,30 @@ PARTITION BY toYYYYMM(received_at)
 ORDER BY (project_id, occurred_at, event_id)
 TTL toDateTime(received_at) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
+
+
+CREATE TABLE IF NOT EXISTS hexgate_audit.llm_invocation
+(
+    -- Envelope (shared across all future event tables)
+    event_id            UUID,
+    occurred_at         DateTime64(3, 'UTC'),
+    received_at         DateTime64(3, 'UTC') DEFAULT now64(3),
+    project_id          LowCardinality(String),
+    agent_name          LowCardinality(String),
+    agent_version_id    LowCardinality(String) DEFAULT '',
+    session_id          String DEFAULT '',
+    user_id             LowCardinality(String) DEFAULT '',
+
+    -- LLM-invocation-specific
+    model               LowCardinality(String),
+    input_tokens        UInt32,
+    output_tokens       UInt32,
+    latency_ms          UInt32 DEFAULT 0,
+    status              LowCardinality(String) DEFAULT 'success',
+    error_code          LowCardinality(String) DEFAULT ''
+)
+ENGINE = ReplacingMergeTree(received_at)
+PARTITION BY toYYYYMM(received_at)
+ORDER BY (project_id, user_id, agent_name, model, occurred_at, event_id)
+TTL toDateTime(received_at) + INTERVAL 90 DAY
+SETTINGS index_granularity = 8192;

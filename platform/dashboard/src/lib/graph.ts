@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
-import type { AgentRead } from "./api";
+import type { AgentManifestView, AgentRead } from "./api";
 import {
   buildAgentView,
   effectiveMode,
@@ -24,10 +24,50 @@ export interface OverviewGraph {
   agentViews: AgentView[];
 }
 
-/** Build the full project overview: everyone → all agents → all tools. */
-export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
+/**
+ * Build the full project overview: everyone → all agents → all tools.
+ *
+ * ``manifests`` (indexed by agent name) is optional but should be
+ * provided in production — it's the source of truth for tools of
+ * code-registered agents whose ``agent_yaml`` column is empty. Legacy
+ * YAML-edited agents (no manifest entry) fall back to parsing
+ * ``agent_yaml`` as before.
+ *
+ * The map preserves the three-way distinction ``buildAgentView`` needs:
+ * a missing envelope means "fall back to yaml", an envelope with a null
+ * manifest field means "render the agent as registered-but-no-tools",
+ * and a full manifest means "read tools + model from it". Collapsing
+ * those into one nullable path silently drops half-registered agents.
+ */
+export function buildOverviewGraph(
+  agents: AgentRead[],
+  manifests?: AgentManifestView[],
+): OverviewGraph {
+  const envelopeByName = new Map<string, AgentManifestView>();
+  for (const envelope of manifests ?? []) {
+    if (envelopeByName.has(envelope.name)) {
+      // Two envelopes with the same name would silently overwrite each
+      // other — the last-wins Map default hides a real data problem
+      // (join fan-out on the server, or a stale envelope from a
+      // pending rename). Log once so a broken response is visible in
+      // devtools rather than showing up as a wrong tool list.
+      console.warn(
+        `buildOverviewGraph: duplicate manifest envelope for agent ${envelope.name}; keeping the first, ignoring later entries`,
+      );
+      continue;
+    }
+    envelopeByName.set(envelope.name, envelope);
+  }
   const agentViews = agents
-    .map(buildAgentView)
+    .map((a) => {
+      const envelope = envelopeByName.get(a.name);
+      // Preserve undefined (no envelope → yaml fallback) vs null
+      // (envelope with null manifest → render bare) — collapsing both
+      // to null was the bug the review flagged.
+      const manifestInfo =
+        envelope === undefined ? undefined : envelope.manifest;
+      return buildAgentView(a, manifestInfo);
+    })
     .filter((a): a is AgentView => a !== null);
 
   const uniqueTools = new Set<string>();
@@ -59,6 +99,10 @@ export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
         name: view.name,
         model: view.model,
         toolCount: view.tools.length,
+        // Broken-policy signal — the AgentNode component can surface
+        // this as a warning marker instead of the caller thinking the
+        // fail-closed empty policy is the operator's real one.
+        policyParseFailed: view.policyParseFailed,
       },
       draggable: false,
     });
@@ -75,7 +119,11 @@ export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
       },
     });
 
-    // agent → tools
+    // agent → tools. Skip when policy_yaml couldn't parse — otherwise
+    // every edge would draw deny (from the fail-closed empty policy)
+    // and tell an operator with a transient YAML typo that their real
+    // policy is broken.
+    if (view.policyParseFailed) return;
     for (const toolName of view.tools) {
       const mode = effectiveMode(view, toolName);
       edges.push({
@@ -94,9 +142,11 @@ export function buildOverviewGraph(agents: AgentRead[]): OverviewGraph {
     // Determine the "worst" mode for the left strip on the tool node.
     // Shares MODE_STRENGTH ordering with parsePolicy's cross-role merge
     // via the exported worstMode helper — one source of truth for
-    // "which mode wins when they disagree."
+    // "which mode wins when they disagree." Skip agents whose policy
+    // failed to parse — their fail-closed empty policy would return
+    // deny for every tool and poison the aggregate.
     const modesForTool: Mode[] = agentViews
-      .filter((v) => v.tools.includes(toolName))
+      .filter((v) => !v.policyParseFailed && v.tools.includes(toolName))
       .map((v) => effectiveMode(v, toolName));
     const mode = worstMode(modesForTool) ?? "default";
     nodes.push({

@@ -9,17 +9,17 @@
   },
   "favicon": "/favicon.svg",
   "navigation": {
-    "anchors": [
+    "tabs": [
       {
-        "anchor": "Documentation",
-        "icon": "book-open",
+        "tab": "Using Hexgate",
         "groups": [
           {
             "group": "Get started",
             "pages": [
               "introduction",
               "quickstart",
-              "two-paths"
+              "two-paths",
+              "guides/build-an-agent"
             ]
           },
           {
@@ -31,7 +31,8 @@
               "concepts/audit-trail",
               "concepts/mcp",
               "concepts/approval-required",
-              "concepts/approval-frameworks-compared"
+              "concepts/approval-frameworks-compared",
+              "concepts/sandbox"
             ]
           },
           {
@@ -47,7 +48,9 @@
             "group": "Policy",
             "pages": [
               "policy/yaml-shape",
+              "policy/writing-conditions",
               "policy/constraints",
+              "policy/in-code",
               "policy/wasm-bundles",
               "policy/signing",
               "policy/local-override"
@@ -61,31 +64,53 @@
               "cli/register",
               "cli/policy"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "Platform",
+        "groups": [
           {
             "group": "Platform",
             "pages": [
               "platform/overview",
+              "platform/workflow",
+              "platform/hosted",
+              "platform/live-demo"
+            ]
+          },
+          {
+            "group": "Self-hosting",
+            "pages": [
               "platform/control-plane",
               "platform/dashboard",
-              "platform/live-demo",
               "platform/audit-clickhouse",
               "platform/email"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
           {
-            "group": "SDK reference",
+            "group": "Reference",
             "pages": [
-              "sdk/index"
+              "sdk/index",
+              "reference/environment"
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "Internals",
+        "groups": [
           {
             "group": "Internals (engineering)",
             "pages": [
-              "internals/architecture",
               "internals/audit-pipeline",
-              "internals/policy-binding-spec",
-              "internals/rego-wasm"
+              "internals/rego-wasm",
+              "internals/development"
             ]
           }
         ]

@@ -3,17 +3,49 @@ title: "WASM bundles"
 description: "Compile policy.yaml to a portable signed artifact."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Policy Bundles](https://github.com/HexamindOrganisation/hexgate#-policy-bundles--compile-sign-enforce-wasm).
-Engineering snapshot at [internals/rego-wasm](/internals/rego-wasm).
-</Note>
+Hexgate has **two policy enforcement engines** that return identical decisions
+(a parity test suite proves it):
+
+- **pydantic** (default) — evaluates constraints in-process. Zero setup; this is
+  what every example uses.
+- **WASM** — compiles `policy.yaml` → Rego → a WebAssembly module evaluated via
+  `wasmtime`. This is the path production ships: one compiled artifact,
+  byte-for-byte reproducible, cryptographically [signed](/policy/signing) by the
+  platform.
+
+Why a second engine: the WASM path produces a **portable, signed artifact** (a
+"bundle"), surfaces **structured deny reasons** (exactly which constraints
+failed), and chains trust back to the platform's signing key — the same key that
+signs your biscuit tokens. See [internals/rego-wasm](/internals/rego-wasm) for the
+engineering snapshot.
+
+## Building a bundle
+
+The compile step needs the `opa` binary — see the
+[`hexgate policy` CLI](/cli/policy#prerequisite-opa).
 
 ```bash
 hexgate policy build policy.yaml --out ./bundle
-# → ./bundle/policy.yaml, .rego, .wasm, .bundle.json
 ```
+
+`hexgate policy build` produces a directory:
+
+| File | Contents |
+|---|---|
+| `{stem}.yaml` | the source policy (verbatim) |
+| `{stem}.rego` | the compiled Rego module |
+| `{stem}.wasm` | the WebAssembly module — what actually evaluates at runtime |
+| `{stem}.bundle.json` | manifest: sha256 of each artifact + a `wasm_hash` |
+| `{stem}.bundle.json.sig` | detached Ed25519 signature over the manifest (signed bundles only) |
 
 The manifest's hashes authenticate the files; the signature authenticates the
 manifest. Verifying both proves the whole bundle came from the trusted signer,
 untampered.
+
+## Enforcing a bundle locally
+
+Point an agent at a local source and every tool call routes through the WASM
+engine instead of pydantic — no platform needed. Both YAML and bundle-dir sources
+hot-reload on save. See [local override](/policy/local-override) for the two
+shapes and the shared refresh seam, and [signing](/policy/signing) for the
+signature-verification matrix.

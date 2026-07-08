@@ -14,10 +14,13 @@ Two kinds of checks here:
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from hexgate.security import (
     AgentPolicy,
@@ -167,11 +170,13 @@ def test_mixin_role_omitted_from_output() -> None:
 def test_deny_tool_emits_no_rule() -> None:
     """`mode: deny` produces no rule — absence of allow IS the deny."""
     rego = compile_to_rego(_SUPPORT_BOT_POLICY)
-    # default.refund_order is deny — no allow rule should reference it
-    # alongside input.role == "default".
-    for rule in _allow_rules(rego):
-        if 'input.role == "default"' in rule:
-            assert "refund_order" not in rule, rule
+    # default.refund_order is deny — the default role must get no allow for it.
+    assert (
+        _predict_rego_allow(
+            rego, "default", "refund_order", {"amount": 1, "currency": "USD"}
+        )
+        is False
+    )
 
 
 def test_role_section_comments_present() -> None:
@@ -250,7 +255,8 @@ def test_not_in_constraint_wraps_with_not() -> None:
 
 
 def test_compile_rejects_unparseable_constraint() -> None:
-    """An invalid constraint surfaces at compile time, not at WASM eval."""
+    """An invalid constraint surfaces at load (model grammar validator),
+    which compile_to_rego triggers before ever reaching WASM eval."""
     payload = {
         "version": 1,
         "roles": {
@@ -264,8 +270,49 @@ def test_compile_rejects_unparseable_constraint() -> None:
             }
         },
     }
-    with pytest.raises(PolicySetError, match="invalid constraint"):
+    with pytest.raises(ValidationError):
         compile_to_rego(payload)
+
+
+# ---------------------------------------------------------------------------
+# file_scope is pydantic-only — refuse to compile it to a fail-open bundle
+# ---------------------------------------------------------------------------
+
+
+def _file_scope_policy(mode: str) -> dict:
+    return {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "read_file": {
+                        "mode": mode,
+                        "file_scope": {"allowed_paths": ["src/**"]},
+                    }
+                }
+            }
+        },
+    }
+
+
+@pytest.mark.parametrize("mode", ["allow", "approval_required"])
+def test_compile_rejects_file_scope(mode: str) -> None:
+    """Compiling a non-deny file_scope tool must fail loud, not silently drop it.
+
+    Dropping file_scope would make the bundle FAIL OPEN (every path allowed)
+    vs the pydantic engine that enforces the restriction.
+    """
+    with pytest.raises(PolicySetError, match="file_scope"):
+        compile_to_rego(_file_scope_policy(mode))
+
+
+def test_compile_allows_file_scope_on_deny_tool() -> None:
+    """file_scope on a deny tool is inert (deny never consults it) → compiles."""
+    rego = compile_to_rego(_file_scope_policy("deny"))
+    # deny emits no allow rule for read_file; nothing to fail-open on.
+    assert (
+        _predict_rego_allow(rego, "default", "read_file", {"file_path": "x"}) is False
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +359,11 @@ def test_flat_single_policy_compiles_as_default_role() -> None:
     }
     rego = compile_to_rego(payload)
     [rule] = _allow_rules(rego)
-    assert 'input.role == "default"' in rule
     assert 'input.tool == "web_search"' in rule
+    # Only the default role exists → no role guard; it applies to every caller
+    # (including unknown roles, per the default-role fallback).
+    assert _predict_rego_allow(rego, "default", "web_search", {}) is True
+    assert _predict_rego_allow(rego, "anyone", "web_search", {}) is True
 
 
 def test_compile_default_only_wraps_AgentPolicy() -> None:
@@ -378,16 +428,148 @@ def test_violation_rule_uses_raw_constraint_string() -> None:
 
 
 def test_violation_rule_body_negates_constraint() -> None:
-    """The rule body matches role/tool and asserts `not <constraint>`."""
+    """The violation body matches role/tool and negates a positive rule-ref
+    (`not _p_<hash>`) — not an inline expression — whose helper holds the
+    (type-guarded) comparison."""
     rego = compile_to_rego(_SUPPORT_BOT_POLICY)
-    # Pick out billing's amount violation rule and inspect.
     pattern = re.compile(
         r"violations contains `args\.amount <= 500` if \{\n(.*?)\n\}", re.DOTALL
     )
-    [body] = pattern.findall(rego)
-    assert 'input.role == "billing"' in body
+    body = next(b for b in pattern.findall(rego) if 'input.role == "billing"' in b)
     assert 'input.tool == "refund_order"' in body
-    assert "not input.args.amount <= 500" in body
+    m = re.search(r"not (_p_[0-9a-f]+)", body)
+    assert m, body
+    helper = re.search(rf"{m.group(1)} if \{{\n(.*?)\n\}}", rego, re.DOTALL).group(1)
+    assert "input.args.amount <= 500" in helper
+    assert "is_number(input.args.amount)" in helper
+
+
+def test_violation_value_uses_json_when_constraint_has_backtick() -> None:
+    """A constraint whose text contains a backtick can't use Rego's backtick
+    raw-string for the violations membership — it falls back to a JSON string."""
+    raw = 'args.x == "a`b"'
+    payload = {
+        "version": 1,
+        "roles": {"default": {"tools": {"t": {"mode": "allow", "constraints": [raw]}}}},
+    }
+    rego = compile_to_rego(payload)
+    assert f"violations contains {json.dumps(raw)} if" in rego
+    assert f"`{raw}`" not in rego  # not the backtick raw-string form
+
+
+def test_quantifier_emits_helper_rule() -> None:
+    """A quantifier compiles to a named helper the allow rule references and
+    the violation rule negates (``not _q_…`` — not an inline ``not every``)."""
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {
+                        "mode": "allow",
+                        "constraints": ['every(args.files, startswith(., "/tmp/"))'],
+                    }
+                }
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    assert re.search(r"_q_[0-9a-f]+ if \{\n\s+every __e_[0-9a-f]+ in ", rego)
+    [allow_body] = _allow_rules(rego)
+    assert re.search(r"_q_[0-9a-f]+", allow_body)  # allow references the helper
+    assert re.search(r"not _q_[0-9a-f]+", rego)  # violation negates the helper
+    assert "not every" not in rego and "not some" not in rego  # never inline-negated
+
+
+def test_or_emits_same_head_disjunct_rules() -> None:
+    """An `or` compiles to one helper rule per disjunct under the same head
+    (Rego OR), referenced by the allow rule and negated in the violation."""
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {
+                        "mode": "allow",
+                        "constraints": ["args.a == 1 or args.b == 2"],
+                    }
+                }
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    # two rules with the same _c_<hash> head (the disjuncts)
+    m = re.search(r"(_c_[0-9a-f]+) if", rego)
+    assert m
+    name = m.group(1)
+    assert rego.count(f"{name} if {{") == 2  # one per disjunct
+    assert f"not {name}" in rego  # violation negates the whole disjunction
+    assert "not not" not in rego
+
+
+def test_quantifier_output_is_deterministic() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["any(args.r, . == 1)"]}
+                }
+            }
+        },
+    }
+    assert compile_to_rego(payload) == compile_to_rego(payload)
+
+
+def test_consts_emitted_as_module_rules() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "consts": {"cap": 500, "repos": ["a", "b"]},
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.n <= consts.cap"]}
+                },
+            }
+        },
+    }
+    rego = compile_to_rego(payload)
+    assert "cap := 500" in rego
+    assert 'repos := ["a", "b"]' in rego
+    assert "input.args.n <= cap" in rego  # reference uses the const name
+
+
+def test_compile_rejects_unknown_const() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {
+                "consts": {"cap": 500},
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.x == consts.missing"]}
+                },
+            }
+        },
+    }
+    with pytest.raises(PolicySetError, match="undefined constant"):
+        compile_to_rego(payload)
+
+
+def test_compile_rejects_conflicting_consts_across_roles() -> None:
+    payload = {
+        "version": 1,
+        "roles": {
+            "default": {"consts": {"cap": 500}, "tools": {}},
+            "billing": {
+                "consts": {"cap": 999},  # same name, different value → conflict
+                "tools": {
+                    "t": {"mode": "allow", "constraints": ["args.n <= consts.cap"]}
+                },
+            },
+        },
+    }
+    with pytest.raises(PolicySetError, match="conflicting values"):
+        compile_to_rego(payload)
 
 
 def test_violations_sentinel_emitted_for_constraint_free_policy() -> None:
@@ -511,36 +693,55 @@ def test_parity_wasm_vs_pydantic(
     )
 
 
-def _predict_rego_allow(rego: str, role: str, tool: str, args: dict) -> bool:
-    """Lightweight Rego eval substitute for the parity test.
+def _guard_matches(rule: str, kind: str, value: object) -> bool:
+    """True when a rule's ``role``/``tool`` guard admits ``value``.
 
-    Scans emitted rules for one whose role + tool match the input, and
-    then re-evaluates each constraint line using the pydantic
-    :func:`parse_constraint` engine — which is the same parser the SDK
-    enforces with. When the wasm adapter ships, this stub gets replaced
-    by a real ``wasm_module.evaluate(input)`` call.
+    Handles both guard shapes the compiler emits: exact match
+    (``input.<kind> == "x"``) and exclusion (``not input.<kind> in {...}``,
+    used for the default-role fallback and the default_policy catch-all).
+    No guard of that kind → the rule applies to any value.
+    """
+    m = re.search(rf'input\.{kind} == "([^"]*)"', rule)
+    if m:
+        return value == m.group(1)
+    m = re.search(rf"not input\.{kind} in \{{([^}}]*)\}}", rule)
+    if m:
+        excluded = json.loads("[" + m.group(1) + "]")
+        return value not in excluded
+    return True  # unguarded on this dimension → matches anything
+
+
+def _predict_rego_allow(rego: str, role: str, tool: str, args: dict) -> bool:
+    """Lightweight Rego eval substitute for the parity test (no opa needed).
+
+    Scans emitted allow rules for one whose role + tool guards admit the
+    input, then re-evaluates each ``input.args.*`` constraint line with the
+    SDK's own :func:`parse_constraint` engine. The load-bearing check is
+    :func:`test_parity_wasm_vs_pydantic`; this stub just catches emitter
+    regressions when opa isn't available.
     """
     from hexgate.security.constraints import evaluate_constraint, parse_constraint
 
     for rule in _allow_rules(rego):
-        if f'input.role == "{role}"' not in rule:
+        if not _guard_matches(rule, "role", role):
             continue
-        if f'input.tool == "{tool}"' not in rule:
+        if not _guard_matches(rule, "tool", tool):
             continue
-        # Re-derive the args.* constraint lines: strip the leading ``input.``,
-        # leaving the original constraint grammar for parse_constraint.
         ok = True
         for line in rule.splitlines():
             stripped = line.strip()
+            # Skip guards (role/tool), type guards, and blanks — only args.*
+            # comparison lines are constraints the predictor re-evaluates.
             if (
                 not stripped
-                or stripped.startswith("input.role")
-                or stripped.startswith("input.tool")
+                or "input.role" in stripped
+                or "input.tool" in stripped
+                or stripped.startswith(("is_number(", "is_string("))
             ):
                 continue
             # Unwrap the ``not X in Y`` shape back into our grammar.
             if stripped.startswith("not input."):
-                stripped = stripped.replace("not input.", "", 1) + ""
+                stripped = stripped.replace("not input.", "", 1)
                 stripped = stripped.replace(" in ", " not in ")
             else:
                 stripped = stripped.replace("input.", "", 1)
@@ -551,3 +752,191 @@ def _predict_rego_allow(rego: str, role: str, tool: str, args: dict) -> bool:
         if ok:
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Golden snapshot — locks compiled Rego byte-for-byte across the AST refactor
+# ---------------------------------------------------------------------------
+
+# Exercises every construct the current grammar renders: multiple roles,
+# inheritance + mixin filtering, deny (no rule), approval_required, and each
+# operator (<=, ==, in, not in, bool ==, deep path). Regenerate the golden
+# only on a *deliberate* codegen change:
+#   python -c "from tests.security.test_rego_compile import _GOLDEN_PAYLOAD; \
+#     from hexgate.security.rego import compile_to_rego; \
+#     open('tests/security/golden/policy_fixture.rego','w').write(\
+#       compile_to_rego(_GOLDEN_PAYLOAD, source_hash='GOLDEN_FIXED_HASH'))"
+_GOLDEN_PAYLOAD = {
+    "version": 1,
+    "roles": {
+        "read_only": {"is_mixin": True, "tools": {"read_file": {"mode": "allow"}}},
+        "default": {"tools": {"web_search": {"mode": "allow"}}},
+        "support": {
+            "inherits": ["read_only"],
+            "tools": {
+                "fetch": {"mode": "allow"},
+                "issue_credit": {
+                    "mode": "approval_required",
+                    "constraints": ["args.amount <= 500"],
+                },
+            },
+        },
+        "billing": {
+            "inherits": ["read_only", "support"],
+            "tools": {
+                "refund_order": {
+                    "mode": "allow",
+                    "constraints": [
+                        "args.amount <= 500",
+                        'args.currency == "USD"',
+                        'args.template in ["a", "b"]',
+                        'args.priority not in ["urgent"]',
+                        "args.confirmed == true",
+                        "args.payment.amount <= 100",
+                    ],
+                },
+                "delete_user": {"mode": "deny"},
+            },
+        },
+    },
+}
+
+_GOLDEN_PATH = Path(__file__).parent / "golden" / "policy_fixture.rego"
+
+
+def test_compiled_rego_matches_golden_snapshot() -> None:
+    """The AST refactor must not change compiled output — byte-for-byte."""
+    expected = _GOLDEN_PATH.read_text(encoding="utf-8")
+    actual = compile_to_rego(_GOLDEN_PAYLOAD, source_hash="GOLDEN_FIXED_HASH")
+    assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Adversarial parity — every operator + literal type, both engines end-to-end
+#
+# The fixture below covers each construct the grammar can emit. The wasm
+# fixture *building at all* is itself a regression guard: a `not in`
+# constraint that compiled to `not not ... in ...` (invalid Rego) used to
+# break opa build for the whole bundle — undetected because no wasm-parity
+# fixture exercised `not in`.
+# ---------------------------------------------------------------------------
+
+_ADVERSARIAL_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "num": {"mode": "allow", "constraints": ["args.amount <= 500"]},
+                "ne": {"mode": "allow", "constraints": ['args.currency != "USD"']},
+                "streq": {"mode": "allow", "constraints": ['args.currency == "USD"']},
+                "inl": {
+                    "mode": "allow",
+                    "constraints": ['args.tier in ["gold", "silver"]'],
+                },
+                "notin": {
+                    "mode": "allow",
+                    "constraints": ['args.priority not in ["urgent", "critical"]'],
+                },
+                "boolean": {"mode": "allow", "constraints": ["args.confirmed == true"]},
+                "isnull": {"mode": "allow", "constraints": ["args.note == null"]},
+                "neg": {"mode": "allow", "constraints": ["args.delta >= -5"]},
+                "flt": {"mode": "allow", "constraints": ["args.ratio <= 1.5"]},
+                "strop": {"mode": "allow", "constraints": ['args.label == "a <= b"']},
+                "deep": {
+                    "mode": "allow",
+                    "constraints": ["args.payment.amount <= 100"],
+                },
+                "multi": {
+                    "mode": "allow",
+                    "constraints": ["args.amount <= 500", 'args.currency == "USD"'],
+                },
+                "emptyin": {"mode": "allow", "constraints": ["args.x in []"]},
+            }
+        }
+    },
+}
+
+_ADVERSARIAL_CASES: list[tuple[str, dict, bool]] = [
+    ("num", {"amount": 500}, True),  # boundary
+    ("num", {"amount": 501}, False),
+    ("num", {}, False),  # missing → fail closed
+    ("ne", {"currency": "EUR"}, True),
+    ("ne", {"currency": "USD"}, False),
+    ("ne", {}, False),  # missing → deny on both engines
+    ("streq", {"currency": "USD"}, True),
+    ("streq", {"currency": "usd"}, False),  # case sensitive
+    ("inl", {"tier": "gold"}, True),
+    ("inl", {"tier": "bronze"}, False),
+    ("inl", {}, False),
+    ("notin", {"priority": "low"}, True),
+    ("notin", {"priority": "urgent"}, False),
+    ("notin", {}, False),  # the case that started this: parity on missing
+    ("boolean", {"confirmed": True}, True),
+    ("boolean", {"confirmed": False}, False),
+    ("isnull", {"note": None}, True),
+    ("isnull", {"note": "x"}, False),
+    ("isnull", {}, False),
+    ("neg", {"delta": -5}, True),
+    ("neg", {"delta": -6}, False),
+    ("flt", {"ratio": 1.5}, True),
+    ("flt", {"ratio": 2.0}, False),
+    ("strop", {"label": "a <= b"}, True),  # operator chars inside a string literal
+    ("strop", {"label": "other"}, False),
+    ("deep", {"payment": {"amount": 50}}, True),
+    ("deep", {"payment": {"amount": 200}}, False),
+    ("deep", {"payment": {}}, False),  # nested missing
+    ("deep", {}, False),
+    ("multi", {"amount": 100, "currency": "USD"}, True),
+    ("multi", {"amount": 100, "currency": "EUR"}, False),  # one of two fails
+    ("multi", {"amount": 999, "currency": "USD"}, False),
+    ("emptyin", {"x": 1}, False),  # empty set → nothing matches
+]
+
+
+def _pydantic_allows(policy_dict: dict, role: str, tool: str, args: dict) -> bool:
+    ps = load_policy_set_from_dict(policy_dict)
+    try:
+        authorize_tool_call(ps.policy_for(role), tool, args)
+        return True
+    except PolicyDeniedError:
+        return False
+
+
+@pytest.mark.parametrize(("tool", "args", "expect"), _ADVERSARIAL_CASES)
+def test_adversarial_pydantic(tool: str, args: dict, expect: bool) -> None:
+    assert _pydantic_allows(_ADVERSARIAL_POLICY, "default", tool, args) is expect
+
+
+@pytest.fixture(scope="module")
+def _adversarial_wasm() -> bytes:
+    import shutil
+
+    if shutil.which("opa") is None:
+        pytest.skip("opa not on PATH")
+    from hexgate.security import compile_to_wasm
+
+    # This build FAILS if any violation rule is invalid Rego (e.g. the old
+    # `not not ... in ...` for `not in`) — a load-bearing regression guard.
+    return compile_to_wasm(compile_to_rego(_ADVERSARIAL_POLICY)).wasm
+
+
+@pytest.mark.parametrize(("tool", "args", "expect"), _ADVERSARIAL_CASES)
+def test_adversarial_wasm_matches_pydantic(
+    tool: str, args: dict, expect: bool, _adversarial_wasm: bytes
+) -> None:
+    """The compiled wasm decides identically to pydantic for every case."""
+    from hexgate.security import WasmPolicy
+
+    wasm = WasmPolicy.from_bytes(_adversarial_wasm)
+    got = wasm.decide(role="default", tool=tool, args=args).allow
+    py = _pydantic_allows(_ADVERSARIAL_POLICY, "default", tool, args)
+    assert got is py, f"engine divergence for {tool}/{args}: wasm={got} pydantic={py}"
+    assert got is expect
+
+
+def test_notin_violation_rule_is_valid_rego(_adversarial_wasm: bytes) -> None:
+    """Regression: a `not in` constraint must not emit `not not ... in ...`."""
+    rego = compile_to_rego(_ADVERSARIAL_POLICY)
+    assert "not not" not in rego
+    # violation body for `not in` is the plain positive membership
+    assert 'input.args.priority in ["urgent", "critical"]' in rego

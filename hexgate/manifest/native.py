@@ -7,7 +7,7 @@ from langchain_core.messages.system import SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
 from hexgate.agents.factory import HexgateAgent
-from hexgate.cli.register.models import (
+from hexgate.manifest.models import (
     AgentFramework,
     AgentManifest,
     InputProperty,

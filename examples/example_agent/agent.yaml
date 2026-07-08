@@ -2,6 +2,7 @@ name: example_agent
 model: gpt-5.4
 system_prompt: system.md
 tools:
-  - web_search
-  - fetch
+  - read_file
+  - glob
+  - grep
 policy: policy.yaml

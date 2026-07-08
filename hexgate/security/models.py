@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from hexgate.security.constraints import parse_constraint
 
 PolicyMode = Literal["allow", "deny", "approval_required"]
 
@@ -22,6 +24,17 @@ class BaseToolPolicy(BaseModel):
 
     mode: PolicyMode = "deny"
     constraints: list[str] = Field(default_factory=list)
+
+    @field_validator("constraints")
+    @classmethod
+    def _validate_constraint_grammar(cls, value: list[str]) -> list[str]:
+        """Parse every constraint at load — a malformed expression is a config
+        error, surfaced here at ``model_validate`` time rather than lazily at
+        the first matching tool call. Keeps ``models.py`` (document schema) and
+        ``constraints.py`` (expression grammar) jointly the enforced spec."""
+        for constraint in value:
+            parse_constraint(constraint)
+        return value
 
 
 class FileScope(BaseModel):
@@ -50,6 +63,10 @@ class AgentPolicy(BaseModel):
     ``is_mixin = True`` marks the policy as a building block — the SDK
     won't pick it as the effective policy for any User scope; it can only
     be referenced via ``inherits``.
+
+    ``consts`` names reusable values referenced from constraints as
+    ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
+    through ``inherits`` like ``tools`` — put shared constants in a mixin.
     """
 
     version: int = 1
@@ -57,3 +74,4 @@ class AgentPolicy(BaseModel):
     is_mixin: bool = False
     default_policy: BaseToolPolicy = Field(default_factory=BaseToolPolicy)
     tools: dict[str, ToolPolicy] = Field(default_factory=dict)
+    consts: dict[str, Any] = Field(default_factory=dict)

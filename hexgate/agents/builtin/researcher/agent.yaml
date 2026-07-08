@@ -1,7 +1,0 @@
-name: researcher
-model: gpt-5.4
-system_prompt: system.md
-tools:
-  - web_search
-  - fetch
-policy: policy.yaml

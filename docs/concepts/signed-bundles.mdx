@@ -3,19 +3,37 @@ title: "Signed policy bundles"
 description: "Compile YAML to WASM, sign with Ed25519, verify on every load."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Policy Bundles](https://github.com/HexamindOrganisation/hexgate#-policy-bundles--compile-sign-enforce-wasm).
-</Note>
-
-## TL;DR
-
 Hexgate has two policy engines that return identical decisions:
 
-- **pydantic** — evaluates constraints in-process. Zero setup; what every example uses.
-- **WASM** — compiles `policy.yaml` → Rego → WebAssembly. Production-ready, signed,
-  byte-for-byte reproducible.
+- **pydantic** — evaluates constraints in-process. Zero setup; what every example
+  uses.
+- **WASM** — compiles `policy.yaml` → Rego → WebAssembly. Production-ready,
+  signed, byte-for-byte reproducible.
 
-A "bundle" is a directory containing `policy.yaml` + `policy.rego` + `policy.wasm` +
-a manifest with SHA-256 of each artifact + an optional Ed25519 detached signature
-over the manifest.
+A **bundle** is a directory containing `policy.yaml` + `policy.rego` +
+`policy.wasm` + a manifest with the SHA-256 of each artifact + an optional Ed25519
+detached signature over the manifest.
+
+## Why a signed artifact
+
+The WASM path exists because it gives you three things the in-process engine
+can't:
+
+- **Portability** — one compiled `.wasm` module, evaluated identically anywhere
+  `wasmtime` runs.
+- **Structured deny reasons** — exactly which constraints failed, surfaced back to
+  the caller.
+- **A trust chain** — the signature chains back to the platform's signing key, the
+  same key that signs your biscuit tokens. Verifying the manifest hashes *and* the
+  signature proves the whole bundle came from the trusted signer, untampered.
+
+## Where to go next
+
+- [WASM bundles](/policy/wasm-bundles) — building a bundle, what each file
+  contains, the `opa` prerequisite.
+- [Signing & verification](/policy/signing) — keypairs, the
+  `REQUIRE_SIGNATURE` matrix.
+- [Local override](/policy/local-override) — enforcing a bundle or YAML from disk
+  with hot-reload.
+- [internals/rego-wasm](/internals/rego-wasm) — the engineering snapshot of the
+  compile pipeline.

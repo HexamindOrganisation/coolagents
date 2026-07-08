@@ -1,19 +1,85 @@
 ---
 title: "Platform overview"
-description: "FastAPI control plane + React dashboard + ClickHouse audit."
+description: "Three ways to enforce policy: local, Hexgate Cloud, or self-hosted."
 ---
 
-<Note>
-**Page stub.** Full content lives in the
-[README — Hexgate Platform](https://github.com/HexamindOrganisation/hexgate#-hexgate-platform).
-</Note>
+The SDK enforces policy in one of three modes. They share the same enforcement
+seam and the same `User` scope — they differ only in **where the policy lives and
+who runs the infrastructure**.
 
-The platform is an optional control plane that hosts agent definitions, dev
-tokens, and a live debug surface. The SDK works fully without it
-(`load_local_agent`, `load_builtin_agent` keep their semantics) — but with it
-you get:
+| Mode | You set | Policy + audit live | Who runs infra |
+|---|---|---|---|
+| **Local** | `HEXGATE_LOCAL_POLICY=./policy.yaml` | on your disk / terminal | nobody |
+| **Hexgate Cloud** (hosted) | `HEXGATE_API_KEY` from [app.hexgate.ai](https://app.hexgate.ai) | Hexgate Cloud | Hexamind |
+| **Self-hosted** | `HEXGATE_API_KEY` + `HEXGATE_API_URL=https://your-host` | your control plane + ClickHouse | you |
 
-- A web dashboard for editing agent YAMLs and viewing the project graph
+**Remote enforcement is just an env var.** `HEXGATE_API_URL` defaults to
+`https://app.hexgate.ai`, so the hosted path needs only `HEXGATE_API_KEY`.
+Self-hosting is the identical SDK code with `HEXGATE_API_URL` repointed.
+
+- **Local** — no platform at all. Enforce a [YAML file or bundle](/policy/local-override)
+  from disk, hot-reload on save. Best for the inner dev loop and CI.
+- **[Hexgate Cloud](/platform/hosted)** — the fastest path to remote enforcement +
+  an audit trail. Sign up, mint a token, set one env var. No infra to run.
+- **[Self-hosting](/platform/control-plane)** — run the control plane, dashboard,
+  and audit store inside your own infrastructure for data residency, air-gapped
+  environments, or compliance.
+
+Know which mode you want? Follow the [platform workflow](/platform/workflow) —
+mint a key, register, edit the policy, test, deploy — start to finish.
+
+## What the platform gives you (hosted or self-hosted)
+
+The SDK works fully without it (`load_local_agent`, local YAML enforcement) — but
+with the platform you get:
+
+- A web [dashboard](/platform/dashboard) for editing agent YAMLs and viewing the project graph
 - Mintable dev tokens (`fty_test_*`, `fty_live_*`) that authenticate the SDK
 - A live Playground that streams tool calls and decisions from your running agent
-- Turn-level policy refresh — edit YAML in the UI, the next chat picks it up
+- **Turn-level policy refresh** — edit YAML in the UI, the next chat picks it up
+- An [audit trail](/concepts/audit-trail) of every decision in ClickHouse
+
+## Start on Hexgate Cloud
+
+The zero-infra path — see [Hexgate Cloud](/platform/hosted) for the full
+walkthrough:
+
+```bash
+# .env  (HEXGATE_API_URL defaults to https://app.hexgate.ai)
+HEXGATE_API_KEY=fty_live_<project>_<biscuit>
+
+hexgate serve my_app.agents:my_agent   # your agent; serve auto-registers it on first run
+```
+
+## Or run the platform locally
+
+To run the whole control plane on your own machine — for self-hosting, or just to
+develop against it — you need **three terminals**:
+
+```bash
+make demo-platform     # prints the 3-terminal recipe below
+```
+
+```bash
+# Terminal 1 — backend (FastAPI on :8000)
+make platform-api
+
+# Terminal 2 — dashboard (Vite + React on :5173)
+make dashboard
+
+# Terminal 3 — mint a token in the dashboard, then serve your local agent
+make serve                                          # default — examples.customer_bot:agent
+uv run hexgate serve my_app.agents:my_agent         # or a different agent
+```
+
+First-time setup (each sub-project has its own deps):
+
+```bash
+make platform-api-install   # uv sync inside platform/api/
+make dashboard-install      # pnpm install inside platform/dashboard/
+```
+
+Point the SDK at your local platform by setting
+`HEXGATE_API_URL=http://localhost:8000` alongside a key minted by that instance.
+See [control plane](/platform/control-plane) for the production self-hosting
+guide.

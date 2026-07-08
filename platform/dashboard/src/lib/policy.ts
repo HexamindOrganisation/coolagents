@@ -55,6 +55,14 @@ export interface AgentView {
   /** Tools that appear in agent.yaml but have no policy entry (neither
    *  at flat top level nor in any role) → default_policy applies. */
   missingInPolicy: string[];
+  /** True when ``policy_yaml`` couldn't be parsed. The ``policy`` field
+   *  above is then a fail-closed placeholder (default_policy=deny, no
+   *  tools, no roles) — do NOT render it as if it were the operator's
+   *  policy: every tool would appear as denied + missing-in-policy,
+   *  which is a strictly wrong story to tell about a transient YAML
+   *  parse error. Graph consumers should render the agent node with a
+   *  broken-policy marker and skip tool edges. */
+  policyParseFailed: boolean;
 }
 
 function isMode(x: unknown): x is Mode {
@@ -315,24 +323,113 @@ export function mergedTools(policy: ParsedPolicy): Record<string, ToolPolicy> {
   return merged;
 }
 
-export function buildAgentView(agent: AgentRead): AgentView | null {
-  const parsedAgent = parseAgent(agent.agent_yaml, agent.policy_yaml);
+/**
+ * Build an :class:`AgentView` from an :class:`AgentRead` and, optionally,
+ * that agent's registered-manifest envelope.
+ *
+ * ``agent_yaml`` is a legacy column from the pre-manifest dashboard flow
+ * where users hand-edited YAML. Code-registered agents (``hexgate
+ * register``) leave it empty — the source of truth for their tool list
+ * lives on the AgentVersion.manifest instead.
+ *
+ * The ``manifestInfo`` argument is deliberately three-valued so the
+ * builder can distinguish three real cases that used to collapse into
+ * one "silently drop the agent" failure:
+ *
+ *   * ``undefined`` — caller has no manifest envelope for this agent
+ *     (either legacy dashboard hasn't queried manifests, or the agent
+ *     genuinely predates the manifest flow). Fall back to parsing
+ *     ``agent_yaml``.
+ *   * ``null`` — envelope exists on the manifests endpoint but its
+ *     ``.manifest`` field is null (agent row present, no persisted
+ *     ``AgentVersion.manifest`` yet — a real state per
+ *     ``AgentManifestView`` docs). Render the agent with the DB name
+ *     and no tools rather than falling to the empty-``agent_yaml``
+ *     path that would drop it entirely.
+ *   * object — normal case, read tools + model from the manifest.
+ *
+ * Policy parses from ``agent.policy_yaml``. If it can't parse but the
+ * caller had manifest info, we still render the agent with a fail-closed
+ * default policy — the operator can see the agent exists and fix the
+ * broken YAML in the Policies editor, instead of the agent silently
+ * vanishing from the graph.
+ */
+export function buildAgentView(
+  agent: AgentRead,
+  manifestInfo?: {
+    model: string | null;
+    tools: readonly { name: string }[];
+  } | null,
+): AgentView | null {
   const parsedPolicy = parsePolicy(agent.policy_yaml);
-  if (!parsedAgent || !parsedPolicy) return null;
-  // Display tool list = agent.yaml declaration ONLY. Role-only tool
-  // entries in policy don't create callable tools — the runtime
+
+  let name: string;
+  let model: string;
+  let tools: string[];
+  const hasEnvelope = manifestInfo !== undefined;
+
+  if (manifestInfo) {
+    // Registered agent with a persisted manifest — the common case.
+    name = agent.name;
+    model = manifestInfo.model ?? "";
+    // ``Array.isArray`` guard: a manifest whose ``tools`` field arrives
+    // null or non-array (backend serialization bug, partial record,
+    // schema drift) used to blow up ``.map`` inside the ``useMemo`` and
+    // tear down the whole Graph page. Degrade to an empty tool list
+    // instead — the agent still renders and the operator can see it
+    // exists.
+    tools = Array.isArray(manifestInfo.tools)
+      ? manifestInfo.tools.map((t) => String(t?.name ?? ""))
+      : [];
+  } else if (manifestInfo === null) {
+    // Registered agent whose latest AgentVersion has no manifest yet.
+    // Render as a bare node so the operator sees the agent exists —
+    // the tool list will appear once they run ``hexgate register``.
+    name = agent.name;
+    model = "";
+    tools = [];
+  } else {
+    // No envelope at all → legacy YAML-edited agent. Parse agent_yaml.
+    const parsedAgent = parseAgent(agent.agent_yaml, agent.policy_yaml);
+    if (!parsedAgent) return null;
+    name = parsedAgent.name || agent.name;
+    model = parsedAgent.model;
+    tools = [...parsedAgent.tools];
+  }
+
+  // Fail-closed default policy when parse failed but the caller
+  // confirmed the agent is real (manifest envelope present). Legacy
+  // agents with unparseable policy_yaml continue to drop — they have
+  // no other signal that the agent is genuinely registered.
+  const effectivePolicy: ParsedPolicy = parsedPolicy ?? {
+    version: 1,
+    default_policy: { mode: "deny" },
+    tools: {},
+    roles: {},
+  };
+  if (!parsedPolicy && !hasEnvelope) return null;
+
+  // Display tool list = manifest declaration OR agent.yaml declaration.
+  // Role-only policy entries do NOT create callable tools — the runtime
   // registers tools from agent.tools (the SDK-decorated functions);
   // policy just gates them. Including role-only tools here would draw
   // phantom capability edges on the graph.
-  const tools = [...parsedAgent.tools];
-  const merged = mergedTools(parsedPolicy);
-  const missingInPolicy = tools.filter((t) => !(t in merged));
+  const policyParseFailed = parsedPolicy === null;
+  const merged = mergedTools(effectivePolicy);
+  // Suppress the "missing in policy" list when the policy itself failed
+  // to parse — otherwise every manifest tool would land in there and
+  // paint the graph as fully-denied, misleading the operator into
+  // rewriting a policy that was actually fine (mid-typing YAML, etc.).
+  const missingInPolicy = policyParseFailed
+    ? []
+    : tools.filter((t) => !(t in merged));
   return {
-    name: parsedAgent.name || agent.name,
-    model: parsedAgent.model,
+    name,
+    model,
     tools,
-    policy: parsedPolicy,
+    policy: effectivePolicy,
     missingInPolicy,
+    policyParseFailed,
   };
 }
 

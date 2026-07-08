@@ -30,10 +30,8 @@ def _default_demo_agent(base_dir: Path) -> str:
     available = list_available_agents(base_dir)
     if "example_agent" in available:
         return "example_agent"
-    if "researcher" in available:
-        return "researcher"
     if not available:
-        raise RuntimeError("No local or builtin agents available for the demo.")
+        raise RuntimeError("No local or registered agents available for the demo.")
     return available[0]
 
 
