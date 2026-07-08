@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
 
 import pytest_asyncio
 from fastapi.testclient import TestClient
@@ -69,10 +68,6 @@ async def client(session_factory, tmp_path) -> TestClient:
     finally:
         app.dependency_overrides.clear()
         keystore_mod.keystore = original_keystore
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def _signup_and_login(client: TestClient, email: str, password: str) -> None:
@@ -353,56 +348,3 @@ def test_feed_empty_returns_stable_etag(client: TestClient) -> None:
     assert r.status_code == 200
     assert r.json() == []
     assert "ETag" in r.headers
-
-
-# ---------------------------------------------------------------------------
-# Audit-side contract that shipped with the ``banned`` outcome
-# ---------------------------------------------------------------------------
-
-
-def _decision_payload(**overrides) -> dict:
-    base = {
-        "event_id": str(uuid.uuid4()),
-        "occurred_at": _now().isoformat(),
-        "agent_name": "researcher",
-    }
-    return {**base, **overrides}
-
-
-def test_decision_event_banned_allows_empty_tool_name() -> None:
-    from hexgate_api.schemas import DecisionEvent
-
-    e = DecisionEvent(**_decision_payload(outcome="banned"))
-    assert e.tool_name == ""
-
-
-def test_decision_event_requires_tool_name_for_non_banned() -> None:
-    from pydantic import ValidationError
-
-    from hexgate_api.schemas import DecisionEvent
-
-    try:
-        DecisionEvent(**_decision_payload(outcome="deny"))
-    except ValidationError as exc:
-        assert "tool_name" in str(exc)
-    else:
-        raise AssertionError("expected ValidationError for missing tool_name")
-
-
-def test_zero_counts_includes_banned() -> None:
-    from hexgate_api.features.audit.service import _zero_counts
-
-    assert _zero_counts()["banned"] == 0
-
-
-def test_banned_excluded_from_deny_anomalies() -> None:
-    """A burst of bans must not register as a deny-rate anomaly (the just-banned
-    user would otherwise light up as anomalous). Denies still flag — sanity."""
-    from hexgate_api.features.audit.service import _sliding_window_anomalies
-
-    base = _now()
-    banned_rows = [("u1", base + timedelta(seconds=i), "banned") for i in range(6)]
-    assert _sliding_window_anomalies(banned_rows) == []
-
-    deny_rows = [("u1", base + timedelta(seconds=i), "deny") for i in range(6)]
-    assert len(_sliding_window_anomalies(deny_rows)) >= 1

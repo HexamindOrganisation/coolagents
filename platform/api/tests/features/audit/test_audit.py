@@ -208,6 +208,73 @@ def test_oversized_arguments_rejected(client: TestClient) -> None:
     assert "arguments" in r.json()["detail"]
 
 
+# ---------------------------------------------------------------------------
+# Ban-hit ingest — sibling event stream (POST /v1/audit/ban-hits)
+# ---------------------------------------------------------------------------
+
+
+def _ban_hit(**overrides) -> dict:
+    base = {
+        "event_id": str(uuid.uuid4()),
+        "occurred_at": _now().isoformat(),
+        "agent_name": "researcher",
+        "user_id": "u1",
+        "ban_type": "user",
+        "ban_id": "ban_abc123",
+    }
+    return {**base, **overrides}
+
+
+def test_ban_hit_happy_path_returns_202_and_inserts_row(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    payload = _ban_hit()
+    r = client.post("/v1/audit/ban-hits", json=payload)
+
+    assert r.status_code == 202, r.text
+    assert r.json() == {"event_id": payload["event_id"]}
+
+    fake_clickhouse.insert.assert_called_once()
+    args, kwargs = fake_clickhouse.insert.call_args
+    assert args[0] == "ban_hit"  # its own table, not policy_decision
+    row = args[1][0]
+    assert len(row) == 10  # matches _BAN_HIT_COLUMNS
+    assert row[2] == "proj_test"  # project_id (bearer)
+    assert row[4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
+    assert row[7] == "user"  # ban_type
+    assert row[8] == "ban_abc123"  # ban_id
+
+
+def test_ban_hit_bad_ban_type_rejected(client: TestClient) -> None:
+    r = client.post("/v1/audit/ban-hits", json=_ban_hit(ban_type="nonsense"))
+    assert r.status_code == 422
+
+
+def test_ban_hit_future_occurred_at_rejected(client: TestClient) -> None:
+    far_future = (_now() + timedelta(minutes=10)).isoformat()
+    r = client.post("/v1/audit/ban-hits", json=_ban_hit(occurred_at=far_future))
+    assert r.status_code == 400
+    assert "future" in r.json()["detail"]
+
+
+def test_list_ban_hits_maps_rows(fake_clickhouse: MagicMock) -> None:
+    from hexgate_api.features.audit.service import list_ban_hits
+
+    event_id = uuid.uuid4()
+    occurred = _now()
+    fake_clickhouse.query.return_value = MagicMock(
+        result_rows=[
+            (event_id, occurred, "researcher", "u1", "s1", "user", "ban_x", "spam")
+        ]
+    )
+    rows = list_ban_hits(fake_clickhouse, project_id="p1", since_hours=24)
+    assert len(rows) == 1
+    assert rows[0].ban_type == "user"
+    assert rows[0].ban_id == "ban_x"
+    assert rows[0].agent_name == "researcher"
+    assert rows[0].reason == "spam"
+
+
 def test_oversized_hint_rejected(client: TestClient) -> None:
     big = {"globs": "y" * (audit.MAX_HINT_BYTES + 100)}
     r = client.post("/v1/audit/decisions", json=_event(hint=big))
@@ -469,7 +536,6 @@ def test_summarize_classifies_grouping_sets() -> None:
         "allow": 6,
         "deny": 4,
         "needs_approval": 0,
-        "banned": 0,
     }
     # Breakdowns sorted by "all" desc; grand total must NOT leak into any.
     assert data["by_agent"] == [
@@ -479,7 +545,6 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 6,
             "deny": 3,
             "needs_approval": 0,
-            "banned": 0,
         },
         {
             "key": "scraper",
@@ -487,7 +552,6 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 0,
             "deny": 1,
             "needs_approval": 0,
-            "banned": 0,
         },
     ]
     assert data["by_role"] == [
@@ -497,9 +561,8 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 6,
             "deny": 0,
             "needs_approval": 0,
-            "banned": 0,
         },
-        {"key": "", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0, "banned": 0},
+        {"key": "", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
     ]
     assert data["by_tool"] == [
         {
@@ -508,7 +571,6 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 0,
             "deny": 4,
             "needs_approval": 0,
-            "banned": 0,
         },
     ]
     assert data["by_user"] == [
@@ -518,7 +580,6 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 6,
             "deny": 0,
             "needs_approval": 0,
-            "banned": 0,
         },
         {
             "key": "Bob",
@@ -526,7 +587,6 @@ def test_summarize_classifies_grouping_sets() -> None:
             "allow": 0,
             "deny": 4,
             "needs_approval": 0,
-            "banned": 0,
         },
     ]
 
@@ -534,7 +594,7 @@ def test_summarize_classifies_grouping_sets() -> None:
 def test_summarize_empty_result() -> None:
     data = summarize(_summary_result([]), project_id="p1", since_hours=24)
     assert data == {
-        "totals": {"all": 0, "allow": 0, "deny": 0, "needs_approval": 0, "banned": 0},
+        "totals": {"all": 0, "allow": 0, "deny": 0, "needs_approval": 0},
         "by_agent": [],
         "by_role": [],
         "by_tool": [],

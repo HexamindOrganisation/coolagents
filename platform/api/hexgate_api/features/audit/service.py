@@ -22,6 +22,8 @@ from hexgate_api.schemas import (
     AnomalySeverity,
     AuditAnomaly,
     AuditOutcome,
+    BanHitEvent,
+    BanHitRow,
     DecisionEvent,
 )
 
@@ -140,6 +142,87 @@ def insert_decision(
         column_names=_DECISION_COLUMNS,
         settings=_DECISION_INSERT_SETTINGS,
     )
+
+
+# --- Ban hits: sibling event stream (own table, kept out of decision reads) ---
+
+# Order matches the ban_hit table in schema.sql; received_at is server-stamped.
+_BAN_HIT_COLUMNS = [
+    "event_id",
+    "occurred_at",
+    "project_id",
+    "agent_name",
+    "agent_version_id",
+    "session_id",
+    "user_id",
+    "ban_type",
+    "ban_id",
+    "reason",
+]
+
+
+def insert_ban_hit(
+    clickhouse_client: Client,
+    *,
+    event: BanHitEvent,
+    project_id: str,
+    agent_version_id: str,
+) -> None:
+    """Write one ban hit to ban_hit. Raises ClickHouseError on insert failure;
+    it propagates so the caller maps it to a transport error. No payload caps —
+    a ban hit carries no arguments/hint blobs."""
+    row = [
+        event.event_id,
+        event.occurred_at,
+        project_id,  # bearer-resolved
+        event.agent_name,
+        agent_version_id,  # platform-resolved
+        event.session_id,
+        event.user_id,
+        event.ban_type,
+        event.ban_id,
+        event.reason,
+    ]
+    clickhouse_client.insert(
+        "ban_hit",
+        [row],
+        column_names=_BAN_HIT_COLUMNS,
+        # Same async-insert-and-block semantics as decisions.
+        settings=_DECISION_INSERT_SETTINGS,
+    )
+
+
+def list_ban_hits(
+    client: Client,
+    *,
+    project_id: str,
+    since_hours: int,
+    limit: int = 50,
+) -> list[BanHitRow]:
+    """Recent ban hits for a project (newest first). Its own table, so it never
+    touches the policy-decision aggregations or their totals."""
+    sql = (
+        "SELECT event_id, occurred_at, agent_name, user_id, session_id, "
+        "ban_type, ban_id, reason FROM ban_hit "
+        "WHERE project_id = {project_id:String} "
+        "AND occurred_at >= now() - toIntervalHour({hours:UInt32}) "
+        "ORDER BY occurred_at DESC LIMIT {limit:UInt32}"
+    )
+    params = {"project_id": project_id, "hours": since_hours, "limit": limit}
+    rows = client.query(sql, parameters=params).result_rows
+    return [
+        BanHitRow(
+            event_id=r[0],
+            occurred_at=r[1],
+            agent_name=r[2],
+            user_id=r[3],
+            session_id=r[4],
+            ban_type=r[5],
+            ban_id=r[6],
+            reason=r[7],
+        )
+        for r in rows
+    ]
 
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------

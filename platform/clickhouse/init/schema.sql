@@ -22,14 +22,7 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     -- Decision-specific
     tool_name           LowCardinality(String),
     role                LowCardinality(String) DEFAULT '',
-    -- 'banned' = kill-switch refusal at the invoke gate (override, not a
-    -- policy decision). Appended last so existing rows keep their codes and
-    -- the ORDER BY stays valid. This init file only applies on a fresh volume;
-    -- an existing cluster needs a one-off (metadata-only) migration:
-    --   ALTER TABLE hexgate_audit.policy_decision
-    --     MODIFY COLUMN outcome
-    --     Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3, 'banned' = 4);
-    outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3, 'banned' = 4),
+    outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3),
     error_type          LowCardinality(String) DEFAULT '',
     reason              String,
     violations          Array(String),
@@ -43,5 +36,34 @@ ENGINE = ReplacingMergeTree(received_at)
 -- client-supplied occurred_at (clock skew would break retention).
 PARTITION BY toYYYYMM(received_at)
 ORDER BY (project_id, agent_name, outcome, occurred_at, event_id)
+TTL toDateTime(received_at) + INTERVAL 90 DAY
+SETTINGS index_granularity = 8192;
+
+
+-- Kill-switch ban hits — one row per execution refused at the SDK invoke gate.
+-- Sibling of policy_decision sharing the envelope (same names/types/order),
+-- kept separate because a ban is refused BEFORE any tool call (no
+-- tool/role/outcome/args), and its per-attempt volume would otherwise swamp
+-- the policy-decision feed. See the init-dir note above re: fresh-volume only.
+CREATE TABLE IF NOT EXISTS hexgate_audit.ban_hit
+(
+    -- Envelope (shared with policy_decision — same names, types, order)
+    event_id            UUID,
+    occurred_at         DateTime64(3, 'UTC'),
+    received_at         DateTime64(3, 'UTC') DEFAULT now64(3),
+    project_id          LowCardinality(String),
+    agent_name          LowCardinality(String),
+    agent_version_id    LowCardinality(String) DEFAULT '',
+    session_id          String DEFAULT '',
+    user_id             LowCardinality(String) DEFAULT '',
+
+    -- Ban-specific
+    ban_type            Enum8('agent' = 1, 'user' = 2),
+    ban_id              LowCardinality(String),
+    reason              String
+)
+ENGINE = ReplacingMergeTree(received_at)
+PARTITION BY toYYYYMM(received_at)
+ORDER BY (project_id, occurred_at, event_id)
 TTL toDateTime(received_at) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;

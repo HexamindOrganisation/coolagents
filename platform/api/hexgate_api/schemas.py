@@ -433,20 +433,12 @@ class AuditOutcome(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     NEEDS_APPROVAL = "needs_approval"
-    # Kill-switch refusal at the invoke-time gate — distinct from a policy
-    # ``deny`` so it's excluded from deny-rate anomaly detection (the anomaly
-    # math keys off ``DENY`` explicitly).
-    BANNED = "banned"
 
 
 class DecisionEvent(AuditEnvelope):
     """One policy decision; mirrors the policy_decision table."""
 
-    # Required for allow/deny/needs_approval. A kill-switch ``banned`` event is
-    # refused at the invoke gate before any tool call, so it carries no tool —
-    # the empty value is legal only for that outcome (see the validator below),
-    # not a field-level min_length that would forbid it outright.
-    tool_name: str = Field(default="", max_length=256)
+    tool_name: str = Field(min_length=1, max_length=256)
     outcome: AuditOutcome
     role: str = Field(default="", max_length=256)
     error_type: str = Field(default="", max_length=64)
@@ -459,19 +451,43 @@ class DecisionEvent(AuditEnvelope):
     hint: Optional[dict] = None
     arguments: Optional[dict] = None
 
-    @model_validator(mode="after")
-    def _require_tool_unless_banned(self) -> "DecisionEvent":
-        # Every outcome except a kill-switch ban names the tool it decided on;
-        # ``banned`` is refused before any tool runs, so it alone may omit it.
-        if self.outcome != AuditOutcome.BANNED and not self.tool_name:
-            raise ValueError("tool_name is required unless outcome is 'banned'")
-        return self
-
 
 class DecisionAccepted(BaseModel):
     """Response shape for POST /v1/audit/decisions."""
 
     event_id: UUID
+
+
+class BanHitEvent(AuditEnvelope):
+    """One execution refused by a kill-switch ban, logged from the SDK's
+    invoke-time gate. Sibling of :class:`DecisionEvent` on the shared audit
+    envelope; mirrors the ``ban_hit`` table. No tool/outcome — the refusal
+    happens before any tool call, and every ``ban_hit`` row is a ban hit by
+    definition."""
+
+    ban_type: str = Field(pattern="^(agent|user)$")
+    ban_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(default="", max_length=1024)
+
+
+class BanHitAccepted(BaseModel):
+    """Response shape for POST /v1/audit/ban-hits."""
+
+    event_id: UUID
+
+
+class BanHitRow(BaseModel):
+    """One ``ban_hit`` row — powers the Kill Switch page's "recent blocked
+    attempts" (consumed in Phase 3)."""
+
+    event_id: UUID
+    occurred_at: datetime
+    agent_name: str
+    user_id: str = ""
+    session_id: str = ""
+    ban_type: str
+    ban_id: str
+    reason: str = ""
 
 
 # --- Audit dashboard read models (mirror audit.py return shapes) -------------
@@ -486,7 +502,6 @@ class OutcomeCounts(BaseModel):
     allow: int = 0
     deny: int = 0
     needs_approval: int = 0
-    banned: int = 0
 
 
 class AuditBreakdownRow(OutcomeCounts):
@@ -514,7 +529,6 @@ class AuditTimeseriesPoint(BaseModel):
     allow: int = 0
     deny: int = 0
     needs_approval: int = 0
-    banned: int = 0
 
 
 class AuditDecisionRow(BaseModel):

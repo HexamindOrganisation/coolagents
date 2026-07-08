@@ -13,6 +13,7 @@ from hexgate_api.features.audit.service import (
     AuditEventOutOfWindow,
     AuditPayloadTooLarge,
     anomalies,
+    insert_ban_hit,
     insert_decision,
     list_decisions,
     prepare_date_range,
@@ -31,6 +32,8 @@ from hexgate_api.schemas import (
     AuditSummary,
     AuditTimeseriesPoint,
     AuditWindow,
+    BanHitAccepted,
+    BanHitEvent,
     DecisionAccepted,
     DecisionEvent,
 )
@@ -92,6 +95,51 @@ async def ingest_decision(
         raise HTTPException(status_code=422, detail="audit event rejected by storage")
 
     return DecisionAccepted(event_id=body.event_id)
+
+
+@router.post(
+    "/audit/ban-hits",
+    response_model=BanHitAccepted,
+    status_code=202,
+    tags=["audit"],
+)
+async def ingest_ban_hit(
+    body: BanHitEvent,
+    project_id: str = Depends(require_project),
+    session: AsyncSession = Depends(get_session),
+    clickhouse_client=Depends(require_clickhouse),
+) -> BanHitAccepted:
+    """Ingest one kill-switch ban hit — an execution refused at the SDK's
+    invoke gate. Sibling of the decision ingest; project_id (bearer),
+    received_at (CH default), and agent_version_id (platform lookup) are
+    server-resolved. Idempotent on event_id via the ReplacingMergeTree engine
+    (retry with the SAME event_id; a fresh id turns a retry into a duplicate).
+    """
+    try:
+        validate_event_window(body.occurred_at)
+    except AuditEventOutOfWindow as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    agent_version_id = await get_latest_agent_version_id(
+        session, project_id, body.agent_name
+    )
+
+    try:
+        await asyncio.to_thread(
+            insert_ban_hit,
+            clickhouse_client,
+            event=body,
+            project_id=project_id,
+            agent_version_id=agent_version_id,
+        )
+    except OperationalError as exc:  # transient transport failure — retryable
+        _log.warning("ban-hit insert failed (transient): %s", exc)
+        raise _audit_unavailable()
+    except ClickHouseError as exc:  # storage rejected the row — retry won't help
+        _log.error("ban-hit insert rejected by ClickHouse: %s", exc)
+        raise HTTPException(status_code=422, detail="ban hit rejected by storage")
+
+    return BanHitAccepted(event_id=body.event_id)
 
 
 # Dashboard audit reads — project-scoped aggregation, cookie-authed like the
