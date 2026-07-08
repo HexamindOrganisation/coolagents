@@ -40,12 +40,18 @@ jobs:
       # Pin a known-good version so an upstream OPA change can't break CI overnight.
       - name: Install OPA
         run: |
-          # --retry-all-errors covers curl 56 (recv reset mid-download) and
-          # other transient TCP hiccups against openpolicyagent.org's CDN
-          # that --retry alone won't catch. ~3min worst case before the job
-          # gives up, much better than a one-shot fail forcing a re-run.
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
-            -o opa https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+          # Fetch straight from GitHub releases (skips the openpolicyagent.org
+          # redirect hop) with per-ATTEMPT stall guards. --retry-max-time alone
+          # only gates whether to START a retry; a single transfer that stalls
+          # mid-download (curl 56) hangs indefinitely without --max-time, which
+          # is what ate a 5m job. --speed-limit/-time aborts a dead transfer in
+          # ~20s so a retry fires fast instead of waiting out the clock.
+          curl -fsSL \
+            --connect-timeout 15 --max-time 120 \
+            --speed-limit 1024 --speed-time 20 \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            -o opa \
+            https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_linux_amd64_static
           chmod +x opa
           sudo mv opa /usr/local/bin/opa
           opa version
@@ -99,12 +105,18 @@ jobs:
       # ETag header. Same pin as the SDK job.
       - name: Install OPA
         run: |
-          # --retry-all-errors covers curl 56 (recv reset mid-download) and
-          # other transient TCP hiccups against openpolicyagent.org's CDN
-          # that --retry alone won't catch. ~3min worst case before the job
-          # gives up, much better than a one-shot fail forcing a re-run.
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
-            -o opa https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
+          # Fetch straight from GitHub releases (skips the openpolicyagent.org
+          # redirect hop) with per-ATTEMPT stall guards. --retry-max-time alone
+          # only gates whether to START a retry; a single transfer that stalls
+          # mid-download (curl 56) hangs indefinitely without --max-time, which
+          # is what ate a 5m job. --speed-limit/-time aborts a dead transfer in
+          # ~20s so a retry fires fast instead of waiting out the clock.
+          curl -fsSL \
+            --connect-timeout 15 --max-time 120 \
+            --speed-limit 1024 --speed-time 20 \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            -o opa \
+            https://github.com/open-policy-agent/opa/releases/download/v0.70.0/opa_linux_amd64_static
           chmod +x opa
           sudo mv opa /usr/local/bin/opa
           opa version

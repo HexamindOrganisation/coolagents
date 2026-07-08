@@ -1,0 +1,218 @@
+---
+title: "Writing conditions"
+description: "A friendly, example-first guide to gating tool calls on their arguments."
+---
+
+Allowing a tool is often too blunt. You don't want the agent to make *any*
+refund — you want refunds **under $500**. You don't want it to write *any*
+file — only files **under `/srv/`**. That "only when…" is a **condition**.
+
+A condition is a yes/no test on the arguments of the call. Attach conditions to
+a tool and it runs only when **all** of them say yes:
+
+```yaml
+tools:
+  refund:
+    mode: allow
+    constraints:
+      - args.amount <= 500        # only refunds up to $500
+      - args.currency == "USD"    # …and only in USD
+```
+
+That's the whole idea. The rest of this page shows how to say more.
+
+## Three things to keep in mind
+
+<Note>
+- **Conditions read the call's arguments** under `args.` — `args.amount`,
+  `args.currency`, `args.file_path`.
+- **Every line must pass.** Listing two conditions means *both* have to hold.
+- **When in doubt, it's a no.** If an argument is missing or the wrong type, the
+  condition fails and the call is denied. Safe by default — you never have to
+  write "…and the value exists."
+</Note>
+
+## Your first condition
+
+Compare an argument to a value:
+
+```yaml
+constraints:
+  - args.amount <= 500
+```
+
+The operators are what you'd expect: `==`, `!=`, `<`, `<=`, `>`, `>=`.
+
+Comparing to text? **Quote it** — double quotes:
+
+```yaml
+- args.currency == "USD"
+```
+
+<Warning>
+Quotes matter. `args.currency == USD` (no quotes) doesn't compare to the *word*
+"USD" — it compares `args.currency` to **another field** called `USD`, which
+almost never exists, so the call is denied. If you mean text, quote it.
+</Warning>
+
+## One of a set
+
+Use `in` (and `not in`) to check membership:
+
+```yaml
+- args.currency in ["USD", "EUR", "GBP"]
+- args.priority not in ["urgent", "critical"]
+```
+
+## Combining conditions
+
+Separate lines are already **and** — all must hold. When you need **or**, or to
+group things, write it inline with `and` / `or` / `not` and parentheses:
+
+```yaml
+constraints:
+  - args.amount <= 100 or role == "admin"
+  - not (args.env == "prod" and args.force == false)
+```
+
+`or` binds loosest, then `and`, then `not` — the usual precedence. Reach for
+parentheses whenever it makes the intent clearer.
+
+## Checking the shape of text
+
+For strings, four helpers go beyond exact match:
+
+```yaml
+- startswith(args.file_path, "/srv/")
+- endswith(args.file_path, ".md")
+- contains(args.subject, "urgent")
+- matches(args.ticket_id, "^INC-[0-9]+$")     # a regular expression
+```
+
+<Tip>
+`matches` uses a regular expression and is **unanchored** — it looks for the
+pattern anywhere in the string. Add `^` and `$` when you mean the *whole* value,
+like the ticket-ID example above.
+</Tip>
+
+## Rules over a list
+
+When an argument is a **list**, `every` and `any` let you constrain its
+elements. Inside, `.` is "the current element":
+
+```yaml
+tools:
+  send_email:
+    mode: allow
+    constraints:
+      - count(args.to) <= 5                       # at most 5 recipients
+      - every(args.to, endswith(., "@acme.com"))  # all on the company domain
+```
+
+- `every(list, …)` — the condition must hold for **all** elements.
+- `any(list, …)` — it must hold for **at least one**.
+- `count(list) …` — compares the number of elements.
+
+If the elements are objects, reach into them with `.field`:
+
+```yaml
+- every(args.line_items, .price <= 1000)
+- any(args.reviewers, .role == "senior")
+```
+
+## Comparing two arguments
+
+The right-hand side can be another argument, not just a fixed value:
+
+```yaml
+- args.amount <= args.limit      # never refund more than the caller's own limit
+- args.start < args.end
+```
+
+## Reusing values with `consts`
+
+When the same value shows up in several rules, name it once in a `consts:` block
+and reference it as `consts.<name>`:
+
+```yaml
+consts:
+  max_refund: 500
+  managed_repos: ["hexgate", "hexkit", "hexgate-landing"]
+
+tools:
+  refund:    { mode: allow, constraints: ["args.amount <= consts.max_refund"] }
+  create_pr: { mode: allow, constraints: ["args.repo in consts.managed_repos"] }
+```
+
+Change the number in one place and every rule that uses it follows. It also lets
+someone tune the allowlist without touching the logic. Put shared constants in a
+mixin (`inherits:`) so several roles can reuse them.
+
+## Who's calling, and what they're calling
+
+Two facts about the call itself are always available:
+
+```yaml
+- role == "admin"              # the caller's role
+- tool == "refund_order"       # the tool being invoked
+```
+
+They're most useful with `or` — "under the limit, **or** an admin":
+
+```yaml
+- args.amount <= consts.max_refund or role == "admin"
+```
+
+## A worked example
+
+A support agent that can email customers and issue refunds, with a stricter
+default role and a looser billing role:
+
+```yaml
+version: 1
+
+consts:
+  max_refund: 500
+  support_domains: ["acme.com", "example.org"]
+
+roles:
+  default:
+    tools:
+      send_email:
+        mode: allow
+        constraints:
+          - count(args.to) <= 10
+          - every(args.to, endswith(., "@acme.com"))
+      refund:
+        mode: approval_required
+        constraints:
+          - args.amount <= args.order_total          # never more than the order
+          - args.amount <= consts.max_refund or role == "billing"
+
+  billing:
+    tools:
+      refund:
+        mode: allow
+        constraints:
+          - args.amount <= args.order_total
+```
+
+## Good to know
+
+<Note>
+- **Missing or wrong-typed arguments deny.** A numeric rule like
+  `args.amount <= 500` won't be fooled by a string arriving in `args.amount` —
+  it fails closed.
+- **Dev and production agree.** The same conditions are enforced identically in
+  local development and in a compiled, signed policy bundle — there's one
+  grammar, checked both ways.
+- **Not yet supported:** `and`/`or`/`not` *inside* a quantifier body (e.g.
+  `every(args.x, .a == 1 or .b == 2)`), and `in` against another field.
+</Note>
+
+## Where to next
+
+- **[Constraints reference](/policy/constraints)** — the full operator,
+  function, and quantifier tables in one place.
+- **[Define policy in code](/policy/in-code)** — build the same conditions in
+  Python with typed constructors, and unit-test them.

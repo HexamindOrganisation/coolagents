@@ -1,0 +1,96 @@
+---
+title: "Define policy in code"
+description: "Build and unit-test policies in Python — no YAML required."
+---
+
+A policy doesn't have to live in YAML. You can construct the same validated
+model in Python, which is handy for tests, generated policies, and keeping
+policy next to the code it governs.
+
+## Three ways to build a policy
+
+**From a dict** — the model validates it (including every constraint's grammar):
+
+```python
+from hexgate import AgentPolicy, enforce_policy
+
+policy = AgentPolicy.model_validate({
+    "version": 1,
+    "default_policy": {"mode": "deny"},
+    "tools": {
+        "web_search": {"mode": "allow"},
+        "refund_order": {"mode": "allow", "constraints": ["args.amount <= 500"]},
+    },
+})
+agent = enforce_policy(agent, policy)
+```
+
+**With `PolicyBuilder`** — fluent, and `C(...)` gives you type-checked
+constraints instead of hand-written strings:
+
+```python
+from hexgate import PolicyBuilder, C, enforce_policy
+
+policy = (
+    PolicyBuilder(default="deny")
+    .allow("web_search")
+    .allow("refund_order", when=[C("args.amount") <= 500, C("args.currency") == "USD"])
+    .approve("edit_file")
+    .build()
+)
+agent = enforce_policy(agent, policy)
+```
+
+`C` covers every operator: `<= < > >= == !=`, `.is_in([...])`, `.not_in([...])`,
+`.count()`, and cross-field comparisons (`C("args.max") >= C("args.min")`). Each
+constraint is validated the moment you write it, so a typo raises at that line —
+not later at enforcement.
+
+**Role-aware, with `RolePolicyBuilder`** — produces a `PolicySet`:
+
+```python
+from hexgate import RolePolicyBuilder, PolicyBuilder, C
+
+policies = (
+    RolePolicyBuilder()
+    .role("read_only", PolicyBuilder().allow("web_search"), mixin=True)
+    .role("default", PolicyBuilder(), inherits=["read_only"])
+    .role("billing",
+          PolicyBuilder().allow("refund_order", when=[C("args.amount") <= 500]),
+          inherits=["read_only"])
+    .build()
+)
+```
+
+## Unit-test a policy
+
+The `assert_*` helpers evaluate a policy the same way the runtime enforces it:
+
+```python
+from hexgate import PolicyBuilder, C, assert_allows, assert_denies, assert_needs_approval
+
+policy = (
+    PolicyBuilder()
+    .allow("refund", when=[C("args.amount") <= 500])
+    .approve("edit_file")
+    .build()
+)
+
+assert_allows(policy, "refund", {"amount": 100})
+assert_denies(policy, "refund", {"amount": 999})
+assert_denies(policy, "some_unlisted_tool")          # deny-by-default
+assert_needs_approval(policy, "edit_file")
+```
+
+For a `PolicySet`, pass `role=`:
+
+```python
+assert_allows(policies, "refund_order", {"amount": 100}, role="billing")
+assert_denies(policies, "refund_order", role="default")
+```
+
+<Note>
+The builder and `C` emit the **exact constraint strings** the YAML parser
+accepts, so a policy built in code enforces identically to the same policy in
+YAML — there is only one grammar.
+</Note>
