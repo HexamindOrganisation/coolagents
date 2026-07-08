@@ -52,6 +52,7 @@ pip install hexgate
 **See it enforce — no API keys.** Save a policy that gives two roles different
 limits on the *same* `refund_order` tool:
 
+<!-- Keep this refund_order policy example in sync with docs/quickstart.mdx -->
 ```yaml
 # policy.yaml
 version: 1
@@ -61,13 +62,17 @@ roles:
     tools:
       refund_order:
         mode: allow
-        constraints: [ "args.amount <= 50", 'args.currency == "USD"' ]
+        constraints:
+          - args.amount <= 50
+          - args.currency == "USD"
   billing:                                     # larger refunds, major currencies
     default_policy: { mode: deny }
     tools:
       refund_order:
         mode: allow
-        constraints: [ "args.amount <= 500", 'args.currency in ["USD", "EUR"]' ]
+        constraints:
+          - args.amount <= 500
+          - args.currency in ["USD", "EUR"]
 ```
 
 `hexgate policy test` decides the **same $400 refund** for each role offline — no model, no keys:
@@ -75,11 +80,12 @@ roles:
 ```bash
 hexgate policy test policy.yaml --role support \
     --tool refund_order --args '{"amount": 400, "currency": "USD"}'
-# ✗ DENY · support → refund_order(...)   — over support's $50 cap
+# ✗ DENY · support → refund_order({"amount": 400, "currency": "USD"})
+#   reason: Policy on "refund_order" denied: constraint failed — args.amount <= 50
 
 hexgate policy test policy.yaml --role billing \
     --tool refund_order --args '{"amount": 400, "currency": "USD"}'
-# ✓ ALLOW · billing → refund_order(...)
+# ✓ ALLOW · billing → refund_order({"amount": 400, "currency": "USD"})
 ```
 
 Same tool, same request — **the caller's role and the arguments decide**, enforced

@@ -22,6 +22,7 @@ description: "Watch a role + arguments decide a tool call — first offline, the
     Save this policy as `policy.yaml`. It gives two roles different limits on the
     **same** `refund_order` tool:
 
+    {/* Keep this refund_order policy example in sync with README.md */}
     ```yaml
     version: 1
     roles:
@@ -53,8 +54,8 @@ description: "Watch a role + arguments decide a tool call — first offline, the
     #   reason: Policy on "refund_order" denied: constraint failed — args.amount <= 50
 
     hexgate policy test policy.yaml --role billing \
-        --tool refund_order --args '{"amount": 400, "currency": "EUR"}'
-    # ✓ ALLOW · billing → refund_order({"amount": 400, "currency": "EUR"})
+        --tool refund_order --args '{"amount": 400, "currency": "USD"}'
+    # ✓ ALLOW · billing → refund_order({"amount": 400, "currency": "USD"})
     ```
 
     Same tool, same request — **the caller's role and the arguments decide.** The
