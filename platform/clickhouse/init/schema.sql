@@ -40,12 +40,12 @@ TTL toDateTime(received_at) + INTERVAL 90 DAY
 SETTINGS index_granularity = 8192;
 
 
--- Kill-switch ban hits — one row per execution refused at the SDK invoke gate.
+-- Kill-switch ban enforcements — one row per execution refused at the SDK invoke gate.
 -- Sibling of policy_decision sharing the envelope (same names/types/order),
 -- kept separate because a ban is refused BEFORE any tool call (no
 -- tool/role/outcome/args), and its per-attempt volume would otherwise swamp
 -- the policy-decision feed. See the init-dir note above re: fresh-volume only.
-CREATE TABLE IF NOT EXISTS hexgate_audit.ban_hit
+CREATE TABLE IF NOT EXISTS hexgate_audit.ban_enforcement
 (
     -- Envelope (shared with policy_decision — same names, types, order)
     event_id            UUID,

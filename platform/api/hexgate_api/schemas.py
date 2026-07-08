@@ -458,11 +458,11 @@ class DecisionAccepted(BaseModel):
     event_id: UUID
 
 
-class BanHitEvent(AuditEnvelope):
+class BanEnforcementEvent(AuditEnvelope):
     """One execution refused by a kill-switch ban, logged from the SDK's
     invoke-time gate. Sibling of :class:`DecisionEvent` on the shared audit
-    envelope; mirrors the ``ban_hit`` table. No tool/outcome — the refusal
-    happens before any tool call, and every ``ban_hit`` row is a ban hit by
+    envelope; mirrors the ``ban_enforcement`` table. No tool/outcome — the refusal
+    happens before any tool call, and every ``ban_enforcement`` row is a ban enforcement by
     definition."""
 
     ban_type: str = Field(pattern="^(agent|user)$")
@@ -470,14 +470,14 @@ class BanHitEvent(AuditEnvelope):
     reason: str = Field(default="", max_length=1024)
 
 
-class BanHitAccepted(BaseModel):
-    """Response shape for POST /v1/audit/ban-hits."""
+class BanEnforcementAccepted(BaseModel):
+    """Response shape for POST /v1/audit/ban-enforcements."""
 
     event_id: UUID
 
 
-class BanHitRow(BaseModel):
-    """One ``ban_hit`` row — powers the Kill Switch page's "recent blocked
+class BanEnforcementRow(BaseModel):
+    """One ``ban_enforcement`` row — powers the Kill Switch page's "recent blocked
     attempts" (consumed in Phase 3)."""
 
     event_id: UUID

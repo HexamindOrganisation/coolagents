@@ -22,8 +22,8 @@ from hexgate_api.schemas import (
     AnomalySeverity,
     AuditAnomaly,
     AuditOutcome,
-    BanHitEvent,
-    BanHitRow,
+    BanEnforcementEvent,
+    BanEnforcementRow,
     DecisionEvent,
 )
 
@@ -144,10 +144,10 @@ def insert_decision(
     )
 
 
-# --- Ban hits: sibling event stream (own table, kept out of decision reads) ---
+# --- Ban enforcements: sibling event stream (own table, kept out of decision reads) ---
 
-# Order matches the ban_hit table in schema.sql; received_at is server-stamped.
-_BAN_HIT_COLUMNS = [
+# Order matches the ban_enforcement table in schema.sql; received_at is server-stamped.
+_BAN_ENFORCEMENT_COLUMNS = [
     "event_id",
     "occurred_at",
     "project_id",
@@ -161,16 +161,16 @@ _BAN_HIT_COLUMNS = [
 ]
 
 
-def insert_ban_hit(
+def insert_ban_enforcement(
     clickhouse_client: Client,
     *,
-    event: BanHitEvent,
+    event: BanEnforcementEvent,
     project_id: str,
     agent_version_id: str,
 ) -> None:
-    """Write one ban hit to ban_hit. Raises ClickHouseError on insert failure;
+    """Write one ban enforcement to ban_enforcement. Raises ClickHouseError on insert failure;
     it propagates so the caller maps it to a transport error. No payload caps —
-    a ban hit carries no arguments/hint blobs."""
+    a ban enforcement carries no arguments/hint blobs."""
     row = [
         event.event_id,
         event.occurred_at,
@@ -184,26 +184,26 @@ def insert_ban_hit(
         event.reason,
     ]
     clickhouse_client.insert(
-        "ban_hit",
+        "ban_enforcement",
         [row],
-        column_names=_BAN_HIT_COLUMNS,
+        column_names=_BAN_ENFORCEMENT_COLUMNS,
         # Same async-insert-and-block semantics as decisions.
         settings=_DECISION_INSERT_SETTINGS,
     )
 
 
-def list_ban_hits(
+def list_ban_enforcements(
     client: Client,
     *,
     project_id: str,
     since_hours: int,
     limit: int = 50,
-) -> list[BanHitRow]:
-    """Recent ban hits for a project (newest first). Its own table, so it never
+) -> list[BanEnforcementRow]:
+    """Recent ban enforcements for a project (newest first). Its own table, so it never
     touches the policy-decision aggregations or their totals."""
     sql = (
         "SELECT event_id, occurred_at, agent_name, user_id, session_id, "
-        "ban_type, ban_id, reason FROM ban_hit "
+        "ban_type, ban_id, reason FROM ban_enforcement "
         "WHERE project_id = {project_id:String} "
         "AND occurred_at >= now() - toIntervalHour({hours:UInt32}) "
         "ORDER BY occurred_at DESC LIMIT {limit:UInt32}"
@@ -211,7 +211,7 @@ def list_ban_hits(
     params = {"project_id": project_id, "hours": since_hours, "limit": limit}
     rows = client.query(sql, parameters=params).result_rows
     return [
-        BanHitRow(
+        BanEnforcementRow(
             event_id=r[0],
             occurred_at=r[1],
             agent_name=r[2],

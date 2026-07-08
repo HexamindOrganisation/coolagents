@@ -209,11 +209,11 @@ def test_oversized_arguments_rejected(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ban-hit ingest — sibling event stream (POST /v1/audit/ban-hits)
+# Ban-enforcement ingest — sibling event stream (POST /v1/audit/ban-enforcements)
 # ---------------------------------------------------------------------------
 
 
-def _ban_hit(**overrides) -> dict:
+def _ban_enforcement(**overrides) -> dict:
     base = {
         "event_id": str(uuid.uuid4()),
         "occurred_at": _now().isoformat(),
@@ -225,40 +225,44 @@ def _ban_hit(**overrides) -> dict:
     return {**base, **overrides}
 
 
-def test_ban_hit_happy_path_returns_202_and_inserts_row(
+def test_ban_enforcement_happy_path_returns_202_and_inserts_row(
     client: TestClient, fake_clickhouse: MagicMock
 ) -> None:
-    payload = _ban_hit()
-    r = client.post("/v1/audit/ban-hits", json=payload)
+    payload = _ban_enforcement()
+    r = client.post("/v1/audit/ban-enforcements", json=payload)
 
     assert r.status_code == 202, r.text
     assert r.json() == {"event_id": payload["event_id"]}
 
     fake_clickhouse.insert.assert_called_once()
     args, kwargs = fake_clickhouse.insert.call_args
-    assert args[0] == "ban_hit"  # its own table, not policy_decision
+    assert args[0] == "ban_enforcement"  # its own table, not policy_decision
     row = args[1][0]
-    assert len(row) == 10  # matches _BAN_HIT_COLUMNS
+    assert len(row) == 10  # matches _BAN_ENFORCEMENT_COLUMNS
     assert row[2] == "proj_test"  # project_id (bearer)
     assert row[4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
     assert row[7] == "user"  # ban_type
     assert row[8] == "ban_abc123"  # ban_id
 
 
-def test_ban_hit_bad_ban_type_rejected(client: TestClient) -> None:
-    r = client.post("/v1/audit/ban-hits", json=_ban_hit(ban_type="nonsense"))
+def test_ban_enforcement_bad_ban_type_rejected(client: TestClient) -> None:
+    r = client.post(
+        "/v1/audit/ban-enforcements", json=_ban_enforcement(ban_type="nonsense")
+    )
     assert r.status_code == 422
 
 
-def test_ban_hit_future_occurred_at_rejected(client: TestClient) -> None:
+def test_ban_enforcement_future_occurred_at_rejected(client: TestClient) -> None:
     far_future = (_now() + timedelta(minutes=10)).isoformat()
-    r = client.post("/v1/audit/ban-hits", json=_ban_hit(occurred_at=far_future))
+    r = client.post(
+        "/v1/audit/ban-enforcements", json=_ban_enforcement(occurred_at=far_future)
+    )
     assert r.status_code == 400
     assert "future" in r.json()["detail"]
 
 
-def test_list_ban_hits_maps_rows(fake_clickhouse: MagicMock) -> None:
-    from hexgate_api.features.audit.service import list_ban_hits
+def test_list_ban_enforcements_maps_rows(fake_clickhouse: MagicMock) -> None:
+    from hexgate_api.features.audit.service import list_ban_enforcements
 
     event_id = uuid.uuid4()
     occurred = _now()
@@ -267,7 +271,7 @@ def test_list_ban_hits_maps_rows(fake_clickhouse: MagicMock) -> None:
             (event_id, occurred, "researcher", "u1", "s1", "user", "ban_x", "spam")
         ]
     )
-    rows = list_ban_hits(fake_clickhouse, project_id="p1", since_hours=24)
+    rows = list_ban_enforcements(fake_clickhouse, project_id="p1", since_hours=24)
     assert len(rows) == 1
     assert rows[0].ban_type == "user"
     assert rows[0].ban_id == "ban_x"
