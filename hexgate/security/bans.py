@@ -73,8 +73,8 @@ EMPTY_BAN_SET = BanSet({}, {})
 def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
     """Index a ``GET /v1/bans`` body into a :class:`BanSet`.
 
-    Entries with a blank target for their type are skipped — an empty key
-    would over-match every agent/user. A non-array/non-object body raises
+    Entries with an unknown ban_type or blank target are dropped and logged
+    (an empty key would over-match). A non-array/non-object body raises
     :class:`BanContentError` rather than silently yielding no bans.
     """
     if not isinstance(entries, list):
@@ -95,6 +95,14 @@ def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
             by_agent[entry.target_agent_name] = entry
         elif entry.ban_type == "user" and entry.target_user_id:
             by_user[entry.target_user_id] = entry
+        else:
+            # Unknown ban_type or blank target — can't index, so drop it, but
+            # loudly: this is a ban the operator created that we won't enforce.
+            logger.warning(
+                "dropping unenforceable ban %s (ban_type=%r, blank/unknown target)",
+                entry.ban_id,
+                entry.ban_type,
+            )
     return BanSet(by_agent, by_user)
 
 
@@ -266,6 +274,9 @@ class BanGate:
         self._decide(bans, user)
 
     def _emit(self, hit: BanEntry, user: User | None) -> None:
+        # Best-effort: on sync entrypoints with no running loop, a sink built
+        # off-loop drops the event (shared AuditSender limitation, not
+        # ban-specific). The refusal itself is unaffected.
         if self._sink is None:
             return
         self._sink.emit(

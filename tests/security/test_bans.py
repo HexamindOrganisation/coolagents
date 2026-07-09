@@ -106,22 +106,48 @@ def test_ban_set_from_payload_indexes_by_type() -> None:
     assert bans.user_ban("bot") is None
 
 
-def test_ban_set_from_payload_skips_blank_target() -> None:
-    """A malformed entry with no target for its type is dropped, not indexed
-    under an empty key (which would over-match every agent/user)."""
-    bans = ban_set_from_payload(
-        [
-            {
-                "ban_id": "bad",
-                "ban_type": "agent",
-                "target_agent_name": None,
-                "target_user_id": None,
-                "reason": None,
-            }
-        ]
-    )
-    assert bans.agent_ban("") is None
+def test_ban_set_from_payload_skips_blank_target(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An entry with no target for its type is dropped (not indexed under an
+    empty key) and logged as unenforceable."""
+    with caplog.at_level("WARNING"):
+        bans = ban_set_from_payload(
+            [
+                {
+                    "ban_id": "bad",
+                    "ban_type": "agent",
+                    "target_agent_name": None,
+                    "target_user_id": None,
+                    "reason": None,
+                }
+            ]
+        )
     assert bans == EMPTY_BAN_SET  # nothing indexed at all
+    assert "unenforceable" in caplog.text and "bad" in caplog.text
+
+
+def test_ban_set_from_payload_drops_unknown_ban_type_loudly(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A future/unknown ban_type is dropped but logged, so a ban the operator
+    created isn't silently unenforced."""
+    with caplog.at_level("WARNING"):
+        bans = ban_set_from_payload(
+            [
+                {
+                    "ban_id": "b-session",
+                    "ban_type": "session",
+                    "target_agent_name": None,
+                    "target_user_id": "u-1",
+                    "reason": None,
+                }
+            ]
+        )
+    assert bans == EMPTY_BAN_SET
+    assert bans.user_ban("u-1") is None  # not indexed despite a target
+    [rec] = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert "b-session" in rec.message and "session" in rec.message
 
 
 def test_empty_ban_set_never_matches() -> None:
