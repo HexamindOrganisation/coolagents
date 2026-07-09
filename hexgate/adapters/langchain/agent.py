@@ -9,6 +9,7 @@ from langfuse import get_client, propagate_attributes
 from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
+from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.runtime import User
 
 if TYPE_CHECKING:
@@ -32,6 +33,7 @@ class HexgateLangchainAgent:
         agent: CompiledStateGraph,
         api_key: str,
         tool_names: list[str],
+        agent_name: str = "default",
         binding: PolicyBinding | None = None,
     ) -> None:
         self._agent = agent
@@ -40,6 +42,9 @@ class HexgateLangchainAgent:
         self._tool_names = tool_names
         self._langfuse = get_client()
         self._callback_handler = CallbackHandler()
+        self._usage_handler = HexgateUsageCallbackHandler(
+            agent_name=agent_name, api_key=api_key
+        )
 
     async def _refresh_async(self) -> None:
         """Refresh the policy binding, if attached (async entry points)."""
@@ -60,11 +65,12 @@ class HexgateLangchainAgent:
         }
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
-        """Append the Hexgate callback handler to ``config['callbacks']``."""
+        """Append the Hexgate callback handlers to ``config['callbacks']``."""
         merged: RunnableConfig = dict(config) if config else {}
         callbacks = list(merged.get("callbacks") or [])
-        if self._callback_handler not in callbacks:
-            callbacks.append(self._callback_handler)
+        for handler in (self._callback_handler, self._usage_handler):
+            if handler not in callbacks:
+                callbacks.append(handler)
         merged["callbacks"] = callbacks
         return merged
 

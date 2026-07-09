@@ -80,6 +80,7 @@ def test_wrap_returns_hexgate_proxy_with_supplied_tool_names(
     assert wrapped._tool_names == ["a", "b"]
     assert wrapped._agent is graph
     assert wrapped._api_key == "hexgate-key"
+    assert wrapped._usage_handler._agent_name == "fake-graph"
     assert resolved["name"] == "fake-graph"
     assert resolved["key"] == "hexgate-key"
 

@@ -54,6 +54,7 @@ def wrap_langchain_agent(
     return HexgateLangchainAgent(
         agent=agent,
         api_key=resolved_key,
+        agent_name=agent_name,
         tool_names=tool_names,
         binding=PolicyBinding(enforcer, resolved.source),
     )

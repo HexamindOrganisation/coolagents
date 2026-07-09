@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from hexgate.runtime.context import get_current_user
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
 from hexgate.tracing._senders import shutdown as _shutdown_all
@@ -40,6 +41,46 @@ class LlmUsageEvent:
             "status": self.status,
             "error_code": self.error_code or "",
         }
+
+
+def emit_llm_usage(
+    agent_name: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    latency_ms: int = 0,
+    status: str = "success",
+    error_code: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """Resolve identity from the active User scope and emit one
+    :class:`LlmUsageEvent` through the shared sender registry.
+
+    The single entry point every adapter's usage hook calls into. No-op
+    when no sender is configured for ``api_key`` (no key resolvable, or
+    ``HEXGATE_LOCAL_MODE`` is on) — mirrors ``PolicyEnforcer.decide()``'s
+    audit emission, which is likewise silent when its sender is ``None``.
+    """
+    sender = configure_usage_sender(api_key)
+    if sender is None:
+        return
+    user = get_current_user()
+    sender.emit(
+        LlmUsageEvent(
+            agent_name=agent_name,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            latency_ms=latency_ms,
+            status=status,
+            session_id=user.session_id
+            if (user is not None and user.session_id)
+            else "",
+            user_id=user.user_id if user is not None else "",
+            error_code=error_code,
+        )
+    )
 
 
 def configure_usage_sender(
