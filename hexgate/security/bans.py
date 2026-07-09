@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger("hexgate.security.bans")
 
 
+class BanContentError(RuntimeError):
+    """The ``/v1/bans`` body was a 200 but malformed — contract drift, not a
+    transient error (mirrors :class:`~hexgate.security.source.PolicyContentError`)."""
+
+
 # ---------------------------------------------------------------------------
 # BanSet — immutable snapshot with the two lookups the gate needs
 # ---------------------------------------------------------------------------
@@ -69,11 +74,16 @@ def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
     """Index a ``GET /v1/bans`` body into a :class:`BanSet`.
 
     Entries with a blank target for their type are skipped — an empty key
-    would over-match every agent/user.
+    would over-match every agent/user. A non-array/non-object body raises
+    :class:`BanContentError` rather than silently yielding no bans.
     """
+    if not isinstance(entries, list):
+        raise BanContentError(f"expected a JSON array, got {type(entries).__name__}")
     by_agent: dict[str, BanEntry] = {}
     by_user: dict[str, BanEntry] = {}
     for raw in entries:
+        if not isinstance(raw, dict):
+            raise BanContentError(f"expected ban objects, got {type(raw).__name__}")
         entry = BanEntry(
             ban_id=raw.get("ban_id", ""),
             ban_type=raw.get("ban_type", ""),
@@ -207,11 +217,18 @@ class BanGate:
         self._last_good = EMPTY_BAN_SET
 
     def _current(self) -> BanSet:
+        # Fail-soft is deliberate for v1 (fail-closed is a Phase 4 opt-in):
+        # a control-plane blip must never crash a run. Note the sharper
+        # trade-off vs. policy — a ban never successfully fetched degrades to
+        # EMPTY, not to a prior restrictive state.
         if self._source is None:
             return EMPTY_BAN_SET
         try:
             self._last_good = self._source.fetch()
-        except Exception as exc:  # noqa: BLE001 — fail-soft: keep last-good
+        except BanContentError as exc:
+            # Contract drift, not a blip — log loudly, like PolicyContentError.
+            logger.error("ban feed rejected; using last-good: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — transient; keep last-good
             logger.warning("ban refresh failed; using last-good: %s", exc)
         return self._last_good
 

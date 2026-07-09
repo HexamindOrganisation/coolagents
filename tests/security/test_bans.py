@@ -15,6 +15,7 @@ import pytest
 from hexgate.runtime import User
 from hexgate.security.bans import (
     EMPTY_BAN_SET,
+    BanContentError,
     BanEnforcementEvent,
     BanGate,
     BanSet,
@@ -126,6 +127,16 @@ def test_ban_set_from_payload_skips_blank_target() -> None:
 def test_empty_ban_set_never_matches() -> None:
     assert EMPTY_BAN_SET.agent_ban("bot") is None
     assert EMPTY_BAN_SET.user_ban("u-1") is None
+
+
+def test_ban_set_from_payload_rejects_non_array_body() -> None:
+    with pytest.raises(BanContentError):
+        ban_set_from_payload({"detail": "not found"})  # type: ignore[arg-type]
+
+
+def test_ban_set_from_payload_rejects_non_object_entries() -> None:
+    with pytest.raises(BanContentError):
+        ban_set_from_payload(["oops"])  # type: ignore[list-item]
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +296,22 @@ def test_check_fail_soft_keeps_previous_ban(caplog: pytest.LogCaptureFixture) ->
         gate.check(_user())  # first fetch bans
     with pytest.raises(AgentBannedError):
         gate.check(_user())  # second fetch fails → last-good still bans
+
+
+def test_check_content_error_logged_at_error_and_fail_soft(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed feed (BanContentError) fails soft but logs at ERROR, not
+    WARN — it's contract drift, not a transient blip."""
+
+    class _BadContentSource:
+        def fetch(self) -> BanSet:
+            raise BanContentError("expected a JSON array, got dict")
+
+    with caplog.at_level("WARNING"):
+        assert BanGate("bot", _BadContentSource()).check(_user()) is None
+    [rec] = caplog.records
+    assert rec.levelname == "ERROR"
 
 
 async def test_check_async_raises_through_to_thread() -> None:

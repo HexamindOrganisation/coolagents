@@ -7,6 +7,7 @@ from hexgate.security.errors import (
 )
 from hexgate.security.bans import (
     EMPTY_BAN_SET,
+    BanContentError,
     BanEnforcementEvent,
     BanEntry,
     BanGate,
@@ -112,6 +113,7 @@ __all__ = [
     "AgentBannedError",
     "AgentPolicy",
     "EMPTY_BAN_SET",
+    "BanContentError",
     "BanEnforcementEvent",
     "BanEntry",
     "BanGate",
