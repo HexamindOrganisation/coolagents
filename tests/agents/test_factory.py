@@ -161,7 +161,7 @@ def test_create_agent_wires_tools_and_handler(monkeypatch: pytest.MonkeyPatch) -
         tags=["hexgate", "linkup", "openai:gpt-5.4"],
     )
 
-    assert agent.graph == "agent-instance"
+    assert agent._graph == "agent-instance"
     assert handler == "handler-instance"
     assert agent.tools == custom_tools
     assert calls["agent_kwargs"]["model"] == "openai:gpt-5.4"

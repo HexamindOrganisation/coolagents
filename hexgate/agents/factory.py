@@ -330,7 +330,9 @@ class HexgateAgent:
         hexgate_client: HexgateClient | None = None,
         ban_gate: BanGate | None = None,
     ) -> None:
-        self.graph = graph
+        # Private: run only via ainvoke/astream_events, which apply policy
+        # refresh + the ban gate. Reaching self._graph directly skips both.
+        self._graph = graph
         self.model = model
         self.tools = list(tools)
         self.system_prompt = system_prompt
@@ -369,7 +371,7 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         await self._check_ban()
-        return await self.graph.ainvoke(payload, config=config)
+        return await self._graph.ainvoke(payload, config=config)
 
     async def astream_events(
         self,
@@ -386,7 +388,7 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         await self._check_ban()
-        async for event in self.graph.astream_events(
+        async for event in self._graph.astream_events(
             payload, config=config, version=version
         ):
             yield event
