@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator, Iterator
 from uuid import uuid4
 
@@ -376,17 +377,17 @@ class _CallbackFiringGraph:
 
     name = "graph"
 
-    def _fire(self, config: Any) -> None:
+    async def _afire(self, config: Any) -> None:
         for handler in (config or {}).get("callbacks", []):
             if isinstance(handler, HexgateUsageCallbackHandler):
-                handler.on_llm_end(_fake_llm_result(), run_id=uuid4())
+                await handler.on_llm_end(_fake_llm_result(), run_id=uuid4())
 
     def invoke(self, input: dict, config: Any = None, **kwargs: Any) -> dict:
-        self._fire(config)
+        asyncio.run(self._afire(config))
         return {"ok": True}
 
     async def ainvoke(self, input: dict, config: Any = None, **kwargs: Any) -> dict:
-        self._fire(config)
+        await self._afire(config)
         return {"ok": True}
 
 
