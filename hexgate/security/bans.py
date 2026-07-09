@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from uuid import UUID, uuid4
 
 from hexgate.config.env import resolve_api_key
 from hexgate.security.errors import AgentBannedError
+from hexgate.security.source import _LOCAL_POLICY_ENV_VAR
 from hexgate.tracing._senders import (
     AuditSender,
     _local_mode_active,
@@ -144,15 +146,19 @@ class PlatformBanSource:
             return self._cached
 
 
-# One source per api-key — the feed is project-wide, so agents share a cache.
-_ban_sources: dict[str, PlatformBanSource] = {}
+# One source per (api-key, base-url) — the feed is project-wide, so agents on
+# the same key+platform share a cache. base_url is part of the key so two
+# runners with the same key but different HEXGATE_API_URL (staging vs prod)
+# don't share a source bound to the wrong platform.
+_ban_sources: dict[tuple[str, str], PlatformBanSource] = {}
 
 
 def get_ban_source(api_key: str, client: HexgateClient) -> PlatformBanSource:
-    """Get-or-create the shared :class:`PlatformBanSource` for ``api_key``."""
-    src = _ban_sources.get(api_key)
+    """Get-or-create the shared :class:`PlatformBanSource` for this key+platform."""
+    cache_key = (api_key, client.config.base_url)
+    src = _ban_sources.get(cache_key)
     if src is None:
-        src = _ban_sources[api_key] = PlatformBanSource(client)
+        src = _ban_sources[cache_key] = PlatformBanSource(client)
     return src
 
 
@@ -299,9 +305,15 @@ def resolve_ban_gate(
     api_key: str | None = None,
     client: HexgateClient | None = None,
 ) -> BanGate | None:
-    """Build the gate for ``agent_name``, or ``None`` in local mode / no key
-    (the caller skips the check). Points at the shared per-key source + sink."""
-    if _local_mode_active():
+    """Build the gate for ``agent_name``, or ``None`` when there's no platform
+    to poll (the caller skips the check). Points at the shared per-key source
+    + sink.
+
+    ``None`` for all "no platform" cases: HEXGATE_LOCAL_MODE (no cloud writes),
+    HEXGATE_LOCAL_POLICY (offline local-policy dev), or no key — so the offline
+    dev loop never stalls on a ``GET /v1/bans`` round-trip (plan §4.11).
+    """
+    if _local_mode_active() or os.environ.get(_LOCAL_POLICY_ENV_VAR):
         return None
     key = resolve_api_key(api_key)
     if not key:

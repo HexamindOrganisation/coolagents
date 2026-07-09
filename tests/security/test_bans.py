@@ -39,6 +39,7 @@ def _isolate_ban_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.delenv("HEXGATE_API_KEY", raising=False)
     monkeypatch.delenv("HEXGATE_API_URL", raising=False)
     monkeypatch.delenv(_senders._LOCAL_MODE_ENV, raising=False)
+    monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
     yield
     _BAN_SOURCES.clear()
     _senders._senders.clear()
@@ -72,8 +73,13 @@ def _user_entry(user_id: str = "u-1", ban_id: str = "b-user") -> dict[str, Any]:
 class _FakeBanClient:
     """Scripts get_bans (payload, etag) returns; records If-None-Match sent."""
 
-    def __init__(self, responses: list[tuple[list[dict] | None, str | None]]) -> None:
+    def __init__(
+        self,
+        responses: list[tuple[list[dict] | None, str | None]],
+        base_url: str = "https://api.test",
+    ) -> None:
         self._responses = responses
+        self.config = SimpleNamespace(base_url=base_url)
         self.if_none_match_seen: list[str | None] = []
         self.calls = 0
 
@@ -208,7 +214,7 @@ def test_source_200_then_200_rebuilds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_ban_source registry — shared per api-key
+# get_ban_source registry — shared per (api-key, base-url)
 # ---------------------------------------------------------------------------
 
 
@@ -217,8 +223,19 @@ def test_get_ban_source_shared_per_key() -> None:
     a = get_ban_source("key-1", client)  # type: ignore[arg-type]
     b = get_ban_source("key-1", client)  # type: ignore[arg-type]
     c = get_ban_source("key-2", client)  # type: ignore[arg-type]
-    assert a is b  # same key → one shared source
+    assert a is b  # same key + base_url → one shared source
     assert c is not a  # distinct key → distinct source
+
+
+def test_get_ban_source_distinct_per_base_url() -> None:
+    """Same key but different platforms (staging vs prod) must not share a
+    source, or the second runner would fetch bans from the wrong control plane."""
+    staging = _FakeBanClient([(None, None)], base_url="https://staging")
+    prod = _FakeBanClient([(None, None)], base_url="https://prod")
+    s = get_ban_source("key-1", staging)  # type: ignore[arg-type]
+    p = get_ban_source("key-1", prod)  # type: ignore[arg-type]
+    assert s is not p
+    assert s._client is staging and p._client is prod
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +451,16 @@ def test_resolve_ban_gate_none_without_key() -> None:
 def test_resolve_ban_gate_none_in_local_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXGATE_API_KEY", "fty_live_proj_secret")
     monkeypatch.setenv(_senders._LOCAL_MODE_ENV, "1")
+    assert resolve_ban_gate("bot") is None
+
+
+def test_resolve_ban_gate_none_in_local_policy_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HEXGATE_LOCAL_POLICY is offline too — no ban feed, so the offline dev
+    loop never stalls on GET /v1/bans (plan §4.11)."""
+    monkeypatch.setenv("HEXGATE_API_KEY", "fty_live_proj_secret")
+    monkeypatch.setenv("HEXGATE_LOCAL_POLICY", "/tmp/policy.yaml")
     assert resolve_ban_gate("bot") is None
 
 
