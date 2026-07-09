@@ -14,9 +14,8 @@ class ApprovalRequiredError(RuntimeError):
 class AgentBannedError(RuntimeError):
     """Execution refused by a kill-switch ban, before the LLM runs.
 
-    Enriched (not a bare throw) so integrators can render good UX without
-    reverse-engineering: ``code`` / ``ban_type`` / ``reason`` allow localization,
-    and ``user_message`` is a sensible default safe to show verbatim.
+    Enriched so integrators can localize (``code`` / ``ban_type`` / ``reason``)
+    or show ``user_message`` verbatim.
     """
 
     def __init__(

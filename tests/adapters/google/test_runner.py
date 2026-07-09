@@ -32,9 +32,8 @@ class _StaticBanSource:
 
 
 def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
-    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
-
-    Pass a different ``banned`` for passthrough tests."""
+    """Gate for ``agent_name`` whose source bans ``banned`` (default: itself;
+    pass a different value for passthrough tests)."""
     banned = banned or agent_name
     entry = BanEntry(
         ban_id="b1",
@@ -62,9 +61,8 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
         return ResolvedPolicy(engine, None)
 
     monkeypatch.setattr(wrapper_mod, "resolve_policy", fake_resolve)
-    # Neutralize the ban gate by default — lifecycle/binding tests aren't
-    # about bans, and the bogus api_key would otherwise trip fail-soft.
-    # Ban tests override runner._ban_gate directly, bypassing this.
+    # Neutralize the ban gate for lifecycle tests; ban tests override
+    # runner._ban_gate directly, bypassing this.
     monkeypatch.setattr(runner_mod, "resolve_ban_gate", lambda *a, **k: None)
 
 

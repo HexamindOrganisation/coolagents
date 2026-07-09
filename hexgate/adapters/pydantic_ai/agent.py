@@ -56,12 +56,11 @@ class HexgatePydanticAgent:
             self._binding.refresh()
 
     async def _check_ban_async(self, user: User) -> None:
-        """Refuse a banned agent/user before running (async entry points)."""
+        """Refuse a banned agent/user before running, if a gate is attached."""
         if self._ban_gate is not None:
             await self._ban_gate.check_async(user)
 
     def _check_ban(self, user: User) -> None:
-        """Refuse a banned agent/user before running (sync entry points)."""
         if self._ban_gate is not None:
             self._ban_gate.check(user)
 

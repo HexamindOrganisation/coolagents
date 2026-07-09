@@ -1,29 +1,9 @@
-"""Kill-switch bans — the SDK side of the ``Ban`` primitive.
+"""Kill-switch bans (SDK side) — refuse a banned agent or user before the LLM
+runs, at an invoke-time gate independent of ``PolicyEnforcer.decide()``.
 
-Bans are an operator-controlled, override-everything denylist evaluated
-*around* the policy engine, at a new invoke-time gate that refuses **before
-the LLM runs** (see ``plans/kill-switch.md`` §4.3/§4.12 and
-``plans/kill-switch-phase2.md``). Two ban types, both meaning "don't run at
-all": an ``agent`` ban (one agent can't execute anything) and a ``user`` ban
-(one ``user_id`` can't execute anything, across every agent in the project).
-
-This module owns four things, none of which touch ``PolicyEnforcer.decide()``
-or the per-tool-call hot path:
-
-  * :class:`BanEntry` / :class:`BanSet` — an immutable snapshot of the active
-    bans with the two O(1) lookups the gate needs.
-  * :class:`PlatformBanSource` + :func:`get_ban_source` — an ETag-cached fetch
-    of ``GET /v1/bans``. The feed is **project-scoped** (project resolved from
-    the bearer token), so one source is **shared per api-key** across every
-    agent in the process — one cache, one ETag, one poll cadence. This mirrors
-    the shared ``hexgate.tracing._senders`` registry, not the per-agent
-    :class:`~hexgate.security.source.PlatformPolicySource`.
-  * :class:`BanGate` + :func:`resolve_ban_gate` — a per-agent gate (it carries
-    ``agent_name``) that refreshes fail-soft, checks, and on a hit emits a
-    telemetry event then raises :class:`AgentBannedError`.
-  * :class:`BanEnforcementEvent` + :func:`configure_ban_sink` — a fire-and-forget
-    ``POST /v1/audit/ban-enforcements`` emitter, a thin wrapper over the shared
-    ``(api_key, path)`` sender registry (mirrors ``hexgate.tracing.usage``).
+The ban feed is project-scoped, so its source and sink are shared per api-key
+(module registries), unlike the per-agent policy source. See
+``plans/kill-switch-phase2.md``.
 """
 
 from __future__ import annotations
@@ -59,11 +39,7 @@ logger = logging.getLogger("hexgate.security.bans")
 
 @dataclass(frozen=True, slots=True)
 class BanEntry:
-    """One active ban, mirroring the platform ``BanFeedEntry`` wire shape.
-
-    Exactly one of ``target_agent_name`` / ``target_user_id`` is set,
-    matching ``ban_type`` (the platform enforces this at create time).
-    """
+    """One active ban, mirroring the platform ``BanFeedEntry`` wire shape."""
 
     ban_id: str
     ban_type: str  # "agent" | "user"
@@ -74,22 +50,15 @@ class BanEntry:
 
 @dataclass(frozen=True, slots=True)
 class BanSet:
-    """Immutable snapshot of the project's active bans, indexed for lookup.
-
-    Built by :func:`ban_set_from_payload` from a ``GET /v1/bans`` body.
-    Agent bans are keyed by ``target_agent_name``, user bans by
-    ``target_user_id`` — so the gate's two checks are plain dict gets.
-    """
+    """Immutable snapshot of active bans, indexed by target for O(1) lookup."""
 
     _by_agent: Mapping[str, BanEntry]
     _by_user: Mapping[str, BanEntry]
 
     def agent_ban(self, agent_name: str) -> BanEntry | None:
-        """Return the active ban for ``agent_name``, or ``None``."""
         return self._by_agent.get(agent_name)
 
     def user_ban(self, user_id: str) -> BanEntry | None:
-        """Return the active ban for ``user_id``, or ``None``."""
         return self._by_user.get(user_id)
 
 
@@ -97,14 +66,10 @@ EMPTY_BAN_SET = BanSet({}, {})
 
 
 def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
-    """Build a :class:`BanSet` from the ``GET /v1/bans`` body.
+    """Index a ``GET /v1/bans`` body into a :class:`BanSet`.
 
-    The body is a list of ``BanFeedEntry`` dicts (``ban_id``, ``ban_type``,
-    ``target_agent_name``, ``target_user_id``, ``reason``). Agent bans are
-    indexed by ``target_agent_name`` and user bans by ``target_user_id``;
-    entries with a missing/blank target for their type are skipped rather
-    than indexed under an empty key (defensive — the platform never emits
-    those, but an empty-key entry would silently over-match).
+    Entries with a blank target for their type are skipped — an empty key
+    would over-match every agent/user.
     """
     by_agent: dict[str, BanEntry] = {}
     by_user: dict[str, BanEntry] = {}
@@ -129,32 +94,24 @@ def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
 
 
 class BanSource(Protocol):
-    """Produces the current :class:`BanSet` on demand.
-
-    Expected to be **cheap when nothing has changed** (ETag/304), so the gate
-    can call :meth:`fetch` at the top of every run. Raises on transport/HTTP
-    error — the :class:`BanGate` is what makes the refresh fail-soft.
-    """
+    """Produces the current :class:`BanSet`; raises on error (the gate makes
+    the refresh fail-soft)."""
 
     def fetch(self) -> BanSet: ...
 
 
 class PlatformBanSource:
-    """Pull the project's active bans from ``GET /v1/bans``, with ETag/304.
+    """Fetch ``GET /v1/bans`` with ETag/304, cached under a lock.
 
-    Mirrors :class:`~hexgate.security.source.PlatformPolicySource` (lock + ETag
-    cache) but is keyed to the project, not an agent — the feed derives the
-    project from the bearer token, so there's no ``agent_name`` here. A 304
-    returns the cached :class:`BanSet` by identity; a 200 rebuilds and caches.
+    Mirrors :class:`~hexgate.security.source.PlatformPolicySource` but keyed to
+    the project (from the bearer), not an agent.
     """
 
     def __init__(self, client: HexgateClient) -> None:
         self._client = client
-        # Serialize the (read etag → HTTP → write cache) cycle: the gate's
-        # refresh runs on a to_thread worker, and one source is shared across
-        # every agent, so concurrent runs could otherwise interleave a write
-        # to _cached with another's read of _etag and pair a body with the
-        # wrong etag. Same guard PlatformPolicySource uses.
+        # Serialize read-etag → HTTP → write-cache: the source is shared across
+        # agents and refreshed off a to_thread worker, so concurrent fetches
+        # could otherwise pair a body with the wrong etag.
         self._lock = threading.Lock()
         self._cached = EMPTY_BAN_SET
         self._etag: str | None = None
@@ -169,9 +126,7 @@ class PlatformBanSource:
             return self._cached
 
 
-# One source per api-key — the feed is project-wide, so every agent wrapped
-# for a given key shares one cache/ETag/poll. Mirrors the shared sender
-# registry in hexgate.tracing._senders (not the per-agent policy source).
+# One source per api-key — the feed is project-wide, so agents share a cache.
 _ban_sources: dict[str, PlatformBanSource] = {}
 
 
@@ -192,13 +147,9 @@ _BAN_ENFORCEMENT_PATH = "/v1/audit/ban-enforcements"
 
 @dataclass(frozen=True, slots=True)
 class BanEnforcementEvent:
-    """One kill-switch refusal, ready to POST. Satisfies ``_PayloadEvent``.
-
-    Matches the platform ``BanEnforcementEvent(AuditEnvelope)``: ``agent_name``
-    is always the invoked agent (non-empty even for user bans), ``ban_type``
-    is ``agent``/``user``, ``ban_id`` is non-empty; the server resolves
-    ``project_id`` / ``agent_version_id`` / ``received_at``.
-    """
+    """One refusal, ready to POST. Matches the platform
+    ``BanEnforcementEvent(AuditEnvelope)``; the server resolves project_id /
+    agent_version_id / received_at."""
 
     ban_type: str
     ban_id: str
@@ -226,14 +177,8 @@ def configure_ban_sink(
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> AuditSender | None:
-    """Get-or-create the ban-enforcement sender for ``api_key``.
-
-    Thin wrapper over the shared ``(api_key, path)`` registry — mirrors
-    :func:`hexgate.audit.configure` / :func:`hexgate.tracing.usage.configure_usage_sender`.
-    Returns ``None`` in local mode or when no key is resolvable, and the
-    existing ``hexgate.audit.shutdown`` / ``hexgate.tracing.usage.shutdown``
-    drain it along with every other sender — no new lifecycle code.
-    """
+    """Get-or-create the ban-enforcement sender (shared registry; ``None`` in
+    local mode / no key). Drained by the existing ``audit.shutdown``."""
     return get_or_create_sender(_BAN_ENFORCEMENT_PATH, api_key, base_url)
 
 
@@ -245,11 +190,9 @@ def configure_ban_sink(
 class BanGate:
     """Refuses a banned agent or user before the LLM runs.
 
-    Per-agent (it carries ``agent_name``) but points at the shared, project-
-    scoped :class:`BanSource`. The refresh is **fail-soft with last-good**,
-    exactly like :meth:`PolicyBinding.refresh` — a control-plane blip must
-    never crash a run. A ``None`` source (local mode / no key) makes the gate
-    a permanent no-op.
+    Per-agent but points at the shared project-scoped source. Fail-soft with
+    last-good, like :meth:`PolicyBinding.refresh`; a ``None`` source (local
+    mode / no key) is a permanent no-op.
     """
 
     def __init__(
@@ -260,28 +203,21 @@ class BanGate:
     ) -> None:
         self._agent_name = agent_name
         self._source = source
-        self._sink = sink  # ban-enforcement emitter (fire-and-forget)
+        self._sink = sink
         self._last_good = EMPTY_BAN_SET
 
     def _current(self) -> BanSet:
-        if self._source is None:  # local mode / no api-key → no bans
+        if self._source is None:
             return EMPTY_BAN_SET
         try:
             self._last_good = self._source.fetch()
-        except Exception as exc:  # noqa: BLE001 — fail-soft like binding.refresh
+        except Exception as exc:  # noqa: BLE001 — fail-soft: keep last-good
             logger.warning("ban refresh failed; using last-good: %s", exc)
         return self._last_good
 
     def _decide(self, bans: BanSet, user: User | None) -> None:
-        """Refuse if ``bans`` bans this agent or user; emit telemetry on a hit.
-
-        Agent ban wins over user ban (checked first) — both refuse anyway,
-        but this makes the emitted ``ban_type`` / ``ban_id`` deterministic.
-
-        Split from the fetch so the async path can run the blocking fetch off
-        the event loop while keeping the emit + raise *on* it (see
-        :meth:`check_async`).
-        """
+        # Agent ban checked first so a coincident agent+user ban emits a
+        # deterministic ban_type/ban_id.
         hit = bans.agent_ban(self._agent_name)
         if hit is None and user is not None:
             hit = bans.user_ban(user.user_id)
@@ -303,16 +239,11 @@ class BanGate:
         self._decide(self._current(), user)
 
     async def check_async(self, user: User | None) -> None:
-        """Async path: fetch off-loop, but decide + emit + raise **on** the loop.
+        """Async check: fetch off-loop, decide + emit + raise on the loop.
 
-        Only the blocking ``urllib`` fetch goes to a worker thread. The emit
-        must stay on the event loop: the fire-and-forget :class:`AuditSender`
-        only *adopts* a running loop on its on-loop path — emitting from a
-        ``to_thread`` worker (no running loop) would fall back to the sender's
-        build-time loop, which is ``None`` whenever the gate was resolved off
-        the loop (the common case: ``wrap_*`` / ``__init__`` at sync setup),
-        silently dropping every ``ban_enforcement`` event. Raising here (rather
-        than inside the worker) is also required for the emit to precede it.
+        The emit must stay on the loop — the fire-and-forget ``AuditSender``
+        only adopts a running loop on its on-loop path, so emitting from the
+        ``to_thread`` worker would drop the event.
         """
         bans = await asyncio.to_thread(self._current)
         self._decide(bans, user)
@@ -338,12 +269,8 @@ def resolve_ban_gate(
     api_key: str | None = None,
     client: HexgateClient | None = None,
 ) -> BanGate | None:
-    """Build the gate for ``agent_name``, or ``None`` when there's no platform.
-
-    Returns ``None`` in local mode or when no api-key is resolvable — the
-    caller treats a ``None`` gate as a no-op (skip the check). Otherwise the
-    gate points at the shared per-key ban source and ban sink.
-    """
+    """Build the gate for ``agent_name``, or ``None`` in local mode / no key
+    (the caller skips the check). Points at the shared per-key source + sink."""
     if _local_mode_active():
         return None
     key = resolve_api_key(api_key)

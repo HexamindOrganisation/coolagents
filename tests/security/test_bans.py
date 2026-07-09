@@ -1,10 +1,7 @@
-"""Tests for the kill-switch ban primitive (SDK side) — ``hexgate.security.bans``.
+"""Tests for the kill-switch ban primitive — ``hexgate.security.bans``.
 
-Covers the BanSet snapshot + indexing, the ETag-cached PlatformBanSource and
-its shared-per-key registry, the fail-soft BanGate (agent/user/precedence/
-no-op/fail-soft), resolve_ban_gate's local-mode/no-key gates, and the
-ban-enforcement emitter (event payload + configure_ban_sink wiring). No real
-network calls — the HexgateClient is always mocked.
+BanSet indexing, ETag-cached PlatformBanSource + shared registry, fail-soft
+BanGate, resolve_ban_gate gates, and the emitter. HexgateClient is mocked.
 """
 
 from __future__ import annotations
@@ -72,8 +69,7 @@ def _user_entry(user_id: str = "u-1", ban_id: str = "b-user") -> dict[str, Any]:
 
 
 class _FakeBanClient:
-    """Stand-in for HexgateClient.get_bans — scripts (payload, etag) returns
-    and records the If-None-Match sent on each call."""
+    """Scripts get_bans (payload, etag) returns; records If-None-Match sent."""
 
     def __init__(self, responses: list[tuple[list[dict] | None, str | None]]) -> None:
         self._responses = responses
@@ -342,15 +338,8 @@ def test_none_sink_is_noop_but_still_raises() -> None:
 
 
 async def test_check_async_emits_on_loop_even_when_sink_built_off_loop() -> None:
-    """Regression: check_async must emit *on* the event loop so the real
-    AuditSender adopts the running loop, even when the sink was constructed
-    off-loop (build-time loop None — the common wrap-at-sync-setup case).
-
-    Before the fetch/emit split, the whole check ran in a to_thread worker,
-    so the emit hit the sender's off-loop path, found no bound loop, and
-    silently dropped the ban_enforcement POST. This drives a real AuditSender
-    with a stubbed HTTP client and asserts the POST actually fires.
-    """
+    """Regression: check_async emits on the loop, so a real AuditSender built
+    off-loop (loop None) still POSTs instead of dropping the event."""
     posted: list[dict] = []
 
     class _FakeHttpClient:

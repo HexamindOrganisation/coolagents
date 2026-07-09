@@ -29,11 +29,8 @@ class _StaticBanSource:
 
 
 def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
-    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
-
-    Pass a different ``banned`` to build a non-matching gate for passthrough
-    tests — the gate still carries the real agent's name but the ban set
-    targets someone else."""
+    """Gate for ``agent_name`` whose source bans ``banned`` (default: itself;
+    pass a different value for passthrough tests)."""
     banned = banned or agent_name
     entry = BanEntry(
         ban_id="b1",

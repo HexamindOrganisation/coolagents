@@ -93,7 +93,7 @@ class HexgateRunner:
         self._setup_observability()
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
-            self._ban_gate.check(user)  # refuse a banned agent/user before running
+            self._ban_gate.check(user)
         with user.sync_scope(), self._propagate(user):
             agen = self._runner.run_async(
                 user_id=user.user_id,
@@ -123,7 +123,7 @@ class HexgateRunner:
         self._setup_observability()
         await self._binding.refresh_async()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
-            await self._ban_gate.check_async(user)  # refuse a ban before running
+            await self._ban_gate.check_async(user)
         async with user:
             with self._propagate(user):
                 async for event in self._runner.run_async(
