@@ -149,9 +149,10 @@ class HexgatePydanticAgent:
         async with self._abind(user, "iter"):
             async with self._agent.iter(*args, **kwargs) as run:
                 yield run
-                emit_run_usage(
-                    self._agent_name, self._agent, run, api_key=self._api_key
-                )
+                if run.result is not None:
+                    emit_run_usage(
+                        self._agent_name, self._agent, run, api_key=self._api_key
+                    )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate unknown attributes to the wrapped agent.

@@ -9,6 +9,7 @@ from typing import Any, AsyncGenerator, Generator
 
 import nest_asyncio
 from google.adk.agents import BaseAgent
+from google.adk.apps import App
 from google.adk.runners import Runner
 from google.adk.sessions import BaseSessionService
 from google.genai import types
@@ -54,11 +55,10 @@ class HexgateRunner:
         )
         plugins = list(runner_kwargs.pop("plugins", None) or [])
         plugins.append(HexgateUsagePlugin(api_key=self.api_key))
+        app = App(name=app_name, root_agent=self._wrapped_agent, plugins=plugins)
         self._runner = Runner(
-            agent=self._wrapped_agent,
-            app_name=app_name,
+            app=app,
             session_service=session_service,
-            plugins=plugins,
             **runner_kwargs,
         )
         self._agent_name = getattr(agent, "name", "default")

@@ -49,11 +49,12 @@ class _FakeResult:
     """Minimal stand-in for AgentRunResult/StreamedRunResult/AgentRun —
     exposes .usage()/.response so emit_run_usage() doesn't blow up on the
     test double; .value carries what the old plain-string fixtures used to
-    return."""
+    return. .result mirrors AgentRun.result (None until the run completes)."""
 
-    def __init__(self, value: str) -> None:
+    def __init__(self, value: str, *, result: Any = "completed") -> None:
         self.value = value
         self.response = None
+        self.result = result
 
     def usage(self) -> RunUsage:
         return RunUsage(input_tokens=10, output_tokens=20)
@@ -520,3 +521,68 @@ async def test_usage_emit_context_propagates_through_run_stream(
     [event] = fake_sender.events
     assert event.user_id == "u-1"
     assert event.session_id == "s-1"
+
+
+@pytest.mark.asyncio
+async def test_iter_emits_usage_when_run_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """iter() emits once the caller has driven the run to an End node."""
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
+    )
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+
+    class _CompletingAgent:
+        model = "test-model"
+
+        @asynccontextmanager
+        async def iter(self, *args: Any, **kwargs: Any) -> AsyncIterator[_FakeResult]:
+            yield _FakeResult("iter-result", result="done")
+
+    proxy = HexgatePydanticAgent(
+        agent=_CompletingAgent(),  # type: ignore[arg-type]
+        api_key="k",
+        agent_name="my-agent",
+    )
+
+    async with proxy.iter("hello", user=_user()):
+        pass
+
+    [event] = fake_sender.events
+    assert event.agent_name == "my-agent"
+
+
+@pytest.mark.asyncio
+async def test_iter_does_not_emit_usage_when_caller_exits_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exiting the ``async with`` block before the graph reaches ``End``
+    must not emit a zero-token usage event — ``AgentRun.result`` is the
+    signal that the run actually finished, and it stays None until then."""
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
+    )
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+
+    class _IncompleteAgent:
+        @asynccontextmanager
+        async def iter(self, *args: Any, **kwargs: Any) -> AsyncIterator[_FakeResult]:
+            yield _FakeResult("iter-result", result=None)
+
+    proxy = HexgatePydanticAgent(
+        agent=_IncompleteAgent(),  # type: ignore[arg-type]
+        api_key="k",
+        agent_name="my-agent",
+    )
+
+    async with proxy.iter("hello", user=_user()):
+        pass
+
+    assert fake_sender.events == []

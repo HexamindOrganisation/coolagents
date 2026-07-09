@@ -224,10 +224,11 @@ def test_constructor_builds_underlying_runner_once(
     )
 
     [fake_runner] = fake.instances
-    assert fake_runner.kwargs["app_name"] == "app"
     assert fake_runner.kwargs["custom_kwarg"] == "value"
+    app = fake_runner.kwargs["app"]
+    assert app.name == "app"
     # The wrapped agent is a clone, not the original.
-    assert fake_runner.kwargs["agent"].name == "my_agent"
+    assert app.root_agent.name == "my_agent"
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +246,7 @@ def test_run_drives_run_async_inline_under_user_scope(
 
     runner = HexgateRunner(
         agent=_make_agent(),
-        app_name="my-app",
+        app_name="my_app",
         session_service=InMemorySessionService(),
         api_key="k",
     )
@@ -283,7 +284,7 @@ def test_run_keeps_scope_visible_across_awaits(
 
     runner = HexgateRunner(
         agent=_make_agent(),
-        app_name="my-app",
+        app_name="my_app",
         session_service=InMemorySessionService(),
         api_key="k",
     )
@@ -314,7 +315,7 @@ async def test_run_async_opens_user_scope_and_yields_events(
 
     runner = HexgateRunner(
         agent=_make_agent(),
-        app_name="my-app",
+        app_name="my_app",
         session_service=InMemorySessionService(),
         api_key="k",
     )
@@ -600,7 +601,8 @@ class _PluginFiringRunner:
         _PluginFiringRunner.instances.append(self)
 
     async def run_async(self, **kwargs: Any) -> AsyncIterator[dict[str, str]]:
-        for plugin in self.kwargs.get("plugins") or []:
+        app = self.kwargs.get("app")
+        for plugin in app.plugins if app else []:
             if isinstance(plugin, HexgateUsagePlugin):
                 await plugin.after_model_callback(
                     callback_context=SimpleNamespace(agent_name="my-agent"),
@@ -622,7 +624,7 @@ def test_constructor_passes_a_usage_plugin_when_no_plugins_supplied(
     )
 
     [fake_runner] = fake.instances
-    plugins = fake_runner.kwargs["plugins"]
+    plugins = fake_runner.kwargs["app"].plugins
     assert len(plugins) == 1
     assert isinstance(plugins[0], HexgateUsagePlugin)
 
@@ -644,7 +646,7 @@ def test_constructor_preserves_caller_supplied_plugins(
     )
 
     [fake_runner] = fake.instances
-    plugins = fake_runner.kwargs["plugins"]
+    plugins = fake_runner.kwargs["app"].plugins
     assert custom_plugin in plugins
     assert any(isinstance(p, HexgateUsagePlugin) for p in plugins)
     assert len(plugins) == 2
