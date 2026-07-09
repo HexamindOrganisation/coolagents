@@ -13,6 +13,7 @@ from pydantic_ai.result import StreamedRunResult
 from hexgate.runtime import User
 
 if TYPE_CHECKING:
+    from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
 
 
@@ -34,9 +35,11 @@ class HexgatePydanticAgent:
         api_key: str,
         agent_name: str,
         binding: PolicyBinding | None = None,
+        ban_gate: BanGate | None = None,
     ) -> None:
         self._agent = agent
         self._binding = binding
+        self._ban_gate = ban_gate
         self._api_key = api_key
         self._agent_name = agent_name
         self._langfuse = get_client()
@@ -51,6 +54,16 @@ class HexgatePydanticAgent:
         """Refresh the policy binding, if one is attached (sync entry points)."""
         if self._binding is not None:
             self._binding.refresh()
+
+    async def _check_ban_async(self, user: User) -> None:
+        """Refuse a banned agent/user before running (async entry points)."""
+        if self._ban_gate is not None:
+            await self._ban_gate.check_async(user)
+
+    def _check_ban(self, user: User) -> None:
+        """Refuse a banned agent/user before running (sync entry points)."""
+        if self._ban_gate is not None:
+            self._ban_gate.check(user)
 
     def _setup_observability(self) -> None:
         """Globally instrument all pydantic_ai Agents (idempotent)."""
@@ -86,6 +99,7 @@ class HexgatePydanticAgent:
     ) -> AgentRunResult[Any]:
         """Run the agent asynchronously inside a User scope."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with self._abind(user, "run"):
             return await self._agent.run(*args, **kwargs)
 
@@ -97,6 +111,7 @@ class HexgatePydanticAgent:
     ) -> AgentRunResult[Any]:
         """Run the agent synchronously inside a User scope."""
         self._refresh()
+        self._check_ban(user)
         with self._bind(user, "run_sync"):
             return self._agent.run_sync(*args, **kwargs)
 
@@ -109,6 +124,7 @@ class HexgatePydanticAgent:
     ) -> AsyncIterator[StreamedRunResult[Any, Any]]:
         """Stream the agent response asynchronously inside a User scope."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with self._abind(user, "run_stream"):
             async with self._agent.run_stream(*args, **kwargs) as result:
                 yield result
@@ -122,6 +138,7 @@ class HexgatePydanticAgent:
     ) -> AsyncIterator[AgentRun[Any, Any]]:
         """Iterate over the agent execution graph asynchronously."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with self._abind(user, "iter"):
             async with self._agent.iter(*args, **kwargs) as run:
                 yield run

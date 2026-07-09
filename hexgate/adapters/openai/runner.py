@@ -28,6 +28,7 @@ from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
+from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
@@ -48,6 +49,9 @@ class HexgateRunner:
             )
         # Cached per agent name — keeps the ETag memory alive across runs.
         self._bindings: dict[str, PolicyBinding] = {}
+        # Ban gates cached per agent name too; None (local mode / no key) is
+        # cached as a distinct entry so we don't re-resolve every run.
+        self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
@@ -71,6 +75,18 @@ class HexgateRunner:
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
         return binding
+
+    def _ban_gate_for(self, agent: Agent) -> BanGate | None:
+        """Get-or-resolve the cached ban gate for ``agent``'s name.
+
+        Points at the shared per-key ban source; ``None`` in local mode or
+        without a key (the caller then skips the check). ``None`` is cached
+        via a membership check so we resolve at most once per agent name.
+        """
+        name = getattr(agent, "name", None) or "default"
+        if name not in self._ban_gates:
+            self._ban_gates[name] = resolve_ban_gate(name, api_key=self.api_key)
+        return self._ban_gates[name]
 
     def _setup_observability(self):
         """Install Langfuse + OpenAIAgentsInstrumentor (idempotent)."""
@@ -105,6 +121,9 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            await ban_gate.check_async(user)  # refuse a ban before running
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
@@ -128,6 +147,9 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            ban_gate.check(user)  # refuse a ban before running
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
@@ -158,6 +180,11 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # must precede the wrap + setup
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            # Refuse before Runner.run_streamed spawns the background task —
+            # so a banned run never starts and never yields a chunk.
+            ban_gate.check(user)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,

@@ -19,6 +19,7 @@ from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.adapters.pydantic_ai.tools import wrap_tools
 from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
+from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
@@ -85,4 +86,5 @@ def wrap_pydantic_agent(
         api_key=resolved_key,
         agent_name=agent_name,
         binding=PolicyBinding(enforcer, resolved.source),
+        ban_gate=resolve_ban_gate(agent_name, api_key=resolved_key),
     )

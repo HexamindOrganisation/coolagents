@@ -19,6 +19,7 @@ from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.agents.factory import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
+from hexgate.security.bans import resolve_ban_gate
 
 
 class HexgateRunner:
@@ -52,6 +53,7 @@ class HexgateRunner:
             **runner_kwargs,
         )
         self._agent_name = getattr(agent, "name", "default")
+        self._ban_gate = resolve_ban_gate(self._agent_name, api_key=self.api_key)
 
     def _setup_observability(self):
         """Install Langfuse + GoogleADKInstrumentor (idempotent)."""
@@ -90,6 +92,8 @@ class HexgateRunner:
         """
         self._setup_observability()
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
+        if self._ban_gate is not None:
+            self._ban_gate.check(user)  # refuse a banned agent/user before running
         with user.sync_scope(), self._propagate(user):
             agen = self._runner.run_async(
                 user_id=user.user_id,
@@ -118,6 +122,8 @@ class HexgateRunner:
         """Run the Google ADK agent asynchronously, yielding events."""
         self._setup_observability()
         await self._binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        if self._ban_gate is not None:
+            await self._ban_gate.check_async(user)  # refuse a ban before running
         async with user:
             with self._propagate(user):
                 async for event in self._runner.run_async(

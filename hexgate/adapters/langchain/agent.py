@@ -12,6 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from hexgate.runtime import User
 
 if TYPE_CHECKING:
+    from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
 
 
@@ -33,9 +34,11 @@ class HexgateLangchainAgent:
         api_key: str,
         tool_names: list[str],
         binding: PolicyBinding | None = None,
+        ban_gate: BanGate | None = None,
     ) -> None:
         self._agent = agent
         self._binding = binding
+        self._ban_gate = ban_gate
         self._api_key = api_key
         self._tool_names = tool_names
         self._langfuse = get_client()
@@ -50,6 +53,16 @@ class HexgateLangchainAgent:
         """Refresh the policy binding, if one is attached (sync entry points)."""
         if self._binding is not None:
             self._binding.refresh()
+
+    async def _check_ban_async(self, user: User) -> None:
+        """Refuse a banned agent/user before running (async entry points)."""
+        if self._ban_gate is not None:
+            await self._ban_gate.check_async(user)
+
+    def _check_ban(self, user: User) -> None:
+        """Refuse a banned agent/user before running (sync entry points)."""
+        if self._ban_gate is not None:
+            self._ban_gate.check(user)
 
     def _propagate_kwargs(self, user: User, method: str) -> dict[str, Any]:
         return {
@@ -78,6 +91,7 @@ class HexgateLangchainAgent:
     ) -> dict[str, Any]:
         """Invoke the agent asynchronously inside a User scope."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with user:
             with propagate_attributes(**self._propagate_kwargs(user, "ainvoke")):
                 return await self._agent.ainvoke(
@@ -94,6 +108,7 @@ class HexgateLangchainAgent:
     ) -> dict[str, Any]:
         """Invoke the agent synchronously inside a User scope."""
         self._refresh()
+        self._check_ban(user)
         with user.sync_scope():
             with propagate_attributes(**self._propagate_kwargs(user, "invoke")):
                 return self._agent.invoke(input, self._with_callbacks(config), **kwargs)
@@ -108,6 +123,7 @@ class HexgateLangchainAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream the agent asynchronously inside a User scope."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with user:
             with propagate_attributes(**self._propagate_kwargs(user, "astream")):
                 async for chunk in self._agent.astream(
@@ -125,6 +141,7 @@ class HexgateLangchainAgent:
     ) -> Iterator[dict[str, Any]]:
         """Stream the agent synchronously inside a User scope."""
         self._refresh()
+        self._check_ban(user)
         with user.sync_scope():
             with propagate_attributes(**self._propagate_kwargs(user, "stream")):
                 yield from self._agent.stream(
@@ -142,6 +159,7 @@ class HexgateLangchainAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream the agent events asynchronously inside a User scope."""
         await self._refresh_async()
+        await self._check_ban_async(user)
         async with user:
             with propagate_attributes(**self._propagate_kwargs(user, "astream_events")):
                 async for event in self._agent.astream_events(

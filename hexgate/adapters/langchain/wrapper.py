@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.adapters.langchain.tools import install_enforcer_on_tools
 from hexgate.config.env import resolve_api_key
+from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
@@ -56,4 +57,5 @@ def wrap_langchain_agent(
         api_key=resolved_key,
         tool_names=tool_names,
         binding=PolicyBinding(enforcer, resolved.source),
+        ban_gate=resolve_ban_gate(agent_name, api_key=resolved_key),
     )
