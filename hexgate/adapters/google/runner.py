@@ -15,6 +15,7 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
+from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.agents.factory import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
@@ -51,10 +52,13 @@ class HexgateRunner:
             approval_handler=approval_handler,
             client=client,
         )
+        plugins = list(runner_kwargs.pop("plugins", None) or [])
+        plugins.append(HexgateUsagePlugin(api_key=self.api_key))
         self._runner = Runner(
             agent=self._wrapped_agent,
             app_name=app_name,
             session_service=session_service,
+            plugins=plugins,
             **runner_kwargs,
         )
         self._agent_name = getattr(agent, "name", "default")
