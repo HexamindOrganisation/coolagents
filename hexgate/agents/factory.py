@@ -328,6 +328,12 @@ class HexgateAgent:
         binding: PolicyBinding | None = None,
         hexgate_client: HexgateClient | None = None,
     ) -> None:
+        # Local import: hexgate.adapters.langchain's package __init__ pulls in
+        # tools.py -> agents.approvals -> agents.factory (this module) at
+        # import time, so a module-level import here would be circular —
+        # same cycle enforce_policy()'s GuardedTool import already dodges.
+        from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
+
         self.graph = graph
         self.model = model
         self.tools = list(tools)
@@ -350,6 +356,16 @@ class HexgateAgent:
         # load_hexgate_agent attaches it for lazy cloud-side attenuation.
         self._binding: PolicyBinding | None = binding
         self.hexgate_client: HexgateClient | None = hexgate_client
+        self._usage_handler = HexgateUsageCallbackHandler(agent_name=name or "default")
+
+    def _with_usage_callback(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Append the usage callback handler to ``config['callbacks']``."""
+        merged = dict(config)
+        callbacks = list(merged.get("callbacks") or [])
+        if self._usage_handler not in callbacks:
+            callbacks.append(self._usage_handler)
+        merged["callbacks"] = callbacks
+        return merged
 
     async def ainvoke(
         self, payload: dict[str, Any], config: dict[str, Any]
@@ -363,7 +379,9 @@ class HexgateAgent:
         running with stale policy.
         """
         await _refresh_policy_safely(self)
-        return await self.graph.ainvoke(payload, config=config)
+        return await self.graph.ainvoke(
+            payload, config=self._with_usage_callback(config)
+        )
 
     async def astream_events(
         self,
@@ -380,7 +398,7 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         async for event in self.graph.astream_events(
-            payload, config=config, version=version
+            payload, config=self._with_usage_callback(config), version=version
         ):
             yield event
 

@@ -4,11 +4,19 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
 from pydantic import BaseModel
 
+from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.agents import factory
+from hexgate.agents.factory import HexgateAgent
+from hexgate.runtime import User
+from hexgate.runtime.context import get_current_user
+from hexgate.tracing import usage as tracing_usage_mod
 
 
 class FakeAgent:
@@ -320,3 +328,148 @@ async def test_stream_agent_normalizes_raw_events(
     ]
 
     assert events == [{"normalized": 1}, {"normalized": 2}]
+
+
+# ---------------------------------------------------------------------------
+# HexgateAgent: usage handler wiring (manifest-driven path — hexgate serve /
+# the Playground build agents via create_agent(), which returns one of these)
+# ---------------------------------------------------------------------------
+
+
+def _make_hexgate_agent(
+    name: str = "my-agent", graph: Any = None
+) -> tuple[HexgateAgent, Any]:
+    fake_graph = graph if graph is not None else FakeAgent()
+    agent = HexgateAgent(
+        graph=fake_graph,
+        model="gpt-4o",
+        tools=[],
+        system_prompt=None,
+        name=name,
+    )
+    return agent, fake_graph
+
+
+@pytest.mark.asyncio
+async def test_ainvoke_appends_usage_handler_to_callbacks() -> None:
+    agent, graph = _make_hexgate_agent()
+
+    await agent.ainvoke({"messages": []}, config={})
+
+    [call] = graph.ainvoke_calls
+    assert agent._usage_handler in call["config"]["callbacks"]
+
+
+@pytest.mark.asyncio
+async def test_astream_events_appends_usage_handler_to_callbacks() -> None:
+    agent, graph = _make_hexgate_agent()
+
+    events = [
+        event
+        async for event in agent.astream_events(
+            {"messages": []}, config={}, version="v2"
+        )
+    ]
+
+    assert events == [{"event": "one"}, {"event": "two"}]
+    [call] = graph.astream_event_calls
+    assert agent._usage_handler in call["config"]["callbacks"]
+
+
+@pytest.mark.asyncio
+async def test_with_usage_callback_preserves_existing_callbacks() -> None:
+    agent, graph = _make_hexgate_agent()
+    sentinel = object()
+
+    await agent.ainvoke({"messages": []}, config={"callbacks": [sentinel]})
+
+    [call] = graph.ainvoke_calls
+    assert call["config"]["callbacks"] == [sentinel, agent._usage_handler]
+
+
+@pytest.mark.asyncio
+async def test_with_usage_callback_does_not_double_register() -> None:
+    agent, graph = _make_hexgate_agent()
+
+    await agent.ainvoke({"messages": []}, config={})
+    await agent.ainvoke({"messages": []}, config=graph.ainvoke_calls[0]["config"])
+
+    assert (
+        graph.ainvoke_calls[1]["config"]["callbacks"].count(agent._usage_handler) == 1
+    )
+
+
+def _fake_llm_result(input_tokens: int = 10, output_tokens: int = 20) -> LLMResult:
+    message = AIMessage(
+        content="hi",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+    return LLMResult(
+        generations=[[ChatGeneration(message=message)]],
+        llm_output={"model_name": "gpt-4o"},
+    )
+
+
+class _FakeSender:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit(self, event: Any) -> None:
+        self.events.append(event)
+
+
+class _CallbackFiringGraph:
+    """Fires on_llm_end on every HexgateUsageCallbackHandler in the config,
+    the way the real LangGraph agent fires it on chat-model completion —
+    from inside the same call, not a detached task."""
+
+    async def ainvoke(self, payload: dict, config: Any = None) -> dict:
+        for handler in (config or {}).get("callbacks", []):
+            if isinstance(handler, HexgateUsageCallbackHandler):
+                await handler.on_llm_end(_fake_llm_result(), run_id=uuid4())
+        return {"messages": ["ok"]}
+
+
+@pytest.mark.asyncio
+async def test_usage_handler_emits_with_agent_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+    agent, _ = _make_hexgate_agent(name="my-agent", graph=_CallbackFiringGraph())
+
+    await agent.ainvoke({"messages": []}, config={})
+
+    [event] = fake_sender.events
+    assert event.agent_name == "my-agent"
+    assert event.input_tokens == 10
+    assert event.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HexgateAgent itself doesn't open a User scope (serve.py does, only
+    when the chat payload carries user_attenuation) — but when a caller
+    does have one active around the call, identity must still resolve
+    inside on_llm_end."""
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+    agent, _ = _make_hexgate_agent(name="my-agent", graph=_CallbackFiringGraph())
+
+    async with User(user_id="u-1", session_id="s-1", role="developer"):
+        await agent.ainvoke({"messages": []}, config={})
+
+    [event] = fake_sender.events
+    assert event.user_id == "u-1"
+    assert event.session_id == "s-1"
+    assert get_current_user() is None

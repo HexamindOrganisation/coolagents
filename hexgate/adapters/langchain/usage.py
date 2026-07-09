@@ -28,16 +28,22 @@ class HexgateUsageCallbackHandler(BaseCallbackHandler):
     synthesize a zeroed event.
     """
 
-    def __init__(self, *, agent_name: str, api_key: str) -> None:
+    def __init__(self, *, agent_name: str, api_key: str | None = None) -> None:
         self._agent_name = agent_name
         self._api_key = api_key
 
-    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+    async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        # Async so LangChain's AsyncCallbackManager awaits this inline on the
+        # real event loop (asyncio.iscoroutinefunction check in
+        # _ahandle_event_for_handler) instead of dispatching it to a thread
+        # pool executor — a plain sync def here runs off-loop, and
+        # emit_llm_usage's sender never gets a valid loop to schedule its
+        # HTTP send on, silently dropping every event.
         usage = _extract_usage(response)
         if usage is None:
             return
         input_tokens, output_tokens = usage
-        model = (response.llm_output or {}).get("model_name", "")
+        model = _model_name(response)
         emit_llm_usage(
             self._agent_name,
             model,
@@ -45,6 +51,25 @@ class HexgateUsageCallbackHandler(BaseCallbackHandler):
             output_tokens,
             api_key=self._api_key,
         )
+
+
+def _model_name(response: LLMResult) -> str:
+    """Read the model name off the response.
+
+    ``llm_output`` is ``None`` for a streamed response (LangChain's default
+    ``_combine_llm_outputs`` — and even providers that override it, like
+    ChatOpenAI, only combine per-chunk outputs that are non-``None``, which
+    streaming chunks typically aren't) — confirmed empirically against a
+    real streaming ``ChatOpenAI`` call, not assumed. ``response_metadata``
+    on the message is populated in both the streaming and non-streaming
+    case, so it's the primary source; ``llm_output`` stays as a fallback
+    for providers that only populate the legacy field.
+    """
+    message = response.generations[0][0].message  # type: ignore[union-attr]
+    response_metadata = getattr(message, "response_metadata", None) or {}
+    return response_metadata.get("model_name") or (response.llm_output or {}).get(
+        "model_name", ""
+    )
 
 
 def _extract_usage(response: LLMResult) -> tuple[int, int] | None:
