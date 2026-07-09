@@ -272,13 +272,16 @@ class BanGate:
             logger.warning("ban refresh failed; using last-good: %s", exc)
         return self._last_good
 
-    def check(self, user: User | None) -> None:
-        """Raise :class:`AgentBannedError` if this agent or user is banned.
+    def _decide(self, bans: BanSet, user: User | None) -> None:
+        """Refuse if ``bans`` bans this agent or user; emit telemetry on a hit.
 
         Agent ban wins over user ban (checked first) — both refuse anyway,
         but this makes the emitted ``ban_type`` / ``ban_id`` deterministic.
+
+        Split from the fetch so the async path can run the blocking fetch off
+        the event loop while keeping the emit + raise *on* it (see
+        :meth:`check_async`).
         """
-        bans = self._current()
         hit = bans.agent_ban(self._agent_name)
         if hit is None and user is not None:
             hit = bans.user_ban(user.user_id)
@@ -295,9 +298,24 @@ class BanGate:
             reason=hit.reason,
         )
 
+    def check(self, user: User | None) -> None:
+        """Raise :class:`AgentBannedError` if this agent or user is banned."""
+        self._decide(self._current(), user)
+
     async def check_async(self, user: User | None) -> None:
-        """Async wrapper — the fetch is sync urllib, like ``refresh_async``."""
-        await asyncio.to_thread(self.check, user)
+        """Async path: fetch off-loop, but decide + emit + raise **on** the loop.
+
+        Only the blocking ``urllib`` fetch goes to a worker thread. The emit
+        must stay on the event loop: the fire-and-forget :class:`AuditSender`
+        only *adopts* a running loop on its on-loop path — emitting from a
+        ``to_thread`` worker (no running loop) would fall back to the sender's
+        build-time loop, which is ``None`` whenever the gate was resolved off
+        the loop (the common case: ``wrap_*`` / ``__init__`` at sync setup),
+        silently dropping every ``ban_enforcement`` event. Raising here (rather
+        than inside the worker) is also required for the emit to precede it.
+        """
+        bans = await asyncio.to_thread(self._current)
+        self._decide(bans, user)
 
     def _emit(self, hit: BanEntry, user: User | None) -> None:
         if self._sink is None:

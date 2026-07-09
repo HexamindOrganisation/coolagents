@@ -10,6 +10,7 @@ network calls — the HexgateClient is always mocked.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -338,6 +339,45 @@ def test_none_sink_is_noop_but_still_raises() -> None:
     gate = BanGate("bot", _StaticSource(bans), None)
     with pytest.raises(AgentBannedError):
         gate.check(_user())
+
+
+async def test_check_async_emits_on_loop_even_when_sink_built_off_loop() -> None:
+    """Regression: check_async must emit *on* the event loop so the real
+    AuditSender adopts the running loop, even when the sink was constructed
+    off-loop (build-time loop None — the common wrap-at-sync-setup case).
+
+    Before the fetch/emit split, the whole check ran in a to_thread worker,
+    so the emit hit the sender's off-loop path, found no bound loop, and
+    silently dropped the ban_enforcement POST. This drives a real AuditSender
+    with a stubbed HTTP client and asserts the POST actually fires.
+    """
+    posted: list[dict] = []
+
+    class _FakeHttpClient:
+        async def post(self, endpoint: str, json: dict) -> Any:
+            posted.append(json)
+            return SimpleNamespace(status_code=200, text="")
+
+        async def aclose(self) -> None:
+            return None
+
+    sender = _senders.AuditSender(
+        endpoint="http://test/v1/audit/ban-enforcements", api_key="k"
+    )
+    sender._loop = None  # simulate a sink built off the loop (wrap at sync setup)
+    sender._client = _FakeHttpClient()  # type: ignore[assignment]
+
+    bans = ban_set_from_payload([_agent_entry("bot", ban_id="b1")])
+    gate = BanGate("bot", _StaticSource(bans), sender)
+
+    with pytest.raises(AgentBannedError):
+        await gate.check_async(_user("u-1"))
+
+    await sender.close()  # drain the fire-and-forget send task
+    assert len(posted) == 1
+    assert posted[0]["ban_id"] == "b1"
+    assert posted[0]["agent_name"] == "bot"
+    assert posted[0]["user_id"] == "u-1"
 
 
 # ---------------------------------------------------------------------------
