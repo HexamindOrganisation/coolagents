@@ -994,7 +994,7 @@ wheels = [
 
 [[package]]
 name = "hexgate"
-version = "0.2.5"
+version = "0.2.7"
 source = { editable = "../../" }
 dependencies = [
     { name = "bashlex" },
@@ -1009,6 +1009,7 @@ dependencies = [
     { name = "langfuse" },
     { name = "langgraph" },
     { name = "litellm" },
+    { name = "mcp" },
     { name = "nest-asyncio" },
     { name = "openai-agents" },
     { name = "openinference-instrumentation-google-adk" },
@@ -1038,6 +1039,7 @@ requires-dist = [
     { name = "langfuse" },
     { name = "langgraph", specifier = ">=0.2" },
     { name = "litellm", specifier = ">=1.50" },
+    { name = "mcp", specifier = ">=1.0" },
     { name = "nest-asyncio", specifier = ">=1.6" },
     { name = "openai-agents", specifier = ">=0.0.10" },
     { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.11" },

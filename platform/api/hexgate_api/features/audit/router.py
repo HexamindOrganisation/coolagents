@@ -13,6 +13,7 @@ from hexgate_api.features.audit.service import (
     AuditEventOutOfWindow,
     AuditPayloadTooLarge,
     anomalies,
+    insert_ban_enforcement,
     insert_decision,
     list_decisions,
     prepare_date_range,
@@ -31,6 +32,8 @@ from hexgate_api.schemas import (
     AuditSummary,
     AuditTimeseriesPoint,
     AuditWindow,
+    BanEnforcementAccepted,
+    BanEnforcementEvent,
     DecisionAccepted,
     DecisionEvent,
 )
@@ -92,6 +95,49 @@ async def ingest_decision(
         raise HTTPException(status_code=422, detail="audit event rejected by storage")
 
     return DecisionAccepted(event_id=body.event_id)
+
+
+@router.post(
+    "/audit/ban-enforcements",
+    response_model=BanEnforcementAccepted,
+    status_code=202,
+    tags=["audit"],
+)
+async def ingest_ban_enforcement(
+    body: BanEnforcementEvent,
+    project_id: str = Depends(require_project),
+    session: AsyncSession = Depends(get_session),
+    clickhouse_client=Depends(require_clickhouse),
+) -> BanEnforcementAccepted:
+    """Ingest one ban enforcement (bearer). project_id / received_at /
+    agent_version_id are server-resolved; idempotent on event_id."""
+    try:
+        validate_event_window(body.occurred_at)
+    except AuditEventOutOfWindow as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    agent_version_id = await get_latest_agent_version_id(
+        session, project_id, body.agent_name
+    )
+
+    try:
+        await asyncio.to_thread(
+            insert_ban_enforcement,
+            clickhouse_client,
+            event=body,
+            project_id=project_id,
+            agent_version_id=agent_version_id,
+        )
+    except OperationalError as exc:  # transient transport failure — retryable
+        _log.warning("ban-enforcement insert failed (transient): %s", exc)
+        raise _audit_unavailable()
+    except ClickHouseError as exc:  # storage rejected the row — retry won't help
+        _log.error("ban-enforcement insert rejected by ClickHouse: %s", exc)
+        raise HTTPException(
+            status_code=422, detail="ban enforcement rejected by storage"
+        )
+
+    return BanEnforcementAccepted(event_id=body.event_id)
 
 
 # Dashboard audit reads — project-scoped aggregation, cookie-authed like the

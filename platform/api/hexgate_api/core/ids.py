@@ -2,7 +2,7 @@
 
 import secrets
 
-from hexgate_api.models import Agent, AgentVersion, DevToken, Tool
+from hexgate_api.models import Agent, AgentVersion, Ban, DevToken, Tool
 
 # Class-keyed so a typo is a NameError at import, not a runtime bug. Centralized
 # so entropy / format changes happen in one place.
@@ -11,6 +11,7 @@ _ID_PREFIXES: dict[type, str] = {
     AgentVersion: "agv",
     Tool: "tol",
     DevToken: "tok",
+    Ban: "ban",
 }
 
 

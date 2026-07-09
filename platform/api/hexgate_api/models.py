@@ -301,3 +301,34 @@ class Tool(SQLModel, table=True):
     name: str
     description: Optional[str] = None
     input_schema: dict = Field(sa_column=Column(JSON, nullable=False))
+
+
+# ---------------------------------------------------------------------------
+# Kill switch — operator hard blocks that override policy at the SDK's
+# invoke-time gate. v1 targets: a whole agent or a whole user_id.
+# ---------------------------------------------------------------------------
+
+
+class Ban(SQLModel, table=True):
+    """A hard block overriding policy for one agent or user_id, project-scoped.
+
+    Active while ``revoked_at`` is null; revoke is a soft delete keeping the
+    who/when trail (the row is the audit record). One active ban per target,
+    enforced in the service like :class:`Invitation` (no SQLite partial index).
+    """
+
+    id: str = Field(primary_key=True)  # new_id(Ban) -> "ban_…"
+    project_id: str = Field(foreign_key="project.id", index=True)
+    ban_type: str = Field(index=True)  # "agent" | "user"
+    # Exactly one set, matching ban_type; a user ban leaves this null.
+    target_agent_name: Optional[str] = Field(default=None, index=True)
+    target_user_id: Optional[str] = Field(default=None, index=True)
+    reason: Optional[str] = None
+    created_by_user_id: str = Field(foreign_key="user.id", index=True)
+    created_at: datetime = Field(
+        default_factory=utcnow, sa_type=DateTime(timezone=True)
+    )
+    revoked_at: Optional[datetime] = Field(
+        default=None, sa_type=DateTime(timezone=True)
+    )
+    revoked_by_user_id: Optional[str] = Field(default=None, foreign_key="user.id")

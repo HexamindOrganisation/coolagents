@@ -22,6 +22,7 @@ from hexgate_api.schemas import (
     AnomalySeverity,
     AuditAnomaly,
     AuditOutcome,
+    BanEnforcementEvent,
     DecisionEvent,
 )
 
@@ -138,6 +139,52 @@ def insert_decision(
         "policy_decision",
         [row],
         column_names=_DECISION_COLUMNS,
+        settings=_DECISION_INSERT_SETTINGS,
+    )
+
+
+# --- Ban enforcements: sibling event stream (own table, kept out of decision reads) ---
+
+# Order matches the ban_enforcement table in schema.sql; received_at is server-stamped.
+_BAN_ENFORCEMENT_COLUMNS = [
+    "event_id",
+    "occurred_at",
+    "project_id",
+    "agent_name",
+    "agent_version_id",
+    "session_id",
+    "user_id",
+    "ban_type",
+    "ban_id",
+    "reason",
+]
+
+
+def insert_ban_enforcement(
+    clickhouse_client: Client,
+    *,
+    event: BanEnforcementEvent,
+    project_id: str,
+    agent_version_id: str,
+) -> None:
+    """Write one row to ban_enforcement (no payload caps — no arguments/hint blobs)."""
+    row = [
+        event.event_id,
+        event.occurred_at,
+        project_id,  # bearer-resolved
+        event.agent_name,
+        agent_version_id,  # platform-resolved
+        event.session_id,
+        event.user_id,
+        event.ban_type,
+        event.ban_id,
+        event.reason,
+    ]
+    clickhouse_client.insert(
+        "ban_enforcement",
+        [row],
+        column_names=_BAN_ENFORCEMENT_COLUMNS,
+        # Same async-insert-and-block semantics as decisions.
         settings=_DECISION_INSERT_SETTINGS,
     )
 

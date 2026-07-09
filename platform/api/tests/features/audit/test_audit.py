@@ -208,6 +208,59 @@ def test_oversized_arguments_rejected(client: TestClient) -> None:
     assert "arguments" in r.json()["detail"]
 
 
+# ---------------------------------------------------------------------------
+# Ban-enforcement ingest — sibling event stream (POST /v1/audit/ban-enforcements)
+# ---------------------------------------------------------------------------
+
+
+def _ban_enforcement(**overrides) -> dict:
+    base = {
+        "event_id": str(uuid.uuid4()),
+        "occurred_at": _now().isoformat(),
+        "agent_name": "researcher",
+        "user_id": "u1",
+        "ban_type": "user",
+        "ban_id": "ban_abc123",
+    }
+    return {**base, **overrides}
+
+
+def test_ban_enforcement_happy_path_returns_202_and_inserts_row(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    payload = _ban_enforcement()
+    r = client.post("/v1/audit/ban-enforcements", json=payload)
+
+    assert r.status_code == 202, r.text
+    assert r.json() == {"event_id": payload["event_id"]}
+
+    fake_clickhouse.insert.assert_called_once()
+    args, kwargs = fake_clickhouse.insert.call_args
+    assert args[0] == "ban_enforcement"  # its own table, not policy_decision
+    row = args[1][0]
+    assert len(row) == 10  # matches _BAN_ENFORCEMENT_COLUMNS
+    assert row[2] == "proj_test"  # project_id (bearer)
+    assert row[4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
+    assert row[7] == "user"  # ban_type
+    assert row[8] == "ban_abc123"  # ban_id
+
+
+def test_ban_enforcement_bad_ban_type_rejected(client: TestClient) -> None:
+    r = client.post(
+        "/v1/audit/ban-enforcements", json=_ban_enforcement(ban_type="nonsense")
+    )
+    assert r.status_code == 422
+
+
+def test_ban_enforcement_future_occurred_at_rejected(client: TestClient) -> None:
+    far_future = (_now() + timedelta(minutes=10)).isoformat()
+    r = client.post(
+        "/v1/audit/ban-enforcements", json=_ban_enforcement(occurred_at=far_future)
+    )
+    assert r.status_code == 400
+    assert "future" in r.json()["detail"]
+
+
 def test_oversized_hint_rejected(client: TestClient) -> None:
     big = {"globs": "y" * (audit.MAX_HINT_BYTES + 100)}
     r = client.post("/v1/audit/decisions", json=_event(hint=big))
@@ -476,15 +529,39 @@ def test_summarize_classifies_grouping_sets() -> None:
         {"key": "scraper", "all": 1, "allow": 0, "deny": 1, "needs_approval": 0},
     ]
     assert data["by_role"] == [
-        {"key": "analyst", "all": 6, "allow": 6, "deny": 0, "needs_approval": 0},
+        {
+            "key": "analyst",
+            "all": 6,
+            "allow": 6,
+            "deny": 0,
+            "needs_approval": 0,
+        },
         {"key": "", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
     ]
     assert data["by_tool"] == [
-        {"key": "read_file", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
+        {
+            "key": "read_file",
+            "all": 4,
+            "allow": 0,
+            "deny": 4,
+            "needs_approval": 0,
+        },
     ]
     assert data["by_user"] == [
-        {"key": "Alice", "all": 6, "allow": 6, "deny": 0, "needs_approval": 0},
-        {"key": "Bob", "all": 4, "allow": 0, "deny": 4, "needs_approval": 0},
+        {
+            "key": "Alice",
+            "all": 6,
+            "allow": 6,
+            "deny": 0,
+            "needs_approval": 0,
+        },
+        {
+            "key": "Bob",
+            "all": 4,
+            "allow": 0,
+            "deny": 4,
+            "needs_approval": 0,
+        },
     ]
 
 

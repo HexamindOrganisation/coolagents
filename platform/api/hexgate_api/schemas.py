@@ -3,7 +3,14 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +158,61 @@ class ProjectUpdate(BaseModel):
     doesn't land in Phase 4."""
 
     name: str = Field(min_length=1, max_length=64)
+
+
+# ---------------------------------------------------------------------------
+# Kill switch — ban wire shapes
+# ---------------------------------------------------------------------------
+
+
+class BanCreate(BaseModel):
+    """``POST /v1/projects/{project_id}/bans`` body — exactly one target,
+    matching ``ban_type`` (enforced below, so a bad shape is a 422)."""
+
+    ban_type: str = Field(pattern="^(agent|user)$")
+    target_agent_name: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    target_user_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
+    reason: Optional[str] = Field(default=None, max_length=1024)
+
+    @model_validator(mode="after")
+    def _check_target(self) -> "BanCreate":
+        if self.ban_type == "agent":
+            if not self.target_agent_name:
+                raise ValueError("agent ban requires target_agent_name")
+            if self.target_user_id is not None:
+                raise ValueError("agent ban must not set target_user_id")
+        else:  # "user"
+            if not self.target_user_id:
+                raise ValueError("user ban requires target_user_id")
+            if self.target_agent_name is not None:
+                raise ValueError("user ban must not set target_agent_name")
+        return self
+
+
+class BanRead(BaseModel):
+    """A ban row for the dashboard, with its created/revoked audit trail."""
+
+    id: str
+    project_id: str
+    ban_type: str
+    target_agent_name: Optional[str]
+    target_user_id: Optional[str]
+    reason: Optional[str]
+    created_by_user_id: str
+    created_at: datetime
+    revoked_at: Optional[datetime]
+    active: bool
+
+
+class BanFeedEntry(BaseModel):
+    """``GET /v1/bans`` shape — carries ``ban_id`` so the SDK gate can echo it
+    into a ``BanEnforcementEvent``; no created_by/timestamps leak."""
+
+    ban_id: str
+    ban_type: str
+    target_agent_name: Optional[str]
+    target_user_id: Optional[str]
+    reason: Optional[str]
 
 
 class InvitationPreview(BaseModel):
@@ -398,6 +460,20 @@ class LlmInvocationEvent(AuditEnvelope):
 
 class DecisionAccepted(BaseModel):
     """Response shape for POST /v1/audit/decisions."""
+
+    event_id: UUID
+
+
+class BanEnforcementEvent(AuditEnvelope):
+    """One kill-switch ban enforcement; mirrors the ban_enforcement table."""
+
+    ban_type: str = Field(pattern="^(agent|user)$")
+    ban_id: str = Field(min_length=1, max_length=64)
+    reason: str = Field(default="", max_length=1024)
+
+
+class BanEnforcementAccepted(BaseModel):
+    """Response shape for POST /v1/audit/ban-enforcements."""
 
     event_id: UUID
 
