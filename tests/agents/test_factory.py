@@ -320,3 +320,84 @@ async def test_stream_agent_normalizes_raw_events(
     ]
 
     assert events == [{"normalized": 1}, {"normalized": 2}]
+
+
+# ---------------------------------------------------------------------------
+# HexgateAgent kill-switch ban gate
+# ---------------------------------------------------------------------------
+
+
+def _ban_gate(agent_name: str, banned: str | None = None):
+    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself)."""
+    from hexgate.security.bans import BanEntry, BanGate, BanSet
+
+    banned = banned or agent_name
+    entry = BanEntry("b1", "agent", banned, None, "disabled")
+
+    class _Src:
+        def fetch(self) -> BanSet:
+            return BanSet({banned: entry}, {})
+
+    return BanGate(agent_name, _Src())
+
+
+def _agent_with_gate(graph: FakeAgent, gate) -> factory.HexgateAgent:
+    return factory.HexgateAgent(
+        graph=graph, model="m", tools=[], system_prompt=None, name="bot", ban_gate=gate
+    )
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_ainvoke_refused_before_graph_when_banned() -> None:
+    from hexgate.runtime import User
+    from hexgate.security.errors import AgentBannedError
+
+    graph = FakeAgent()
+    agent = _agent_with_gate(graph, _ban_gate("bot"))
+
+    async with User(user_id="u1"):
+        with pytest.raises(AgentBannedError) as exc:
+            await agent.ainvoke({}, {})
+
+    assert exc.value.code == "agent_banned"
+    assert graph.ainvoke_calls == []  # graph never ran
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_astream_raises_before_first_event_when_banned() -> None:
+    from hexgate.runtime import User
+    from hexgate.security.errors import AgentBannedError
+
+    graph = FakeAgent()
+    agent = _agent_with_gate(graph, _ban_gate("bot"))
+
+    async with User(user_id="u1"):
+        with pytest.raises(AgentBannedError):
+            async for _ in agent.astream_events({}, {}, version="v2"):
+                pass
+
+    assert graph.astream_event_calls == []
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_not_banned_passes_through() -> None:
+    from hexgate.runtime import User
+
+    graph = FakeAgent()
+    agent = _agent_with_gate(graph, _ban_gate("bot", banned="someone-else"))
+
+    async with User(user_id="u1"):
+        result = await agent.ainvoke({}, {})
+
+    assert result == {"messages": ["ok"]}
+    assert len(graph.ainvoke_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_no_gate_runs() -> None:
+    graph = FakeAgent()
+    agent = factory.HexgateAgent(
+        graph=graph, model="m", tools=[], system_prompt=None, name="bot"
+    )
+
+    assert await agent.ainvoke({}, {}) == {"messages": ["ok"]}

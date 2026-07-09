@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING to avoid the runtime cycle (security.* and cloud.* both
     # eventually import from this module).
     from hexgate.cloud.client import HexgateClient
+    from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
     from hexgate.security.enforcer import DecisionObserver
     from hexgate.security.source import PolicySource
@@ -327,6 +328,7 @@ class HexgateAgent:
         workspace: Workspace | None = None,
         binding: PolicyBinding | None = None,
         hexgate_client: HexgateClient | None = None,
+        ban_gate: BanGate | None = None,
     ) -> None:
         self.graph = graph
         self.model = model
@@ -350,6 +352,9 @@ class HexgateAgent:
         # load_hexgate_agent attaches it for lazy cloud-side attenuation.
         self._binding: PolicyBinding | None = binding
         self.hexgate_client: HexgateClient | None = hexgate_client
+        # Kill-switch gate; attached by load_hexgate_agent (platform path only —
+        # no gate without a control plane). Threaded through with_tools rebuilds.
+        self._ban_gate: BanGate | None = ban_gate
 
     async def ainvoke(
         self, payload: dict[str, Any], config: dict[str, Any]
@@ -363,6 +368,7 @@ class HexgateAgent:
         running with stale policy.
         """
         await _refresh_policy_safely(self)
+        await self._check_ban()
         return await self.graph.ainvoke(payload, config=config)
 
     async def astream_events(
@@ -379,10 +385,21 @@ class HexgateAgent:
         regardless of which entry point a caller picks.
         """
         await _refresh_policy_safely(self)
+        await self._check_ban()
         async for event in self.graph.astream_events(
             payload, config=config, version=version
         ):
             yield event
+
+    async def _check_ban(self) -> None:
+        """Refuse a banned agent/user before the graph runs, if a gate is
+        attached. User comes from the active :class:`User` scope (this path is
+        ambient, unlike the framework adapters which pass it explicitly)."""
+        if self._ban_gate is None:
+            return
+        from hexgate.runtime.context import get_current_user
+
+        await self._ban_gate.check_async(get_current_user())
 
     def with_tools(self, tools: Sequence[ToolSpec]) -> Self:
         """Rebuild the runtime with a new tool list."""
@@ -423,6 +440,7 @@ class HexgateAgent:
             workspace=self.workspace,
             binding=self._binding,
             hexgate_client=self.hexgate_client,
+            ban_gate=self._ban_gate,
         )
 
     def enforce_policy(
