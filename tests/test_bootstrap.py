@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from hexgate import audit, bootstrap
+from hexgate.tracing import _senders
 
 
 def _stub_dotenv_with_required_keys(
@@ -40,15 +41,15 @@ def _stub_dotenv_with_required_keys(
 @pytest.fixture(autouse=True)
 def _isolate_audit_and_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset audit + the env vars bootstrap touches between tests."""
-    audit._senders.clear()
-    audit._logged_local_mode_suppressed = False
+    _senders._senders.clear()
+    _senders._logged_local_mode_suppressed.clear()
     monkeypatch.delenv("HEXGATE_API_KEY", raising=False)
     monkeypatch.delenv("HEXGATE_API_URL", raising=False)
     monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
-    monkeypatch.delenv(audit._LOCAL_MODE_ENV, raising=False)
+    monkeypatch.delenv(_senders._LOCAL_MODE_ENV, raising=False)
     yield
-    audit._senders.clear()
-    audit._logged_local_mode_suppressed = False
+    _senders._senders.clear()
+    _senders._logged_local_mode_suppressed.clear()
 
 
 def test_bootstrap_loads_requested_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,7 +81,7 @@ def test_local_only_sets_env_var_before_audit_configure(
     real_configure = audit.configure
 
     def spy_configure(*args, **kwargs):
-        observed_env["HEXGATE_LOCAL_MODE"] = os.environ.get(audit._LOCAL_MODE_ENV)
+        observed_env["HEXGATE_LOCAL_MODE"] = os.environ.get(_senders._LOCAL_MODE_ENV)
         return real_configure(*args, **kwargs)
 
     monkeypatch.setattr(audit, "configure", spy_configure)
@@ -89,7 +90,7 @@ def test_local_only_sets_env_var_before_audit_configure(
     assert observed_env["HEXGATE_LOCAL_MODE"] == "1"
     # Sanity: with the gate on, configure returned None even though a key
     # was in env — registry is empty.
-    assert audit._senders == {}
+    assert _senders._senders == {}
 
 
 def test_local_only_false_leaves_env_var_unset(
@@ -99,7 +100,7 @@ def test_local_only_false_leaves_env_var_unset(
     ``hexgate serve`` and any other platform-bound caller rely on this."""
     _stub_dotenv_with_required_keys(monkeypatch)
     bootstrap.bootstrap("test.env")  # default
-    assert os.environ.get(audit._LOCAL_MODE_ENV) is None
+    assert os.environ.get(_senders._LOCAL_MODE_ENV) is None
 
 
 def test_bootstrap_warns_when_key_and_local_policy_both_set(

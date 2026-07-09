@@ -1,6 +1,6 @@
 # Audit Pipeline Specification
 
-> Status: living — kept in sync with the audit code. Last reviewed 2026-06.
+> Status: living — kept in sync with the audit code. Last reviewed 2026-07.
 
 Scope: the end-to-end path that records every policy decision a Hexgate-wrapped
 agent makes, from the SDK enforcement point to durable storage in ClickHouse and
@@ -145,7 +145,9 @@ The sender is **injected per enforcer**, not looked up globally — see §3.4.
 
 ### 3.2 `AuditSender` — fire-and-forget POST
 
-`hexgate/audit.py`. `emit()` is synchronous and non-blocking; it schedules a
+`hexgate/tracing/_senders.py` — shared by `hexgate.audit` (policy decisions)
+and `hexgate.tracing.usage` (LLM token usage); neither module owns it. `emit()`
+is synchronous and non-blocking; it schedules a
 background `asyncio.Task` that performs the POST. Key behaviours:
 
 - **Bounded concurrency.** An `asyncio.Semaphore(max_in_flight=32)` caps
@@ -176,17 +178,24 @@ synchronous.
 
 ### 3.4 Configuration & lifecycle
 
-`configure(api_key=None, base_url=None) -> AuditSender | None`:
+`hexgate.audit.configure(api_key=None, base_url=None) -> AuditSender | None`
+is a thin, decisions-specific wrapper around the shared
+`hexgate.tracing._senders.get_or_create_sender()`:
 
 - Resolves `api_key` from the argument or `HEXGATE_API_KEY`; returns `None` (audit
   inert) when no key is resolvable.
 - Resolves `base_url` from the argument or `HEXGATE_API_URL`, defaulting to
   Hexgate Cloud (`https://app.hexgate.ai`); set `http://localhost:8000` when
   self-hosting. The endpoint is `<base_url>/v1/audit/decisions`.
-- **Keyed by api_key.** Senders live in a registry `dict[str, AuditSender]`.
-  Calling `configure()` again with the **same** key returns the existing sender
-  (idempotent); a **different** key gets its own sender with its own bearer
-  token. This is what lets one process audit several tenants/keys correctly.
+- **Keyed by `(api_key, path)`.** Senders live in a shared registry
+  `dict[tuple[str, str], AuditSender]` in `hexgate/tracing/_senders.py`, reused
+  by every event type that goes through it (currently policy decisions and LLM
+  usage — see `hexgate.tracing.usage`). Calling `configure()` again with the
+  **same** key returns the existing decisions sender (idempotent); a
+  **different** key gets its own sender with its own bearer token. Keying on
+  the pair rather than `api_key` alone is what lets one process audit several
+  tenants/keys *and* emit more than one event type per key without a usage
+  sender silently reusing (and POSTing to) the decisions endpoint.
 
 Each adapter wrapper (`wrap_langchain_agent`, `wrap_openai_agent`,
 `wrap_google_agent`, `wrap_pydantic_agent`) and `factory.enforce_policy` call
@@ -196,7 +205,9 @@ local runs work without an explicit key.
 
 #### Local mode (`HEXGATE_LOCAL_MODE`)
 
-Setting `HEXGATE_LOCAL_MODE=1` makes `configure()` return `None` even when
+The gate lives in `hexgate/tracing/_senders.py` and applies to every event
+type sharing the registry, not just decisions. Setting `HEXGATE_LOCAL_MODE=1`
+makes `configure()` (and `configure_usage_sender()`) return `None` even when
 `HEXGATE_API_KEY` is present in env. `bootstrap(local_only=True)` sets the var
 *before* the first `configure()` call, and `hexgate chat` passes
 `local_only=True` — so the inner-loop REPL never posts audit events even if
@@ -213,10 +224,12 @@ There are now two clean operating modes, not three:
 | **Local** | (irrelevant) | `1`, or unset with no key | YAML / disk / builtin | suppressed |
 | **Platform-managed** | set | unset | platform fetch | emitted |
 
-A single INFO line (`audit suppressed: HEXGATE_LOCAL_MODE=1 (...)`) is logged
-the first time `configure()` is called with both a key and local mode active
-— exactly the case where the suppression would be surprising. The "no key
-anywhere" case stays quiet.
+A single INFO line (`sender suppressed for <path>: HEXGATE_LOCAL_MODE=1
+(...)`) is logged the first time a given path (e.g. `/v1/audit/decisions`)
+is configured with both a key and local mode active — exactly the case where
+the suppression would be surprising. The gate is logged **per path**, not
+once per process, since decisions and LLM usage each warrant their own
+first-suppression notice. The "no key anywhere" case stays quiet.
 
 A separate WARNING fires from `bootstrap()` itself when both `HEXGATE_API_KEY`
 and `HEXGATE_LOCAL_POLICY` are set — that combination is almost always a
@@ -227,17 +240,26 @@ saves a later debugging detour.
 > — chat vs. serve, inner loop vs. team loop — see the
 > ["Which path do I pick?"](/two-paths) page.
 
-`async shutdown()` drains in-flight tasks and closes every sender's HTTP client.
-It is safe to call multiple times and is the recommended teardown hook. Absent
-it, background sends still pending when the event loop tears down are
-**cancelled, not finished** — events emitted shortly before process exit are
-lost. GC closing the httpx client does not flush anything.
+`async shutdown()` drains in-flight tasks and closes every sender's HTTP client
+**across the whole shared registry** — decisions and LLM usage alike. It is
+safe to call multiple times and is the recommended teardown hook; either
+`hexgate.audit.shutdown()` or `hexgate.tracing.usage.shutdown()` drains
+everything, since both delegate to the same
+`hexgate.tracing._senders.shutdown()`. Absent it, background sends still
+pending when the event loop tears down are **cancelled, not finished** —
+events emitted shortly before process exit are lost. GC closing the httpx
+client does not flush anything.
 
 | Function | Purpose |
 |----------|---------|
-| `configure(key, url)` | Get-or-create the sender for `key`. Idempotent per key. |
-| `get_sender(key)` | Registry lookup by key (diagnostics). Prefer the injected sender. |
-| `shutdown()` | Drain + close all senders. |
+| `hexgate.tracing._senders.get_or_create_sender(path, key, url)` | Get-or-create the sender for `(key, path)`. Idempotent per pair. |
+| `hexgate.tracing._senders.get_sender(path, key)` | Registry lookup by `(key, path)` (diagnostics). Prefer the injected sender. |
+| `hexgate.tracing._senders.shutdown()` | Drain + close every sender for every path. |
+| `hexgate.audit.configure(key, url)` | Decisions-specific: `get_or_create_sender("/v1/audit/decisions", key, url)`. |
+| `hexgate.audit.get_sender(key)` | Decisions-specific: `get_sender("/v1/audit/decisions", key)`. |
+| `hexgate.tracing.usage.configure_usage_sender(key, url)` | LLM-usage-specific: `get_or_create_sender("/v1/audit/llm-invocations", key, url)`. |
+| `hexgate.tracing.usage.get_usage_sender(key)` | LLM-usage-specific: `get_sender("/v1/audit/llm-invocations", key)`. |
+| `hexgate.audit.shutdown()` / `hexgate.tracing.usage.shutdown()` | Both call the shared `shutdown()`; either drains all event types. |
 
 ---
 

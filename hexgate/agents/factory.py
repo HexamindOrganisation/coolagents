@@ -661,9 +661,9 @@ def _should_bind_policy(bind_policy: bool | None, name: str | None) -> bool:
     # opted into local mode, the auto-detect must not surprise-bind to the
     # platform — that would defeat the whole point of the gate. ``bind_policy=True``
     # is honored above so a deliberate caller can still opt in.
-    from hexgate import audit
+    from hexgate.tracing._senders import _local_mode_active
 
-    if audit._local_mode_active():
+    if _local_mode_active():
         return False
     if os.environ.get("HEXGATE_LOCAL_POLICY"):
         return True

@@ -17,6 +17,7 @@ import pytest
 import hexgate.audit as audit_mod
 from hexgate.audit import AuditEvent
 from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.tracing import _senders
 
 pytestmark = pytest.mark.integration
 
@@ -57,7 +58,7 @@ async def test_wire_format_accepted_by_platform() -> None:
 async def test_sender_emits_end_to_end_without_errors() -> None:
     """Drives the full SDK path: configure → emit → drain. Confirms no raised exceptions."""
     _need_token()
-    audit_mod._senders.clear()  # reset for a clean configure
+    _senders._senders.clear()  # reset for a clean configure
     sender = audit_mod.configure(TOKEN, PLATFORM_URL)
     try:
         sender.emit(_event())

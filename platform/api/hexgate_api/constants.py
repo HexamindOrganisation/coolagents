@@ -38,8 +38,3 @@ ROLE_OWNER = "owner"
 ROLE_ADMIN = "admin"
 ROLE_MEMBER = "member"
 ALL_ROLES = {ROLE_OWNER, ROLE_ADMIN, ROLE_MEMBER}
-
-# Kill-switch ban target kinds. BanCreate validates the wire value; these
-# name the two kinds for service branching.
-BAN_TYPE_AGENT = "agent"
-BAN_TYPE_USER = "user"
