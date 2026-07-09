@@ -251,9 +251,23 @@ class _StaticSource:
         return self._bans
 
 
-class _BoomSource:
-    def fetch(self) -> BanSet:
-        raise RuntimeError("platform down")
+class _ScriptedClient:
+    """get_bans replays scripted items: a ``(payload, etag)`` tuple, or an
+    Exception instance to raise. Fail-soft tests live at the source now."""
+
+    def __init__(self, script: list, base_url: str = "https://api.test") -> None:
+        self._script = script
+        self.config = SimpleNamespace(base_url=base_url)
+        self.calls = 0
+
+    def get_bans(
+        self, *, if_none_match: str | None = None
+    ) -> tuple[list[dict] | None, str | None]:
+        item = self._script[min(self.calls, len(self._script) - 1)]
+        self.calls += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def test_check_agent_ban_raises_enriched_error() -> None:
@@ -313,48 +327,48 @@ def test_check_none_user_only_checks_agent() -> None:
     assert gate.check(None) is None
 
 
-def test_check_fail_soft_uses_last_good() -> None:
-    """A fetch failure logs and reuses last-good; it never raises on its own."""
-    gate = BanGate("bot", _BoomSource())
-    # last-good is empty → no ban → no raise despite the fetch blowing up.
+def test_source_fail_soft_returns_empty_on_cold_failure() -> None:
+    """First fetch fails with nothing cached → EMPTY → no ban (never raises)."""
+    gate = BanGate("bot", PlatformBanSource(_ScriptedClient([RuntimeError("down")])))
     assert gate.check(_user()) is None
 
 
-def test_check_fail_soft_keeps_previous_ban(caplog: pytest.LogCaptureFixture) -> None:
-    """If the last-good set banned the agent, a later fetch failure still
-    refuses (fail-soft never under-blocks)."""
-
-    class _FlakySource:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def fetch(self) -> BanSet:
-            self.calls += 1
-            if self.calls == 1:
-                return ban_set_from_payload([_agent_entry("bot")])
-            raise RuntimeError("down")
-
-    gate = BanGate("bot", _FlakySource())
+def test_source_fail_soft_keeps_previous_ban() -> None:
+    """A later fetch failure reuses the source's cached set (never under-blocks)."""
+    src = PlatformBanSource(
+        _ScriptedClient([([_agent_entry("bot")], '"e1"'), RuntimeError("down")])
+    )
+    gate = BanGate("bot", src)
     with pytest.raises(AgentBannedError):
-        gate.check(_user())  # first fetch bans
+        gate.check(_user())  # first fetch caches the ban
     with pytest.raises(AgentBannedError):
-        gate.check(_user())  # second fetch fails → last-good still bans
+        gate.check(_user())  # fetch fails → source returns cached ban
 
 
-def test_check_content_error_logged_at_error_and_fail_soft(
+def test_source_content_error_logged_at_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A malformed feed (BanContentError) fails soft but logs at ERROR, not
-    WARN — it's contract drift, not a transient blip."""
-
-    class _BadContentSource:
-        def fetch(self) -> BanSet:
-            raise BanContentError("expected a JSON array, got dict")
-
+    """A malformed 200 body (BanContentError) fails soft, logged at ERROR."""
+    src = PlatformBanSource(_ScriptedClient([({"detail": "boom"}, '"e1"')]))
     with caplog.at_level("WARNING"):
-        assert BanGate("bot", _BadContentSource()).check(_user()) is None
-    [rec] = caplog.records
+        assert BanGate("bot", src).check(_user()) is None
+    [rec] = [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
     assert rec.levelname == "ERROR"
+
+
+def test_shared_source_enforces_regardless_of_gate_init_order() -> None:
+    """Regression (#7): a gate whose own first fetch fails still enforces via
+    the shared source's cached set — no per-gate last-good to diverge."""
+    src = PlatformBanSource(
+        _ScriptedClient([([_agent_entry("bot")], '"e1"'), RuntimeError("blip")])
+    )
+    gate_a = BanGate("bot", src)  # polls successfully → source caches the ban
+    gate_b = BanGate("bot", src)  # its first poll fails, but shares the source
+
+    with pytest.raises(AgentBannedError):
+        gate_a.check(_user())
+    with pytest.raises(AgentBannedError):
+        gate_b.check(_user())  # would fail open before the fix
 
 
 async def test_check_async_raises_through_to_thread() -> None:

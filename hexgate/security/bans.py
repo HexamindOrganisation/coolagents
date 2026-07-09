@@ -114,8 +114,9 @@ def ban_set_from_payload(entries: list[dict[str, Any]]) -> BanSet:
 
 
 class BanSource(Protocol):
-    """Produces the current :class:`BanSet`; raises on error (the gate makes
-    the refresh fail-soft)."""
+    """Produces the current :class:`BanSet`. Fail-soft — returns last-good on
+    error, never raises (so the shared cache, not per-gate state, is the
+    source of truth for enforcement)."""
 
     def fetch(self) -> BanSet: ...
 
@@ -124,7 +125,10 @@ class PlatformBanSource:
     """Fetch ``GET /v1/bans`` with ETag/304, cached under a lock.
 
     Mirrors :class:`~hexgate.security.source.PlatformPolicySource` but keyed to
-    the project (from the bearer), not an agent.
+    the project (from the bearer), not an agent. **Owns last-good**: on any
+    fetch/parse error it returns the cached set rather than raising, so every
+    gate on this api-key sees the same data regardless of which one polled
+    successfully first.
     """
 
     def __init__(self, client: HexgateClient) -> None:
@@ -138,10 +142,19 @@ class PlatformBanSource:
 
     def fetch(self) -> BanSet:
         with self._lock:
-            payload, etag = self._client.get_bans(if_none_match=self._etag)
-            if payload is None:  # 304 — unchanged since last fetch
+            try:
+                payload, etag = self._client.get_bans(if_none_match=self._etag)
+                if payload is None:  # 304 — unchanged since last fetch
+                    return self._cached
+                new = ban_set_from_payload(payload)
+            except BanContentError as exc:
+                # Contract drift, not a blip — log loudly, like PolicyContentError.
+                logger.error("ban feed rejected; using last-good: %s", exc)
                 return self._cached
-            self._cached = ban_set_from_payload(payload)
+            except Exception as exc:  # noqa: BLE001 — fail-soft: keep last-good
+                logger.warning("ban refresh failed; using last-good: %s", exc)
+                return self._cached
+            self._cached = new
             self._etag = etag
             return self._cached
 
@@ -214,11 +227,15 @@ def configure_ban_sink(
 class BanGate:
     """Refuses a banned agent or user before the LLM runs.
 
-    Per-agent but points at the shared project-scoped source. Fail-soft with
-    last-good, like :meth:`PolicyBinding.refresh`; a ``None`` source (local
+    Per-agent but points at the shared project-scoped source, which owns
+    last-good (fail-soft): a control-plane blip never crashes a run, and all
+    gates on one api-key see the same cached set. A ``None`` source (local
     mode / no key) is a permanent no-op. On generator/stream entrypoints the
     refusal surfaces when iteration begins (before the first chunk), not at
     call time.
+
+    Fail-soft caveat: a ban never successfully fetched (cold start during an
+    outage) degrades to EMPTY, not to a prior restrictive state.
     """
 
     def __init__(
@@ -230,23 +247,11 @@ class BanGate:
         self._agent_name = agent_name
         self._source = source
         self._sink = sink
-        self._last_good = EMPTY_BAN_SET
 
     def _current(self) -> BanSet:
-        # Fail-soft is deliberate for v1 (fail-closed is a Phase 4 opt-in):
-        # a control-plane blip must never crash a run. Note the sharper
-        # trade-off vs. policy — a ban never successfully fetched degrades to
-        # EMPTY, not to a prior restrictive state.
-        if self._source is None:
-            return EMPTY_BAN_SET
-        try:
-            self._last_good = self._source.fetch()
-        except BanContentError as exc:
-            # Contract drift, not a blip — log loudly, like PolicyContentError.
-            logger.error("ban feed rejected; using last-good: %s", exc)
-        except Exception as exc:  # noqa: BLE001 — transient; keep last-good
-            logger.warning("ban refresh failed; using last-good: %s", exc)
-        return self._last_good
+        # Source is fail-soft (owns last-good), so no per-gate cache here —
+        # that avoids enforcement depending on which gate polled first.
+        return EMPTY_BAN_SET if self._source is None else self._source.fetch()
 
     def _decide(self, bans: BanSet, user: User | None) -> None:
         # Agent ban checked first so a coincident agent+user ban emits a
