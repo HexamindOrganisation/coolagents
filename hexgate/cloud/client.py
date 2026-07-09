@@ -20,7 +20,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from hexgate.cloud.biscuit import (
     TokenError,
@@ -190,6 +190,29 @@ class HexgateClient:
         # the SDK through the new bearer-only route.
         url = f"{self.config.base_url}/v1/agents/{name}"
         return self._raw_get(url, authorize=True, if_none_match=if_none_match)
+
+    def get_bans(
+        self, *, if_none_match: str | None = None
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """Fetch the project's active bans (project resolved from the bearer).
+
+        The kill-switch feed is project-scoped — ``/v1/bans`` derives the
+        project from the token, so there's no per-agent parameter (unlike
+        :meth:`get_agent`). Returns ``(payload, etag)`` where ``payload`` is a
+        list of ``BanFeedEntry`` dicts, or ``None`` on ``304 Not Modified``
+        when ``if_none_match`` matches the current feed ETag.
+
+        Unlike the other endpoints, ``/v1/bans`` returns a bare JSON array;
+        the shared ``_raw_get`` is typed for the common object case, so we
+        narrow the runtime ``list`` here.
+        """
+        self._ensure_key_verified()
+        payload, etag = self._raw_get(
+            f"{self.config.base_url}/v1/bans",
+            authorize=True,
+            if_none_match=if_none_match,
+        )
+        return cast("list[dict[str, Any]] | None", payload), etag
 
     # ------------------------------------------------------------------
     # Biscuit verification

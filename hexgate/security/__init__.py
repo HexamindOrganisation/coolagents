@@ -1,6 +1,10 @@
 """Security helpers for policies and enforcement."""
 
-from hexgate.security.errors import ApprovalRequiredError, PolicyDeniedError
+from hexgate.security.errors import (
+    AgentBannedError,
+    ApprovalRequiredError,
+    PolicyDeniedError,
+)
 from hexgate.security.models import (
     AgentPolicy,
     BaseToolPolicy,
@@ -92,6 +96,7 @@ from hexgate.security.testing import (
 )
 
 __all__ = [
+    "AgentBannedError",
     "AgentPolicy",
     "C",
     "PolicyBuilder",
