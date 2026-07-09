@@ -143,5 +143,10 @@ class HexgatePydanticAgent:
                 yield run
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate unknown attributes to the wrapped agent."""
+        """Delegate unknown attributes to the wrapped agent.
+
+        Only the wrapped run methods (run/run_sync/run_stream/iter) enforce the
+        ban gate + User scope; methods reached here (to_a2a, to_ag_ui, …) bypass
+        them.
+        """
         return getattr(self._agent, name)

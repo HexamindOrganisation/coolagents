@@ -170,5 +170,10 @@ class HexgateLangchainAgent:
                     yield event
 
     def __getattr__(self, name: str) -> Any:
-        """Delegate unknown attributes to the wrapped agent."""
+        """Delegate unknown attributes to the wrapped agent.
+
+        Only the wrapped run methods (invoke/ainvoke/stream/astream/
+        astream_events) enforce the ban gate + User scope; methods reached
+        here (batch, abatch, astream_log, …) bypass them.
+        """
         return getattr(self._agent, name)
