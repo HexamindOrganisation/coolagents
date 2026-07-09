@@ -7,9 +7,13 @@ ban per target, enforced here (SQLite has no reliable partial unique index).
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api.constants import BAN_TYPE_AGENT, BAN_TYPE_USER
 from hexgate_api.core.ids import new_id
 from hexgate_api.models import Ban, utcnow
+
+# Ban target kinds. BanCreate validates the wire value; these name the two
+# kinds for service branching. Feature-local — the only consumer is this slice.
+BAN_TYPE_AGENT = "agent"
+BAN_TYPE_USER = "user"
 
 
 class BanConflictError(Exception):
