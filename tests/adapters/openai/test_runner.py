@@ -13,8 +13,35 @@ from hexgate.adapters.openai.runner import HexgateRunner
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
+from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
+from hexgate.security.errors import AgentBannedError
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+
+
+class _StaticBanSource:
+    """A BanSource returning a fixed BanSet (no network)."""
+
+    def __init__(self, bans: BanSet) -> None:
+        self._bans = bans
+
+    def fetch(self) -> BanSet:
+        return self._bans
+
+
+def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
+    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
+
+    Pass a different ``banned`` for passthrough tests."""
+    banned = banned or agent_name
+    entry = BanEntry(
+        ban_id="b1",
+        ban_type="agent",
+        target_agent_name=banned,
+        target_user_id=None,
+        reason="disabled",
+    )
+    return BanGate(agent_name, _StaticBanSource(BanSet({banned: entry}, {})))
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +63,10 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return ResolvedPolicy(engine, None)
 
     monkeypatch.setattr(runner_mod, "resolve_policy", fake_resolve)
+    # Neutralize the ban gate by default — lifecycle/binding tests aren't
+    # about bans, and the bogus api_key would otherwise trip fail-soft.
+    # Ban tests inject a gate directly into runner._ban_gates, bypassing this.
+    monkeypatch.setattr(runner_mod, "resolve_ban_gate", lambda *a, **k: None)
     return resolved_names
 
 
@@ -314,6 +345,86 @@ async def test_run_propagates_user_identity_to_langfuse(
     assert call["user_id"] == "u-1"
     assert call["session_id"] == "s-1"
     assert call["metadata"] == {"user_role": "developer"}
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch ban gate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_refused_before_runner_run_when_banned(
+    monkeypatch: pytest.MonkeyPatch, _stub_resolve: list[str]
+) -> None:
+    _silence_observability(monkeypatch)
+    called: list[str] = []
+
+    async def fake_run(*_a: Any, **_kw: Any) -> str:
+        called.append("run")
+        return "ok"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run", staticmethod(fake_run)
+    )
+
+    runner = HexgateRunner(api_key="k")
+    runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
+
+    with pytest.raises(AgentBannedError) as exc:
+        await runner.run(_make_agent("my-agent"), "hi", user=_user())
+
+    assert exc.value.code == "agent_banned"
+    assert called == []  # Runner.run never reached
+    assert get_current_user() is None
+
+
+def test_run_streamed_refused_before_task_spawns_when_banned(
+    monkeypatch: pytest.MonkeyPatch, _stub_resolve: list[str]
+) -> None:
+    """The gate refuses before Runner.run_streamed spawns its background task,
+    so a banned stream never starts (no chunk)."""
+    _silence_observability(monkeypatch)
+    called: list[str] = []
+
+    def fake_run_streamed(*_a: Any, **_kw: Any) -> _FakeStreamingResult:
+        called.append("run_streamed")
+        return _FakeStreamingResult()
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_streamed",
+        staticmethod(fake_run_streamed),
+    )
+
+    runner = HexgateRunner(api_key="k")
+    runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
+
+    with pytest.raises(AgentBannedError):
+        runner.run_streamed(_make_agent("my-agent"), "hi", user=_user())
+
+    assert called == []  # background task never spawned
+
+
+@pytest.mark.asyncio
+async def test_not_banned_passes_through(
+    monkeypatch: pytest.MonkeyPatch, _stub_resolve: list[str]
+) -> None:
+    _silence_observability(monkeypatch)
+
+    async def fake_run(*_a: Any, **_kw: Any) -> str:
+        return "ok"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run", staticmethod(fake_run)
+    )
+
+    runner = HexgateRunner(api_key="k")
+    runner._ban_gates["my-agent"] = _agent_ban_gate(
+        "my-agent", banned="some-other-agent"
+    )
+
+    result = await runner.run(_make_agent("my-agent"), "hi", user=_user())
+
+    assert result == "ok"
 
 
 # ---------------------------------------------------------------------------

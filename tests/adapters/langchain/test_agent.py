@@ -9,11 +9,40 @@ import pytest
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
+from hexgate.security.bans import BanEntry, BanGate, BanSet
+from hexgate.security.errors import AgentBannedError
 
 
 def _user() -> User:
     """Build a minimal User for invocation tests."""
     return User(user_id="u-1", session_id="s-1", role="developer")
+
+
+class _StaticBanSource:
+    """A BanSource that always returns a fixed BanSet (no network)."""
+
+    def __init__(self, bans: BanSet) -> None:
+        self._bans = bans
+
+    def fetch(self) -> BanSet:
+        return self._bans
+
+
+def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
+    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
+
+    Pass a different ``banned`` to build a non-matching gate for passthrough
+    tests — the gate still carries the real agent's name but the ban set
+    targets someone else."""
+    banned = banned or agent_name
+    entry = BanEntry(
+        ban_id="b1",
+        ban_type="agent",
+        target_agent_name=banned,
+        target_user_id=None,
+        reason="disabled",
+    )
+    return BanGate(agent_name, _StaticBanSource(BanSet({banned: entry}, {})))
 
 
 class _RecordingGraph:
@@ -236,6 +265,60 @@ def test_user_scope_is_unwound_when_invoke_raises() -> None:
         proxy.invoke({"input": "hi"}, user=_user())
 
     assert get_current_user() is None
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch ban gate
+# ---------------------------------------------------------------------------
+
+
+def test_invoke_refused_before_graph_runs_when_banned() -> None:
+    graph = _RecordingGraph()
+    proxy = HexgateLangchainAgent(
+        agent=graph,
+        api_key="k",
+        tool_names=["echo"],
+        ban_gate=_agent_ban_gate(graph.name),
+    )
+
+    with pytest.raises(AgentBannedError) as exc:
+        proxy.invoke({"input": "hi"}, user=_user())
+
+    assert exc.value.code == "agent_banned"
+    assert graph.invoke_calls == []  # graph never ran
+    assert get_current_user() is None
+
+
+@pytest.mark.asyncio
+async def test_astream_raises_before_first_chunk_when_banned() -> None:
+    graph = _RecordingGraph()
+    proxy = HexgateLangchainAgent(
+        agent=graph,
+        api_key="k",
+        tool_names=["echo"],
+        ban_gate=_agent_ban_gate(graph.name),
+    )
+
+    agen = proxy.astream({"input": "hi"}, user=_user())
+    with pytest.raises(AgentBannedError):
+        await agen.__anext__()
+    assert graph.astream_calls == []  # no chunk yielded
+
+
+def test_not_banned_passes_through() -> None:
+    """A gate that bans a different agent must not block this one."""
+    graph = _RecordingGraph()
+    proxy = HexgateLangchainAgent(
+        agent=graph,
+        api_key="k",
+        tool_names=["echo"],
+        ban_gate=_agent_ban_gate(graph.name, banned="some-other-agent"),
+    )
+
+    result = proxy.invoke({"input": "hi"}, user=_user())
+
+    assert result == {"messages": ["sync-ok"]}
+    assert len(graph.invoke_calls) == 1
 
 
 # ---------------------------------------------------------------------------

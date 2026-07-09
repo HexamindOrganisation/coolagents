@@ -10,11 +10,39 @@ import pytest
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
+from hexgate.security.bans import BanEntry, BanGate, BanSet
+from hexgate.security.errors import AgentBannedError
 
 
 def _user() -> User:
     """Build a minimal User for invocation tests."""
     return User(user_id="u-1", session_id="s-1", role="developer")
+
+
+class _StaticBanSource:
+    """A BanSource that always returns a fixed BanSet (no network)."""
+
+    def __init__(self, bans: BanSet) -> None:
+        self._bans = bans
+
+    def fetch(self) -> BanSet:
+        return self._bans
+
+
+def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
+    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
+
+    Pass a different ``banned`` for passthrough tests — the gate carries the
+    real agent's name but the ban set targets someone else."""
+    banned = banned or agent_name
+    entry = BanEntry(
+        ban_id="b1",
+        ban_type="agent",
+        target_agent_name=banned,
+        target_user_id=None,
+        reason="disabled",
+    )
+    return BanGate(agent_name, _StaticBanSource(BanSet({banned: entry}, {})))
 
 
 class _RecordingAgent:
@@ -235,6 +263,72 @@ def test_user_scope_is_unwound_when_run_sync_raises(
         proxy.run_sync("hi", user=_user())
 
     assert get_current_user() is None
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch ban gate
+# ---------------------------------------------------------------------------
+
+
+def _banned_proxy(
+    monkeypatch: pytest.MonkeyPatch, agent: _RecordingAgent
+) -> HexgatePydanticAgent:
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
+    )
+    return HexgatePydanticAgent(
+        agent=agent,  # type: ignore[arg-type]
+        api_key="k",
+        agent_name=agent.name,
+        ban_gate=_agent_ban_gate(agent.name),
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_refused_before_agent_runs_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner = _RecordingAgent()
+    proxy = _banned_proxy(monkeypatch, inner)
+
+    with pytest.raises(AgentBannedError) as exc:
+        await proxy.run("hi", user=_user())
+
+    assert exc.value.code == "agent_banned"
+    assert inner.run_calls == []
+    assert get_current_user() is None
+
+
+@pytest.mark.asyncio
+async def test_run_stream_raises_before_first_chunk_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inner = _RecordingAgent()
+    proxy = _banned_proxy(monkeypatch, inner)
+
+    with pytest.raises(AgentBannedError):
+        async with proxy.run_stream("hi", user=_user()) as _r:
+            pass
+    assert inner.run_stream_calls == []
+
+
+@pytest.mark.asyncio
+async def test_not_banned_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
+    )
+    inner = _RecordingAgent()
+    proxy = HexgatePydanticAgent(
+        agent=inner,  # type: ignore[arg-type]
+        api_key="k",
+        agent_name=inner.name,
+        ban_gate=_agent_ban_gate(inner.name, banned="some-other-agent"),
+    )
+
+    result = await proxy.run("hi", user=_user())
+
+    assert result == "run-ok"
+    assert len(inner.run_calls) == 1
 
 
 # ---------------------------------------------------------------------------

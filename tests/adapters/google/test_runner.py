@@ -10,12 +10,40 @@ from google.adk.agents import LlmAgent
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
 
+from hexgate.adapters.google import runner as runner_mod
 from hexgate.adapters.google import wrapper as wrapper_mod
 from hexgate.adapters.google.runner import HexgateRunner
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
+from hexgate.security.bans import BanEntry, BanGate, BanSet
+from hexgate.security.errors import AgentBannedError
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+
+
+class _StaticBanSource:
+    """A BanSource returning a fixed BanSet (no network)."""
+
+    def __init__(self, bans: BanSet) -> None:
+        self._bans = bans
+
+    def fetch(self) -> BanSet:
+        return self._bans
+
+
+def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
+    """A gate for ``agent_name`` whose source bans ``banned`` (default: itself).
+
+    Pass a different ``banned`` for passthrough tests."""
+    banned = banned or agent_name
+    entry = BanEntry(
+        ban_id="b1",
+        ban_type="agent",
+        target_agent_name=banned,
+        target_user_id=None,
+        reason="disabled",
+    )
+    return BanGate(agent_name, _StaticBanSource(BanSet({banned: entry}, {})))
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +62,10 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
         return ResolvedPolicy(engine, None)
 
     monkeypatch.setattr(wrapper_mod, "resolve_policy", fake_resolve)
+    # Neutralize the ban gate by default — lifecycle/binding tests aren't
+    # about bans, and the bogus api_key would otherwise trip fail-soft.
+    # Ban tests override runner._ban_gate directly, bypassing this.
+    monkeypatch.setattr(runner_mod, "resolve_ban_gate", lambda *a, **k: None)
 
 
 def _user() -> User:
@@ -396,6 +428,68 @@ def test_extra_kwargs_reach_underlying_runner(
 
     [fake_runner] = fake.instances
     assert fake_runner.kwargs["custom_kwarg"] == "value"
+
+
+# ---------------------------------------------------------------------------
+# Kill-switch ban gate
+# ---------------------------------------------------------------------------
+
+
+def _banned_runner(monkeypatch: pytest.MonkeyPatch) -> HexgateRunner:
+    _silence_observability(monkeypatch)
+    _install_fake_runner(monkeypatch)
+    runner = HexgateRunner(
+        agent=_make_agent("my_agent"),
+        app_name="app",
+        session_service=InMemorySessionService(),
+        api_key="k",
+    )
+    runner._ban_gate = _agent_ban_gate("my_agent")
+    return runner
+
+
+def test_run_refused_before_events_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _banned_runner(monkeypatch)
+
+    with pytest.raises(AgentBannedError) as exc:
+        list(runner.run(new_message="hi", user=_user()))
+
+    assert exc.value.code == "agent_banned"
+    [fake_runner] = _FakeRunner.instances
+    assert fake_runner.run_async_calls == []  # underlying runner never driven
+    assert get_current_user() is None
+
+
+@pytest.mark.asyncio
+async def test_run_async_refused_before_first_event_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _banned_runner(monkeypatch)
+
+    agen = runner.run_async(new_message="hi", user=_user())
+    with pytest.raises(AgentBannedError):
+        await agen.__anext__()
+
+    [fake_runner] = _FakeRunner.instances
+    assert fake_runner.run_async_calls == []
+
+
+def test_not_banned_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    _silence_observability(monkeypatch)
+    _install_fake_runner(monkeypatch)
+    runner = HexgateRunner(
+        agent=_make_agent("my_agent"),
+        app_name="app",
+        session_service=InMemorySessionService(),
+        api_key="k",
+    )
+    runner._ban_gate = _agent_ban_gate("my_agent", banned="some-other-agent")
+
+    events = list(runner.run(new_message="hi", user=_user()))
+
+    assert events == [{"event": "first"}, {"event": "second"}]
 
 
 # ---------------------------------------------------------------------------
