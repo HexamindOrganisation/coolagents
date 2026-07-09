@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import pytest
 from google.adk.agents import LlmAgent
+from google.adk.models.llm_response import LlmResponse
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools.function_tool import FunctionTool
+from google.genai import types
 
 from hexgate.adapters.google import wrapper as wrapper_mod
 from hexgate.adapters.google.runner import HexgateRunner
+from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+from hexgate.tracing import usage as tracing_usage_mod
 
 
 @pytest.fixture(autouse=True)
@@ -458,3 +464,127 @@ def test_construction_does_not_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     runner, binding = _runner_with_counting_binding(monkeypatch)
 
     assert binding.refreshes == 0
+
+
+# ---------------------------------------------------------------------------
+# Usage plugin: merge behavior + User contextvar survives into
+# after_model_callback
+# ---------------------------------------------------------------------------
+
+
+class _FakeSender:
+    """Stand in for the AuditSender the usage plugin emits through."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit(self, event: Any) -> None:
+        self.events.append(event)
+
+
+def _fake_llm_response(
+    prompt_tokens: int = 10, candidates_tokens: int = 20
+) -> LlmResponse:
+    return LlmResponse(
+        model_version="gemini-2.0-flash",
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=prompt_tokens,
+            candidates_token_count=candidates_tokens,
+        ),
+    )
+
+
+class _PluginFiringRunner:
+    """Stand-in Runner that fires after_model_callback on any
+    HexgateUsagePlugin in its plugins kwarg, from inside run_async, the way
+    real ADK fires it mid-run rather than from the test's own call stack."""
+
+    instances: list[_PluginFiringRunner] = []
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        _PluginFiringRunner.instances.append(self)
+
+    async def run_async(self, **kwargs: Any) -> AsyncIterator[dict[str, str]]:
+        for plugin in self.kwargs.get("plugins") or []:
+            if isinstance(plugin, HexgateUsagePlugin):
+                await plugin.after_model_callback(
+                    callback_context=SimpleNamespace(agent_name="my-agent"),
+                    llm_response=_fake_llm_response(),
+                )
+        yield {"event": "done"}
+
+
+def test_constructor_passes_a_usage_plugin_when_no_plugins_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _install_fake_runner(monkeypatch)
+
+    HexgateRunner(
+        agent=_make_agent(),
+        app_name="app",
+        session_service=InMemorySessionService(),
+        api_key="k",
+    )
+
+    [fake_runner] = fake.instances
+    plugins = fake_runner.kwargs["plugins"]
+    assert len(plugins) == 1
+    assert isinstance(plugins[0], HexgateUsagePlugin)
+
+
+def test_constructor_preserves_caller_supplied_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-supplied plugins list must still reach the Runner — the
+    usage plugin is appended alongside it, not swapped in over it."""
+    fake = _install_fake_runner(monkeypatch)
+    custom_plugin = BasePlugin(name="custom")
+
+    HexgateRunner(
+        agent=_make_agent(),
+        app_name="app",
+        session_service=InMemorySessionService(),
+        api_key="k",
+        plugins=[custom_plugin],
+    )
+
+    [fake_runner] = fake.instances
+    plugins = fake_runner.kwargs["plugins"]
+    assert custom_plugin in plugins
+    assert any(isinstance(p, HexgateUsagePlugin) for p in plugins)
+    assert len(plugins) == 2
+
+
+@pytest.mark.asyncio
+async def test_usage_plugin_context_propagates_through_run_async(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_current_user() must still resolve inside after_model_callback,
+    fired from wherever ADK invokes it within the run_async call tree — the
+    User scope opened around run_async must still be live there."""
+    _silence_observability(monkeypatch)
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+    _PluginFiringRunner.instances = []
+    monkeypatch.setattr("hexgate.adapters.google.runner.Runner", _PluginFiringRunner)
+
+    runner = HexgateRunner(
+        agent=_make_agent(),
+        app_name="app",
+        session_service=InMemorySessionService(),
+        api_key="k",
+    )
+    user = _user()
+
+    async for _ in runner.run_async(new_message=None, user=user):
+        pass
+
+    [event] = fake_sender.events
+    assert event.agent_name == "my-agent"
+    assert event.user_id == "u-1"
+    assert event.session_id == "s-1"
+    assert event.input_tokens == 10
+    assert event.output_tokens == 20
