@@ -6,14 +6,18 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
 import pytest
-from agents import Agent, FunctionTool
+from agents import Agent, FunctionTool, RunHooks
+from agents.items import ModelResponse
+from agents.usage import Usage
 
 from hexgate.adapters.openai import runner as runner_mod
 from hexgate.adapters.openai.runner import HexgateRunner
+from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.enforcer import PolicyEnforcer
+from hexgate.tracing import usage as tracing_usage_mod
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
 
@@ -154,7 +158,8 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     assert captured["agent"] is not agent
     assert captured["agent"].name == agent.name
     assert captured["input"] == "hello"
-    assert captured["kwargs"] == {"run_config": None}
+    assert captured["kwargs"]["run_config"] is None
+    assert isinstance(captured["kwargs"]["hooks"], HexgateUsageHooks)
     # User scope was live for the duration of Runner.run.
     assert captured["active_user"] is user
     # Scope unwound on exit — no leak.
@@ -472,3 +477,122 @@ def test_run_streamed_refreshes_before_setup(
     runner.run_streamed(_make_agent("my-agent"), "hello", user=_user())
 
     assert order == ["refresh", "run_streamed"]
+
+
+# ---------------------------------------------------------------------------
+# Usage hooks: merge behavior + User contextvar survives into on_llm_end
+# ---------------------------------------------------------------------------
+
+
+class _FakeSender:
+    """Stand in for the AuditSender the usage hook emits through."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit(self, event: Any) -> None:
+        self.events.append(event)
+
+
+class _RecordingHooks(RunHooks):
+    """A caller-supplied hooks object that just counts on_llm_end calls."""
+
+    def __init__(self) -> None:
+        self.llm_end_calls = 0
+
+    async def on_llm_end(self, context: Any, agent: Agent, response: Any) -> None:
+        self.llm_end_calls += 1
+
+
+def _fake_llm_response(
+    input_tokens: int = 10, output_tokens: int = 20
+) -> ModelResponse:
+    return ModelResponse(
+        output=[],
+        usage=Usage(input_tokens=input_tokens, output_tokens=output_tokens),
+        response_id=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_passes_a_usage_hooks_instance_when_caller_passes_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _silence_observability(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    async def fake_run(*_args: Any, **kwargs: Any) -> str:
+        captured["hooks"] = kwargs["hooks"]
+        return "ok"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run", staticmethod(fake_run)
+    )
+
+    runner = HexgateRunner(api_key="k")
+    await runner.run(_make_agent(), "hi", user=_user())
+
+    assert isinstance(captured["hooks"], HexgateUsageHooks)
+
+
+@pytest.mark.asyncio
+async def test_run_composes_caller_supplied_hooks_instead_of_clobbering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A caller-supplied hooks object must still fire — the usage hook is
+    added alongside it, not swapped in over it."""
+    _silence_observability(monkeypatch)
+    captured: dict[str, Any] = {}
+
+    async def fake_run(*_args: Any, **kwargs: Any) -> str:
+        captured["hooks"] = kwargs["hooks"]
+        await kwargs["hooks"].on_llm_end(object(), _make_agent(), _fake_llm_response())
+        return "ok"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run", staticmethod(fake_run)
+    )
+
+    caller_hooks = _RecordingHooks()
+    runner = HexgateRunner(api_key="k")
+
+    await runner.run(_make_agent(), "hi", user=_user(), hooks=caller_hooks)
+
+    assert captured["hooks"] is not caller_hooks  # composed, not passed through raw
+    assert caller_hooks.llm_end_calls == 1  # still fired
+
+
+@pytest.mark.asyncio
+async def test_usage_hook_context_propagates_through_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_current_user() must still resolve inside on_llm_end, fired from
+    wherever the real Runner invokes it within the run() call tree — the
+    User scope opened around Runner.run must still be live there."""
+    _silence_observability(monkeypatch)
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+
+    async def fake_run(*_args: Any, **kwargs: Any) -> str:
+        await kwargs["hooks"].on_llm_end(
+            object(), _make_agent("my-agent"), _fake_llm_response()
+        )
+        return "ok"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run", staticmethod(fake_run)
+    )
+
+    runner = HexgateRunner(api_key="k")
+    user = _user()
+
+    await runner.run(_make_agent("my-agent"), "hi", user=user)
+
+    [event] = fake_sender.events
+    assert event.agent_name == "my-agent"
+    assert event.user_id == "u-1"
+    assert event.session_id == "s-1"
+    assert event.input_tokens == 10
+    assert event.output_tokens == 20
