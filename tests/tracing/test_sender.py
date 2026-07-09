@@ -1,4 +1,11 @@
-"""AuditSender behavior. Mocks the httpx.AsyncClient on the sender instance."""
+"""AuditSender behavior. Mocks the httpx.AsyncClient on the sender instance.
+
+Moved here from tests/audit/ under Design C: AuditSender is a fully generic
+sender (it only depends on ``event.as_payload()``), now living in
+hexgate.tracing._senders and shared by hexgate.audit and
+hexgate.tracing.usage — its own tests belong next to it, not under
+tests/audit/.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +14,13 @@ import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import pytest
 
-from hexgate.audit import AuditEvent, AuditSender
+from hexgate.audit import AuditEvent
 from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.tracing._senders import AuditSender
+
+_LOGGER_NAME = "hexgate.tracing._senders"
 
 
 def _event() -> AuditEvent:
@@ -57,7 +68,7 @@ async def test_semaphore_saturation_drops_events(
     sender = AuditSender("http://x/y", "k", max_in_flight=1)
     await sender._semaphore.acquire()
     try:
-        with caplog.at_level(logging.WARNING, logger="hexgate.audit"):
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
             for _ in range(5):
                 sender.emit(_event())
         assert sender._dropped == 5
@@ -107,7 +118,7 @@ async def test_network_error_logged_not_raised(
     sender._client = MagicMock()
     sender._client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
     sender._client.aclose = AsyncMock()
-    with caplog.at_level(logging.WARNING, logger="hexgate.audit"):
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
         sender.emit(_event())
         await asyncio.gather(*sender._tasks)
     assert any("network error" in r.message for r in caplog.records)
@@ -118,7 +129,7 @@ def test_no_running_loop_skips_silently(caplog: "logging.LogCaptureFixture") -> 
     no-ops with a one-time warning."""
     sender = AuditSender("http://x/y", "k")
     assert sender._loop is None
-    with caplog.at_level(logging.WARNING, logger="hexgate.audit"):
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
         sender.emit(_event())
         sender.emit(_event())  # second call: silent
     assert len(sender._tasks) == 0
@@ -147,6 +158,67 @@ async def test_emit_from_executor_thread_routes_to_bound_loop() -> None:
     assert sender._warned_no_loop is False  # routed, not dropped
     await asyncio.gather(*sender._tasks)
     sender._client.post.assert_called_once()
+
+
+def test_emit_when_call_soon_threadsafe_raises_then_error_is_swallowed() -> None:
+    """Loop torn down between the is_closed() check and call_soon_threadsafe:
+    the race is swallowed, not raised."""
+    sender = AuditSender("http://x/y", "k")
+    assert sender._loop is None  # built outside any running loop
+    fake_loop = MagicMock()
+    fake_loop.is_closed.return_value = False
+    fake_loop.call_soon_threadsafe.side_effect = RuntimeError("loop closed mid-call")
+    sender._loop = fake_loop
+    sender.emit(_event())  # must not raise
+    assert len(sender._tasks) == 0
+
+
+def test_spawn_send_when_closing_then_no_task_is_created() -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._closing = True
+    sender._spawn_send(_event())
+    assert len(sender._tasks) == 0
+
+
+async def test_send_when_client_is_none_then_runtimeerror_is_raised() -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._client = None
+    with pytest.raises(RuntimeError, match="before start"):
+        await sender._send(_event())
+
+
+async def test_send_when_response_status_is_4xx_then_failure_is_logged(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._client = MagicMock()
+    sender._client.post = AsyncMock(
+        return_value=MagicMock(status_code=404, text="not found")
+    )
+    sender._client.aclose = AsyncMock()
+    with caplog.at_level(logging.ERROR, logger=_LOGGER_NAME):
+        sender.emit(_event())
+        await asyncio.gather(*sender._tasks)
+    assert any("ingest failed" in r.message for r in caplog.records)
+
+
+async def test_close_when_drain_times_out_then_warning_is_logged(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._client = _stub_client()
+    task = asyncio.create_task(asyncio.sleep(10))
+    sender._tasks.add(task)
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        await sender.close(drain_timeout=0.01)
+    assert any("drain timed out" in r.message for r in caplog.records)
+    assert task.cancelled()
+
+
+async def test_close_when_client_is_none_then_no_error_is_raised() -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._client = None
+    await sender.close()  # must not raise
 
 
 def test_rebuilds_loop_bound_state_across_event_loops() -> None:

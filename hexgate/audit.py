@@ -6,20 +6,16 @@ Lifecycle: configure() per api_key, await shutdown() at process exit.
 
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import os
-import random
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-import httpx
-
-from hexgate.config.env import resolve_api_key, resolve_api_url
+from hexgate.tracing._senders import AuditSender, get_or_create_sender
+from hexgate.tracing._senders import get_sender as _get_sender
+from hexgate.tracing._senders import shutdown as _shutdown_all
 
 if TYPE_CHECKING:
     # Annotation-only: Decision is used solely as a type hint below, so it stays
@@ -29,8 +25,6 @@ if TYPE_CHECKING:
     # avoided (binding.py keeps its enforcer import under TYPE_CHECKING too), so
     # this is correctness-by-design, not a workaround — keep it here.
     from hexgate.security.decision import Decision
-
-_log = logging.getLogger(__name__)
 
 # Mirrors the platform's MAX_ARGS_BYTES (platform/api/audit.py). The platform
 # rejects (413) rather than truncates, so an over-cap event would be lost
@@ -128,187 +122,15 @@ class AuditEvent:
         }
 
 
-class AuditSender:
-    """Per-decision fire-and-forget POST. Bounded by an asyncio.Semaphore.
-
-    emit() is sync and non-blocking — schedules a background task. Drops with
-    a periodic log when the semaphore is saturated (platform slow/unreachable).
-    """
-
-    def __init__(
-        self,
-        endpoint: str,
-        api_key: str,
-        *,
-        max_in_flight: int = 32,
-        http_timeout: float = 5.0,
-    ) -> None:
-        self._endpoint = endpoint
-        self._api_key = api_key
-        self._max_in_flight = max_in_flight
-        self._http_timeout = http_timeout
-        # The semaphore and httpx client are loop-bound: asyncio primitives
-        # latch onto the first loop that drives them and reject any other
-        # (e.g. a second asyncio.run()). Build them eagerly so configure()
-        # stays sync, but track the loop and rebuild if it rotates.
-        #
-        # Capture the build-time loop so emit() can reach it from an executor
-        # thread (a sync tool under run_in_executor has no loop of its own).
-        try:
-            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = None
-        self._semaphore = asyncio.Semaphore(max_in_flight)
-        self._client: httpx.AsyncClient | None = self._new_client()
-        self._tasks: set[asyncio.Task[None]] = set()
-        self._closing = False
-        self._dropped = 0
-        self._warned_no_loop = False
-
-    def _new_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            timeout=self._http_timeout,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-        )
-
-    def _ensure_loop_state(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Adopt the running loop on first use; rebuild on loop rotation.
-
-        The previous client/semaphore are bound to a now-defunct loop, so
-        drop them (GC closes the old client) and rebuild on ``loop``."""
-        if self._loop is loop:
-            return
-        if self._loop is not None:
-            self._semaphore = asyncio.Semaphore(self._max_in_flight)
-            self._client = self._new_client()
-            self._dropped = 0
-        self._loop = loop
-
-    def emit(self, event: AuditEvent) -> None:
-        if self._closing or self._client is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # Called off-loop (sync tool on a run_in_executor thread): route
-            # to the build-time loop instead of dropping the event.
-            loop = self._loop
-            if loop is None or loop.is_closed():
-                if not self._warned_no_loop:
-                    _log.warning(
-                        "audit emit called with no running loop and no live "
-                        "bound loop; skipping"
-                    )
-                    self._warned_no_loop = True
-                return
-            try:
-                loop.call_soon_threadsafe(self._spawn_send, event)
-            except RuntimeError:
-                pass  # loop torn down between the is_closed() check and the call
-            return
-        self._ensure_loop_state(loop)
-        self._spawn_send(event)
-
-    def _spawn_send(self, event: AuditEvent) -> None:
-        """Create the send task. MUST run on the bound loop's thread —
-        ``create_task`` and the loop-bound semaphore require the running loop.
-        Reached on-loop from :meth:`emit`, or via ``call_soon_threadsafe``."""
-        if self._closing or self._client is None:
-            return
-        if self._semaphore.locked():
-            self._dropped += 1
-            if self._dropped % 100 == 1:
-                _log.warning(
-                    "audit sender saturated; %d events dropped (platform slow?)",
-                    self._dropped,
-                )
-            return
-        task = asyncio.create_task(self._send(event), name="hexgate-audit-send")
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def _send(self, event: AuditEvent) -> None:
-        if self._client is None:
-            # Invariant: _send is only reached after start() initialised
-            # the client. Raise so `python -O` can't strip the check.
-            raise RuntimeError("audit sender _send called before start()")
-        async with self._semaphore:
-            payload = event.as_payload()
-            try:
-                response = await self._client.post(self._endpoint, json=payload)
-                if response.status_code == 503:
-                    # Equal jitter: a fleet of SDKs hitting the same platform
-                    # 503 must not retry in lockstep.
-                    delay = min(self._http_timeout, 2.0)
-                    await asyncio.sleep(random.uniform(delay / 2, delay))
-                    response = await self._client.post(self._endpoint, json=payload)
-                if response.status_code >= 400:
-                    _log.error(
-                        "audit ingest failed: %s %s",
-                        response.status_code,
-                        response.text[:200],
-                    )
-            except httpx.RequestError as exc:
-                _log.warning("audit ingest network error: %s", exc)
-
-    async def close(self, drain_timeout: float = 5.0) -> None:
-        """Stop accepting new emits; drain in-flight tasks; close the HTTP client."""
-        self._closing = True
-        if self._tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._tasks, return_exceptions=True),
-                    timeout=drain_timeout,
-                )
-            except asyncio.TimeoutError:
-                _log.warning(
-                    "audit close: drain timed out with %d tasks pending",
-                    len(self._tasks),
-                )
-        if self._client is not None:
-            await self._client.aclose()
-
-
 # --- Per-key sender registry --------------------------------------------------
+#
+# The registry mechanics (dict + get-or-create + shutdown), the
+# HEXGATE_LOCAL_MODE gate, and AuditSender itself now live in the neutral
+# hexgate.tracing._senders module, shared with hexgate.tracing.usage. The
+# functions below are thin, decisions-specific wrappers around it.
 
 
 _AUDIT_PATH = "/v1/audit/decisions"
-
-# Setting this env var to a truthy value (``1``/``true``/``yes``/``on``,
-# case-insensitive) makes ``configure()`` a no-op even when ``HEXGATE_API_KEY``
-# is present. ``bootstrap(local_only=True)`` sets it; ``hexgate chat``
-# passes ``local_only=True``. The check happens on every ``configure()``
-# call (not cached) so an adapter wrapper that re-``configure``s after
-# bootstrap still respects the gate.
-_LOCAL_MODE_ENV = "HEXGATE_LOCAL_MODE"
-
-# One-shot log gate so the "audit suppressed: local mode" message lands
-# the first time it'd matter (a key WAS set but local mode preempted)
-# and stays quiet thereafter.
-_logged_local_mode_suppressed = False
-# One sender per resolved api_key. A single process may wrap agents for
-# several tenants/keys, and each must emit with its own bearer token — so
-# senders are keyed by api_key rather than kept as a first-wins singleton.
-# The registry is unbounded and assumes a small, fixed key set per process;
-# a key-per-request pattern would leak one sender + httpx pool per unique
-# key. Such callers must evict explicitly (await sender.close(), then drop
-# the dict entry) or use shutdown().
-_senders: dict[str, AuditSender] = {}
-
-
-def _local_mode_active() -> bool:
-    """True if ``HEXGATE_LOCAL_MODE`` is set to a truthy value.
-
-    Accepts ``1``/``true``/``yes``/``on`` (case-insensitive). Everything
-    else — including unset — evaluates false. Mirrors the truthy-value
-    parser the platform's ``HEXGATE_COOKIE_SECURE`` knob uses, so the
-    behavior is consistent across the codebase's env flags."""
-    return os.environ.get(_LOCAL_MODE_ENV, "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
 
 
 def configure(
@@ -327,32 +149,7 @@ def configure(
     iterating locally and don't want cloud writes" path
     (``hexgate chat`` opts in via ``bootstrap(local_only=True)``).
     """
-    global _logged_local_mode_suppressed
-    if _local_mode_active():
-        # Only log when a key was actually present — otherwise the
-        # message is just noise during a no-key local run.
-        resolved = resolve_api_key(api_key)
-        if resolved and not _logged_local_mode_suppressed:
-            _log.info(
-                "audit suppressed: %s=1 (a key is configured but local "
-                "mode is on, so events stay on this machine)",
-                _LOCAL_MODE_ENV,
-            )
-            _logged_local_mode_suppressed = True
-        return None
-    resolved_key = resolve_api_key(api_key)
-    if not resolved_key:
-        return None
-    existing = _senders.get(resolved_key)
-    if existing is not None:
-        return existing
-    resolved_url = resolve_api_url(base_url)
-    sender = AuditSender(
-        endpoint=f"{resolved_url}{_AUDIT_PATH}",
-        api_key=resolved_key,
-    )
-    _senders[resolved_key] = sender
-    return sender
+    return get_or_create_sender(_AUDIT_PATH, api_key, base_url)
 
 
 def get_sender(api_key: str | None = None) -> AuditSender | None:
@@ -362,14 +159,10 @@ def get_sender(api_key: str | None = None) -> AuditSender | None:
     :class:`~hexgate.security.enforcer.PolicyEnforcer`; this lookup exists for
     diagnostics and is unambiguous only when scoped to a key.
     """
-    resolved_key = resolve_api_key(api_key)
-    if not resolved_key:
-        return None
-    return _senders.get(resolved_key)
+    return _get_sender(_AUDIT_PATH, api_key)
 
 
 async def shutdown() -> None:
-    """Drain in-flight emits and close every sender. Safe to call multiple times."""
-    senders = list(_senders.values())
-    _senders.clear()
-    await asyncio.gather(*(s.close() for s in senders), return_exceptions=True)
+    """Drain in-flight emits and close every sender in the shared registry
+    (decisions and LLM usage alike). Safe to call multiple times."""
+    await _shutdown_all()

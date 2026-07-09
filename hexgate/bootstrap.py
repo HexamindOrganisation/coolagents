@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from hexgate import audit
 from hexgate.config.env import resolve_api_key
 from hexgate.config.settings import Settings
+from hexgate.tracing._senders import _LOCAL_MODE_ENV
 
 _log = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ def bootstrap(env_file: str = ".env", *, local_only: bool = False) -> Settings:
     load_dotenv(env_path, override=False)
     if local_only:
         # Set BEFORE audit.configure() so the first call sees the gate.
-        os.environ[audit._LOCAL_MODE_ENV] = "1"
+        os.environ[_LOCAL_MODE_ENV] = "1"
     if resolve_api_key() and os.environ.get("HEXGATE_LOCAL_POLICY"):
         _log.warning(
             "HEXGATE_API_KEY and HEXGATE_LOCAL_POLICY are both set; the local "
