@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Iterator
+from uuid import uuid4
 
 import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
 
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
+from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.runtime import User
 from hexgate.runtime.context import get_current_user
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
+from hexgate.tracing import usage as usage_mod
 
 
 def _user() -> User:
@@ -121,13 +126,14 @@ class _RecordingGraph:
 # ---------------------------------------------------------------------------
 
 
-def test_with_callbacks_appends_handler_to_empty_config() -> None:
+def test_with_callbacks_appends_handlers_to_empty_config() -> None:
     proxy = HexgateLangchainAgent(agent=_RecordingGraph(), api_key="k", tool_names=[])
 
     merged = proxy._with_callbacks(None)
 
     assert proxy._callback_handler in merged["callbacks"]
-    assert len(merged["callbacks"]) == 1
+    assert proxy._usage_handler in merged["callbacks"]
+    assert len(merged["callbacks"]) == 2
 
 
 def test_with_callbacks_preserves_existing_callbacks() -> None:
@@ -137,16 +143,18 @@ def test_with_callbacks_preserves_existing_callbacks() -> None:
     merged = proxy._with_callbacks({"callbacks": [sentinel]})
 
     assert merged["callbacks"][0] is sentinel
-    assert merged["callbacks"][-1] is proxy._callback_handler
+    assert merged["callbacks"][1] is proxy._callback_handler
+    assert merged["callbacks"][2] is proxy._usage_handler
 
 
-def test_with_callbacks_does_not_double_register_handler() -> None:
+def test_with_callbacks_does_not_double_register_handlers() -> None:
     proxy = HexgateLangchainAgent(agent=_RecordingGraph(), api_key="k", tool_names=[])
 
     merged_once = proxy._with_callbacks(None)
     merged_twice = proxy._with_callbacks(merged_once)
 
     assert merged_twice["callbacks"].count(proxy._callback_handler) == 1
+    assert merged_twice["callbacks"].count(proxy._usage_handler) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -329,3 +337,99 @@ def test_proxy_delegates_unknown_attributes_to_wrapped_agent() -> None:
 
     assert proxy.some_attribute() == "delegated"
     assert proxy.name == "recording-graph"
+
+
+# ---------------------------------------------------------------------------
+# Usage handler: User contextvar survives into on_llm_end
+# ---------------------------------------------------------------------------
+
+
+class _FakeSender:
+    """Stand in for the AuditSender the usage handler emits through."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    def emit(self, event: Any) -> None:
+        self.events.append(event)
+
+
+def _fake_llm_result(input_tokens: int = 10, output_tokens: int = 20) -> LLMResult:
+    message = AIMessage(
+        content="hi",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+    return LLMResult(
+        generations=[[ChatGeneration(message=message)]],
+        llm_output={"model_name": "gpt-4o"},
+    )
+
+
+class _CallbackFiringGraph:
+    """Fires on_llm_end on every HexgateUsageCallbackHandler in the config,
+    the way LangGraph fires it on real chat-model completion — from inside
+    the same call, not a detached task."""
+
+    name = "graph"
+
+    def _fire(self, config: Any) -> None:
+        for handler in (config or {}).get("callbacks", []):
+            if isinstance(handler, HexgateUsageCallbackHandler):
+                handler.on_llm_end(_fake_llm_result(), run_id=uuid4())
+
+    def invoke(self, input: dict, config: Any = None, **kwargs: Any) -> dict:
+        self._fire(config)
+        return {"ok": True}
+
+    async def ainvoke(self, input: dict, config: Any = None, **kwargs: Any) -> dict:
+        self._fire(config)
+        return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_usage_handler_context_propagates_through_ainvoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_current_user() must still resolve inside on_llm_end, called from
+    wherever LangGraph actually invokes it within the ainvoke call tree —
+    the User scope opened around _agent.ainvoke must still be live there."""
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+    proxy = HexgateLangchainAgent(
+        agent=_CallbackFiringGraph(), api_key="k", agent_name="my-agent", tool_names=[]
+    )
+    user = _user()
+
+    await proxy.ainvoke({"input": "hi"}, user=user)
+
+    [event] = fake_sender.events
+    assert event.agent_name == "my-agent"
+    assert event.user_id == "u-1"
+    assert event.session_id == "s-1"
+    assert event.input_tokens == 10
+    assert event.output_tokens == 20
+
+
+def test_usage_handler_context_propagates_through_sync_invoke(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guarantee on the sync path (user.sync_scope())."""
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+    proxy = HexgateLangchainAgent(
+        agent=_CallbackFiringGraph(), api_key="k", agent_name="my-agent", tool_names=[]
+    )
+
+    proxy.invoke({"input": "hi"}, user=_user())
+
+    [event] = fake_sender.events
+    assert event.user_id == "u-1"
+    assert event.session_id == "s-1"
