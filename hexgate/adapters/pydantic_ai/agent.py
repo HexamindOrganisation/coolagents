@@ -10,6 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRun, AgentRunResult
 from pydantic_ai.result import StreamedRunResult
 
+from hexgate.adapters.pydantic_ai.usage import emit_run_usage
 from hexgate.runtime import User
 
 if TYPE_CHECKING:
@@ -87,7 +88,9 @@ class HexgatePydanticAgent:
         """Run the agent asynchronously inside a User scope."""
         await self._refresh_async()
         async with self._abind(user, "run"):
-            return await self._agent.run(*args, **kwargs)
+            result = await self._agent.run(*args, **kwargs)
+            emit_run_usage(self._agent_name, self._agent, result, api_key=self._api_key)
+            return result
 
     def run_sync(
         self,
@@ -98,7 +101,9 @@ class HexgatePydanticAgent:
         """Run the agent synchronously inside a User scope."""
         self._refresh()
         with self._bind(user, "run_sync"):
-            return self._agent.run_sync(*args, **kwargs)
+            result = self._agent.run_sync(*args, **kwargs)
+            emit_run_usage(self._agent_name, self._agent, result, api_key=self._api_key)
+            return result
 
     @asynccontextmanager
     async def run_stream(
@@ -112,6 +117,9 @@ class HexgatePydanticAgent:
         async with self._abind(user, "run_stream"):
             async with self._agent.run_stream(*args, **kwargs) as result:
                 yield result
+                emit_run_usage(
+                    self._agent_name, self._agent, result, api_key=self._api_key
+                )
 
     @asynccontextmanager
     async def iter(
@@ -125,6 +133,9 @@ class HexgatePydanticAgent:
         async with self._abind(user, "iter"):
             async with self._agent.iter(*args, **kwargs) as run:
                 yield run
+                emit_run_usage(
+                    self._agent_name, self._agent, run, api_key=self._api_key
+                )
 
     def __getattr__(self, name: str) -> Any:
         """Delegate unknown attributes to the wrapped agent."""
