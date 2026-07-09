@@ -210,7 +210,9 @@ class BanGate:
 
     Per-agent but points at the shared project-scoped source. Fail-soft with
     last-good, like :meth:`PolicyBinding.refresh`; a ``None`` source (local
-    mode / no key) is a permanent no-op.
+    mode / no key) is a permanent no-op. On generator/stream entrypoints the
+    refusal surfaces when iteration begins (before the first chunk), not at
+    call time.
     """
 
     def __init__(

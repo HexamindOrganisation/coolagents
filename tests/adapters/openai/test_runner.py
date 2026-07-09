@@ -50,7 +50,9 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     resolved agent names so tests can assert on the binding cache."""
     resolved_names: list[str] = []
 
-    def fake_resolve(name: str, *, api_key: str) -> ResolvedPolicy:
+    def fake_resolve(
+        name: str, *, api_key: str, client: object = None
+    ) -> ResolvedPolicy:
         resolved_names.append(name)
         engine = PolicySet(
             {

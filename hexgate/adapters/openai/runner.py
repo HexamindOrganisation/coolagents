@@ -26,6 +26,7 @@ from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.agents.factory import ApprovalHandler
+from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 from hexgate.security.bans import BanGate, resolve_ban_gate
@@ -47,6 +48,8 @@ class HexgateRunner:
             raise ValueError(
                 "HEXGATE_API_KEY is not set. Pass api_key= explicitly or set the HEXGATE_API_KEY environment variable."
             )
+        # One client shared by the policy and ban resolvers below.
+        self._client = HexgateClient(HexgateConfig.from_env(api_key=self.api_key))
         # Cached per agent name — keeps the ETag memory alive across runs.
         self._bindings: dict[str, PolicyBinding] = {}
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
@@ -67,7 +70,7 @@ class HexgateRunner:
         name = getattr(agent, "name", None) or "default"
         binding = self._bindings.get(name)
         if binding is None:
-            resolved = resolve_policy(name, api_key=self.api_key)
+            resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
             )
@@ -80,7 +83,9 @@ class HexgateRunner:
         local mode / no key). ``None`` is cached too, so we resolve once."""
         name = getattr(agent, "name", None) or "default"
         if name not in self._ban_gates:
-            self._ban_gates[name] = resolve_ban_gate(name, api_key=self.api_key)
+            self._ban_gates[name] = resolve_ban_gate(
+                name, api_key=self.api_key, client=self._client
+            )
         return self._ban_gates[name]
 
     def _setup_observability(self):

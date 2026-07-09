@@ -18,6 +18,7 @@ from pydantic_ai.tools import Tool
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.adapters.pydantic_ai.tools import wrap_tools
 from hexgate.agents.factory import ApprovalHandler
+from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
@@ -73,7 +74,10 @@ def wrap_pydantic_agent(
     agent_name = getattr(agent, "name", None) or "default"
     tools = _extract_tools(agent)
 
-    resolved = resolve_policy(agent_name, api_key=resolved_key)
+    # One client shared by the policy and ban resolvers — avoids a second
+    # biscuit verify + JWKS round-trip per wrapped agent.
+    client = HexgateClient(HexgateConfig.from_env(api_key=resolved_key))
+    resolved = resolve_policy(agent_name, api_key=resolved_key, client=client)
     enforcer = build_enforcer(
         resolved.engine, agent_name=agent_name, api_key=resolved_key
     )
@@ -86,5 +90,5 @@ def wrap_pydantic_agent(
         api_key=resolved_key,
         agent_name=agent_name,
         binding=PolicyBinding(enforcer, resolved.source),
-        ban_gate=resolve_ban_gate(agent_name, api_key=resolved_key),
+        ban_gate=resolve_ban_gate(agent_name, api_key=resolved_key, client=client),
     )
