@@ -44,11 +44,6 @@ function createErrorMessage(err: unknown): string {
     if (err.status === 409) {
       return "An active ban already exists for this target.";
     }
-    const detail = err.detail;
-    if (detail && typeof detail === "object" && "detail" in detail) {
-      const message = (detail as { detail: unknown }).detail;
-      if (typeof message === "string") return message;
-    }
     if (err.status === 400 || err.status === 422) {
       return "Invalid ban — check the target matches the ban type.";
     }

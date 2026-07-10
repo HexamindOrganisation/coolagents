@@ -114,13 +114,19 @@ function stubFetch({
         case url.pathname.startsWith(`/v1/projects/${PROJECT}/bans/`) &&
           method === "DELETE":
           return new Response(null, { status: 204 });
-        case url.pathname === `/v1/projects/${PROJECT}/audit/ban-enforcements`:
+        case url.pathname ===
+          `/v1/projects/${PROJECT}/audit/ban-enforcements`: {
+          // Paginate like the real endpoint: slice by offset/limit, report
+          // the true unpaginated total.
+          const offset = Number(url.searchParams.get("offset") ?? 0);
+          const limit = Number(url.searchParams.get("limit") ?? 25);
           return json({
-            rows: enforcements,
+            rows: enforcements.slice(offset, offset + limit),
             total: enforcements.length,
-            limit: 25,
-            offset: 0,
+            limit,
+            offset,
           });
+        }
         case url.pathname === `/v1/projects/${PROJECT}/agents`:
           return json(agents);
         default:
@@ -244,6 +250,31 @@ describe("BansPage", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Enforcement")).toBeInTheDocument();
     expect(screen.getByText("sess-1")).toBeInTheDocument();
+  });
+
+  it("pages blocked attempts by offset and hides Load more at the end", async () => {
+    // 30 rows over a PAGE_SIZE of 25 → two pages. The old growing-limit code
+    // stranded rows past the server's 200 cap behind a stuck button; offset
+    // paging reaches them and the button clears once all are loaded.
+    const many: BanEnforcementRow[] = Array.from({ length: 30 }, (_, i) => ({
+      ...ENFORCEMENT,
+      event_id: `evt-${i}`,
+      ban_id: `ban_${i}`,
+      reason: `r${i}`,
+    }));
+    stubFetch({ role: "admin", enforcements: many });
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    // First page: rows 0–24, and a Load more button (row 25 not yet loaded).
+    await screen.findByText("r0");
+    expect(screen.getByText("r24")).toBeInTheDocument();
+    expect(screen.queryByText("r25")).toBeNull();
+
+    // Second page appends the remainder; then the button is gone.
+    await user.click(screen.getByRole("button", { name: /load .* more/i }));
+    expect(await screen.findByText("r29")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /load .* more/i })).toBeNull();
   });
 
   it("closes the blocked-attempt drawer", async () => {

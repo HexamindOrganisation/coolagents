@@ -272,6 +272,34 @@ export interface AuditDecisionFilters extends AuditScope {
   offset?: number;
 }
 
+export type BanType = "agent" | "user";
+
+/** Mirror of platform/api/schemas.py:BanRead. ``active`` is the
+ * server-computed ``revoked_at is None``; ``created_by_email`` is resolved
+ * server-side for display (null when the account no longer exists). */
+export interface BanRead {
+  id: string;
+  project_id: string;
+  ban_type: BanType;
+  target_agent_name: string | null;
+  target_user_id: string | null;
+  reason: string | null;
+  created_by_user_id: string;
+  created_by_email: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  active: boolean;
+}
+
+/** POST body for a ban. Only the target field matching ``ban_type`` is set —
+ * the server's cross-validator rejects a body that sets the other target. */
+export interface BanCreateBody {
+  ban_type: BanType;
+  target_agent_name?: string;
+  target_user_id?: string;
+  reason?: string;
+}
+
 /** One blocked-attempt row from GET …/audit/ban-enforcements. A ban is
  * refused before any tool call, so there's no tool/role/outcome —
  * mirrors platform/api/schemas.py:BanEnforcementRow. */
@@ -394,4 +422,22 @@ export const api = {
     request<BanEnforcementPage>(
       `/v1/projects/${projectId}/audit/ban-enforcements${qs({ ...filters })}`,
     ),
+
+  listBans: (projectId: string, includeRevoked = false) =>
+    request<BanRead[]>(
+      `/v1/projects/${projectId}/bans${
+        includeRevoked ? "?include_revoked=true" : ""
+      }`,
+    ),
+
+  createBan: (body: BanCreateBody, projectId: string) =>
+    request<BanRead>(`/v1/projects/${projectId}/bans`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  revokeBan: (banId: string, projectId: string) =>
+    request<void>(`/v1/projects/${projectId}/bans/${banId}`, {
+      method: "DELETE",
+    }),
 };

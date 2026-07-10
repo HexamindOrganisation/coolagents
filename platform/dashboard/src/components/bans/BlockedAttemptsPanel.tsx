@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -11,30 +11,41 @@ import { formatAbsolute, formatRelative } from "./format";
 
 /**
  * Region C (§9.3) — the secondary panel. A feed of runs refused by a
- * ban, before the model ran. Sourced from the dedicated
- * `ban_enforcement` ClickHouse table (§4.9), NOT the tool-decision
- * Audit log — hence the caption disambiguating the two.
+ * ban, before the model ran, from the dedicated `ban_enforcement` table.
  *
- * Window selector (24h / 7d / 30d / 90d) on the right; paged with a
- * "Load more" that grows `limit`. Both the window and the limit are in
- * the React Query key so each view caches independently.
+ * Paged by OFFSET (not a growing limit): the endpoint hard-caps limit at
+ * 200, so growing it would strand rows past 200 and spin a stuck "Load
+ * more". `useInfiniteQuery` fetches successive PAGE_SIZE offsets and
+ * accumulates them, so every row is reachable and the button disappears
+ * once all are loaded. The window is in the query key, so switching it
+ * starts a fresh paged view.
  */
 export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
   const [timeWindow, setTimeWindow] = useState<AuditWindow>("24h");
-  const [limit, setLimit] = useState(PAGE_SIZE);
   const [selected, setSelected] = useState<BanEnforcementRow | null>(null);
 
-  const feedQuery = useQuery({
-    queryKey: ["ban-enforcements", projectId, timeWindow, limit],
-    queryFn: () =>
+  const feed = useInfiniteQuery({
+    queryKey: ["ban-enforcements", projectId, timeWindow],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
       api.listBanEnforcements(
-        { window: timeWindow, limit, offset: 0 },
+        { window: timeWindow, limit: PAGE_SIZE, offset: pageParam },
         projectId,
       ),
+    // Next offset = rows loaded so far, until we've caught up to `total`.
+    // Stops on an empty page too, so a stale total can't loop.
+    getNextPageParam: (lastPage, allPages) => {
+      const loaded = allPages.reduce((n, p) => n + p.rows.length, 0);
+      if (lastPage.rows.length === 0 || loaded >= lastPage.total) {
+        return undefined;
+      }
+      return loaded;
+    },
   });
 
-  const rows: BanEnforcementRow[] = feedQuery.data?.rows ?? [];
-  const total = feedQuery.data?.total ?? 0;
+  const rows: BanEnforcementRow[] =
+    feed.data?.pages.flatMap((p) => p.rows) ?? [];
+  const total = feed.data?.pages[0]?.total ?? 0;
   const remaining = Math.max(total - rows.length, 0);
 
   return (
@@ -59,7 +70,7 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
         </ToggleGroup>
       </div>
 
-      {feedQuery.isLoading ? (
+      {feed.isLoading ? (
         <div className="p-12 text-center text-sm text-muted-foreground">
           Loading…
         </div>
@@ -107,15 +118,15 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
               ))}
             </tbody>
           </table>
-          {rows.length < total && (
+          {feed.hasNextPage && (
             <div className="border-t border-border px-5 py-3 text-center">
               <Button
                 variant="secondary"
                 size="sm"
-                disabled={feedQuery.isFetching}
-                onClick={() => setLimit((l) => l + PAGE_SIZE)}
+                disabled={feed.isFetchingNextPage}
+                onClick={() => feed.fetchNextPage()}
               >
-                {feedQuery.isFetching
+                {feed.isFetchingNextPage
                   ? "Loading…"
                   : `Load ${PAGE_SIZE} more · ${remaining.toLocaleString()} remaining`}
               </Button>
