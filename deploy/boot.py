@@ -32,11 +32,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent          # repo root
 API_DIR = REPO_ROOT / "platform" / "api"
 DEPLOY_DIR = Path(__file__).resolve().parent
-NOTEBOOK = DEPLOY_DIR / "demo_notebook.py"
+# Which notebook marimo serves. Defaults to the BYOK "define your own agent"
+# demo; the gates demo sets HEXGATE_NOTEBOOK=deploy/gates-demo/notebook.py.
+NOTEBOOK = Path(os.environ.get("HEXGATE_NOTEBOOK", str(DEPLOY_DIR / "demo_notebook.py")))
 
 API_PORT = int(os.environ.get("HEXGATE_API_PORT", "8000"))
 MARIMO_PORT = int(os.environ.get("HEXGATE_MARIMO_PORT", "2718"))
 DASH_URL_FILE = Path(os.environ.get("HEXGATE_DASH_URL_FILE", "/tmp/hexgate_dash_url"))
+# The public hexkit URL, when the integrated (gates) demo runs hexkit alongside.
+# The notebook's "run it in a different app" section links to it if present.
+HEXKIT_URL_FILE = Path(os.environ.get("HEXGATE_HEXKIT_URL_FILE", "/tmp/hexkit_url"))
 SERVE_KEY_FILE = Path(os.environ.get("HEXGATE_SERVE_KEY_FILE", "/tmp/hexgate_serve_key"))
 
 _procs: list[subprocess.Popen] = []
@@ -90,21 +95,35 @@ def start_services(dash_url: str | None = None) -> dict[str, str]:
     # local API origin when not running behind a tunnel (local testing).
     DASH_URL_FILE.write_text((dash_url or api_base).strip())
 
+    # Publish the public hexkit URL too, when the integrated demo passes one
+    # (HEXGATE_HEXKIT_URL). The gates notebook links to it; absent = the
+    # notebook shows its "running locally" note instead.
+    hexkit_url = os.environ.get("HEXGATE_HEXKIT_URL", "").strip()
+    if hexkit_url:
+        HEXKIT_URL_FILE.write_text(hexkit_url)
+
+    # --- Seed + mint the serve token BEFORE starting the API ------------
+    # provision talks to the shared SQLite + keystore directly (it doesn't
+    # need the API up), and it seeds docs_agent. Doing it first means the API's
+    # startup backfill_bundles compiles docs_agent's policy bundle — do it after
+    # the API boots and backfill has already run, and docs_agent is left
+    # bundle-less (usable only via the pydantic fallback, and unsignable).
+    sys.path.insert(0, str(DEPLOY_DIR))
+    sys.path.insert(0, str(API_DIR))
+    from provision import provision_serve_token  # noqa: E402  (path set above)
+
+    SERVE_KEY_FILE.write_text(provision_serve_token())
+    print("[boot] seeded demo agents + minted HEXGATE_API_KEY", flush=True)
+
     # --- Platform API (background) --------------------------------------
+    # Its lifespan re-runs the (idempotent) seed and compiles any missing
+    # bundles — including docs_agent's, now that it exists.
     _spawn(
         ["uvicorn", "hexgate_api.main:app", "--host", "0.0.0.0", "--port", str(API_PORT)],
         cwd=API_DIR,
         env=env,
     )
     _wait_healthy(f"{api_base}/v1/.well-known/keys")
-
-    # --- Mint the serve token (shares the now-seeded SQLite + keystore) ---
-    sys.path.insert(0, str(DEPLOY_DIR))
-    sys.path.insert(0, str(API_DIR))
-    from provision import provision_serve_token  # noqa: E402  (path set above)
-
-    SERVE_KEY_FILE.write_text(provision_serve_token())
-    print("[boot] minted HEXGATE_API_KEY for seeded project", flush=True)
     # serve itself runs in the notebook kernel (serve_manager), bound to the
     # live agent object. boot only hands it the key (file) + HEXGATE_API_URL (env).
     return env
