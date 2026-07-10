@@ -14,6 +14,7 @@ from hexgate_api.features.bans.service import (
     BanNotFoundError,
     active_bans_for_project,
     create_ban,
+    emails_for_user_ids,
     list_bans,
     revoke_ban,
 )
@@ -23,7 +24,7 @@ from hexgate_api.schemas import BanCreate, BanFeedEntry, BanRead
 router = APIRouter()
 
 
-def _ban_read(ban: Ban) -> BanRead:
+def _ban_read(ban: Ban, *, created_by_email: str | None) -> BanRead:
     return BanRead(
         id=ban.id,
         project_id=ban.project_id,
@@ -32,6 +33,7 @@ def _ban_read(ban: Ban) -> BanRead:
         target_user_id=ban.target_user_id,
         reason=ban.reason,
         created_by_user_id=ban.created_by_user_id,
+        created_by_email=created_by_email,
         created_at=ban.created_at,
         revoked_at=ban.revoked_at,
         active=ban.revoked_at is None,
@@ -69,7 +71,8 @@ async def api_create_ban(
         )
     except BanConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _ban_read(ban)
+    # The creator is the authenticated caller — no lookup needed.
+    return _ban_read(ban, created_by_email=caller.email)
 
 
 @router.get("/projects/{project_id}/bans", tags=["bans"])
@@ -83,7 +86,10 @@ async def api_list_bans(
     rows = await list_bans(
         session, project_id=project_id, include_revoked=include_revoked
     )
-    return [_ban_read(b) for b in rows]
+    emails = await emails_for_user_ids(session, {b.created_by_user_id for b in rows})
+    return [
+        _ban_read(b, created_by_email=emails.get(b.created_by_user_id)) for b in rows
+    ]
 
 
 @router.delete("/projects/{project_id}/bans/{ban_id}", status_code=204, tags=["bans"])

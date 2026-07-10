@@ -28,6 +28,9 @@ export interface BanRead {
   target_user_id: string | null;
   reason: string | null;
   created_by_user_id: string;
+  /** Creator's email, resolved server-side for display; null if the account
+   * no longer exists (fall back to the id). */
+  created_by_email: string | null;
   created_at: string;
   revoked_at: string | null;
   active: boolean;

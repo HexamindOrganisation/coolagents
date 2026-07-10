@@ -199,6 +199,9 @@ class BanRead(BaseModel):
     target_user_id: Optional[str]
     reason: Optional[str]
     created_by_user_id: str
+    # Resolved from the User table for display; null if the account no longer
+    # exists. The id above stays the stable key.
+    created_by_email: Optional[str] = None
     created_at: datetime
     revoked_at: Optional[datetime]
     active: bool

@@ -130,6 +130,8 @@ def test_create_agent_ban_succeeds(client: TestClient) -> None:
     assert body["active"] is True
     assert body["revoked_at"] is None
     assert body["created_by_user_id"]  # audit trail recorded
+    # Resolved to the caller's email for display (the creator is the caller).
+    assert body["created_by_email"] == "owner@example.com"
     assert body["id"].startswith("ban_")
 
 
@@ -219,6 +221,8 @@ def test_list_bans_active_only_by_default(client: TestClient) -> None:
 
     active = client.get(f"/v1/projects/{pid}/bans").json()
     assert {row["id"] for row in active} == {a["id"]}
+    # List reads resolve the creator's email via the batch User lookup.
+    assert active[0]["created_by_email"] == "owner@example.com"
 
     allrows = client.get(f"/v1/projects/{pid}/bans?include_revoked=true").json()
     assert {row["id"] for row in allrows} == {a["id"], b["id"]}

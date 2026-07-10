@@ -36,7 +36,8 @@ const BAN = {
   target_agent_name: null,
   target_user_id: "u1",
   reason: "spam",
-  created_by_user_id: "creator@acme.dev",
+  created_by_user_id: "usr_creator",
+  created_by_email: "creator@acme.dev",
   created_at: "2026-06-01T10:00:00Z",
   revoked_at: null,
   active: true,
@@ -157,6 +158,9 @@ describe("BansPage", () => {
     renderWithProviders(<BansPage />, { initialRoute: "/bans" });
 
     expect(await screen.findByText("u1")).toBeInTheDocument();
+    // "Created by" shows the resolved email, not the raw user id.
+    expect(screen.getByText("creator@acme.dev")).toBeInTheDocument();
+    expect(screen.queryByText("usr_creator")).toBeNull();
     expect(
       screen.getByRole("button", { name: /create ban/i }),
     ).toBeInTheDocument();

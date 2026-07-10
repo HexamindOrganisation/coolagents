@@ -109,8 +109,11 @@ export function ActiveBansPanel({
                 >
                   {b.reason || "—"}
                 </td>
-                <td className="px-5 py-3 text-[13px] text-muted-foreground">
-                  {b.created_by_user_id}
+                <td
+                  className="px-5 py-3 text-[13px] text-muted-foreground"
+                  title={b.created_by_user_id}
+                >
+                  {b.created_by_email ?? b.created_by_user_id}
                 </td>
                 <td
                   className="px-5 py-3 text-[13px] text-muted-foreground"
