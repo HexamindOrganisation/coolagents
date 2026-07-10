@@ -1,11 +1,11 @@
 # Bans & Ban Enforcement — Design and Logic
 
-> **Status:** Reflects the shipped implementation (kill-switch Phases 1–3). Phase 4
-> hardening items are called out as *future* where relevant.
+> **Status:** Reflects the shipped implementation. Deferred hardening is called out as
+> *known issues worth addressing in later PRs* where relevant (see §9).
 >
 > **Primitive name:** `Ban` (model), `features/bans/` (API slice), `/v1/bans` (SDK feed),
-> `AgentBannedError` (SDK error), `ban_enforcement` (ClickHouse telemetry table).
-> **"Kill Switch" is the dashboard UI label only** — everywhere in code the primitive is a `Ban`.
+> `AgentBannedError` (SDK error), `ban_enforcement` (ClickHouse telemetry table). The dashboard
+> surfaces this as the **Bans** page.
 
 ---
 
@@ -31,7 +31,7 @@ Key properties:
 - **Refuses before the model runs.** No tokens are spent, no tool fires — the run raises (or, on
   a stream, refuses before the first chunk).
 - **No expiry (v1).** A ban is *active* while `revoked_at` is null. Lifting a ban is a **soft
-  delete** that preserves the who/when trail. Time-based expiry is a future item.
+  delete** that preserves the who/when trail. Time-based expiry is a known gap (see §9).
 - **One active ban per target.** Enforced in the service layer (SQLite has no reliable partial
   unique index), not by a DB constraint.
 - **Fail-soft.** A control-plane blip never crashes a run; the SDK keeps the last-good ban set.
@@ -430,7 +430,7 @@ rows are **not** affected — those historical blocked attempts persist until th
 
 > **Propagation latency.** Because the SDK re-checks the feed at the start of each run, a create or
 > revoke takes effect on the target's **next run**; an in-progress run is not interrupted. There is
-> no push invalidation in v1 (a future item). The dashboard sets this expectation in its copy.
+> no push invalidation in v1 (a known gap; see §9). The dashboard sets this expectation in its copy.
 
 ---
 
@@ -497,11 +497,11 @@ All ban routes live in `features/bans/router.py`; the enforcement telemetry rout
   Documented and accepted.
 - **Concurrent creates racing** → the "one active ban per target" check is service-level, not a DB
   constraint, so two simultaneous creates can produce duplicate active bans. This is fail-safe
-  (over-blocks, never under-blocks); a partial unique index is a future hardening item.
+  (over-blocks, never under-blocks); a partial unique index would back it at the DB level (see §9).
 - **`user_id` trust** → the `user_id` is read from the integrator-supplied runtime `User` scope. It
   is bypassable by the integrator's own process, not by their end-users — which matches the threat
   model (a trusted integrator stopping a misbehaving agent or abusive end-user). Binding `user_id`
-  into the attenuated biscuit is a future item.
+  into the attenuated biscuit is a known gap (see §9).
 
 ---
 
@@ -524,22 +524,27 @@ All ban routes live in `features/bans/router.py`; the enforcement telemetry rout
    can't be narrated by the model; a disguised assistant message would lie about provenance (written
    to history, fed back next turn, counted in token metrics). `AgentBannedError` carries structured
    fields so integrators localize/render good UX.
-6. **Fail-soft for v1.** Consistent with the policy path. Fail-closed is a future opt-in.
+6. **Fail-soft for v1.** Consistent with the policy path. Fail-closed is a possible later-PR opt-in.
 7. **Soft delete.** The `Ban` row is its own audit record — revoke keeps who/when rather than
    deleting the row.
 
 ---
 
-## 9. Limitations & future (Phase 4)
+## 9. Known limitations (worth addressing in later PRs)
+
+These are known, accepted gaps in the current implementation — not blockers, but worth picking up
+in follow-up PRs:
 
 - **Propagation latency** — poll+ETag at run start, no push; a long-running conversation won't see a
-  new ban until its next run. Push invalidation over the existing WS/relay infra is a future item.
+  new ban until its next run. Push invalidation over the existing WS/relay infra would close this.
 - **No per-ban TTL/expiry** — bans are indefinite until revoked.
-- **Fail-open cold start** and **fail-soft** — a fail-closed opt-in is future.
+- **Fail-open cold start** and **fail-soft** — a fail-closed opt-in is not yet available.
 - **Unsigned feed** — v1 relies on TLS + biscuit; signing the ban set (same keystore as policy
-  bundles) is future defense-in-depth.
-- **`user_id` spoofing** — binding `user_id` into the attenuated biscuit is future.
-- **No DB uniqueness constraint** — the one-active-ban-per-target rule is service-enforced only.
+  bundles) would add defense-in-depth.
+- **`user_id` spoofing** — the `user_id` is trusted from the runtime scope; binding it into the
+  attenuated biscuit would make user bans spoof-resistant.
+- **No DB uniqueness constraint** — the one-active-ban-per-target rule is service-enforced only; a
+  partial unique index would back it at the DB level.
 - **No tool-level bans** — covered by policy `deny`; could be reintroduced if a real need appears.
 
 ---
