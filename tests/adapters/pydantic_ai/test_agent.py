@@ -49,12 +49,17 @@ class _FakeResult:
     """Minimal stand-in for AgentRunResult/StreamedRunResult/AgentRun —
     exposes .usage()/.response so emit_run_usage() doesn't blow up on the
     test double; .value carries what the old plain-string fixtures used to
-    return. .result mirrors AgentRun.result (None until the run completes)."""
+    return. .result mirrors AgentRun.result (None until the run completes).
+    .is_complete mirrors StreamedRunResult.is_complete (True once the stream
+    has been fully consumed)."""
 
-    def __init__(self, value: str, *, result: Any = "completed") -> None:
+    def __init__(
+        self, value: str, *, result: Any = "completed", is_complete: bool = True
+    ) -> None:
         self.value = value
         self.response = None
         self.result = result
+        self.is_complete = is_complete
 
     def usage(self) -> RunUsage:
         return RunUsage(input_tokens=10, output_tokens=20)
@@ -521,6 +526,43 @@ async def test_usage_emit_context_propagates_through_run_stream(
     [event] = fake_sender.events
     assert event.user_id == "u-1"
     assert event.session_id == "s-1"
+
+
+@pytest.mark.asyncio
+async def test_run_stream_does_not_emit_usage_when_caller_exits_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exiting the ``async with`` block before the caller has fully drained
+    the stream must not emit a zero-token usage event —
+    ``StreamedRunResult.is_complete`` is the signal that pydantic_ai has
+    actually finished reporting usage, and it stays False until then."""
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
+    )
+    fake_sender = _FakeSender()
+    monkeypatch.setattr(
+        tracing_usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
+    )
+
+    class _IncompleteStreamAgent:
+        model = "test-model"
+
+        @asynccontextmanager
+        async def run_stream(
+            self, *args: Any, **kwargs: Any
+        ) -> AsyncIterator[_FakeResult]:
+            yield _FakeResult("stream-result", is_complete=False)
+
+    proxy = HexgatePydanticAgent(
+        agent=_IncompleteStreamAgent(),  # type: ignore[arg-type]
+        api_key="k",
+        agent_name="my-agent",
+    )
+
+    async with proxy.run_stream("hello", user=_user()):
+        pass
+
+    assert fake_sender.events == []
 
 
 @pytest.mark.asyncio

@@ -10,22 +10,8 @@ from typing import Any
 
 from pydantic_ai import Agent
 
+from hexgate.manifest.pydantic_ai import extract_model
 from hexgate.tracing.usage import emit_llm_usage
-
-
-def _agent_model_name(agent: Agent) -> str:
-    """``Agent.model`` is ``None``, a raw ``str`` (only with
-    ``defer_model_check=True``), or a resolved ``Model`` instance (the
-    common case — the constructor eagerly calls ``infer_model``).
-    ``Model.model_name`` is a required abstract property on every concrete
-    ``Model``, so it's safe to read once the ``None``/``str`` cases are
-    ruled out."""
-    model = agent.model
-    if model is None:
-        return ""
-    if isinstance(model, str):
-        return model
-    return model.model_name
 
 
 def emit_run_usage(agent_name: str, agent: Agent, result: Any, *, api_key: str) -> None:
@@ -40,7 +26,9 @@ def emit_run_usage(agent_name: str, agent: Agent, result: Any, *, api_key: str) 
     """
     usage = result.usage()
     response = getattr(result, "response", None)
-    model_name = getattr(response, "model_name", None) or _agent_model_name(agent)
+    model_name = (
+        getattr(response, "model_name", None) or extract_model(agent.model) or ""
+    )
     emit_llm_usage(
         agent_name,
         model_name,

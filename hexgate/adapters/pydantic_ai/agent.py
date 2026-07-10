@@ -132,9 +132,15 @@ class HexgatePydanticAgent:
         async with self._abind(user, "run_stream"):
             async with self._agent.run_stream(*args, **kwargs) as result:
                 yield result
-                emit_run_usage(
-                    self._agent_name, self._agent, result, api_key=self._api_key
-                )
+                # Emit usage only if the run completed, not if the caller aborted mid-stream,
+                # because the usage counts from pydantic's side are 0 until the run completes.
+                # This can happen if a user cancels a LLM request mid-response: we will never
+                # know the total number of input / output tokens, however they are still charged by the LLM provider.
+                # This is a known limitation of pydantic_ai's usage reporting, and we will not be able to report usage in this case.
+                if result.is_complete:
+                    emit_run_usage(
+                        self._agent_name, self._agent, result, api_key=self._api_key
+                    )
 
     @asynccontextmanager
     async def iter(

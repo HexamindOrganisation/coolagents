@@ -363,6 +363,10 @@ class HexgateAgent:
         # Kill-switch gate; attached by load_hexgate_agent (platform path only —
         # no gate without a control plane). Threaded through with_tools rebuilds.
         self._ban_gate: BanGate | None = ban_gate
+        # api_key intentionally omitted — create_agent has no explicit api_key param
+        # (only hexgate_client, attached post-init by _bind_policy). If one is added,
+        # thread it through here too, or usage events will keep silently resolving
+        # from HEXGATE_API_KEY instead of the caller's explicit key.
         self._usage_handler = HexgateUsageCallbackHandler(agent_name=name or "default")
 
     def _with_usage_callback(self, config: dict[str, Any]) -> dict[str, Any]:
