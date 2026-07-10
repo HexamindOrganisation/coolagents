@@ -535,7 +535,7 @@ def list_ban_enforcements(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
 ) -> dict:
-    """Blocked-attempt rows for the Kill Switch page, newest first. Scoped by
+    """Blocked-attempt rows for the Bans page, newest first. Scoped by
     project + window only (no agent/role/tool/outcome — the table has none).
     Returns ``{rows, total, limit, offset}`` with ``total`` the unpaginated
     match count. Reads ``ban_enforcement``; ``policy_decision`` is untouched."""

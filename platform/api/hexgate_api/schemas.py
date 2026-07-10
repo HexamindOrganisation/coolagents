@@ -555,7 +555,7 @@ class AuditDecisionPage(BaseModel):
 
 
 class BanEnforcementRow(BaseModel):
-    """One blocked-attempt row for the Kill Switch page. No tool/role/outcome
+    """One blocked-attempt row for the Bans page. No tool/role/outcome
     or arguments/hint — a ban is refused before any tool call runs."""
 
     event_id: UUID
