@@ -79,11 +79,24 @@ Every wrapped tool carries the qualified name, the MCP-advertised description an
 
 ## Try it
 
+Two self-contained demos — both spawn a tiny FastMCP server, so there are no
+external services and no LLM key required.
+
+**A quick one-shot run:**
+
 ```bash
 make demo-mcp
 ```
 
-Runs [`examples/mcp_demo.py`](https://github.com/HexamindOrganisation/hexgate/blob/main/examples/mcp_demo.py) — one self-contained Python file that spawns a tiny FastMCP server, attaches it via `MCPToolset`, and walks through one call per policy outcome (allow / deny / approval-required). No external services, no LLM key required.
+Runs [`examples/mcp_demo.py`](https://github.com/HexamindOrganisation/hexgate/blob/main/examples/mcp_demo.py) — attaches the server via `MCPToolset` and prints one call per policy outcome (allow / deny / approval-required).
+
+**An interactive notebook:**
+
+```bash
+marimo edit deploy/mcp_gate_demo.py
+```
+
+Runs [`deploy/mcp_gate_demo.py`](https://github.com/HexamindOrganisation/hexgate/blob/main/deploy/mcp_gate_demo.py) — a [marimo](https://marimo.io) notebook that connects to the server, lists its tools under the `mcp-<server>-<tool>` namespace, and gates them with a default-deny policy plus per-argument constraints. Edit the tool and arguments and re-run to watch the gate decide live: allowed calls execute against the server, denied ones are stopped before it.
 
 ## What hexgate does NOT do (yet)
 
