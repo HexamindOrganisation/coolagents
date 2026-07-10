@@ -554,6 +554,30 @@ class AuditDecisionPage(BaseModel):
     offset: int
 
 
+class BanEnforcementRow(BaseModel):
+    """One blocked-attempt row for the Kill Switch page. No tool/role/outcome
+    or arguments/hint — a ban is refused before any tool call runs."""
+
+    event_id: UUID
+    occurred_at: datetime
+    received_at: datetime
+    agent_name: str
+    session_id: str = ""
+    user_id: str = ""
+    ban_type: str
+    ban_id: str
+    reason: str = ""
+
+
+class BanEnforcementPage(BaseModel):
+    """A page of ban-enforcement rows; ``total`` is the unpaginated match count."""
+
+    rows: list[BanEnforcementRow]
+    total: int
+    limit: int
+    offset: int
+
+
 class AnomalySeverity(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"

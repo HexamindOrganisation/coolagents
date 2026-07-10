@@ -15,6 +15,7 @@ from hexgate_api.features.audit.service import (
     anomalies,
     insert_ban_enforcement,
     insert_decision,
+    list_ban_enforcements,
     list_decisions,
     prepare_date_range,
     summarize,
@@ -24,6 +25,7 @@ from hexgate_api.features.audit.service import (
 from hexgate_api.core.db import get_session
 from hexgate_api.deps.clickhouse import _audit_unavailable, require_clickhouse
 from hexgate_api.deps.org import require_org_member
+from hexgate_api.deps.project import require_project_admin
 from hexgate_api.deps.tokens import require_project
 from hexgate_api.schemas import (
     AuditAnomaly,
@@ -34,6 +36,7 @@ from hexgate_api.schemas import (
     AuditWindow,
     BanEnforcementAccepted,
     BanEnforcementEvent,
+    BanEnforcementPage,
     DecisionAccepted,
     DecisionEvent,
 )
@@ -255,6 +258,41 @@ async def api_audit_decisions(
             user=user,
             outcome=outcome,
             session_id=session_id,
+            limit=max(1, min(limit, 200)),
+            offset=max(0, offset),
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except ClickHouseError:
+        raise _audit_unavailable()
+    return page
+
+
+# Ban enforcements read on their own admin-gated endpoint (like ban CRUD),
+# kept out of the tool-decision reads above so those views stay pure — a ban
+# is refused before any tool call and never lands in policy_decision.
+@router.get(
+    "/projects/{project_id}/audit/ban-enforcements",
+    response_model=BanEnforcementPage,
+    dependencies=[Depends(require_project_admin)],
+    tags=["audit"],
+)
+async def api_audit_ban_enforcements(
+    project_id: str,
+    window: AuditWindow = "24h",
+    limit: int = 25,
+    offset: int = 0,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+    clickhouse_client=Depends(require_clickhouse),
+) -> BanEnforcementPage:
+    start_date, end_date = prepare_date_range(start_date, end_date)
+    try:
+        page = await asyncio.to_thread(
+            list_ban_enforcements,
+            clickhouse_client,
+            project_id=project_id,
+            since_hours=WINDOW_HOURS[window],
             limit=max(1, min(limit, 200)),
             offset=max(0, offset),
             start_date=start_date,

@@ -517,6 +517,64 @@ def list_decisions(
     return {"rows": rows, "total": total, "limit": limit, "offset": offset}
 
 
+# ban_enforcement has no tool/role/outcome or arguments/hint blobs — a ban is
+# refused before any tool call, so the read shape is narrower than decisions.
+_BAN_ENFORCEMENT_LIST_COLUMNS = (
+    "event_id, occurred_at, received_at, agent_name, "
+    "session_id, user_id, ban_type, ban_id, reason"
+)
+
+
+def list_ban_enforcements(
+    client: Client,
+    *,
+    project_id: str,
+    since_hours: int,
+    limit: int = 25,
+    offset: int = 0,
+    start_date: datetime | None = None,
+    end_date: datetime | None = None,
+) -> dict:
+    """Blocked-attempt rows for the Kill Switch page, newest first. Scoped by
+    project + window only (no agent/role/tool/outcome — the table has none).
+    Returns ``{rows, total, limit, offset}`` with ``total`` the unpaginated
+    match count. Reads ``ban_enforcement``; ``policy_decision`` is untouched."""
+    where, params = _scope(
+        project_id,
+        since_hours,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    where_sql = " AND ".join(where)
+
+    # Same one-scan page+total trick as list_decisions (count() OVER () is
+    # computed before LIMIT, so it carries the full match count per row).
+    page_params = {**params, "lim": limit, "off": offset}
+    result = client.query(
+        f"SELECT {_BAN_ENFORCEMENT_LIST_COLUMNS}, count() OVER () AS total_matches "
+        f"FROM ban_enforcement WHERE {where_sql} "
+        "ORDER BY occurred_at DESC LIMIT {lim:UInt32} OFFSET {off:UInt32}",
+        parameters=page_params,
+    )
+    rows = []
+    total = 0
+    for raw in result.result_rows:
+        row = dict(zip(result.column_names, raw))
+        total = int(row.pop("total_matches"))
+        rows.append(row)
+
+    # Empty page past the end carries no window value — fall back to a count.
+    if not rows and offset:
+        total = int(
+            client.query(
+                f"SELECT count() FROM ban_enforcement WHERE {where_sql}",
+                parameters=params,
+            ).result_rows[0][0]
+        )
+
+    return {"rows": rows, "total": total, "limit": limit, "offset": offset}
+
+
 def _sliding_window_anomalies(
     rows: list[tuple],
 ) -> list[AuditAnomaly]:
