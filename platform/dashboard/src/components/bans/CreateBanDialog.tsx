@@ -122,8 +122,8 @@ export function CreateBanDialog({
         <DialogHeader>
           <DialogTitle>Create ban</DialogTitle>
           <DialogDescription>
-            Immediately stops the target from running — this overrides every
-            policy and takes effect within {PROPAGATION_HINT}.
+            Stops the target from running — this overrides every policy and
+            takes effect on {PROPAGATION_HINT}.
           </DialogDescription>
         </DialogHeader>
 

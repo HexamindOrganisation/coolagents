@@ -12,7 +12,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { useActive } from "./active";
 import { ApiError } from "./api";
+import { useOrgs } from "./orgs";
 
 export type BanType = "agent" | "user";
 
@@ -146,4 +148,16 @@ export function useRevokeBan() {
       qc.invalidateQueries({ queryKey: ["bans", input.projectId] });
     },
   });
+}
+
+/** Whether the caller may manage bans in the active org — the ban endpoints
+ * are `require_project_admin` server-side, so this gates the create/revoke
+ * affordances and the cross-page "Ban user"/"Ban agent" tie-ins. Reads the
+ * active org's role from the same source as the org switcher (no extra
+ * fetch). False while orgs are still loading. */
+export function useCanManageBans(): boolean {
+  const activeOrgId = useActive((s) => s.activeOrgId);
+  const orgsQuery = useOrgs();
+  const org = orgsQuery.data?.find((o) => o.id === activeOrgId) ?? null;
+  return org?.role === "owner" || org?.role === "admin";
 }

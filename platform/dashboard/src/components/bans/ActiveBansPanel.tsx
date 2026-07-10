@@ -143,7 +143,7 @@ export function ActiveBansPanel({
         title="Revoke ban?"
         description={
           confirmRevoke
-            ? `${confirmRevoke.target_agent_name ?? confirmRevoke.target_user_id} will be able to run again within ${PROPAGATION_HINT}.`
+            ? `${confirmRevoke.target_agent_name ?? confirmRevoke.target_user_id} will be able to run again on ${PROPAGATION_HINT}.`
             : ""
         }
         confirmLabel="Revoke"

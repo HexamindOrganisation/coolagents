@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Ban, BookOpen, Plus, ShieldAlert } from "lucide-react";
 
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
 import { Button } from "@/components/ui/button";
-import { useActive, useProjectScoped } from "@/lib/active";
-import { useOrgs } from "@/lib/orgs";
+import { useProjectScoped } from "@/lib/active";
+import { useCanManageBans } from "@/lib/bans";
 import { ActiveBansPanel } from "@/components/bans/ActiveBansPanel";
 import { BlockedAttemptsPanel } from "@/components/bans/BlockedAttemptsPanel";
 import {
@@ -40,15 +41,43 @@ function AdminRequiredNotice() {
  */
 export function BansPage() {
   const scope = useProjectScoped();
-  const activeOrgId = useActive((s) => s.activeOrgId);
-  const orgsQuery = useOrgs();
-  const org = orgsQuery.data?.find((o) => o.id === activeOrgId) ?? null;
-  const canManage = org?.role === "owner" || org?.role === "admin";
+  const canManage = useCanManageBans();
 
   const [createOpen, setCreateOpen] = useState(false);
-  // Prefill for the create dialog, driven by the cross-page tie-ins /
-  // `?ban_user=` / `?ban_agent=` (§9.8). Left undefined for a blank form.
-  const [initial] = useState<CreateBanInitial | undefined>(undefined);
+  const [initial, setInitial] = useState<CreateBanInitial | undefined>(
+    undefined,
+  );
+
+  // Cross-page tie-ins (§9.6) deep-link with `?ban_user=` / `?ban_agent=`:
+  // seed the create dialog and open it. Params are read once and then
+  // cleared on close so a refresh doesn't reopen the dialog.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const prefillUser = searchParams.get("ban_user");
+  const prefillAgent = searchParams.get("ban_agent");
+
+  useEffect(() => {
+    if (prefillUser) {
+      setInitial({ ban_type: "user", target: prefillUser });
+      setCreateOpen(true);
+    } else if (prefillAgent) {
+      setInitial({ ban_type: "agent", target: prefillAgent });
+      setCreateOpen(true);
+    }
+  }, [prefillUser, prefillAgent]);
+
+  function openCreate() {
+    setInitial(undefined);
+    setCreateOpen(true);
+  }
+
+  function handleCreateOpenChange(open: boolean) {
+    setCreateOpen(open);
+    if (!open && (prefillUser || prefillAgent)) {
+      searchParams.delete("ban_user");
+      searchParams.delete("ban_agent");
+      setSearchParams(searchParams, { replace: true });
+    }
+  }
 
   if (scope.status === "no-project") {
     return (
@@ -71,8 +100,9 @@ export function BansPage() {
             Bans
           </h1>
           <p className="mt-2 max-w-[620px] text-sm text-muted-foreground">
-            Immediately stop an agent or a user from running — overrides every
-            policy. Takes effect within {PROPAGATION_HINT}.
+            Stop an agent or a user from running — overrides every policy. Takes
+            effect on {PROPAGATION_HINT}; a run already in progress isn't
+            interrupted.
           </p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
@@ -84,7 +114,7 @@ export function BansPage() {
             <Button
               variant="destructive"
               className="gap-2"
-              onClick={() => setCreateOpen(true)}
+              onClick={openCreate}
             >
               <Plus className="size-4" />
               Create ban
@@ -104,12 +134,12 @@ export function BansPage() {
           <ActiveBansPanel
             projectId={projectId}
             canManage
-            onCreate={() => setCreateOpen(true)}
+            onCreate={openCreate}
           />
           <BlockedAttemptsPanel projectId={projectId} />
           <CreateBanDialog
             open={createOpen}
-            onOpenChange={setCreateOpen}
+            onOpenChange={handleCreateOpenChange}
             projectId={projectId}
             initial={initial}
           />
