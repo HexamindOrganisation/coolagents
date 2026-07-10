@@ -25,7 +25,7 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 from hexgate.security.binding import PolicyBinding, resolve_policy

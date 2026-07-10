@@ -15,7 +15,7 @@ import dataclasses
 from agents import Agent
 
 from hexgate.adapters.openai.tools import wrap_tools
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.enforcer import PolicyEnforcer
 
 

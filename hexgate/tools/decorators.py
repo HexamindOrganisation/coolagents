@@ -7,10 +7,9 @@ import inspect
 from typing import Any, Literal
 
 import httpx
-from langchain_core.tools import tool
 
 from hexgate.runtime import get_current_tool_use_context
-from hexgate.tracing.langfuse import observe
+from hexgate.tracing.langfuse_core import observe
 from hexgate.utils.retry import async_retry, is_retryable_error
 
 TOOL_METADATA_ATTR = "__tool_metadata__"
@@ -144,7 +143,15 @@ def agent_tool(
         wrapped.__doc__ = func.__doc__
         wrapped.__annotations__ = _exposed_annotations(func)
         wrapped.__signature__ = exposed_signature
-        registered_tool = tool(wrapped)
+        # Lazy LC import: the @agent_tool decorator produces a
+        # ``langchain_core.tools.BaseTool``, but we don't want the
+        # import at module load time — that would drag LC into every
+        # adapter-only user's install just by having decorators.py on
+        # the import graph. Paid once at decoration time (which only
+        # happens when the caller actually uses the decorator).
+        from langchain_core.tools import tool as _lc_tool
+
+        registered_tool = _lc_tool(wrapped)
         setattr(
             registered_tool,
             TOOL_METADATA_ATTR,

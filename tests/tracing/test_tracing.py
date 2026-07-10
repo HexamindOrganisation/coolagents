@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hexgate.tracing import langfuse as lf
+from hexgate.tracing import langfuse_core as lf_core
 
 
 class LegacyCallbackHandler:
@@ -109,7 +110,11 @@ def test_maybe_get_trace_url_uses_handler_trace_id(
 ) -> None:
     """Resolve the trace URL for the last streamed trace id."""
     client = DummyClient()
-    monkeypatch.setattr(lf, "get_client", lambda: client)
+    # ``maybe_get_trace_url`` moved from ``langfuse`` to ``langfuse_core`` in
+    # the SDK-slimming refactor; the ``langfuse`` module re-exports it for BC.
+    # Patch the callee's home so the closure over ``get_client`` picks up the
+    # dummy client.
+    monkeypatch.setattr(lf_core, "get_client", lambda: client)
 
     class Handler:
         """Provide a last trace id for lookup."""
@@ -126,6 +131,6 @@ def test_maybe_get_trace_url_returns_none_on_client_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Return none when the Langfuse client cannot resolve the trace URL."""
-    monkeypatch.setattr(lf, "get_client", lambda: DummyClient(should_fail=True))
+    monkeypatch.setattr(lf_core, "get_client", lambda: DummyClient(should_fail=True))
 
     assert lf.maybe_get_trace_url() is None

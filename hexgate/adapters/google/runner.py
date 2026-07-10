@@ -16,7 +16,7 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from hexgate.adapters.google.wrapper import wrap_google_agent
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 
