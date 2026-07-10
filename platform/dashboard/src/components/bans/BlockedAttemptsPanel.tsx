@@ -43,8 +43,7 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
         <div>
           <div className="text-sm font-medium">Blocked attempts</div>
           <div className="mt-0.5 text-[11px] text-muted-foreground">
-            Runs refused by a ban, before the model ran. Separate from the Audit
-            log.
+            Runs refused by a ban, before the model ran.
           </div>
         </div>
         <ToggleGroup
@@ -77,7 +76,6 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
                 <th className="px-5 py-2.5 text-left font-medium">Type</th>
                 <th className="px-5 py-2.5 text-left font-medium">Target</th>
                 <th className="px-5 py-2.5 text-left font-medium">Reason</th>
-                <th className="px-5 py-2.5 text-left font-medium">Ban id</th>
               </tr>
             </thead>
             <tbody>
@@ -100,13 +98,10 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
                     {r.ban_type === "agent" ? r.agent_name : r.user_id}
                   </td>
                   <td
-                    className="max-w-[300px] truncate px-5 py-3 text-muted-foreground"
+                    className="truncate px-5 py-3 text-muted-foreground"
                     title={r.reason || undefined}
                   >
                     {r.reason || "—"}
-                  </td>
-                  <td className="px-5 py-3 font-mono text-xs text-muted-foreground">
-                    {r.ban_id}
                   </td>
                 </tr>
               ))}
