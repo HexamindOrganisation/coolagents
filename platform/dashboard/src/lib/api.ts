@@ -272,6 +272,38 @@ export interface AuditDecisionFilters extends AuditScope {
   offset?: number;
 }
 
+/** One blocked-attempt row from GET …/audit/ban-enforcements. A ban is
+ * refused before any tool call, so there's no tool/role/outcome —
+ * mirrors platform/api/schemas.py:BanEnforcementRow. */
+export interface BanEnforcementRow {
+  event_id: string;
+  occurred_at: string;
+  received_at: string;
+  agent_name: string;
+  session_id: string;
+  user_id: string;
+  ban_type: "agent" | "user";
+  ban_id: string;
+  reason: string;
+}
+
+export interface BanEnforcementPage {
+  rows: BanEnforcementRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Filters for the blocked-attempts feed: window (or explicit range) +
+ * paging. No agent/role/tool scope — the ban table carries none. */
+export interface BanEnforcementFilters {
+  window?: AuditWindow;
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export type AnomalySeverity = "high" | "medium";
 
 /** One per-user anomaly burst from GET /audit/anomalies. */
@@ -356,5 +388,10 @@ export const api = {
   getAuditAnomalies: (scope: AnomalyScope, projectId: string) =>
     request<AuditAnomaly[]>(
       `/v1/projects/${projectId}/audit/anomalies${qs({ ...scope })}`,
+    ),
+
+  listBanEnforcements: (filters: BanEnforcementFilters, projectId: string) =>
+    request<BanEnforcementPage>(
+      `/v1/projects/${projectId}/audit/ban-enforcements${qs({ ...filters })}`,
     ),
 };
