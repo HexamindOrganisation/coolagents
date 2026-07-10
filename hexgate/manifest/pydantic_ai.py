@@ -40,13 +40,13 @@ def create_pydantic_ai_manifest(
         name=agent.name,
         description=description,
         framework=AgentFramework.PYDANTIC_AI,
-        model=_extract_model(agent.model),
+        model=extract_model(agent.model),
         system_prompt=_extract_system_prompt(agent),
         tools=tools,
     )
 
 
-def _extract_model(model: Model | str | None) -> str | None:
+def extract_model(model: Model | str | None) -> str | None:
     """Return the model id for a Pydantic AI agent.
 
     ``Model`` exposes ``.model_name`` as the canonical identifier; if it
