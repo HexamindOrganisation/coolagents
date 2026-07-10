@@ -55,7 +55,9 @@ def resolved(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Stub the resolve seam with an allow-all engine; capture the call."""
     captured: dict[str, Any] = {}
 
-    def fake_resolve(name: str, *, api_key: str) -> ResolvedPolicy:
+    def fake_resolve(
+        name: str, *, api_key: str, client: object = None
+    ) -> ResolvedPolicy:
         captured.update(name=name, key=api_key)
         return ResolvedPolicy(_engine(["a", "b"]), None)
 
@@ -149,7 +151,9 @@ def test_wrap_enforces_the_resolved_policy_not_allow_all(
     monkeypatch.setattr(
         wrapper_mod,
         "resolve_policy",
-        lambda name, *, api_key: ResolvedPolicy(_engine(["a"], mode="deny"), None),
+        lambda name, *, api_key, client=None: ResolvedPolicy(
+            _engine(["a"], mode="deny"), None
+        ),
     )
     tools = [_make_tool("a")]
 
@@ -187,6 +191,31 @@ def test_wrap_attaches_binding_with_audited_enforcer(
     # refresh swap reaches the wrapped tools.
     assert isinstance(wrapped._binding.enforcer, PolicyEnforcer)
     assert wrapped._binding.enforcer.agent_name == "fake-graph"
+
+
+def test_wrap_shares_one_client_across_policy_and_ban_resolvers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One HexgateClient is threaded into both resolvers (no duplicate verify)."""
+    seen: dict[str, Any] = {}
+
+    def fake_resolve(name, *, api_key, client=None):
+        seen["policy"] = client
+        return ResolvedPolicy(_engine(["a"]), None)
+
+    def fake_ban(name, *, api_key=None, client=None):
+        seen["ban"] = client
+        return None
+
+    monkeypatch.setattr(wrapper_mod, "resolve_policy", fake_resolve)
+    monkeypatch.setattr(wrapper_mod, "resolve_ban_gate", fake_ban)
+
+    wrap_langchain_agent(
+        agent=_FakeCompiledGraph(), tools=[_make_tool("a")], api_key="k"
+    )
+
+    assert seen["policy"] is not None
+    assert seen["policy"] is seen["ban"]
 
 
 # ---------------------------------------------------------------------------

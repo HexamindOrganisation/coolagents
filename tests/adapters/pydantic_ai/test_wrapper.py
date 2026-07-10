@@ -44,7 +44,9 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     tests cover; resolution itself is covered by the binding tests."""
     captured: dict[str, Any] = {}
 
-    def fake_resolve(name: str, *, api_key: str) -> ResolvedPolicy:
+    def fake_resolve(
+        name: str, *, api_key: str, client: object = None
+    ) -> ResolvedPolicy:
         captured.update(name=name, key=api_key)
         return ResolvedPolicy(_allow_all(["echo", "shout"]), None)
 
@@ -242,7 +244,7 @@ async def test_wrap_enforces_the_resolved_policy_not_allow_all(
     monkeypatch.setattr(
         wrapper_mod,
         "resolve_policy",
-        lambda name, *, api_key: ResolvedPolicy(
+        lambda name, *, api_key, client=None: ResolvedPolicy(
             PolicySet(
                 {
                     DEFAULT_ROLE_NAME: AgentPolicy.model_validate(

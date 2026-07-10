@@ -17,8 +17,10 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
+from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
+from hexgate.security.bans import resolve_ban_gate
 
 
 class HexgateRunner:
@@ -41,9 +43,13 @@ class HexgateRunner:
             )
         # Policy resolves at construction (the loud-failure point); the
         # Runner is built once — refresh swaps the enforcer's policy
-        # without touching it.
+        # without touching it. One client is shared with the ban resolver.
+        client = HexgateClient(HexgateConfig.from_env(api_key=self.api_key))
         self._wrapped_agent, self._binding = wrap_google_agent(
-            agent, api_key=self.api_key, approval_handler=approval_handler
+            agent,
+            api_key=self.api_key,
+            approval_handler=approval_handler,
+            client=client,
         )
         self._runner = Runner(
             agent=self._wrapped_agent,
@@ -52,6 +58,9 @@ class HexgateRunner:
             **runner_kwargs,
         )
         self._agent_name = getattr(agent, "name", "default")
+        self._ban_gate = resolve_ban_gate(
+            self._agent_name, api_key=self.api_key, client=client
+        )
 
     def _setup_observability(self):
         """Install Langfuse + GoogleADKInstrumentor (idempotent)."""
@@ -90,6 +99,8 @@ class HexgateRunner:
         """
         self._setup_observability()
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
+        if self._ban_gate is not None:
+            self._ban_gate.check(user)
         with user.sync_scope(), self._propagate(user):
             agen = self._runner.run_async(
                 user_id=user.user_id,
@@ -118,6 +129,8 @@ class HexgateRunner:
         """Run the Google ADK agent asynchronously, yielding events."""
         self._setup_observability()
         await self._binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        if self._ban_gate is not None:
+            await self._ban_gate.check_async(user)
         async with user:
             with self._propagate(user):
                 async for event in self._runner.run_async(

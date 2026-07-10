@@ -26,8 +26,10 @@ from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
+from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
+from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
@@ -46,8 +48,12 @@ class HexgateRunner:
             raise ValueError(
                 "HEXGATE_API_KEY is not set. Pass api_key= explicitly or set the HEXGATE_API_KEY environment variable."
             )
+        # One client shared by the policy and ban resolvers below.
+        self._client = HexgateClient(HexgateConfig.from_env(api_key=self.api_key))
         # Cached per agent name — keeps the ETag memory alive across runs.
         self._bindings: dict[str, PolicyBinding] = {}
+        # Ban gates cached per agent name too (None cached to avoid re-resolving).
+        self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
@@ -64,13 +70,23 @@ class HexgateRunner:
         name = getattr(agent, "name", None) or "default"
         binding = self._bindings.get(name)
         if binding is None:
-            resolved = resolve_policy(name, api_key=self.api_key)
+            resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
             )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
         return binding
+
+    def _ban_gate_for(self, agent: Agent) -> BanGate | None:
+        """Get-or-resolve the cached ban gate for ``agent``'s name (``None`` in
+        local mode / no key). ``None`` is cached too, so we resolve once."""
+        name = getattr(agent, "name", None) or "default"
+        if name not in self._ban_gates:
+            self._ban_gates[name] = resolve_ban_gate(
+                name, api_key=self.api_key, client=self._client
+            )
+        return self._ban_gates[name]
 
     def _setup_observability(self):
         """Install Langfuse + OpenAIAgentsInstrumentor (idempotent)."""
@@ -105,6 +121,9 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            await ban_gate.check_async(user)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
@@ -128,6 +147,9 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            ban_gate.check(user)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
@@ -158,6 +180,10 @@ class HexgateRunner:
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # must precede the wrap + setup
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            # Before run_streamed spawns its task, so a banned run yields nothing.
+            ban_gate.check(user)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,

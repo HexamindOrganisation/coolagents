@@ -451,3 +451,99 @@ def test_client_biscuit_facts_returns_independent_copy(
     first["user"].append("bob")
     second = client.biscuit_facts()
     assert second["user"] == ["alice"]
+
+
+# ---------------------------------------------------------------------------
+# HexgateClient.get_bans — project-scoped ban feed (kill switch)
+# ---------------------------------------------------------------------------
+
+
+def test_get_bans_builds_token_implicit_url_and_returns_payload(
+    keys: tuple[bytes, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_bans() hits /v1/bans (project from the bearer), authorized, and
+    returns the (payload, etag) tuple verbatim for a 200."""
+    priv, pub = keys
+    config = HexgateConfig(
+        base_url="http://test", api_key=_envelope(priv), public_key=pub
+    )
+    client = HexgateClient(config)
+
+    calls: list[tuple[str, bool, str | None]] = []
+    feed = [{"ban_id": "b1", "ban_type": "agent", "target_agent_name": "bot"}]
+
+    def fake_raw_get(
+        self: HexgateClient,
+        url: str,
+        *,
+        authorize: bool,
+        if_none_match: str | None = None,
+    ) -> tuple[Any, str | None]:
+        calls.append((url, authorize, if_none_match))
+        return feed, '"etag-1"'
+
+    monkeypatch.setattr(HexgateClient, "_raw_get", fake_raw_get)
+
+    payload, etag = client.get_bans()
+
+    assert payload == feed
+    assert etag == '"etag-1"'
+    assert len(calls) == 1
+    url, authorize, inm = calls[0]
+    assert url.endswith("/v1/bans")
+    assert authorize is True
+    assert inm is None
+
+
+def test_get_bans_sends_if_none_match_and_handles_304(
+    keys: tuple[bytes, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conditional get_bans forwards If-None-Match and surfaces the 304 as
+    (None, etag)."""
+    priv, pub = keys
+    config = HexgateConfig(
+        base_url="http://test", api_key=_envelope(priv), public_key=pub
+    )
+    client = HexgateClient(config)
+
+    seen: list[str | None] = []
+
+    def fake_raw_get(
+        self: HexgateClient,
+        url: str,
+        *,
+        authorize: bool,
+        if_none_match: str | None = None,
+    ) -> tuple[Any, str | None]:
+        seen.append(if_none_match)
+        return None, '"etag-1"'  # 304 shape
+
+    monkeypatch.setattr(HexgateClient, "_raw_get", fake_raw_get)
+
+    payload, etag = client.get_bans(if_none_match='"etag-1"')
+
+    assert payload is None
+    assert etag == '"etag-1"'
+    assert seen == ['"etag-1"']
+
+
+def test_get_bans_verifies_key_before_http(
+    keys: tuple[bytes, bytes],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tampered envelope fails the sig check; no ban feed request is sent."""
+    priv, pub = keys
+    tampered = _envelope(priv)[:-4] + "AAAA"
+    config = HexgateConfig(base_url="http://test", api_key=tampered, public_key=pub)
+    client = HexgateClient(config)
+
+    monkeypatch.setattr(
+        HexgateClient,
+        "_raw_get",
+        lambda *a, **kw: pytest.fail("HTTP fired despite signature failure"),
+    )
+
+    with pytest.raises(HexgateError, match="signature does not chain"):
+        client.get_bans()
