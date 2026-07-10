@@ -16,6 +16,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { BanEnforcementRow } from "@/lib/api";
 import { useActive } from "@/lib/active";
 import { BansPage } from "@/routes/Bans";
 import { renderWithProviders } from "@/test/render";
@@ -41,16 +42,30 @@ const BAN = {
   active: true,
 };
 
+const ENFORCEMENT: BanEnforcementRow = {
+  event_id: "evt-1",
+  occurred_at: "2026-06-01T10:00:00Z",
+  received_at: "2026-06-01T10:00:01Z",
+  agent_name: "healthcare_agent",
+  session_id: "sess-1",
+  user_id: "clinician_nurse",
+  ban_type: "agent",
+  ban_id: "ban_evt",
+  reason: "incident 42",
+};
+
 interface StubOptions {
   role?: string;
   bans?: unknown[];
   agents?: { name: string }[];
+  enforcements?: BanEnforcementRow[];
 }
 
 function stubFetch({
   role = "owner",
   bans = [],
   agents = [],
+  enforcements = [],
 }: StubOptions = {}): Call[] {
   const calls: Call[] = [];
   const json = (body: unknown, status = 200) =>
@@ -99,7 +114,12 @@ function stubFetch({
           method === "DELETE":
           return new Response(null, { status: 204 });
         case url.pathname === `/v1/projects/${PROJECT}/audit/ban-enforcements`:
-          return json({ rows: [], total: 0, limit: 25, offset: 0 });
+          return json({
+            rows: enforcements,
+            total: enforcements.length,
+            limit: 25,
+            offset: 0,
+          });
         case url.pathname === `/v1/projects/${PROJECT}/agents`:
           return json(agents);
         default:
@@ -203,5 +223,36 @@ describe("BansPage", () => {
         ),
       ).toBe(true),
     );
+  });
+
+  it("opens a detail drawer with full info when a blocked attempt is clicked", async () => {
+    stubFetch({ role: "admin", enforcements: [ENFORCEMENT] });
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    // Click the row (its reason cell is unique before the drawer opens).
+    await user.click(await screen.findByText("incident 42"));
+
+    // Drawer-only content: the refusal banner, the Enforcement section, and
+    // the session id (not shown in the table row).
+    expect(
+      screen.getByText(/Refused before the model ran/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Enforcement")).toBeInTheDocument();
+    expect(screen.getByText("sess-1")).toBeInTheDocument();
+  });
+
+  it("closes the blocked-attempt drawer", async () => {
+    stubFetch({ role: "admin", enforcements: [ENFORCEMENT] });
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    await user.click(await screen.findByText("incident 42"));
+    expect(
+      screen.getByText(/Refused before the model ran/),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByTitle("Close (Esc)"));
+    expect(screen.queryByText(/Refused before the model ran/)).toBeNull();
   });
 });

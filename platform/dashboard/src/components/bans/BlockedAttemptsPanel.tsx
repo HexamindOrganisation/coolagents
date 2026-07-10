@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api, type AuditWindow, type BanEnforcementRow } from "@/lib/api";
 import { BanTypeBadge } from "./BanTypeBadge";
+import { BlockedAttemptDrawer } from "./BlockedAttemptDrawer";
 import { PAGE_SIZE, WINDOWS } from "./constants";
 import { formatAbsolute, formatRelative } from "./format";
 
@@ -21,6 +22,7 @@ import { formatAbsolute, formatRelative } from "./format";
 export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
   const [timeWindow, setTimeWindow] = useState<AuditWindow>("24h");
   const [limit, setLimit] = useState(PAGE_SIZE);
+  const [selected, setSelected] = useState<BanEnforcementRow | null>(null);
 
   const feedQuery = useQuery({
     queryKey: ["ban-enforcements", projectId, timeWindow, limit],
@@ -82,7 +84,8 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
               {rows.map((r) => (
                 <tr
                   key={r.event_id}
-                  className="border-b border-border/50 last:border-0 hover:bg-accent/40"
+                  onClick={() => setSelected(r)}
+                  className="cursor-pointer border-b border-border/50 last:border-0 hover:bg-accent/40"
                 >
                   <td
                     className="px-5 py-3 text-[13px] text-muted-foreground"
@@ -125,6 +128,11 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
           )}
         </>
       )}
+
+      <BlockedAttemptDrawer
+        event={selected}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }
