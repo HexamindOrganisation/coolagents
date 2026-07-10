@@ -1,6 +1,24 @@
 """Security helpers for policies and enforcement."""
 
-from hexgate.security.errors import ApprovalRequiredError, PolicyDeniedError
+from hexgate.security.errors import (
+    AgentBannedError,
+    ApprovalRequiredError,
+    PolicyDeniedError,
+)
+from hexgate.security.bans import (
+    EMPTY_BAN_SET,
+    BanContentError,
+    BanEnforcementEvent,
+    BanEntry,
+    BanGate,
+    BanSet,
+    BanSource,
+    PlatformBanSource,
+    ban_set_from_payload,
+    configure_ban_sink,
+    get_ban_source,
+    resolve_ban_gate,
+)
 from hexgate.security.models import (
     AgentPolicy,
     BaseToolPolicy,
@@ -92,7 +110,20 @@ from hexgate.security.testing import (
 )
 
 __all__ = [
+    "AgentBannedError",
     "AgentPolicy",
+    "EMPTY_BAN_SET",
+    "BanContentError",
+    "BanEnforcementEvent",
+    "BanEntry",
+    "BanGate",
+    "BanSet",
+    "BanSource",
+    "PlatformBanSource",
+    "ban_set_from_payload",
+    "configure_ban_sink",
+    "get_ban_source",
+    "resolve_ban_gate",
     "C",
     "PolicyBuilder",
     "RolePolicyBuilder",

@@ -483,6 +483,13 @@ def load_hexgate_agent(
     # Attach the client so the runtime can do lazy attenuation inside an
     # active User scope without the caller having to thread it through.
     enforced.hexgate_client = client
+    # Kill-switch gate — reuses the same client (one biscuit verify / feed).
+    # Self-gates to None under HEXGATE_LOCAL_MODE / HEXGATE_LOCAL_POLICY.
+    from hexgate.security.bans import resolve_ban_gate
+
+    enforced._ban_gate = resolve_ban_gate(
+        resolved_name, api_key=config.api_key, client=client
+    )
     return enforced, handler
 
 

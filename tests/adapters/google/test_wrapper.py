@@ -29,7 +29,7 @@ from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
 def _resolve_stub(engine: PolicySet):
     """Build a resolve_policy replacement returning ``engine``."""
-    return lambda name, *, api_key: ResolvedPolicy(engine, None)
+    return lambda name, *, api_key, client=None: ResolvedPolicy(engine, None)
 
 
 def _make_callable(name: str = "echo") -> Any:
@@ -72,7 +72,9 @@ def resolved(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Stub the resolve seam with an allow-all engine; capture the call."""
     captured: dict[str, Any] = {}
 
-    def fake_resolve(name: str, *, api_key: str) -> ResolvedPolicy:
+    def fake_resolve(
+        name: str, *, api_key: str, client: object = None
+    ) -> ResolvedPolicy:
         captured.update(name=name, key=api_key)
         return ResolvedPolicy(_allow_all(["echo", "shout"]), None)
 

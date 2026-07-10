@@ -175,6 +175,7 @@ def _patched_loader(monkeypatch):
 
     class _FakeConfig:
         project_id = "support-bot"
+        api_key = "fty_test_support-bot_secret"
 
         @classmethod
         def from_env(cls, **_kw):
@@ -199,6 +200,9 @@ def _patched_loader(monkeypatch):
     monkeypatch.setattr(loader, "resolve_tools", lambda *a, **k: [])
     monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
     monkeypatch.delenv("HEXGATE_BUNDLE_REQUIRE_SIGNATURE", raising=False)
+    # These tests exercise policy resolution, not the ban feed — local mode
+    # makes resolve_ban_gate a no-op so no ban source/sender is built.
+    monkeypatch.setenv("HEXGATE_LOCAL_MODE", "1")
 
     def install(payload: dict, public_raw: bytes):
         client = _FakeClient(payload, public_raw)
@@ -228,6 +232,28 @@ def test_load_hexgate_agent_falls_back_to_pydantic_without_bundle(
     loader.load_hexgate_agent("default")
     assert isinstance(captured["policy"], PolicySet)
     assert not isinstance(captured["policy"], PolicyBundle)
+
+
+def test_load_hexgate_agent_attaches_ban_gate(_patched_loader, monkeypatch) -> None:
+    """The loader wires a ban gate for the agent, reusing the fetch client."""
+    import hexgate.security.bans as bans_mod
+
+    seen: dict[str, Any] = {}
+
+    def fake_resolve_ban_gate(name, *, api_key=None, client=None):
+        seen.update(name=name, api_key=api_key, client=client)
+        return "ban-gate-sentinel"
+
+    monkeypatch.setattr(bans_mod, "resolve_ban_gate", fake_resolve_ban_gate)
+    payload = {"agent_yaml": _AGENT_YAML, "policy_yaml": _POLICY_YAML, "system_md": ""}
+    _patched_loader(payload, generate_keypair()[1])
+
+    agent, _ = loader.load_hexgate_agent("default")
+
+    assert agent._ban_gate == "ban-gate-sentinel"
+    assert seen["name"] == "default"
+    assert seen["api_key"] == "fty_test_support-bot_secret"
+    assert seen["client"] is agent.hexgate_client
 
 
 @needs_opa
