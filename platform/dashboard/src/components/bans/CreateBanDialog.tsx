@@ -44,6 +44,9 @@ function createErrorMessage(err: unknown): string {
     if (err.status === 409) {
       return "An active ban already exists for this target.";
     }
+    if (err.status === 403) {
+      return "You don't have permission to manage bans in this project.";
+    }
     if (err.status === 400 || err.status === 422) {
       return "Invalid ban — check the target matches the ban type.";
     }

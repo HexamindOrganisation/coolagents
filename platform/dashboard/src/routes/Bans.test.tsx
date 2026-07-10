@@ -213,6 +213,16 @@ describe("BansPage", () => {
     expect(within(dialog).getByText("Agent to ban")).toBeInTheDocument();
   });
 
+  it("does not open a phantom dialog when a non-admin follows a deep link", async () => {
+    stubFetch({ role: "member" });
+    renderWithProviders(<BansPage />, { initialRoute: "/bans?ban_user=u-9" });
+
+    // Non-admin lands on the admin-required notice, and the prefill effect
+    // must not leave a dialog dangling for a branch that never renders.
+    expect(await screen.findByText("Admins only")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("revokes a ban after confirmation", async () => {
     const calls = stubFetch({ role: "admin", bans: [BAN] });
     const user = userEvent.setup();

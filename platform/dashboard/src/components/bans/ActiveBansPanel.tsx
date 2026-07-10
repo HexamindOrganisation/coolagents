@@ -4,6 +4,7 @@ import { toast } from "sonner";
 
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api";
 import { useBans, useRevokeBan, type BanRead } from "@/lib/bans";
 import { BanTypeBadge } from "./BanTypeBadge";
 import { PROPAGATION_HINT } from "./constants";
@@ -40,8 +41,12 @@ export function ActiveBansPanel({
       await revokeBan.mutateAsync({ projectId, banId: confirmRevoke.id });
       toast.success(`Ban revoked for ${target}`);
       setConfirmRevoke(null);
-    } catch {
-      toast.error(`Could not revoke the ban for ${target}.`);
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError && err.status === 403
+          ? "You don't have permission to revoke bans in this project."
+          : `Could not revoke the ban for ${target}.`,
+      );
     }
   }
 

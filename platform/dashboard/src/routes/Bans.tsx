@@ -49,21 +49,37 @@ export function BansPage() {
   );
 
   // Cross-page tie-ins (§9.6) deep-link with `?ban_user=` / `?ban_agent=`:
-  // seed the create dialog and open it. Params are read once and then
-  // cleared on close so a refresh doesn't reopen the dialog.
+  // seed the create dialog and open it. Params are cleared on close so a
+  // refresh doesn't reopen the dialog.
   const [searchParams, setSearchParams] = useSearchParams();
   const prefillUser = searchParams.get("ban_user");
   const prefillAgent = searchParams.get("ban_agent");
 
+  function clearPrefillParams() {
+    searchParams.delete("ban_user");
+    searchParams.delete("ban_agent");
+    setSearchParams(searchParams, { replace: true });
+  }
+
   useEffect(() => {
-    if (prefillUser) {
-      setInitial({ ban_type: "user", target: prefillUser });
-      setCreateOpen(true);
-    } else if (prefillAgent) {
-      setInitial({ ban_type: "agent", target: prefillAgent });
-      setCreateOpen(true);
+    // Wait until the scope (and thus the org role) is resolved so we don't
+    // act on a still-loading `canManage`, then: admins get the prefilled
+    // dialog; a non-admin who followed the link sees AdminRequiredNotice, so
+    // just strip the stale params rather than dangling `createOpen` on a
+    // dialog that never mounts.
+    if (scope.status !== "ready" || (!prefillUser && !prefillAgent)) return;
+    if (!canManage) {
+      clearPrefillParams();
+      return;
     }
-  }, [prefillUser, prefillAgent]);
+    setInitial(
+      prefillUser
+        ? { ban_type: "user", target: prefillUser }
+        : { ban_type: "agent", target: prefillAgent as string },
+    );
+    setCreateOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope.status, canManage, prefillUser, prefillAgent]);
 
   function openCreate() {
     setInitial(undefined);
@@ -73,9 +89,7 @@ export function BansPage() {
   function handleCreateOpenChange(open: boolean) {
     setCreateOpen(open);
     if (!open && (prefillUser || prefillAgent)) {
-      searchParams.delete("ban_user");
-      searchParams.delete("ban_agent");
-      setSearchParams(searchParams, { replace: true });
+      clearPrefillParams();
     }
   }
 
