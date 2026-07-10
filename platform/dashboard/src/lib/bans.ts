@@ -1,5 +1,5 @@
 /**
- * Kill-switch ban hooks. React Query reads + mutations for the
+ * Ban hooks. React Query reads + mutations for the
  * /v1/projects/{project_id}/bans CRUD surface (cookie auth,
  * admin/owner only server-side — non-admins get 403).
  *
