@@ -1,0 +1,35 @@
+name: daytona-snapshot
+
+# Rebuild the Daytona demo snapshot so it tracks the code — on a real release,
+# and on demand.
+#
+# The snapshot image `git clone`s the repo INSIDE Daytona's builder (see
+# deploy/daytona_snapshot.py), so the build runs on Daytona's side; this runner
+# only needs the `daytona` SDK to kick it off. `--force` replaces the existing
+# snapshot.
+#
+# Required repo secret (Settings → Secrets and variables → Actions):
+#   DAYTONA_API_KEY   — from the Daytona dashboard.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daytona-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Rebuild the demo snapshot on Daytona
+        env:
+          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+        run: uv run --python 3.13 --with daytona python deploy/daytona_snapshot.py --force

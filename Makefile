@@ -323,7 +323,7 @@ demo-platform: ## Print 3-terminal instructions for the full platform demo
 # whole thing into one process: the API serves the built dashboard same-origin,
 # auto-seeds + auto-logs-in, and a marimo notebook owns `hexgate serve`. The
 # visitor brings their own OpenAI key (BYOK). This is also what runs per visitor
-# in GitHub Codespaces (see .devcontainer/). See deploy/README.md.
+# in the public demo (a Daytona sandbox). See deploy/README.md.
 
 .PHONY: demo-notebook-build
 demo-notebook-build: platform-api-install dashboard-install ## One-time setup for `make demo-notebook` (deps + marimo + dashboard build)

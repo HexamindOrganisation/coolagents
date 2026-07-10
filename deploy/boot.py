@@ -123,7 +123,7 @@ def marimo_argv() -> list[str]:
 
 def run(dash_url: str | None = None) -> None:
     """Start the API, then marimo as a child, and block — used by
-    `make demo-notebook` and the Codespaces launcher (.devcontainer/start.sh)."""
+    `make demo-notebook` and by the demo sandbox (see deploy/spawner)."""
     env = start_services(dash_url)
     _spawn(marimo_argv(), cwd=ASIANF, env=env)
     _block_until_exit()
@@ -175,6 +175,6 @@ def _block_until_exit() -> None:
 
 
 if __name__ == "__main__":
-    # HEXGATE_DASH_URL lets the launcher (e.g. Codespaces start.sh) pass the
-    # public dashboard URL so the notebook's "Open playground" link is reachable.
+    # HEXGATE_DASH_URL lets the launcher (the Modal spawner) pass the public
+    # dashboard URL so the notebook's "Open playground" link is reachable.
     run(dash_url=os.environ.get("HEXGATE_DASH_URL"))
