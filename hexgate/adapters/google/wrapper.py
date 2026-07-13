@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from google.adk.agents import BaseAgent
 
 from hexgate.adapters.google.tools import wrap_tools
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 

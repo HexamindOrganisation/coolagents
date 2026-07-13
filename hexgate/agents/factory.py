@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeAlias
 
@@ -33,6 +33,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from pydantic import BaseModel
 
+# BC re-export — canonical home is hexgate.approvals (framework-agnostic).
+from hexgate.approvals import ApprovalHandler  # noqa: F401 — re-export
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import (
     LocalWorkspace,
@@ -41,7 +43,6 @@ from hexgate.runtime import (
     reset_current_tool_use_context,
     set_current_tool_use_context,
 )
-from hexgate.security.decision import Decision
 from hexgate.streaming import StreamEvent, new_root_run_id, normalize_langchain_events
 from hexgate.tracing.langfuse import (
     CallbackHandler,
@@ -54,7 +55,6 @@ LangChainAgentGraph: TypeAlias = CompiledStateGraph
 ToolSpec: TypeAlias = BaseTool | Callable[..., Any] | dict[str, Any]
 AgentState: TypeAlias = dict[str, Any]
 AgentInput: TypeAlias = str | Sequence[object] | Mapping[str, object] | BaseModel
-ApprovalHandler: TypeAlias = bool | Callable[[Decision], bool | Awaitable[bool]]
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant built on a tool-using agent runtime.\n\n"
     "Your job is to answer clearly and directly, using the tools available to "

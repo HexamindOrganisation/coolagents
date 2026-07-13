@@ -30,7 +30,7 @@ from hexgate.cli.state import ChatState, LiveRunState, ToolActivity
 from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.streaming import ToolCallState
 from hexgate.tools.decorators import format_tool_call_label
-from hexgate.tracing.langfuse import maybe_get_trace_url
+from hexgate.tracing.langfuse_core import maybe_get_trace_url
 
 MAX_LIVE_RESPONSE_LINES = 12
 MAX_LIVE_RESPONSE_CHARS = 2_400

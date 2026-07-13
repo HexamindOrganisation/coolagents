@@ -20,7 +20,7 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
 
 from hexgate.agents.approvals import resolve_approval_async
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 

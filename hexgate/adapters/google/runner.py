@@ -18,7 +18,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User

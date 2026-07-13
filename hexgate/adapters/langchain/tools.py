@@ -26,7 +26,7 @@ from hexgate.agents.approvals import (
 from hexgate.agents.approvals import (
     resolve_approval_sync as _resolve_approval_sync,
 )
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.tools.decorators import TOOL_METADATA_ATTR
