@@ -1,75 +1,37 @@
 ---
 title: "Live demo"
-description: "A disposable, browser-based hexgate sandbox — edit an agent, chat with it, watch policy decisions stream live."
+description: "Try hexgate in your browser — define an agent, chat with it, watch policy decisions stream live."
 ---
 
-The live demo runs the **whole platform in one disposable container per
-visitor**: a notebook to define an agent, plus the dashboard Playground to chat
-with it and watch policy decisions stream. Everything runs on a fresh database
-that vanishes when the session ends — no shared state, no cleanup.
+Launch a disposable hexgate sandbox in your browser: define an agent in a
+notebook, then chat with it in the dashboard Playground and watch policy
+decisions stream. It's throwaway — everything vanishes when you're done.
+
+<Card title="▶ Launch the live demo" icon="play" href="https://quang-le--hexgate-spawner-web.modal.run/">
+  Opens your own isolated sandbox — no install, no login. Bring your OpenAI key.
+</Card>
 
 <Note>
-**Bring your own key (BYOK).** The visitor pastes their own OpenAI key into the
-notebook. It's their key, in their own throwaway container (one visitor per
-container, destroyed after idle) — so no provider key is ever exposed, and
-there's no LLM gateway to operate.
+**Bring your own key (BYOK).** You paste your own OpenAI key into the notebook —
+it stays in your throwaway sandbox and is never logged.
 </Note>
 
-## What a visitor does
+## What you do
 
 <Steps>
-  <Step title="Open the notebook">
-    The landing page is a [marimo](https://marimo.io) notebook. Paste your
-    OpenAI API key (stays in the container, never logged).
+  <Step title="Define your tools + agent">
+    In the notebook, write your tools (`@tool`) and the agent
+    (`create_agent(...)`) as real Python.
   </Step>
-  <Step title="Edit the agent, Apply & reload">
-    Define your tools (`@tool`) and the agent (`create_agent(...)`) as real
-    Python in the cells, then click **Apply & reload**. The notebook runs the
-    serve loop in-kernel bound to that live `agent` object; the change flows
-    into the Playground automatically.
+  <Step title="Add your key & start">
+    Paste your OpenAI key and click **Start** — the agent goes live.
   </Step>
-  <Step title="Open the Playground and chat">
-    Click **Open the live playground** — it opens the dashboard in a new tab,
-    already signed in. Send a message and watch reasoning, tool calls, and
-    **policy decisions** (allow / deny / approval) stream live. Edit the policy
-    in the **Policies** tab and the next message picks it up — no restart.
+  <Step title="Open the Playground & chat">
+    Click **Open the playground** — send a message and watch reasoning, tool
+    calls, and **policy decisions** (allow / deny / approval) stream live. Edit
+    the policy in the **Policies** tab and the next message picks it up.
   </Step>
 </Steps>
-
-## How it fits together
-
-The demo rides hexgate's normal relay design — the serve loop dials *out* to
-the platform, so a hosted container just replaces "the developer's laptop":
-
-```
-ONE CONTAINER (per visitor — destroyed after idle)
-  fresh SQLite
-   ├─ Platform API  — serves the dashboard same-origin + auto-login
-   └─ marimo notebook — the landing UI; runs the serve loop in-kernel
-        ├─ paste your OpenAI key (BYOK)
-        ├─ define tools + agent in cells + Apply → (re)starts in-kernel serve
-        │     serve loop (bound to your live agent) → dials the platform's /v1/serve
-        │     └─ LLM calls use your key → OpenAI
-        └─ Open playground → signed-in dashboard /playground
-```
-
-Nothing here is demo-only plumbing inside the platform: it's the same
-[control plane](/platform/control-plane), [dashboard](/platform/dashboard), and
-[`hexgate serve`](/cli/serve) logic you'd run locally — just bundled into one
-container with auto-seeding and auto-login.
-
-## Run it in your browser (GitHub Codespaces)
-
-The repo ships a devcontainer, so anyone can launch the full demo — notebook +
-dashboard, their own isolated container — in one click:
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/HexamindOrganisation/hexgate)
-
-It builds once (~a couple of minutes; instant with [Prebuilds](https://docs.github.com/codespaces/prebuilding-your-codespaces)),
-then the notebook opens on port **2718** automatically. Paste your OpenAI key,
-**Apply & start**, and open the dashboard playground. Each visitor gets their own
-container on their own free Codespaces quota — no cost to us, full per-visitor
-isolation, and marimo's live editing works (ports are forwarded directly).
 
 ## Run it locally
 
@@ -78,10 +40,5 @@ make demo-notebook-build   # one-time: deps + marimo + dashboard build
 make demo-notebook         # launch the whole world (one process)
 ```
 
-Open `http://localhost:2718`, paste your key, **Apply & start**, then open the
-Playground.
-
-<Note>
-`make demo-notebook` sets `HEXGATE_COOKIE_SECURE=0` for local HTTP — the browser
-drops a `Secure` cookie over plain HTTP (it's `1` over HTTPS, e.g. Codespaces).
-</Note>
+Open `http://localhost:2718`, define your agent, add your key, click **Start**,
+then open the Playground.

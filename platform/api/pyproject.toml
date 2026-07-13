@@ -94,6 +94,6 @@ precision = 1
 package = false
 
 [tool.uv.sources]
-# Local, editable pointer to the Hexgate SDK (asianf/). Delete this block
+# Local, editable pointer to the Hexgate SDK (../..). Delete this block
 # once `hexgate` is published to PyPI — the [project] dependency stays.
 hexgate = { path = "../..", editable = true }

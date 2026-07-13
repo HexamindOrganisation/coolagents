@@ -21,9 +21,9 @@ import time
 import urllib.request
 from pathlib import Path
 
-ASIANF = Path(__file__).resolve().parent.parent
-API_DIR = ASIANF / "platform" / "api"
-DEPLOY = ASIANF / "deploy"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+API_DIR = REPO_ROOT / "platform" / "api"
+DEPLOY = REPO_ROOT / "deploy"
 DB = API_DIR / "hexgate.db"
 KEY_FILE = Path(os.environ.get("HEXGATE_SERVE_KEY_FILE", "/tmp/hexgate_smoke_key"))
 DEFAULT_PROJECT_ID = "00000000-0000-0000-0000-000000000003"
@@ -37,12 +37,12 @@ env = dict(os.environ)
 env["HEXGATE_DEMO"] = "1"
 env["HEXGATE_COOKIE_SECURE"] = "0"
 env["HEXGATE_API_URL"] = f"http://127.0.0.1:{API_PORT}"
-env["HEXGATE_ROOT"] = str(ASIANF)
+env["HEXGATE_ROOT"] = str(REPO_ROOT)
 env["HEXGATE_SERVE_KEY_FILE"] = str(KEY_FILE)
 # Point the agent's OpenAI client at the mock.
 env["OPENAI_BASE_URL"] = f"http://127.0.0.1:{MOCK_PORT}/v1"
 env["OPENAI_API_BASE"] = f"http://127.0.0.1:{MOCK_PORT}/v1"
-env["PYTHONPATH"] = os.pathsep.join([str(API_DIR), str(ASIANF), str(DEPLOY)])
+env["PYTHONPATH"] = os.pathsep.join([str(API_DIR), str(REPO_ROOT), str(DEPLOY)])
 
 _procs: list[subprocess.Popen] = []
 
