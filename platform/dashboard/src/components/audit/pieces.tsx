@@ -38,9 +38,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Sparkline } from "@/components/ui/charts";
+import { BreakdownCardShell } from "@/components/ui/breakdown-card";
 import { BreakdownBar, type BreakdownDatum, DecisionBadge } from "./charts";
 import { OUTCOME_SERIES } from "./chart-tokens";
 import { fmtTs } from "./fmt";
@@ -314,62 +314,43 @@ export function BreakdownCard({
   const fkey = dim;
 
   return (
-    <Card className="flex flex-col p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <Tabs value={dim} onValueChange={(v) => setDim(v as typeof dim)}>
-          <TabsList>
-            {DIMS.map((d) => (
-              <TabsTrigger key={d.id} value={d.id}>
-                {d.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <Select
-          value={sort}
-          onValueChange={(v) => setSort(v as "volume" | "denials")}
-        >
-          <SelectTrigger className="h-7 w-auto gap-1.5 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="volume">by volume</SelectItem>
-            <SelectItem value="denials">by denials</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid flex-1 grid-cols-2 gap-x-8">
-        {data.map((row) => (
-          <BreakdownBar
-            key={row.key}
-            label={row.key}
-            row={row}
-            max={max}
-            active={!f[fkey] || f[fkey] === row.key}
-            onClick={() =>
-              setF((p) => ({
-                ...p,
-                [fkey]: p[fkey] === row.key ? "" : row.key,
-              }))
-            }
-          />
-        ))}
-        {!data.length && (
-          <div className="py-2 text-[12.5px] text-muted-foreground">
-            No decisions match.
-          </div>
-        )}
-      </div>
-      <div className="mt-1 flex gap-3.5 border-t border-border pt-3 text-[11px] text-muted-foreground">
-        {OUTCOME_SERIES.map((s) => (
-          <span key={s.key} className="flex items-center gap-1.5">
-            <span className={`size-2 rounded-sm ${s.swatchClass}`} />
-            {s.label}
-          </span>
-        ))}
-        <span className="ml-auto">click a bar to filter →</span>
-      </div>
-    </Card>
+    <BreakdownCardShell
+      dims={DIMS}
+      dim={dim}
+      onDimChange={setDim}
+      metric={sort}
+      metricOptions={[
+        { value: "volume", label: "by volume" },
+        { value: "denials", label: "by denials" },
+      ]}
+      onMetricChange={setSort}
+      emptyMessage="No decisions match."
+      legend={
+        <>
+          {OUTCOME_SERIES.map((s) => (
+            <span key={s.key} className="flex items-center gap-1.5">
+              <span className={`size-2 rounded-sm ${s.swatchClass}`} />
+              {s.label}
+            </span>
+          ))}
+        </>
+      }
+      rows={data.map((row) => (
+        <BreakdownBar
+          key={row.key}
+          label={row.key}
+          row={row}
+          max={max}
+          active={!f[fkey] || f[fkey] === row.key}
+          onClick={() =>
+            setF((p) => ({
+              ...p,
+              [fkey]: p[fkey] === row.key ? "" : row.key,
+            }))
+          }
+        />
+      ))}
+    />
   );
 }
 

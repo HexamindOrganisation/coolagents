@@ -7,6 +7,7 @@
 import { Check, CircleDashed, X } from "lucide-react";
 import type { AuditOutcome } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import { BarRow } from "@/components/ui/breakdown-card";
 import { OUT_LABEL } from "./chart-tokens";
 
 export interface Counts {
@@ -47,30 +48,28 @@ export function BreakdownBar({
   const seg = (k: AuditOutcome) => (row.total ? (row[k] / row.total) * 100 : 0);
   const widthPct = max ? (row.total / max) * 100 : 0;
   return (
-    <div
+    <BarRow
       onClick={onClick}
-      className={`mb-[11px] transition-opacity ${onClick ? "cursor-pointer" : ""} ${active === false ? "opacity-45" : ""}`}
-    >
-      <div className="mb-1 flex justify-between gap-2 text-[12.5px]">
-        <span className="truncate font-mono">{label}</span>
-        <span className="shrink-0 text-muted-foreground">
-          {row.deny > 0 && (
-            <span className="mr-2 text-deny">{row.deny} denied</span>
-          )}
-          <span className="text-foreground">{row.total.toLocaleString()}</span>
-        </span>
-      </div>
-      <div
-        className="flex h-1.5 min-w-6 overflow-hidden rounded-[3px] bg-secondary"
-        style={{ width: `${Math.max(widthPct, 4)}%` }}
-      >
-        <div className="bg-allow" style={{ width: `${seg("allow")}%` }} />
-        <div
-          className="bg-approval"
-          style={{ width: `${seg("needs_approval")}%` }}
-        />
-        <div className="bg-deny" style={{ width: `${seg("deny")}%` }} />
-      </div>
-    </div>
+      active={active}
+      widthPct={widthPct}
+      header={
+        <>
+          <span className="truncate font-mono">{label}</span>
+          <span className="shrink-0 text-muted-foreground">
+            {row.deny > 0 && (
+              <span className="mr-2 text-deny">{row.deny} denied</span>
+            )}
+            <span className="text-foreground">
+              {row.total.toLocaleString()}
+            </span>
+          </span>
+        </>
+      }
+      segments={[
+        { className: "bg-allow", widthPct: seg("allow") },
+        { className: "bg-approval", widthPct: seg("needs_approval") },
+        { className: "bg-deny", widthPct: seg("deny") },
+      ]}
+    />
   );
 }

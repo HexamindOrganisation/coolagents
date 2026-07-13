@@ -7,15 +7,7 @@ import type {
 } from "@/lib/usage-filters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BarRow, BreakdownCardShell } from "@/components/ui/breakdown-card";
 import { FilterSelect } from "@/components/audit/pieces";
 
 // ————————————————————————————————————————————— Filter bar
@@ -136,23 +128,20 @@ function UsageBar({
   const value = row[metric];
   const widthPct = max ? (value / max) * 100 : 0;
   return (
-    <div
+    <BarRow
       onClick={onClick}
-      className={`mb-[11px] transition-opacity ${onClick ? "cursor-pointer" : ""} ${active === false ? "opacity-45" : ""}`}
-    >
-      <div className="mb-1 flex justify-between gap-2 text-[12.5px]">
-        <span className="truncate font-mono">{row.key}</span>
-        <span className="shrink-0 text-foreground">
-          {value.toLocaleString()}
-        </span>
-      </div>
-      <div
-        className="flex h-1.5 min-w-6 overflow-hidden rounded-[3px] bg-secondary"
-        style={{ width: `${Math.max(widthPct, 4)}%` }}
-      >
-        <div className="bg-primary" style={{ width: "100%" }} />
-      </div>
-    </div>
+      active={active}
+      widthPct={widthPct}
+      header={
+        <>
+          <span className="truncate font-mono">{row.key}</span>
+          <span className="shrink-0 text-foreground">
+            {value.toLocaleString()}
+          </span>
+        </>
+      }
+      segments={[{ className: "bg-primary", widthPct: 100 }]}
+    />
   );
 }
 
@@ -191,59 +180,38 @@ export function UsageBreakdownCard({
   const fkey = dim;
 
   return (
-    <Card className="flex flex-col p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <Tabs value={dim} onValueChange={(v) => setDim(v as typeof dim)}>
-          <TabsList>
-            {DIMS.map((d) => (
-              <TabsTrigger key={d.id} value={d.id}>
-                {d.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <Select
-          value={metric}
-          onValueChange={(v) => setMetric(v as typeof metric)}
-        >
-          <SelectTrigger className="h-7 w-auto gap-1.5 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="total_tokens">by tokens</SelectItem>
-            <SelectItem value="calls">by calls</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid flex-1 grid-cols-2 gap-x-8">
-        {data.map((row) => (
-          <UsageBar
-            key={row.key}
-            row={row}
-            max={max}
-            metric={metric}
-            active={!f[fkey] || f[fkey] === row.key}
-            onClick={() =>
-              setF((p) => ({
-                ...p,
-                [fkey]: p[fkey] === row.key ? "" : row.key,
-              }))
-            }
-          />
-        ))}
-        {!data.length && (
-          <div className="py-2 text-[12.5px] text-muted-foreground">
-            No LLM calls match.
-          </div>
-        )}
-      </div>
-      <div className="mt-1 flex gap-3.5 border-t border-border pt-3 text-[11px] text-muted-foreground">
+    <BreakdownCardShell
+      dims={DIMS}
+      dim={dim}
+      onDimChange={setDim}
+      metric={metric}
+      metricOptions={[
+        { value: "total_tokens", label: "by tokens" },
+        { value: "calls", label: "by calls" },
+      ]}
+      onMetricChange={setMetric}
+      emptyMessage="No LLM calls match."
+      legend={
         <span className="flex items-center gap-1.5">
           <span className="size-2 rounded-sm bg-primary" />
           {metric === "total_tokens" ? "total tokens" : "calls"}
         </span>
-        <span className="ml-auto">click a bar to filter →</span>
-      </div>
-    </Card>
+      }
+      rows={data.map((row) => (
+        <UsageBar
+          key={row.key}
+          row={row}
+          max={max}
+          metric={metric}
+          active={!f[fkey] || f[fkey] === row.key}
+          onClick={() =>
+            setF((p) => ({
+              ...p,
+              [fkey]: p[fkey] === row.key ? "" : row.key,
+            }))
+          }
+        />
+      ))}
+    />
   );
 }
