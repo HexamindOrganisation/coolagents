@@ -423,6 +423,8 @@ async def _(engine, mo, run_batch, try_it):
         _v = try_it.value
         try:
             _args = json.loads(_v["args"] or "{}")
+            if not isinstance(_args, dict):
+                raise ValueError("arguments must be a JSON object, e.g. {\"doc_id\": \"DOC-101\"}")
             _catalog, _res = await run_batch(engine, [(_v["role"], _v["tool"], _args)])
             _r = _res[0]
             _kind = {"allow": "success", "deny": "danger"}.get(_r["outcome"], "neutral")
@@ -441,6 +443,13 @@ async def _(engine, mo, run_batch, try_it):
             )
         except json.JSONDecodeError as _exc:
             _out = mo.callout(mo.md(f"Invalid JSON in arguments: {_exc}"), kind="warn")
+        except Exception as _exc:  # noqa: BLE001
+            # Args that parse but don't fit the tool (wrong types, missing keys)
+            # would otherwise escape as a raw traceback — render them instead.
+            _out = mo.callout(
+                mo.md(f"⚠️ Couldn't run that call: `{type(_exc).__name__}: {_exc}`"),
+                kind="warn",
+            )
     _out
     return
 
