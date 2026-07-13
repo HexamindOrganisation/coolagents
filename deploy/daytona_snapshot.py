@@ -9,8 +9,11 @@ spawn INSTANTLY (no per-launch uv sync / pnpm build).
 
 Then spawn a test sandbox with deploy/daytona_spawn.py.
 
-NOTE: throwaway evaluation script — not committed/wired into the demo.
-      SDK names can shift; see https://www.daytona.io/docs/en/declarative-builder/
+Clones HEXGATE_SNAPSHOT_REF (a branch or tag; defaults to `main`) so a release
+build bakes the RELEASED code rather than whatever `main` happens to be. The
+daytona-snapshot workflow sets it to the release tag.
+
+NOTE: SDK names can shift; see https://www.daytona.io/docs/en/declarative-builder/
 """
 
 from __future__ import annotations
@@ -29,6 +32,9 @@ from daytona import (
 
 SNAPSHOT = "hexgate-demo"
 REPO = "https://github.com/HexamindOrganisation/hexgate"
+# Branch or tag to bake into the image. The release workflow pins this to the
+# release tag so the snapshot is the released code, not a moving `main`.
+REF = os.environ.get("HEXGATE_SNAPSHOT_REF", "main")
 
 
 def _delete_snapshot(daytona: Daytona) -> None:
@@ -52,7 +58,7 @@ def main() -> None:
             "&& apt-get install -y nodejs",
             "npm install -g pnpm@9",
             "pip install --no-cache-dir uv",
-            f"git clone --depth 1 {REPO} /app",
+            f"git clone --depth 1 --branch {REF} {REPO} /app",
             # API venv also brings the `hexgate` CLI (path dep); + marimo.
             "cd /app/platform/api && uv sync",
             "uv pip install --python /app/platform/api/.venv marimo",

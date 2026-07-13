@@ -32,4 +32,7 @@ jobs:
       - name: Rebuild the demo snapshot on Daytona
         env:
           DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
+          # Bake the released code on a release; the dispatched branch otherwise.
+          # (Both are refs `git clone --branch` accepts — never a bare SHA.)
+          HEXGATE_SNAPSHOT_REF: ${{ github.event.release.tag_name || github.ref_name }}
         run: uv run --python 3.13 --with daytona python deploy/daytona_snapshot.py --force
