@@ -29,8 +29,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-ASIANF = Path(__file__).resolve().parent.parent          # .../asianf
-API_DIR = ASIANF / "platform" / "api"
+REPO_ROOT = Path(__file__).resolve().parent.parent          # repo root
+API_DIR = REPO_ROOT / "platform" / "api"
 DEPLOY_DIR = Path(__file__).resolve().parent
 NOTEBOOK = DEPLOY_DIR / "demo_notebook.py"
 
@@ -80,10 +80,10 @@ def start_services(dash_url: str | None = None) -> dict[str, str]:
     env.setdefault("HEXGATE_COOKIE_SECURE", "1")  # cookie rides the https tunnel
     api_base = f"http://127.0.0.1:{API_PORT}"
     env["HEXGATE_API_URL"] = api_base
-    env["HEXGATE_ROOT"] = str(ASIANF)  # so the notebook can find examples/*.py
+    env["HEXGATE_ROOT"] = str(REPO_ROOT)  # so the notebook can find examples/*.py
     # The API package is imported by module name; make `main`, `examples.*` importable.
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(API_DIR), str(ASIANF), env.get("PYTHONPATH", "")]
+        [str(API_DIR), str(REPO_ROOT), env.get("PYTHONPATH", "")]
     ).strip(os.pathsep)
 
     # Publish the dashboard URL for the notebook to read. Falls back to the
@@ -125,7 +125,7 @@ def run(dash_url: str | None = None) -> None:
     """Start the API, then marimo as a child, and block — used by
     `make demo-notebook` and by the demo sandbox (see deploy/spawner)."""
     env = start_services(dash_url)
-    _spawn(marimo_argv(), cwd=ASIANF, env=env)
+    _spawn(marimo_argv(), cwd=REPO_ROOT, env=env)
     _block_until_exit()
 
 

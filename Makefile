@@ -287,7 +287,7 @@ AGENT_SPEC ?= examples.customer_bot:agent
 
 .PHONY: serve
 serve: ## Run `hexgate serve` on the customer_bot demo (override with AGENT_SPEC=)
-# Reads HEXGATE_API_KEY from asianf/.env at startup. Uvicorn-style spec —
+# Reads HEXGATE_API_KEY from the repo-root .env at startup. Uvicorn-style spec —
 # the agent name + tools come from the loaded object, no env vars to
 # keep in sync.
 	$(UV) hexgate serve $(AGENT_SPEC)
@@ -297,7 +297,7 @@ serve: ## Run `hexgate serve` on the customer_bot demo (override with AGENT_SPEC
 .PHONY: demo-platform
 demo-platform: ## Print 3-terminal instructions for the full platform demo
 	@echo ""
-	@echo "Platform demo — open three terminals in this directory (asianf/):"
+	@echo "Platform demo — open three terminals at the repo root:"
 	@echo ""
 	@echo "  Terminal 1 — FastAPI backend (control plane):"
 	@echo "      make platform-api"
@@ -307,7 +307,7 @@ demo-platform: ## Print 3-terminal instructions for the full platform demo
 	@echo ""
 	@echo "  Terminal 3 — your local agent bridged to the platform:"
 	@echo "      1. Open  http://localhost:5173/tokens  and mint a dev token"
-	@echo "      2. Add to asianf/.env:  HEXGATE_API_KEY=fty_live_..."
+	@echo "      2. Add to the repo-root .env:  HEXGATE_API_KEY=fty_live_..."
 	@echo "      3. make serve  (or: hexgate serve <your.module:agent>)"
 	@echo ""
 	@echo "Then chat with the live agent at  http://localhost:5173/playground"

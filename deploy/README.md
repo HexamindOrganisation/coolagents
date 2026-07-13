@@ -56,19 +56,19 @@ Plus the API-side glue (committed in `platform/api/`):
 
 The docs "Launch" button hits a Modal spawner that creates a per-visitor Daytona
 sandbox from the snapshot (auto-stops + self-deletes, so no standby cost). Deploy
-from `asianf/`:
+from the repo root:
 
 ```bash
 python deploy/daytona_snapshot.py          # once (or --force after code changes)
 modal secret create daytona DAYTONA_API_KEY=dtn_...
-modal deploy deploy/spawner/modal_app.py   # prints the spawner URL → docs button = <url>/launch
+modal deploy deploy/spawner/modal_app.py   # prints the spawner URL → docs button = <url>/
 ```
 `.github/workflows/daytona-snapshot.yml` rebuilds the snapshot on release
 (needs a `DAYTONA_API_KEY` repo secret).
 
 ## Run locally
 
-From `asianf/`:
+From the repo root:
 
 ```bash
 make demo-notebook-build    # one-time: deps + marimo + dashboard build

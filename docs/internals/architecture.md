@@ -95,7 +95,7 @@ This marks `hexgate/` as a Python package.
 Key snippet:
 
 ```python
-"""Asianf package."""
+"""Hexgate package."""
 ```
 
 Right now it is intentionally minimal.
