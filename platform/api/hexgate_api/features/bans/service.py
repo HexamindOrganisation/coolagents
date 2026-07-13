@@ -8,7 +8,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.ids import new_id
-from hexgate_api.models import Ban, utcnow
+from hexgate_api.models import Ban, User, utcnow
 
 # Ban target kinds. BanCreate validates the wire value; these name the two
 # kinds for service branching. Feature-local — the only consumer is this slice.
@@ -93,6 +93,18 @@ async def list_bans(
         conditions.append(Ban.revoked_at.is_(None))  # type: ignore[union-attr]
     stmt = select(Ban).where(*conditions).order_by(Ban.created_at.desc())  # type: ignore[attr-defined]
     return list((await session.exec(stmt)).all())
+
+
+async def emails_for_user_ids(
+    session: AsyncSession, user_ids: set[str]
+) -> dict[str, str]:
+    """Map user id -> email for the given ids in one query. Ids with no live
+    User row are omitted (account deleted) so callers fall back to the id."""
+    ids = {uid for uid in user_ids if uid}
+    if not ids:
+        return {}
+    rows = await session.exec(select(User.id, User.email).where(User.id.in_(ids)))  # type: ignore[attr-defined]
+    return {uid: email for uid, email in rows.all()}
 
 
 async def revoke_ban(

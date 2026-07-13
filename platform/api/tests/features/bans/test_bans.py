@@ -13,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from hexgate_api.constants import ROLE_MEMBER
+from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER
 from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.main import app
 from hexgate_api.models import OrganizationMember, User
@@ -104,6 +104,17 @@ async def _add_member_to_org(
         return existing.id
 
 
+async def _delete_user(session_factory, *, email: str) -> None:
+    """Hard-delete a user row (simulates an account removed after it created a
+    ban). FK enforcement is off on the in-memory SQLite, so the referencing
+    Ban row is left with a dangling created_by_user_id."""
+    async with session_factory() as s:
+        u = (await s.exec(select(User).where(User.email == email))).first()
+        if u is not None:
+            await s.delete(u)
+            await s.commit()
+
+
 def _use_bearer_project(project_id: str) -> None:
     """Point the SDK feed's bearer auth at a project (biscuit path stubbed)."""
     from hexgate_api.deps.tokens import require_project
@@ -130,6 +141,8 @@ def test_create_agent_ban_succeeds(client: TestClient) -> None:
     assert body["active"] is True
     assert body["revoked_at"] is None
     assert body["created_by_user_id"]  # audit trail recorded
+    # Resolved to the caller's email for display (the creator is the caller).
+    assert body["created_by_email"] == "owner@example.com"
     assert body["id"].startswith("ban_")
 
 
@@ -219,6 +232,8 @@ def test_list_bans_active_only_by_default(client: TestClient) -> None:
 
     active = client.get(f"/v1/projects/{pid}/bans").json()
     assert {row["id"] for row in active} == {a["id"]}
+    # List reads resolve the creator's email via the batch User lookup.
+    assert active[0]["created_by_email"] == "owner@example.com"
 
     allrows = client.get(f"/v1/projects/{pid}/bans?include_revoked=true").json()
     assert {row["id"] for row in allrows} == {a["id"], b["id"]}
@@ -232,6 +247,53 @@ def test_list_bans_403_for_non_member(client: TestClient) -> None:
     client.cookies.clear()
     _signup_and_login(client, "strangerC@example.com", "correcthorsebattery")
     assert client.get(f"/v1/projects/{pid}/bans").status_code == 403
+
+
+def test_list_bans_403_for_plain_member(client: TestClient, session_factory) -> None:
+    """A plain member of the org (not admin/owner) can't read the ban list."""
+    pid = _make_project(client)
+    org_id = client.get("/v1/orgs").json()[0]["id"]
+    member_id = asyncio.get_event_loop().run_until_complete(
+        _add_member_to_org(
+            session_factory,
+            email="lowly-get@example.com",
+            org_id=org_id,
+            role=ROLE_MEMBER,
+        )
+    )
+    client.cookies.clear()
+    r = client.get(f"/v1/projects/{pid}/bans", headers={"X-Dev-User": member_id})
+    assert r.status_code == 403
+
+
+def test_list_bans_created_by_email_null_after_creator_deleted(
+    client: TestClient, session_factory
+) -> None:
+    """When the creating account is gone, created_by_email resolves to null
+    (the batch User lookup omits the missing id) while the id is preserved."""
+    pid = _make_project(client)  # owner@example.com creates the project + ban
+    client.post(
+        f"/v1/projects/{pid}/bans",
+        json={"ban_type": "agent", "target_agent_name": "orphan"},
+    )
+    org_id = client.get("/v1/orgs").json()[0]["id"]
+    # A second admin who can still view the list after the creator is deleted.
+    admin_id = asyncio.get_event_loop().run_until_complete(
+        _add_member_to_org(
+            session_factory, email="admin2@example.com", org_id=org_id, role=ROLE_ADMIN
+        )
+    )
+    asyncio.get_event_loop().run_until_complete(
+        _delete_user(session_factory, email="owner@example.com")
+    )
+
+    client.cookies.clear()
+    rows = client.get(
+        f"/v1/projects/{pid}/bans", headers={"X-Dev-User": admin_id}
+    ).json()
+    assert len(rows) == 1
+    assert rows[0]["created_by_email"] is None
+    assert rows[0]["created_by_user_id"]  # stable id survives
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +311,29 @@ def test_revoke_ban_returns_204_and_deactivates(client: TestClient) -> None:
     r = client.delete(f"/v1/projects/{pid}/bans/{ban_id}")
     assert r.status_code == 204
     assert client.get(f"/v1/projects/{pid}/bans").json() == []
+
+
+def test_revoke_ban_403_for_plain_member(client: TestClient, session_factory) -> None:
+    """A plain member can't revoke — require_project_admin gates DELETE too."""
+    pid = _make_project(client)
+    ban_id = client.post(
+        f"/v1/projects/{pid}/bans",
+        json={"ban_type": "agent", "target_agent_name": "keep-banned"},
+    ).json()["id"]
+    org_id = client.get("/v1/orgs").json()[0]["id"]
+    member_id = asyncio.get_event_loop().run_until_complete(
+        _add_member_to_org(
+            session_factory,
+            email="lowly-del@example.com",
+            org_id=org_id,
+            role=ROLE_MEMBER,
+        )
+    )
+    client.cookies.clear()
+    r = client.delete(
+        f"/v1/projects/{pid}/bans/{ban_id}", headers={"X-Dev-User": member_id}
+    )
+    assert r.status_code == 403
 
 
 def test_revoke_unknown_ban_404(client: TestClient) -> None:

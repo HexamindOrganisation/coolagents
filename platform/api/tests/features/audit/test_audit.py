@@ -19,9 +19,11 @@ from clickhouse_connect.driver.exceptions import (
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER
 from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.features.audit import service as audit
 from hexgate_api.features.audit.service import (
+    list_ban_enforcements,
     list_decisions,
     summarize,
     _sliding_window_anomalies,
@@ -662,6 +664,90 @@ def test_list_decisions_empty_first_page_skips_count() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list_ban_enforcements() — same pagination contract, own table
+# ---------------------------------------------------------------------------
+
+_BAN_LIST_COLUMN_NAMES = [
+    c.strip() for c in audit._BAN_ENFORCEMENT_LIST_COLUMNS.split(",")
+] + ["total_matches"]
+
+
+def _ban_row(total: int, **overrides) -> tuple:
+    base = {
+        "event_id": str(uuid.uuid4()),
+        "occurred_at": _now(),
+        "received_at": _now(),
+        "agent_name": "example_agent",
+        "session_id": "sess_1",
+        "user_id": "u_1",
+        "ban_type": "user",
+        "ban_id": "ban_abc",
+        "reason": "abuse",
+        "total_matches": total,
+    }
+    base.update(overrides)
+    return tuple(base[c] for c in _BAN_LIST_COLUMN_NAMES)
+
+
+def test_list_ban_enforcements_reads_own_table_with_window_total() -> None:
+    """An in-range page carries total via count() OVER () and queries
+    ban_enforcement — never policy_decision."""
+    client = MagicMock()
+    client.query.return_value.result_rows = [_ban_row(3), _ban_row(3)]
+    client.query.return_value.column_names = _BAN_LIST_COLUMN_NAMES
+
+    page = list_ban_enforcements(
+        client, project_id="p1", since_hours=24, limit=2, offset=0
+    )
+
+    assert page["total"] == 3
+    assert page["limit"] == 2 and page["offset"] == 0
+    assert len(page["rows"]) == 2
+    assert "total_matches" not in page["rows"][0]
+    client.query.assert_called_once()
+    sql = client.query.call_args.args[0]
+    assert "FROM ban_enforcement" in sql
+    assert "policy_decision" not in sql
+    # event_id tiebreaker keeps offset pagination stable across ms-tied rows.
+    assert "ORDER BY occurred_at DESC, event_id DESC" in sql
+
+
+def test_list_ban_enforcements_past_end_page_falls_back_to_count() -> None:
+    """A page past the end (offset > 0, zero rows) has no window value to read
+    total from → the separate count() branch supplies it, against its table."""
+    page_result = MagicMock()
+    page_result.result_rows = []
+    page_result.column_names = _BAN_LIST_COLUMN_NAMES
+    count_result = MagicMock()
+    count_result.result_rows = [[3]]
+    client = MagicMock()
+    client.query.side_effect = [page_result, count_result]
+
+    page = list_ban_enforcements(
+        client, project_id="p1", since_hours=24, limit=25, offset=75
+    )
+
+    assert page["rows"] == []
+    assert page["total"] == 3
+    assert client.query.call_count == 2
+    count_sql = client.query.call_args_list[1].args[0]
+    assert "count()" in count_sql and "FROM ban_enforcement" in count_sql
+
+
+def test_list_ban_enforcements_empty_first_page_skips_count() -> None:
+    """offset=0 with no rows is a genuinely empty slice — total is 0 and the
+    fallback count() must not fire."""
+    client = MagicMock()
+    client.query.return_value.result_rows = []
+    client.query.return_value.column_names = _BAN_LIST_COLUMN_NAMES
+
+    page = list_ban_enforcements(client, project_id="p1", since_hours=24)
+
+    assert page["total"] == 0 and page["rows"] == []
+    client.query.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Dashboard read endpoints — require_org_member gating
 # ---------------------------------------------------------------------------
 
@@ -779,6 +865,75 @@ def test_audit_read_member_is_200(
     fake_clickhouse.query.return_value.result_rows = []
     r = client.get(path)
     assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------------------
+# Ban-enforcement read endpoint — admin-gated (like ban CRUD, not member-gated)
+# ---------------------------------------------------------------------------
+
+_BAN_READ_PATH = "/v1/projects/proj_test/audit/ban-enforcements"
+
+
+def test_ban_enforcement_read_rejects_anonymous(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """No cookie → the require_project_admin chain 401s before the handler."""
+    r = client.get(_BAN_READ_PATH)
+    assert r.status_code == 401
+    fake_clickhouse.query.assert_not_called()
+
+
+def test_ban_enforcement_read_non_admin_member_is_403(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """A plain member (not admin/owner) can't read blocked attempts — the
+    Kill Switch surface is admin-only, matching ban CRUD."""
+    _login_as_stub_user(
+        project=MagicMock(org_id="org_1"), membership=MagicMock(role=ROLE_MEMBER)
+    )
+    r = client.get(_BAN_READ_PATH)
+    assert r.status_code == 403
+    fake_clickhouse.query.assert_not_called()
+
+
+def test_ban_enforcement_read_unknown_project_is_404(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """Authenticated but the project doesn't exist → 404 (no enumeration)."""
+    _login_as_stub_user(project=None, membership=None)
+    r = client.get(_BAN_READ_PATH)
+    assert r.status_code == 404
+    fake_clickhouse.query.assert_not_called()
+
+
+def test_ban_enforcement_read_admin_is_200(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """Admin membership → the handler answers a BanEnforcementPage."""
+    _login_as_stub_user(
+        project=MagicMock(org_id="org_1"), membership=MagicMock(role=ROLE_ADMIN)
+    )
+    fake_clickhouse.query.return_value.result_rows = []
+    r = client.get(_BAN_READ_PATH)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body == {"rows": [], "total": 0, "limit": 25, "offset": 0}
+    sql = fake_clickhouse.query.call_args.args[0]
+    assert "FROM ban_enforcement" in sql and "policy_decision" not in sql
+
+
+def test_ban_enforcement_read_clamps_limit_to_200(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """An over-large ``limit`` is clamped to 200 before the query runs."""
+    _login_as_stub_user(
+        project=MagicMock(org_id="org_1"), membership=MagicMock(role=ROLE_ADMIN)
+    )
+    fake_clickhouse.query.return_value.result_rows = []
+    r = client.get(f"{_BAN_READ_PATH}?limit=500")
+    assert r.status_code == 200, r.text
+    assert r.json()["limit"] == 200
+    assert fake_clickhouse.query.call_args.kwargs["parameters"]["lim"] == 200
 
 
 # ---------------------------------------------------------------------------

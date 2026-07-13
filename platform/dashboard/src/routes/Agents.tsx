@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAgentSelection } from "@/lib/agent_param";
-import { Bot, FileText, ShieldCheck, Wrench } from "lucide-react";
+import { Ban, Bot, FileText, ShieldCheck, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   api,
@@ -9,6 +9,7 @@ import {
   type ToolDefinition,
 } from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
+import { useCanManageBans } from "@/lib/bans";
 import { Badge } from "@/components/ui/badge";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
 
@@ -43,6 +44,7 @@ export function AgentsPage() {
   );
 
   const active = manifests.data?.find((m) => m.name === selectedName);
+  const canManageBans = useCanManageBans();
 
   if (scope.status === "no-project") {
     return <NoProjectEmptyState resource="agents" />;
@@ -61,13 +63,24 @@ export function AgentsPage() {
         />
         <div className="flex-1" />
         {active && (
-          <Link
-            to={`/policies?agent=${encodeURIComponent(active.name)}`}
-            className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
-          >
-            <ShieldCheck className="size-3" />
-            edit policy →
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link
+              to={`/policies?agent=${encodeURIComponent(active.name)}`}
+              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1.5"
+            >
+              <ShieldCheck className="size-3" />
+              edit policy →
+            </Link>
+            {canManageBans && (
+              <Link
+                to={`/bans?ban_agent=${encodeURIComponent(active.name)}`}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-destructive"
+              >
+                <Ban className="size-3" />
+                ban agent →
+              </Link>
+            )}
+          </div>
         )}
       </header>
 

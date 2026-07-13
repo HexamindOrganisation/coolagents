@@ -9,8 +9,10 @@ import {
   X,
 } from "lucide-react";
 import { endOfDay, format, startOfDay } from "date-fns";
+import { useNavigate } from "react-router-dom";
 import { api, type AuditDecisionRow, type AuditOutcome } from "@/lib/api";
 import { useActive, useProjectScoped } from "@/lib/active";
+import { useCanManageBans } from "@/lib/bans";
 import { useProjects } from "@/lib/projects";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
 import { Button } from "@/components/ui/button";
@@ -313,6 +315,8 @@ export function AuditPage() {
   const projectScope = useProjectScoped();
   const projectId = projectScope.projectId;
   const activeOrgId = useActive((s) => s.activeOrgId);
+  const navigate = useNavigate();
+  const canManageBans = useCanManageBans();
   // Resolve the active project's display name for the page subtitle
   // (already cached by the AppShell bootstrap; falls back to the id).
   const projectsQ = useProjects(activeOrgId);
@@ -676,6 +680,12 @@ export function AuditPage() {
                   end_date: endOfDay(to),
                   user: userId,
                 }))
+              }
+              onBanUser={
+                canManageBans
+                  ? (userId) =>
+                      navigate(`/bans?ban_user=${encodeURIComponent(userId)}`)
+                  : undefined
               }
             />
           </div>

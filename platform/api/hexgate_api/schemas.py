@@ -161,8 +161,13 @@ class ProjectUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Kill switch — ban wire shapes
+# Ban wire shapes
 # ---------------------------------------------------------------------------
+
+# The two ban kinds. Kept as a closed set on the wire so a stray DB value can't
+# slip past OpenAPI/Pydantic into the dashboard (writes are already gated by
+# BanCreate + the ClickHouse Enum8).
+BanType = Literal["agent", "user"]
 
 
 class BanCreate(BaseModel):
@@ -194,11 +199,14 @@ class BanRead(BaseModel):
 
     id: str
     project_id: str
-    ban_type: str
+    ban_type: BanType
     target_agent_name: Optional[str]
     target_user_id: Optional[str]
     reason: Optional[str]
     created_by_user_id: str
+    # Resolved from the User table for display; null if the account no longer
+    # exists. The id above stays the stable key.
+    created_by_email: Optional[str] = None
     created_at: datetime
     revoked_at: Optional[datetime]
     active: bool
@@ -573,6 +581,30 @@ class AuditDecisionPage(BaseModel):
     """A page of rows; ``total`` is the unpaginated match count."""
 
     rows: list[AuditDecisionRow]
+    total: int
+    limit: int
+    offset: int
+
+
+class BanEnforcementRow(BaseModel):
+    """One blocked-attempt row for the Bans page. No tool/role/outcome
+    or arguments/hint — a ban is refused before any tool call runs."""
+
+    event_id: UUID
+    occurred_at: datetime
+    received_at: datetime
+    agent_name: str
+    session_id: str = ""
+    user_id: str = ""
+    ban_type: BanType
+    ban_id: str
+    reason: str = ""
+
+
+class BanEnforcementPage(BaseModel):
+    """A page of ban-enforcement rows; ``total`` is the unpaginated match count."""
+
+    rows: list[BanEnforcementRow]
     total: int
     limit: int
     offset: int

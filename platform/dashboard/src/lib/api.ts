@@ -37,6 +37,29 @@ export class ApiError extends Error {
   }
 }
 
+/** Human-readable message from a FastAPI error body. Handles the two shapes:
+ * a string `detail` (HTTPException) and the validation-error array
+ * `detail: [{loc, msg, type}, ...]` (422) — the latter would otherwise
+ * `String()` to "[object Object]". Returns null when neither applies. */
+function messageFromDetail(detail: unknown): string | null {
+  if (typeof detail !== "object" || detail === null || !("detail" in detail)) {
+    return null;
+  }
+  const d = (detail as { detail: unknown }).detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    const msgs = d
+      .map((e) =>
+        e && typeof e === "object" && "msg" in e
+          ? String((e as { msg: unknown }).msg)
+          : null,
+      )
+      .filter((m): m is string => !!m);
+    if (msgs.length) return msgs.join("; ");
+  }
+  return null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -71,9 +94,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       detail = bodyText;
     }
     const message =
-      typeof detail === "object" && detail !== null && "detail" in detail
-        ? String((detail as { detail: unknown }).detail)
-        : `${res.status} ${res.statusText}`;
+      messageFromDetail(detail) ?? `${res.status} ${res.statusText}`;
     throw new ApiError(res.status, detail, message);
   }
   if (res.status === 204) return undefined as T;
@@ -272,6 +293,66 @@ export interface AuditDecisionFilters extends AuditScope {
   offset?: number;
 }
 
+export type BanType = "agent" | "user";
+
+/** Mirror of platform/api/schemas.py:BanRead. ``active`` is the
+ * server-computed ``revoked_at is None``; ``created_by_email`` is resolved
+ * server-side for display (null when the account no longer exists). */
+export interface BanRead {
+  id: string;
+  project_id: string;
+  ban_type: BanType;
+  target_agent_name: string | null;
+  target_user_id: string | null;
+  reason: string | null;
+  created_by_user_id: string;
+  created_by_email: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  active: boolean;
+}
+
+/** POST body for a ban. Only the target field matching ``ban_type`` is set —
+ * the server's cross-validator rejects a body that sets the other target. */
+export interface BanCreateBody {
+  ban_type: BanType;
+  target_agent_name?: string;
+  target_user_id?: string;
+  reason?: string;
+}
+
+/** One blocked-attempt row from GET …/audit/ban-enforcements. A ban is
+ * refused before any tool call, so there's no tool/role/outcome —
+ * mirrors platform/api/schemas.py:BanEnforcementRow. */
+export interface BanEnforcementRow {
+  event_id: string;
+  occurred_at: string;
+  received_at: string;
+  agent_name: string;
+  session_id: string;
+  user_id: string;
+  ban_type: "agent" | "user";
+  ban_id: string;
+  reason: string;
+}
+
+export interface BanEnforcementPage {
+  rows: BanEnforcementRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/** Filters for the blocked-attempts feed: window (or explicit range) +
+ * paging. No agent/role/tool scope — the ban table carries none. */
+export interface BanEnforcementFilters {
+  window?: AuditWindow;
+  start_date?: string;
+  end_date?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export type AnomalySeverity = "high" | "medium";
 
 /** One per-user anomaly burst from GET /audit/anomalies. */
@@ -357,4 +438,27 @@ export const api = {
     request<AuditAnomaly[]>(
       `/v1/projects/${projectId}/audit/anomalies${qs({ ...scope })}`,
     ),
+
+  listBanEnforcements: (filters: BanEnforcementFilters, projectId: string) =>
+    request<BanEnforcementPage>(
+      `/v1/projects/${projectId}/audit/ban-enforcements${qs({ ...filters })}`,
+    ),
+
+  listBans: (projectId: string, includeRevoked = false) =>
+    request<BanRead[]>(
+      `/v1/projects/${projectId}/bans${
+        includeRevoked ? "?include_revoked=true" : ""
+      }`,
+    ),
+
+  createBan: (body: BanCreateBody, projectId: string) =>
+    request<BanRead>(`/v1/projects/${projectId}/bans`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  revokeBan: (banId: string, projectId: string) =>
+    request<void>(`/v1/projects/${projectId}/bans/${banId}`, {
+      method: "DELETE",
+    }),
 };

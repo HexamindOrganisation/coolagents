@@ -5,6 +5,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AcceptInvitationPage } from "@/routes/AcceptInvitation";
 import { AgentsPage } from "@/routes/Agents";
 import { AuditPage } from "@/routes/Audit";
+import { BansPage } from "@/routes/Bans";
 import { ForgotPasswordPage } from "@/routes/ForgotPassword";
 import { GraphPage } from "@/routes/Graph";
 import { OrgMembersPage } from "@/routes/OrgMembers";
@@ -60,6 +61,7 @@ export default function App() {
           <Route path="graph" element={<GraphPage />} />
           <Route path="playground" element={<PlaygroundPage />} />
           <Route path="audit" element={<AuditPage />} />
+          <Route path="bans" element={<BansPage />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="orgs" element={<OrgsPage />} />
           <Route path="orgs/:orgId/settings" element={<OrgSettingsPage />} />

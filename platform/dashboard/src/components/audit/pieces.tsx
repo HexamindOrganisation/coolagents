@@ -1,5 +1,6 @@
 import { useMemo, useState, type ComponentType } from "react";
 import {
+  Ban,
   Check,
   ChevronRight,
   CircleDashed,
@@ -513,9 +514,13 @@ function SeverityBadge({ severity }: { severity: AnomalySeverity }) {
 export function AnomaliesCard({
   rows,
   onRowClick,
+  onBanUser,
 }: {
   rows: AuditAnomaly[];
   onRowClick: (from: Date, to: Date, userId: string) => void;
+  /** When set, each row gets a "Ban user" action (admins only — the caller
+   * gates on role). Undefined hides the column entirely. */
+  onBanUser?: (userId: string) => void;
 }) {
   return (
     <Card className="overflow-hidden p-0">
@@ -534,6 +539,7 @@ export function AnomaliesCard({
               <TableHead className="w-[80px]">Denies</TableHead>
               <TableHead className="w-[90px]">Deny rate</TableHead>
               <TableHead>When</TableHead>
+              {onBanUser && <TableHead className="w-[110px]" />}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -565,6 +571,22 @@ export function AnomaliesCard({
                 <TableCell className="font-mono text-xs text-muted-foreground">
                   {fmtBurst(row.first_seen, row.last_seen)}
                 </TableCell>
+                {onBanUser && (
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="gap-1.5 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onBanUser(row.user_id);
+                      }}
+                    >
+                      <Ban className="size-3.5" />
+                      Ban user
+                    </Button>
+                  </TableCell>
+                )}
               </TableRow>
             ))}
           </TableBody>

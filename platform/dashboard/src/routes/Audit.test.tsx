@@ -16,6 +16,7 @@
 
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Route, Routes, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AuditAnomaly, AuditDecisionRow } from "@/lib/api";
@@ -91,7 +92,7 @@ const SIBLING: AuditDecisionRow = {
  * every requested URL (path + query) so tests can assert what filter
  * state actually reached the API.
  */
-function stubFetch(anomalies: AuditAnomaly[] = []): string[] {
+function stubFetch(anomalies: AuditAnomaly[] = [], role = "owner"): string[] {
   const calls: string[] = [];
   const json = (body: unknown) =>
     new Response(JSON.stringify(body), {
@@ -113,7 +114,7 @@ function stubFetch(anomalies: AuditAnomaly[] = []): string[] {
               slug: "acme",
               name: "Acme Inc",
               created_at: "2026-01-01T00:00:00Z",
-              role: "owner",
+              role,
             },
           ]);
         case "/v1/orgs/org-1/projects":
@@ -156,6 +157,13 @@ async function openDrawer(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByText("blocked by policy"));
   // The drawer header renders the event id — unique to the drawer.
   await screen.findByText("evt-1");
+}
+
+/** Landing route for the "Ban user" tie-in — echoes the deep-link query
+ * param so tests assert exactly what the anomaly row navigated to. */
+function BansSentinel() {
+  const [sp] = useSearchParams();
+  return <div>ban_user={sp.get("ban_user")}</div>;
 }
 
 describe("AuditPage", () => {
@@ -511,6 +519,34 @@ describe("AuditPage", () => {
 
       await screen.findByText("blocked by policy");
       expect(screen.queryByText(/detected/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Ban user tie-in", () => {
+    it("navigates to /bans?ban_user= when an admin bans an anomalous user", async () => {
+      stubFetch([ANOMALY], "admin");
+      const user = userEvent.setup();
+      renderWithProviders(
+        <Routes>
+          <Route path="/audit" element={<AuditPage />} />
+          <Route path="/bans" element={<BansSentinel />} />
+        </Routes>,
+        { initialRoute: "/audit" },
+      );
+
+      await screen.findByText("bob");
+      await user.click(screen.getByRole("button", { name: /ban user/i }));
+
+      // Real router navigation — the sentinel proves the exact query param.
+      expect(await screen.findByText("ban_user=bob")).toBeInTheDocument();
+    });
+
+    it("hides the Ban user action from non-admins", async () => {
+      stubFetch([ANOMALY], "member");
+      renderWithProviders(<AuditPage />);
+
+      await screen.findByText("bob");
+      expect(screen.queryByRole("button", { name: /ban user/i })).toBeNull();
     });
   });
 });
