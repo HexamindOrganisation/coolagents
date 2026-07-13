@@ -77,7 +77,13 @@ async def _mint() -> str:
     keystore.ensure_keypair()
     async with async_session_factory() as session:
         await ensure_default_seed(session)
-        await _seed_gdocs_agent(session)
+        # Best-effort: the gates demo's docs_agent is enrichment for the
+        # dashboard/hexkit half. A bad policy.yaml or seed error must NOT take
+        # down the core BYOK notebook path — log and carry on.
+        try:
+            await _seed_gdocs_agent(session)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[provision] docs_agent seed skipped: {exc}", file=sys.stderr)
         _, full_token = await mint_dev_token(
             session,
             DEFAULT_PROJECT_ID,

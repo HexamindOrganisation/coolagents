@@ -102,28 +102,28 @@ def start_services(dash_url: str | None = None) -> dict[str, str]:
     if hexkit_url:
         HEXKIT_URL_FILE.write_text(hexkit_url)
 
-    # --- Seed + mint the serve token BEFORE starting the API ------------
-    # provision talks to the shared SQLite + keystore directly (it doesn't
-    # need the API up), and it seeds docs_agent. Doing it first means the API's
-    # startup backfill_bundles compiles docs_agent's policy bundle — do it after
-    # the API boots and backfill has already run, and docs_agent is left
-    # bundle-less (usable only via the pydantic fallback, and unsignable).
-    sys.path.insert(0, str(DEPLOY_DIR))
-    sys.path.insert(0, str(API_DIR))
-    from provision import provision_serve_token  # noqa: E402  (path set above)
-
-    SERVE_KEY_FILE.write_text(provision_serve_token())
-    print("[boot] seeded demo agents + minted HEXGATE_API_KEY", flush=True)
-
     # --- Platform API (background) --------------------------------------
-    # Its lifespan re-runs the (idempotent) seed and compiles any missing
-    # bundles — including docs_agent's, now that it exists.
     _spawn(
         ["uvicorn", "hexgate_api.main:app", "--host", "0.0.0.0", "--port", str(API_PORT)],
         cwd=API_DIR,
         env=env,
     )
     _wait_healthy(f"{api_base}/v1/.well-known/keys")
+
+    # --- Mint the serve token + seed AFTER the API is healthy -----------
+    # Must come after _wait_healthy: run-integrated.sh treats SERVE_KEY_FILE
+    # appearing as "platform ready" and immediately binds the hexkit backend to
+    # the API, so the key must not exist before uvicorn answers. docs_agent is
+    # seeded without a compiled bundle — the SDK binds it via the pydantic
+    # policy_yaml fallback, which is fine here (the demo never requires signed
+    # bundles). The seed is best-effort (see provision) so a bad policy.yaml
+    # can't take down the BYOK notebook path.
+    sys.path.insert(0, str(DEPLOY_DIR))
+    sys.path.insert(0, str(API_DIR))
+    from provision import provision_serve_token  # noqa: E402  (path set above)
+
+    SERVE_KEY_FILE.write_text(provision_serve_token())
+    print("[boot] seeded demo agents + minted HEXGATE_API_KEY", flush=True)
     # serve itself runs in the notebook kernel (serve_manager), bound to the
     # live agent object. boot only hands it the key (file) + HEXGATE_API_URL (env).
     return env
