@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -71,13 +71,19 @@ export function CreateBanDialog({
   const [reason, setReason] = useState("");
   const createBan = useCreateBan();
 
-  // Reset the form whenever the dialog (re)opens, seeding from any prefill.
+  // Seed the form from `initial` only on the closed→open transition — NOT on
+  // every `initial` identity change. The parent re-derives `initial` when URL
+  // params change, so keying the reset on `initial` would wipe whatever the
+  // user has typed mid-edit. The ref tracks the previous open state.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setBanType(initial?.ban_type ?? "agent");
-    setAgentName(initial?.ban_type === "agent" ? (initial.target ?? "") : "");
-    setUserId(initial?.ban_type === "user" ? (initial.target ?? "") : "");
-    setReason(initial?.reason ?? "");
+    if (open && !wasOpen.current) {
+      setBanType(initial?.ban_type ?? "agent");
+      setAgentName(initial?.ban_type === "agent" ? (initial.target ?? "") : "");
+      setUserId(initial?.ban_type === "user" ? (initial.target ?? "") : "");
+      setReason(initial?.reason ?? "");
+    }
+    wasOpen.current = open;
   }, [open, initial]);
 
   const agentsQuery = useQuery({
@@ -126,6 +132,16 @@ export function CreateBanDialog({
         </DialogHeader>
 
         <div className="space-y-4 py-1">
+          {initial?.target && (
+            <div className="flex items-start gap-2 rounded-md border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+              <Info className="mt-px size-3.5 shrink-0" />
+              <span>
+                Target prefilled from a link — confirm it's the one you mean
+                before creating the ban.
+              </span>
+            </div>
+          )}
+
           <ToggleGroup
             type="single"
             value={banType}

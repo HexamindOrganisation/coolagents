@@ -9,6 +9,14 @@ import { BlockedAttemptDrawer } from "./BlockedAttemptDrawer";
 import { PAGE_SIZE, WINDOWS } from "./constants";
 import { formatAbsolute, formatRelative } from "./format";
 
+/** Keep the first occurrence of each event_id, preserving order. */
+function dedupById(rows: BanEnforcementRow[]): BanEnforcementRow[] {
+  const seen = new Set<string>();
+  return rows.filter((r) =>
+    seen.has(r.event_id) ? false : (seen.add(r.event_id), true),
+  );
+}
+
 /**
  * Region C (§9.3) — the secondary panel. A feed of runs refused by a
  * ban, before the model ran, from the dedicated `ban_enforcement` table.
@@ -43,8 +51,13 @@ export function BlockedAttemptsPanel({ projectId }: { projectId: string }) {
     },
   });
 
-  const rows: BanEnforcementRow[] =
-    feed.data?.pages.flatMap((p) => p.rows) ?? [];
+  // Dedup by event_id when flattening pages: this is a live feed ordered
+  // newest-first, so a new row landing between "Load more" clicks shifts every
+  // later offset by one and re-serves a boundary row. Without the dedup that
+  // surfaces as duplicate React keys / a row shown twice on a burst.
+  const rows: BanEnforcementRow[] = dedupById(
+    feed.data?.pages.flatMap((p) => p.rows) ?? [],
+  );
   const total = feed.data?.pages[0]?.total ?? 0;
   const remaining = Math.max(total - rows.length, 0);
 

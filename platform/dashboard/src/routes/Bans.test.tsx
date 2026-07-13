@@ -192,6 +192,8 @@ describe("BansPage", () => {
     expect(
       within(dialog).getByRole("heading", { name: "Create ban" }),
     ).toBeInTheDocument();
+    // Opened blank from the CTA → no "prefilled from a link" banner.
+    expect(within(dialog).queryByText(/prefilled from a link/i)).toBeNull();
   });
 
   it("auto-opens the dialog pre-set to User from ?ban_user=", async () => {
@@ -201,6 +203,10 @@ describe("BansPage", () => {
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("User ID")).toBeInTheDocument();
     expect(within(dialog).getByDisplayValue("u-9")).toBeInTheDocument();
+    // URL-prefilled target is untrusted → the dialog warns the operator.
+    expect(
+      within(dialog).getByText(/prefilled from a link/i),
+    ).toBeInTheDocument();
   });
 
   it("auto-opens the dialog pre-set to Agent from ?ban_agent=", async () => {
@@ -285,6 +291,63 @@ describe("BansPage", () => {
     await user.click(screen.getByRole("button", { name: /load .* more/i }));
     expect(await screen.findByText("r29")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /load .* more/i })).toBeNull();
+  });
+
+  it("dedups a row that repeats across pages on a live feed", async () => {
+    // A new blocked attempt landing between fetches shifts offsets, so the
+    // server re-serves a boundary row on page 2. Flatten must not render it
+    // twice (duplicate React keys / a row shown twice).
+    const rows: BanEnforcementRow[] = Array.from({ length: 30 }, (_, i) => ({
+      ...ENFORCEMENT,
+      event_id: `evt-${i}`,
+      ban_id: `ban_${i}`,
+      reason: `r${i}`,
+    }));
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    vi.spyOn(window, "fetch").mockImplementation(
+      async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), "http://localhost");
+        if (url.pathname === "/v1/orgs")
+          return json([
+            {
+              id: "org-1",
+              slug: "acme",
+              name: "Acme",
+              created_at: "2026-01-01T00:00:00Z",
+              role: "admin",
+            },
+          ]);
+        if (url.pathname === "/v1/orgs/org-1/projects")
+          return json([
+            {
+              id: PROJECT,
+              org_id: "org-1",
+              name: "demo",
+              created_at: "2026-01-01T00:00:00Z",
+            },
+          ]);
+        if (url.pathname === `/v1/projects/${PROJECT}/bans`) return json([]);
+        if (url.pathname === `/v1/projects/${PROJECT}/audit/ban-enforcements`) {
+          const offset = Number(url.searchParams.get("offset") ?? 0);
+          // Page 2 (offset 25) overlaps page 1 by re-serving row 24.
+          const slice = offset === 0 ? rows.slice(0, 25) : rows.slice(24, 30);
+          return json({ rows: slice, total: rows.length, limit: 25, offset });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    await screen.findByText("r24");
+    await user.click(screen.getByRole("button", { name: /load .* more/i }));
+    await screen.findByText("r29");
+    // The overlapped boundary row renders exactly once, not twice.
+    expect(screen.getAllByText("r24")).toHaveLength(1);
   });
 
   it("closes the blocked-attempt drawer", async () => {

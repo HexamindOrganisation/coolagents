@@ -161,8 +161,13 @@ class ProjectUpdate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Kill switch — ban wire shapes
+# Ban wire shapes
 # ---------------------------------------------------------------------------
+
+# The two ban kinds. Kept as a closed set on the wire so a stray DB value can't
+# slip past OpenAPI/Pydantic into the dashboard (writes are already gated by
+# BanCreate + the ClickHouse Enum8).
+BanType = Literal["agent", "user"]
 
 
 class BanCreate(BaseModel):
@@ -194,7 +199,7 @@ class BanRead(BaseModel):
 
     id: str
     project_id: str
-    ban_type: str
+    ban_type: BanType
     target_agent_name: Optional[str]
     target_user_id: Optional[str]
     reason: Optional[str]
@@ -567,7 +572,7 @@ class BanEnforcementRow(BaseModel):
     agent_name: str
     session_id: str = ""
     user_id: str = ""
-    ban_type: str
+    ban_type: BanType
     ban_id: str
     reason: str = ""
 
