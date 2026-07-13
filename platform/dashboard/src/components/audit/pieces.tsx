@@ -57,8 +57,10 @@ const toDatum = (r: AuditBreakdownRow): BreakdownDatum => ({
 // Radix Select items can't carry value="" — UI-local stand-in for "all".
 const ALL = "__all__";
 
-// Module-level (not re-created per render).
-function FilterSelect({
+// Module-level (not re-created per render). Exported — reused by the
+// Usage page's filter bar (components/usage/pieces.tsx), which needs the
+// same "select with an all-option" shape for agent/model/user.
+export function FilterSelect({
   value,
   all,
   opts,

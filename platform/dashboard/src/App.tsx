@@ -18,6 +18,7 @@ import { SettingsPage } from "@/routes/Settings";
 import { SignInPage } from "@/routes/SignIn";
 import { SignUpPage } from "@/routes/SignUp";
 import { TokensPage } from "@/routes/Tokens";
+import { UsagePage } from "@/routes/Usage";
 import { VerifyEmailPage } from "@/routes/VerifyEmail";
 
 export default function App() {
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="playground" element={<PlaygroundPage />} />
           <Route path="audit" element={<AuditPage />} />
           <Route path="bans" element={<BansPage />} />
+          <Route path="usage" element={<UsagePage />} />
           <Route path="tokens" element={<TokensPage />} />
           <Route path="orgs" element={<OrgsPage />} />
           <Route path="orgs/:orgId/settings" element={<OrgSettingsPage />} />

@@ -36,6 +36,7 @@ import {
   type AuditFilters as Filters,
   useAuditFilters,
 } from "@/lib/audit-filters";
+import { rangeDays } from "@/lib/date-range";
 import { fmtTs } from "@/components/audit/fmt";
 import {
   ActiveChips,
@@ -454,15 +455,7 @@ export function AuditPage() {
   const apprPct = counts.total
     ? Math.round((counts.needs_approval / counts.total) * 100)
     : 0;
-  const nDays =
-    f.start_date && f.end_date
-      ? Math.max(
-          1,
-          Math.round(
-            (f.end_date.getTime() - f.start_date.getTime()) / 86_400_000,
-          ),
-        )
-      : RANGE_DAYS[f.range];
+  const nDays = rangeDays(f.range, f.start_date, f.end_date);
   const avgLabel =
     !f.start_date && f.range === "24h"
       ? `${(counts.total / 24).toFixed(1)}/hr avg`
