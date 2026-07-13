@@ -394,7 +394,7 @@ SELECT event_id, occurred_at, received_at, agent_name, session_id, user_id,
        count() OVER () AS total_matches
 FROM ban_enforcement
 WHERE <project + window scope>
-ORDER BY occurred_at DESC
+ORDER BY occurred_at DESC, event_id DESC   -- event_id breaks ms-precision ties into a total order
 LIMIT {lim:UInt32} OFFSET {off:UInt32}
 ```
 
@@ -546,6 +546,7 @@ in follow-up PRs:
 - **No DB uniqueness constraint** — the one-active-ban-per-target rule is service-enforced only; a
   partial unique index would back it at the DB level.
 - **No tool-level bans** — covered by policy `deny`; could be reintroduced if a real need appears.
+- **Enforcement rows are SDK-attested, not platform-verified at ingest** — `POST /v1/audit/ban-enforcements` trusts the project bearer (same model as the decisions ingest), so a leaked bearer could spray fake rows into *its own* project's feed; verifying/signing audit telemetry is a cross-cutting follow-up.
 
 ---
 

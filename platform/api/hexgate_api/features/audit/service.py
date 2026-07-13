@@ -549,11 +549,15 @@ def list_ban_enforcements(
 
     # Same one-scan page+total trick as list_decisions (count() OVER () is
     # computed before LIMIT, so it carries the full match count per row).
+    # event_id breaks occurred_at ties into a total order — DateTime64(3) is
+    # only millisecond-precise and the gate can emit several events in one
+    # tick, so without it paginated offsets would duplicate/skip tied rows.
+    # Matches the storage sort key (project_id, occurred_at, event_id).
     page_params = {**params, "lim": limit, "off": offset}
     result = client.query(
         f"SELECT {_BAN_ENFORCEMENT_LIST_COLUMNS}, count() OVER () AS total_matches "
         f"FROM ban_enforcement WHERE {where_sql} "
-        "ORDER BY occurred_at DESC LIMIT {lim:UInt32} OFFSET {off:UInt32}",
+        "ORDER BY occurred_at DESC, event_id DESC LIMIT {lim:UInt32} OFFSET {off:UInt32}",
         parameters=page_params,
     )
     rows = []

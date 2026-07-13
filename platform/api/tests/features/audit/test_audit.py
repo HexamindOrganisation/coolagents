@@ -706,6 +706,8 @@ def test_list_ban_enforcements_reads_own_table_with_window_total() -> None:
     sql = client.query.call_args.args[0]
     assert "FROM ban_enforcement" in sql
     assert "policy_decision" not in sql
+    # event_id tiebreaker keeps offset pagination stable across ms-tied rows.
+    assert "ORDER BY occurred_at DESC, event_id DESC" in sql
 
 
 def test_list_ban_enforcements_past_end_page_falls_back_to_count() -> None:
