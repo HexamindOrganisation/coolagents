@@ -64,10 +64,14 @@ for _ in $(seq 1 120); do [ -s "$SERVE_KEY_FILE" ] && break; sleep 1; done
 # Wait for the backend to finish startup (its lifespan connects the MCP server
 # before it serves /agents) so the proxy's first roster fetch doesn't race it.
 echo "waiting for the gdocs backend on :$GDOCS_PORT…"
+agent_ready=""
 for _ in $(seq 1 60); do
-  curl -sf -o /dev/null "$GDOCS_URL/agents" && break
+  if curl -sf -o /dev/null "$GDOCS_URL/agents"; then agent_ready=1; break; fi
   sleep 1
 done
+# Non-fatal (the notebook + dashboard still come up), but say so loudly — a
+# silently dead backend just looks like a broken chat UI otherwise.
+[ -n "$agent_ready" ] || echo "⚠ gdocs backend never answered on :$GDOCS_PORT — hexkit chat will be broken; see /tmp/gates-agent.log" >&2
 
 # 3. hexkit proxy (:8800) -> the gdocs backend, with the gdocs demo users.
 (
