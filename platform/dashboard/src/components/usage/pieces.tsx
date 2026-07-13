@@ -8,7 +8,7 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { BarRow, BreakdownCardShell } from "@/components/ui/breakdown-card";
-import { FilterSelect } from "@/components/audit/pieces";
+import { FilterSelect } from "@/components/ui/filter-select";
 
 // ————————————————————————————————————————————— Filter bar
 export function UsageFilterBar({
