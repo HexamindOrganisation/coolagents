@@ -95,4 +95,60 @@ describe("CreateBanDialog", () => {
       screen.getByRole("heading", { name: "Create ban" }),
     ).toBeInTheDocument();
   });
+
+  it("submits an agent ban with only the agent target", async () => {
+    const calls: { path: string; body?: unknown }[] = [];
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": "application/json" },
+      });
+    vi.spyOn(window, "fetch").mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = new URL(String(input), "http://localhost");
+        calls.push({
+          path: url.pathname,
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        if (url.pathname === "/v1/projects/p1/agents")
+          return json([{ name: "support_bot" }]);
+        if (url.pathname === "/v1/projects/p1/bans")
+          return json({ id: "ban_1" }, 201);
+        return new Response("not found", { status: 404 });
+      },
+    );
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    render(wrap({ ban_type: "agent", target: "support_bot" }, onOpenChange));
+
+    await user.click(screen.getByRole("button", { name: /create ban/i }));
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    const post = calls.find((c) => c.path === "/v1/projects/p1/bans");
+    // Only the agent target is sent — no target_user_id.
+    expect(post?.body).toEqual({
+      ban_type: "agent",
+      target_agent_name: "support_bot",
+    });
+  });
+
+  it("disables Create ban until a target is chosen", async () => {
+    vi.spyOn(window, "fetch").mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    // Agent ban opened with no agent selected → nothing to submit.
+    render(wrap({ ban_type: "agent" }));
+
+    expect(
+      await screen.findByRole("button", { name: /create ban/i }),
+    ).toBeDisabled();
+  });
+
+  it("warns that the reason is visible to the banned user", () => {
+    render(wrap({ ban_type: "user", target: "u-1" }));
+    expect(screen.getByText(/banned user may see it/i)).toBeInTheDocument();
+  });
 });

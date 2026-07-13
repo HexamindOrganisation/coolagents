@@ -377,4 +377,20 @@ describe("BansPage", () => {
     await user.click(screen.getByTitle("Close (Esc)"));
     expect(screen.queryByText(/Refused before the model ran/)).toBeNull();
   });
+
+  it("closes the blocked-attempt drawer on Escape", async () => {
+    stubFetch({ role: "admin", enforcements: [ENFORCEMENT] });
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    await user.click(await screen.findByText("incident 42"));
+    expect(
+      screen.getByText(/Refused before the model ran/),
+    ).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByText(/Refused before the model ran/)).toBeNull(),
+    );
+  });
 });
