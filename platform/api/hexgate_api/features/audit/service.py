@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from collections import deque
 
 from clickhouse_connect.driver.client import Client
 
+from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
     AuditAnomaly,
@@ -38,33 +39,14 @@ class AuditPayloadTooLarge(Exception):
         self.limit = limit
 
 
-class AuditEventOutOfWindow(Exception):
-    """occurred_at falls outside the accepted ingest window."""
-
-
 MAX_ARGS_BYTES = 8 * 1024
 MAX_HINT_BYTES = 4 * 1024
-
-# Accepted occurred_at window: small future skew for client clocks, and no
-# older than retention — rows past TTL would be merged away on arrival.
-CLOCK_SKEW_FUTURE = timedelta(minutes=5)
-RETENTION_WINDOW = timedelta(days=90)
 
 _ANOMALY_MIN_REQUESTS = 5
 _TIMEDELTA_ANOMALY_HOURS = 1
 _WINDOW_TD = timedelta(hours=_TIMEDELTA_ANOMALY_HOURS)
 _DENY_RATE_MEDIUM = 0.3
 _DENY_RATE_HIGH = 0.5
-
-
-def validate_event_window(occurred_at: datetime) -> None:
-    """Raise :class:`AuditEventOutOfWindow` when occurred_at is outside
-    [now - retention, now + skew]. Mapped to 400 in main.py."""
-    now = datetime.now(timezone.utc)
-    if occurred_at > now + CLOCK_SKEW_FUTURE:
-        raise AuditEventOutOfWindow("occurred_at is in the future")
-    if occurred_at < now - RETENTION_WINDOW:
-        raise AuditEventOutOfWindow("occurred_at is older than retention window")
 
 
 # Order matches schema.sql; received_at absent (server-stamped via column default).
@@ -191,9 +173,6 @@ def insert_ban_enforcement(
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------
 
-# Dashboard windows → hours; 90d is the 90-day TTL ceiling.
-WINDOW_HOURS: dict[str, int] = {"24h": 24, "7d": 24 * 7, "30d": 24 * 30, "90d": 24 * 90}
-
 
 def bucket_minutes_for_timedelta(delta: timedelta) -> int:
     """Bucket size (minutes) for a free-form date range.
@@ -220,16 +199,6 @@ def _zero_counts() -> dict[str, int]:
     return {"all": 0, **{e.value: 0 for e in AuditOutcome}}
 
 
-def _date_range_valid(start: datetime | None, end: datetime | None) -> bool:
-    """True if both dates are present and start <= end."""
-    if not (start and end):
-        return False
-    if start > end:
-        _log.warning(f"Date range invalid, start > end: {start} > {end}")
-        return False
-    return True
-
-
 def _scope(
     project_id: str,
     since_hours: int,
@@ -243,22 +212,9 @@ def _scope(
 ) -> tuple[list[str], dict[str, object]]:
     """Shared WHERE + params for the scope filters (project/window/agent/role/
     tool) that all reads narrow by. Pass role="" for the no-role bucket."""
-    where = [
-        "project_id = {pid:String}",
-    ]
-    params: dict[str, object] = {"pid": project_id}
-    if _date_range_valid(start_date, end_date):
-        where.append(
-            "occurred_at >= {start_date:DateTime} AND occurred_at <= {end_date:DateTime}"
-        )
-        params["start_date"] = start_date
-        params["end_date"] = end_date
-    else:
-        params["hrs"] = since_hours
-        where.append("occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR")
-    if agent:
-        where.append("agent_name = {agent:String}")
-        params["agent"] = agent
+    where, params = scope_filters(
+        project_id, since_hours, agent=agent, start_date=start_date, end_date=end_date
+    )
     if role is not None:
         where.append("role = {role:String}")
         params["role"] = role
@@ -636,26 +592,3 @@ def anomalies(
     )
     result = client.query(anomalies_sql, parameters=params)
     return _sliding_window_anomalies(result.result_rows)
-
-
-def _ensure_utc(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def prepare_date_range(
-    start_date: datetime | None, end_date: datetime | None
-) -> tuple[datetime | None, datetime | None]:
-    start_date = _ensure_utc(start_date)
-    end_date = _ensure_utc(end_date)
-
-    if end_date:
-        end_date = min(end_date, datetime.now(timezone.utc) + CLOCK_SKEW_FUTURE)
-
-    if start_date and end_date:
-        start_date = max(start_date, end_date - RETENTION_WINDOW)
-
-    return start_date, end_date

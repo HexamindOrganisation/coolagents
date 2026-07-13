@@ -11,10 +11,14 @@ from clickhouse_connect.driver.exceptions import DataError, OperationalError
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.core.db import get_session
+from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api.deps.clickhouse import require_clickhouse
+from hexgate_api.deps.org import require_org_member
 from hexgate_api.deps.tokens import require_project
 from hexgate_api.features.llm_invocations import service as llm_invocations
+from hexgate_api.features.llm_invocations.service import summarize_llm_invocations
 from hexgate_api.main import app
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -109,7 +113,9 @@ _STUB_AGENT_VERSION_ID = "stub_v_id_xyz"
 
 
 @pytest.fixture
-def client(fake_clickhouse: MagicMock, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def client(
+    fake_clickhouse: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> TestClient:
     """TestClient with auth, ClickHouse, session, and version-lookup stubbed."""
     app.dependency_overrides[require_project] = lambda: "proj_test"
     app.dependency_overrides[require_clickhouse] = lambda: fake_clickhouse
@@ -122,10 +128,17 @@ def client(fake_clickhouse: MagicMock, monkeypatch: pytest.MonkeyPatch) -> TestC
         "hexgate_api.features.llm_invocations.router.get_latest_agent_version_id",
         _stub_version_lookup,
     )
+    # The /llm/summary gating tests run the real require_org_member chain,
+    # whose cookie transport needs an initialised keystore (same swap as the
+    # client fixture in test_audit.py).
+    original_keystore = keystore_mod.keystore
+    keystore_mod.keystore = FileKeyStore(base_dir=tmp_path / "keystore")
+    keystore_mod.keystore.ensure_keypair()
     try:
         yield TestClient(app)
     finally:
         app.dependency_overrides.clear()
+        keystore_mod.keystore = original_keystore
 
 
 def test_ingest_llm_invocation_happy_path(
@@ -203,6 +216,230 @@ def test_when_clickhouse_rejects_the_row_then_422_is_returned(
 
 
 # ---------------------------------------------------------------------------
+# _scope() — llm_invocation's own filters layered on the shared scope_filters
+# ---------------------------------------------------------------------------
+
+_BASE_WHERE = [
+    "project_id = {pid:String}",
+    "occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR",
+]
+
+
+def test_scope_no_filters() -> None:
+    where, params = llm_invocations._scope("p1", 24)
+    assert where == _BASE_WHERE
+    assert params == {"pid": "p1", "hrs": 24}
+
+
+def test_scope_all_filters() -> None:
+    where, params = llm_invocations._scope(
+        "p1", 24, agent="researcher", user="u_1", model="gpt-4o"
+    )
+    assert where == _BASE_WHERE + [
+        "agent_name = {agent:String}",
+        "user_id = {user:String}",
+        "model = {model:String}",
+    ]
+    assert params == {
+        "pid": "p1",
+        "hrs": 24,
+        "agent": "researcher",
+        "user": "u_1",
+        "model": "gpt-4o",
+    }
+
+
+def test_scope_empty_user_filters_no_user_bucket() -> None:
+    """user="" (no-user drill-down) must still emit the filter clause —
+    `if user:` instead of `if user is not None:` would silently widen it."""
+    where, params = llm_invocations._scope("p1", 24, user="")
+    assert "user_id = {user:String}" in where
+    assert params["user"] == ""
+
+
+# ---------------------------------------------------------------------------
+# summarize_llm_invocations() — GROUPING SETS row classification
+# ---------------------------------------------------------------------------
+
+# Rows are (model, agent_name, user_id, g_model, g_agent, g_user, calls,
+# input_tokens, output_tokens). GROUPING() flags: 1 = column rolled up.
+# Only the () set rolls up every dimension.
+
+
+def _summary_result(rows: list[tuple]) -> MagicMock:
+    client = MagicMock()
+    client.query.return_value.result_rows = rows
+    return client
+
+
+def test_summarize_filters_reach_query() -> None:
+    client = _summary_result([])
+    summarize_llm_invocations(
+        client,
+        project_id="p1",
+        since_hours=24,
+        agent="researcher",
+        user="u_1",
+        model="gpt-4o",
+    )
+    params = client.query.call_args.kwargs["parameters"]
+    assert params["agent"] == "researcher"
+    assert params["user"] == "u_1"
+    assert params["model"] == "gpt-4o"
+
+
+def test_summarize_classifies_grouping_sets() -> None:
+    client = _summary_result(
+        [
+            # () — grand total (the ONLY row where every grouping flag is 1)
+            ("", "", "", 1, 1, 1, 10, 1000, 400),
+            # (model)
+            ("gpt-4o", "", "", 0, 1, 1, 7, 700, 300),
+            ("gpt-4o-mini", "", "", 0, 1, 1, 3, 300, 100),
+            # (agent_name)
+            ("", "researcher", "", 1, 0, 1, 6, 600, 250),
+            ("", "scraper", "", 1, 0, 1, 4, 400, 150),
+            # (user_id) — empty user_id keeps its raw "" key on the wire
+            ("", "", "Alice", 1, 1, 0, 6, 600, 250),
+            ("", "", "Bob", 1, 1, 0, 4, 400, 150),
+        ]
+    )
+
+    data = summarize_llm_invocations(client, project_id="p1", since_hours=24)
+
+    assert data["totals"] == {
+        "calls": 10,
+        "input_tokens": 1000,
+        "output_tokens": 400,
+        "total_tokens": 1400,
+    }
+    assert data["by_model"] == [
+        {
+            "key": "gpt-4o",
+            "calls": 7,
+            "input_tokens": 700,
+            "output_tokens": 300,
+            "total_tokens": 1000,
+        },
+        {
+            "key": "gpt-4o-mini",
+            "calls": 3,
+            "input_tokens": 300,
+            "output_tokens": 100,
+            "total_tokens": 400,
+        },
+    ]
+    assert data["by_agent"] == [
+        {
+            "key": "researcher",
+            "calls": 6,
+            "input_tokens": 600,
+            "output_tokens": 250,
+            "total_tokens": 850,
+        },
+        {
+            "key": "scraper",
+            "calls": 4,
+            "input_tokens": 400,
+            "output_tokens": 150,
+            "total_tokens": 550,
+        },
+    ]
+    assert data["by_user"] == [
+        {
+            "key": "Alice",
+            "calls": 6,
+            "input_tokens": 600,
+            "output_tokens": 250,
+            "total_tokens": 850,
+        },
+        {
+            "key": "Bob",
+            "calls": 4,
+            "input_tokens": 400,
+            "output_tokens": 150,
+            "total_tokens": 550,
+        },
+    ]
+
+
+def test_summarize_empty_result() -> None:
+    data = summarize_llm_invocations(
+        _summary_result([]), project_id="p1", since_hours=24
+    )
+    assert data == {
+        "totals": {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
+        "by_model": [],
+        "by_agent": [],
+        "by_user": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/projects/{project_id}/llm/summary — require_org_member gating
+# ---------------------------------------------------------------------------
+
+
+def test_llm_summary_rejects_anonymous(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """No cookie / dev header → the require_org_member chain 401s before
+    the handler runs, so ClickHouse is never queried."""
+    r = client.get("/v1/projects/proj_test/llm/summary")
+    assert r.status_code == 401
+    fake_clickhouse.query.assert_not_called()
+
+
+def test_llm_summary_allows_org_member(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """With membership satisfied, the same request reaches the handler —
+    proving the 401 above comes from the auth gate, not the route."""
+    app.dependency_overrides[require_org_member] = lambda: MagicMock()
+    fake_clickhouse.query.return_value.result_rows = []
+    r = client.get("/v1/projects/proj_test/llm/summary")
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "totals": {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        },
+        "by_model": [],
+        "by_agent": [],
+        "by_user": [],
+    }
+
+
+def test_llm_summary_passes_filters_to_clickhouse_query(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    app.dependency_overrides[require_org_member] = lambda: MagicMock()
+    fake_clickhouse.query.return_value.result_rows = []
+    r = client.get(
+        "/v1/projects/proj_test/llm/summary",
+        params={
+            "window": "7d",
+            "agent": "researcher",
+            "user": "u_1",
+            "model": "gpt-4o",
+        },
+    )
+    assert r.status_code == 200, r.text
+    params = fake_clickhouse.query.call_args.kwargs["parameters"]
+    assert params["agent"] == "researcher"
+    assert params["user"] == "u_1"
+    assert params["model"] == "gpt-4o"
+    assert params["hrs"] == 24 * 7
+
+
+# ---------------------------------------------------------------------------
 # Integration — requires `make clickhouse-up` first; opt-in via marker
 # ---------------------------------------------------------------------------
 
@@ -262,6 +499,114 @@ def test_real_clickhouse_round_trip() -> None:
         assert output_tokens == 45
         assert received_at is not None  # server-stamped via column default
         assert av_id == "9f1e3c5a-test"
+    finally:
+        clickhouse_client.command(
+            "ALTER TABLE llm_invocation DELETE WHERE project_id = {pid:String}",
+            parameters={"pid": project_id},
+        )
+
+
+@pytest.mark.integration
+def test_summarize_llm_invocations_happy_path() -> None:
+    """Insert a handful of rows through the real write path, then exercise the
+    actual GROUPING SETS SQL (never run against real ClickHouse anywhere else)
+    to confirm it's valid ClickHouse syntax and classifies rows correctly."""
+    from hexgate_api.core.clickhouse import get_clickhouse as real_get_clickhouse
+
+    clickhouse_client = real_get_clickhouse()
+    project_id = f"test_proj_{uuid.uuid4().hex[:8]}"
+
+    # Distinct totals per bucket so sort order (desc by total_tokens) is
+    # unambiguous — no two rows in the same breakdown should tie.
+    rows = [
+        _llm_event(
+            agent_name="researcher",
+            model="gpt-4o",
+            user_id="alice",
+            input_tokens=100,
+            output_tokens=50,
+        ),
+        _llm_event(
+            agent_name="researcher",
+            model="gpt-4o",
+            user_id="bob",
+            input_tokens=200,
+            output_tokens=100,
+        ),
+        _llm_event(
+            agent_name="scraper",
+            model="gpt-4o-mini",
+            user_id="alice",
+            input_tokens=50,
+            output_tokens=25,
+        ),
+    ]
+    for payload in rows:
+        llm_invocations.insert_llm_invocation(
+            clickhouse_client,
+            event=LlmInvocationEvent(**payload),
+            project_id=project_id,
+            agent_version_id="9f1e3c5a-test",
+        )
+
+    try:
+        data = summarize_llm_invocations(
+            clickhouse_client, project_id=project_id, since_hours=24
+        )
+        assert data["totals"] == {
+            "calls": 3,
+            "input_tokens": 350,
+            "output_tokens": 175,
+            "total_tokens": 525,
+        }
+        assert data["by_model"] == [
+            {
+                "key": "gpt-4o",
+                "calls": 2,
+                "input_tokens": 300,
+                "output_tokens": 150,
+                "total_tokens": 450,
+            },
+            {
+                "key": "gpt-4o-mini",
+                "calls": 1,
+                "input_tokens": 50,
+                "output_tokens": 25,
+                "total_tokens": 75,
+            },
+        ]
+        assert data["by_agent"] == [
+            {
+                "key": "researcher",
+                "calls": 2,
+                "input_tokens": 300,
+                "output_tokens": 150,
+                "total_tokens": 450,
+            },
+            {
+                "key": "scraper",
+                "calls": 1,
+                "input_tokens": 50,
+                "output_tokens": 25,
+                "total_tokens": 75,
+            },
+        ]
+        assert data["by_user"] == [
+            {
+                "key": "bob",
+                "calls": 1,
+                "input_tokens": 200,
+                "output_tokens": 100,
+                "total_tokens": 300,
+            },
+            {
+                "key": "alice",
+                "calls": 2,
+                "input_tokens": 150,
+                "output_tokens": 75,
+                "total_tokens": 225,
+            },
+        ]
     finally:
         clickhouse_client.command(
             "ALTER TABLE llm_invocation DELETE WHERE project_id = {pid:String}",

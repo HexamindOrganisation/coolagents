@@ -516,6 +516,30 @@ class AuditSummary(BaseModel):
     by_user: list[AuditBreakdownRow]
 
 
+class LlmInvocationTotals(BaseModel):
+    """Call volume + token counts for a slice."""
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+
+
+class LlmInvocationBreakdownRow(LlmInvocationTotals):
+    """One model/agent/user bucket."""
+
+    key: str
+
+
+class LlmInvocationSummary(BaseModel):
+    """Totals + breakdowns powering the token-usage dashboard panel."""
+
+    totals: LlmInvocationTotals
+    by_model: list[LlmInvocationBreakdownRow]
+    by_agent: list[LlmInvocationBreakdownRow]
+    by_user: list[LlmInvocationBreakdownRow]
+
+
 class AuditTimeseriesPoint(BaseModel):
     """One time bucket of the outcome-over-time chart."""
 

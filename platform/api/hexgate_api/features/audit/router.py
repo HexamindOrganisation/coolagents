@@ -9,16 +9,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.features.audit.service import (
-    WINDOW_HOURS,
-    AuditEventOutOfWindow,
     AuditPayloadTooLarge,
     anomalies,
     insert_ban_enforcement,
     insert_decision,
     list_decisions,
-    prepare_date_range,
     summarize,
     timeseries,
+)
+from hexgate_api.query_scope import (
+    WINDOW_HOURS,
+    EventOutOfWindow,
+    prepare_date_range,
     validate_event_window,
 )
 from hexgate_api.core.db import get_session
@@ -68,7 +70,7 @@ async def ingest_decision(
     """
     try:
         validate_event_window(body.occurred_at)
-    except AuditEventOutOfWindow as exc:
+    except EventOutOfWindow as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     agent_version_id = await get_latest_agent_version_id(
@@ -113,7 +115,7 @@ async def ingest_ban_enforcement(
     agent_version_id are server-resolved; idempotent on event_id."""
     try:
         validate_event_window(body.occurred_at)
-    except AuditEventOutOfWindow as exc:
+    except EventOutOfWindow as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     agent_version_id = await get_latest_agent_version_id(
