@@ -12,7 +12,7 @@ from __future__ import annotations
 from inspect import isawaitable
 from typing import Any
 
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.decision import Decision
 
 

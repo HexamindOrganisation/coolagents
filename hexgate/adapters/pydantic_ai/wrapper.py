@@ -17,7 +17,7 @@ from pydantic_ai.tools import Tool
 
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.adapters.pydantic_ai.tools import wrap_tools
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.security.bans import resolve_ban_gate

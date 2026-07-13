@@ -14,6 +14,7 @@ import nest_asyncio
 from agents import (
     Agent,
     RunConfig,
+    RunHooks,
     Runner,
     RunResult,
     RunResultStreaming,
@@ -21,17 +22,60 @@ from agents import (
     TContext,
     TResponseInputItem,
 )
+from agents.lifecycle import RunHooksBase
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
+from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+
+
+class _CompositeRunHooks(RunHooks):
+    """Fan a run's lifecycle callbacks out to multiple ``RunHooks``.
+
+    ``Runner.run*`` accepts exactly one ``hooks=`` object; when the caller
+    already passed one, ``HexgateUsageHooks`` must not replace it — this
+    composes both and forwards every ``RunHooksBase`` callback to each in
+    turn.
+    """
+
+    def __init__(self, hooks: list[RunHooksBase]) -> None:
+        self._hooks = hooks
+
+    async def on_llm_start(self, context, agent, system_prompt, input_items) -> None:
+        for hook in self._hooks:
+            await hook.on_llm_start(context, agent, system_prompt, input_items)
+
+    async def on_llm_end(self, context, agent, response) -> None:
+        for hook in self._hooks:
+            await hook.on_llm_end(context, agent, response)
+
+    async def on_agent_start(self, context, agent) -> None:
+        for hook in self._hooks:
+            await hook.on_agent_start(context, agent)
+
+    async def on_agent_end(self, context, agent, output) -> None:
+        for hook in self._hooks:
+            await hook.on_agent_end(context, agent, output)
+
+    async def on_handoff(self, context, from_agent, to_agent) -> None:
+        for hook in self._hooks:
+            await hook.on_handoff(context, from_agent, to_agent)
+
+    async def on_tool_start(self, context, agent, tool) -> None:
+        for hook in self._hooks:
+            await hook.on_tool_start(context, agent, tool)
+
+    async def on_tool_end(self, context, agent, tool, result) -> None:
+        for hook in self._hooks:
+            await hook.on_tool_end(context, agent, tool, result)
 
 
 class HexgateRunner:
@@ -109,12 +153,21 @@ class HexgateRunner:
         with propagate_attributes(**kwargs):
             yield
 
+    def _merge_hooks(self, hooks: RunHooks | None) -> RunHooks:
+        """Compose caller-supplied ``hooks`` with the usage hook — never
+        clobber a hooks object the caller already passed."""
+        usage_hooks = HexgateUsageHooks(api_key=self.api_key)
+        if hooks is None:
+            return usage_hooks
+        return _CompositeRunHooks([hooks, usage_hooks])
+
     async def run(
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
         user: User,
         run_config: RunConfig | None = None,
+        hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResult:
         """Run the OpenAI agent asynchronously inside a User scope."""
@@ -132,7 +185,11 @@ class HexgateRunner:
         async with user:
             with self._propagate(user, agent.name):
                 return await Runner.run(
-                    wrapped_agent, input, run_config=run_config, **kwargs
+                    wrapped_agent,
+                    input,
+                    run_config=run_config,
+                    hooks=self._merge_hooks(hooks),
+                    **kwargs,
                 )
 
     def run_sync(
@@ -141,6 +198,7 @@ class HexgateRunner:
         input: str | list[TResponseInputItem] | RunState[TContext],
         user: User,
         run_config: RunConfig | None = None,
+        hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResult:
         """Run the OpenAI agent synchronously inside a User scope."""
@@ -158,7 +216,11 @@ class HexgateRunner:
         with user.sync_scope():
             with self._propagate(user, agent.name):
                 return Runner.run_sync(
-                    wrapped_agent, input, run_config=run_config, **kwargs
+                    wrapped_agent,
+                    input,
+                    run_config=run_config,
+                    hooks=self._merge_hooks(hooks),
+                    **kwargs,
                 )
 
     def run_streamed(
@@ -167,6 +229,7 @@ class HexgateRunner:
         input: str | list[TResponseInputItem] | RunState[TContext],
         user: User,
         run_config: RunConfig | None = None,
+        hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResultStreaming:
         """Stream the OpenAI agent inside a User scope.
@@ -193,7 +256,11 @@ class HexgateRunner:
         with user.sync_scope():
             with self._propagate(user, agent.name):
                 result = Runner.run_streamed(
-                    wrapped_agent, input, run_config=run_config, **kwargs
+                    wrapped_agent,
+                    input,
+                    run_config=run_config,
+                    hooks=self._merge_hooks(hooks),
+                    **kwargs,
                 )
 
         original_stream_events = result.stream_events

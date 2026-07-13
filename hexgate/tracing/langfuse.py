@@ -1,25 +1,29 @@
-"""Langfuse integration helpers."""
+"""LangChain-tied Langfuse integration.
+
+The framework-agnostic bits (``get_client``, ``propagate_attributes``,
+``observe``, ``maybe_get_trace_url``, the ``LangfuseHandler`` Protocol)
+live in :mod:`hexgate.tracing.langfuse_core` and are re-exported here so
+pre-refactor imports of the form ``from hexgate.tracing.langfuse import
+observe`` keep working. Code that DOESN'T need the LangChain callback
+handler should import from ``_core`` directly to skip the
+``langfuse.langchain`` + ``langchain_core.runnables`` load.
+"""
 
 from __future__ import annotations
 
 from inspect import signature
-from typing import Any, Protocol
 
-from langfuse import get_client, observe as langfuse_observe
-from langfuse.langchain import CallbackHandler
 from langchain_core.runnables import RunnableConfig
+from langfuse.langchain import CallbackHandler
 
-
-class LangfuseHandler(Protocol):
-    """Protocol for the Langfuse callback handler used by hexgate."""
-
-    last_trace_id: str | None
-    langfuse_metadata: dict[str, Any]
-
-
-def observe(*args, **kwargs):
-    """Apply the Langfuse observe decorator."""
-    return langfuse_observe(*args, **kwargs)
+# Re-exports for back-compat with pre-split callers.
+from hexgate.tracing.langfuse_core import (  # noqa: F401 — re-export
+    LangfuseHandler,
+    get_client,
+    maybe_get_trace_url,
+    observe,
+    propagate_attributes,
+)
 
 
 def get_langfuse_handler(
@@ -56,13 +60,3 @@ def get_langfuse_runnable_config(handler: CallbackHandler) -> RunnableConfig:
         config["metadata"] = {k: v for k, v in metadata.items() if v is not None}
 
     return config
-
-
-def maybe_get_trace_url(handler: CallbackHandler | None = None) -> str | None:
-    """Return the current trace URL if Langfuse is active."""
-    client = get_client()
-    trace_id = getattr(handler, "last_trace_id", None) if handler is not None else None
-    try:
-        return client.get_trace_url(trace_id=trace_id)
-    except Exception:
-        return None

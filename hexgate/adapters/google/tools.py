@@ -20,7 +20,7 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
 from hexgate.agents.approvals import resolve_approval_async
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 

@@ -19,7 +19,7 @@ from agents import FunctionTool
 from agents.tool import ToolContext
 
 from hexgate.agents.approvals import resolve_approval_async
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 

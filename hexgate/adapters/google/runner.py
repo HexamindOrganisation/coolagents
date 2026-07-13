@@ -9,14 +9,16 @@ from typing import Any, AsyncGenerator, Generator
 
 import nest_asyncio
 from google.adk.agents import BaseAgent
+from google.adk.apps import App
 from google.adk.runners import Runner
 from google.adk.sessions import BaseSessionService
 from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
+from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
-from hexgate.agents.factory import ApprovalHandler
+from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import User
@@ -51,9 +53,11 @@ class HexgateRunner:
             approval_handler=approval_handler,
             client=client,
         )
+        plugins = list(runner_kwargs.pop("plugins", None) or [])
+        plugins.append(HexgateUsagePlugin(api_key=self.api_key))
+        app = App(name=app_name, root_agent=self._wrapped_agent, plugins=plugins)
         self._runner = Runner(
-            agent=self._wrapped_agent,
-            app_name=app_name,
+            app=app,
             session_service=session_service,
             **runner_kwargs,
         )

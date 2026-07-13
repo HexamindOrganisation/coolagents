@@ -23,11 +23,15 @@ from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER
 from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.features.audit import service as audit
 from hexgate_api.features.audit.service import (
-    CLOCK_SKEW_FUTURE,
     list_ban_enforcements,
     list_decisions,
     summarize,
     _sliding_window_anomalies,
+)
+from hexgate_api.query_scope import (
+    CLOCK_SKEW_FUTURE,
+    RETENTION_WINDOW,
+    prepare_date_range,
 )
 from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api.core.db import get_session
@@ -37,8 +41,6 @@ from hexgate_api.deps.org import require_org_member
 from hexgate_api.deps.tokens import require_project
 from hexgate_api.main import app
 from hexgate_api.schemas import AnomalySeverity, AuditOutcome, DecisionEvent
-
-from hexgate_api.features.audit.service import prepare_date_range
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1057,7 +1059,7 @@ def test_when_window_exceeds_90d_then_start_date_is_clamped_to_end_minus_retenti
 ):
     far_start = datetime(2024, 9, 1, tzinfo=timezone.utc)  # >90d before _END
     start, _ = prepare_date_range(far_start, _END)
-    assert start == _END - audit.RETENTION_WINDOW
+    assert start == _END - RETENTION_WINDOW
 
 
 def test_when_only_start_date_provided_then_no_clamping_occurs() -> None:

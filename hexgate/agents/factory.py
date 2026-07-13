@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeAlias
 
@@ -33,6 +33,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 from pydantic import BaseModel
 
+# BC re-export — canonical home is hexgate.approvals (framework-agnostic).
+from hexgate.approvals import ApprovalHandler  # noqa: F401 — re-export
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import (
     LocalWorkspace,
@@ -41,7 +43,6 @@ from hexgate.runtime import (
     reset_current_tool_use_context,
     set_current_tool_use_context,
 )
-from hexgate.security.decision import Decision
 from hexgate.streaming import StreamEvent, new_root_run_id, normalize_langchain_events
 from hexgate.tracing.langfuse import (
     CallbackHandler,
@@ -54,7 +55,6 @@ LangChainAgentGraph: TypeAlias = CompiledStateGraph
 ToolSpec: TypeAlias = BaseTool | Callable[..., Any] | dict[str, Any]
 AgentState: TypeAlias = dict[str, Any]
 AgentInput: TypeAlias = str | Sequence[object] | Mapping[str, object] | BaseModel
-ApprovalHandler: TypeAlias = bool | Callable[[Decision], bool | Awaitable[bool]]
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant built on a tool-using agent runtime.\n\n"
     "Your job is to answer clearly and directly, using the tools available to "
@@ -333,6 +333,12 @@ class HexgateAgent:
         # Private: run only via ainvoke/astream_events, which apply policy
         # refresh + the ban gate. Reaching self._graph directly skips both.
         self._graph = graph
+        # Local import: hexgate.adapters.langchain's package __init__ pulls in
+        # tools.py -> agents.approvals -> agents.factory (this module) at
+        # import time, so a module-level import here would be circular —
+        # same cycle enforce_policy()'s GuardedTool import already dodges.
+        from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
+
         self.model = model
         self.tools = list(tools)
         self.system_prompt = system_prompt
@@ -357,6 +363,20 @@ class HexgateAgent:
         # Kill-switch gate; attached by load_hexgate_agent (platform path only —
         # no gate without a control plane). Threaded through with_tools rebuilds.
         self._ban_gate: BanGate | None = ban_gate
+        # api_key intentionally omitted — create_agent has no explicit api_key param
+        # (only hexgate_client, attached post-init by _bind_policy). If one is added,
+        # thread it through here too, or usage events will keep silently resolving
+        # from HEXGATE_API_KEY instead of the caller's explicit key.
+        self._usage_handler = HexgateUsageCallbackHandler(agent_name=name or "default")
+
+    def _with_usage_callback(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Append the usage callback handler to ``config['callbacks']``."""
+        merged = dict(config)
+        callbacks = list(merged.get("callbacks") or [])
+        if self._usage_handler not in callbacks:
+            callbacks.append(self._usage_handler)
+        merged["callbacks"] = callbacks
+        return merged
 
     async def ainvoke(
         self, payload: dict[str, Any], config: dict[str, Any]
@@ -371,7 +391,9 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         await self._check_ban()
-        return await self._graph.ainvoke(payload, config=config)
+        return await self._graph.ainvoke(
+            payload, config=self._with_usage_callback(config)
+        )
 
     async def astream_events(
         self,
@@ -389,7 +411,7 @@ class HexgateAgent:
         await _refresh_policy_safely(self)
         await self._check_ban()
         async for event in self._graph.astream_events(
-            payload, config=config, version=version
+            payload, config=self._with_usage_callback(config), version=version
         ):
             yield event
 

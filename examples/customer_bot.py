@@ -10,7 +10,7 @@ registering.
 Workflow
 --------
 1. Run platform API + dashboard, sign in, create/select a project, mint a
-   token. Add it to ``asianf/.env`` as ``HEXGATE_API_KEY=fty_live_...``.
+   token. Add it to the repo-root ``.env`` as ``HEXGATE_API_KEY=fty_live_...``.
 
 2. Serve the agent — one command. ``hexgate serve`` auto-registers the
    manifest on first run (the platform generates a starter role-aware
