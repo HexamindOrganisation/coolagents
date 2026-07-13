@@ -19,6 +19,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { KpiCard } from "@/components/audit/pieces";
+import { displayNoValue, scopeNoValue } from "@/components/audit/chart-tokens";
 import { RANGE_DAYS, rangeDays } from "@/lib/date-range";
 import {
   UsageActiveChips,
@@ -63,7 +64,7 @@ export function UsagePage() {
     window: f.range,
     agent: f.agent || undefined,
     model: f.model || undefined,
-    user: f.user || undefined,
+    user: scopeNoValue(f.user),
     start_date: f.start_date ? f.start_date.toISOString() : undefined,
     end_date: f.end_date ? f.end_date.toISOString() : undefined,
   };
@@ -190,7 +191,7 @@ export function UsagePage() {
         total={rangeTotal}
         agents={options?.by_agent.map((r) => r.key) ?? []}
         models={options?.by_model.map((r) => r.key) ?? []}
-        users={options?.by_user.map((r) => r.key) ?? []}
+        users={options?.by_user.map((r) => displayNoValue(r).key) ?? []}
       />
       <UsageActiveChips f={f} setF={setF} />
 
@@ -224,7 +225,7 @@ export function UsagePage() {
       <UsageBreakdownCard
         byModel={summaryQ.data?.by_model ?? []}
         byAgent={summaryQ.data?.by_agent ?? []}
-        byUser={summaryQ.data?.by_user ?? []}
+        byUser={summaryQ.data?.by_user.map(displayNoValue) ?? []}
         f={f}
         setF={setF}
       />

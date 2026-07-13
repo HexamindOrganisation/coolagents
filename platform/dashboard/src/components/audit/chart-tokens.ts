@@ -26,11 +26,22 @@ export const OUT_SWATCH: Record<AuditOutcome, string> = {
   needs_approval: "bg-approval",
 };
 
-// Display label for the empty-role bucket. Local to the dashboard — the
-// wire carries the raw "" key (and `role=` filters it), so the stored data
-// and API never reserve this string. A role literally named "(none)" would
-// be display-ambiguous here, but its data stays intact and queryable.
+// Display label for an empty-string ("no value recorded") bucket — used for
+// any dimension whose wire value can be "" (role, user, ...). Local to the
+// dashboard: the wire carries the raw "" key (and filters on it as such), so
+// stored data and the API never reserve this string. A role or user literally
+// named "(none)" would be display-ambiguous here, but its data stays intact
+// and queryable.
 export const NO_VALUE_LABEL = "(none)";
+
+// Wire → display: relabel the "" key so it never reaches Radix's
+// <Select.Item>, which throws at render for an empty-string value.
+export const displayNoValue = <T extends { key: string }>(r: T): T =>
+  r.key === "" ? { ...r, key: NO_VALUE_LABEL } : r;
+
+// Display → wire: inverse of displayNoValue for a filter's current value.
+export const scopeNoValue = (v: string): string | undefined =>
+  v === NO_VALUE_LABEL ? "" : v || undefined;
 
 // The outcome stack, in render order, for the generic ui/charts primitives.
 export const OUTCOME_SERIES: ChartSeries[] = [

@@ -27,9 +27,10 @@ import {
 import { AreaChart, type ChartBucket, Donut } from "@/components/ui/charts";
 import { type Counts, DecisionBadge } from "@/components/audit/charts";
 import {
-  NO_VALUE_LABEL,
+  displayNoValue,
   OUT_LABEL,
   OUTCOME_SERIES,
+  scopeNoValue,
 } from "@/components/audit/chart-tokens";
 import {
   RANGE_DAYS,
@@ -334,16 +335,16 @@ export function AuditPage() {
   const showDateRow = f.customMode;
 
   // UI state → wire: '' = "all" locally, so unset filters are omitted
-  // (undefined). The "(none)" label maps to `role: ''` — the wire's
-  // no-role bucket; no sentinel string leaves the dashboard.
+  // (undefined). The "(none)" label (role/user) maps back to '' — the
+  // wire's no-value bucket; no sentinel string leaves the dashboard.
   const scope = {
     window: f.range,
     agent: f.agent || undefined,
-    role: f.role === NO_VALUE_LABEL ? "" : f.role || undefined,
+    role: scopeNoValue(f.role),
     tool: f.tool || undefined,
     start_date: f.start_date ? f.start_date.toISOString() : undefined,
     end_date: f.end_date ? f.end_date.toISOString() : undefined,
-    user: f.user || undefined,
+    user: scopeNoValue(f.user),
   };
 
   // Range-only (unscoped) summary: filter dropdown options + the "X of Y"
@@ -465,10 +466,6 @@ export function AuditPage() {
 
   const options = optionsQ.data;
   const rangeTotal = options?.totals.all ?? 0;
-  // Wire → display: the empty-role bucket arrives as a raw "" key; label
-  // it locally. Filter state then holds the label, mapped back in `scope`.
-  const displayRole = <T extends { key: string }>(r: T): T =>
-    r.key === "" ? { ...r, key: NO_VALUE_LABEL } : r;
   const related = (relatedQ.data?.rows ?? [])
     .filter((r) => r.event_id !== sel?.event_id)
     .slice(0, 6);
@@ -572,7 +569,7 @@ export function AuditPage() {
           shown={listQ.data?.total ?? 0}
           total={rangeTotal}
           agents={options?.by_agent.map((r) => r.key) ?? []}
-          roles={options?.by_role.map((r) => displayRole(r).key) ?? []}
+          roles={options?.by_role.map((r) => displayNoValue(r).key) ?? []}
           tools={options?.by_tool.map((r) => r.key) ?? []}
         />
         <ActiveChips f={f} setF={setF} />
@@ -688,7 +685,7 @@ export function AuditPage() {
           <BreakdownCard
             byTool={summary?.by_tool ?? []}
             byAgent={summary?.by_agent ?? []}
-            byRole={summary?.by_role.map(displayRole) ?? []}
+            byRole={summary?.by_role.map(displayNoValue) ?? []}
             f={f}
             setF={setF}
           />
