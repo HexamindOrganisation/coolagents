@@ -98,10 +98,10 @@ export function UsagePage() {
   const rangeTotal = options?.totals.calls ?? 0;
 
   const nDays = rangeDays(f.range, f.start_date, f.end_date);
-  const avgLabel =
+  const avgLabel = (count: number) =>
     !f.start_date && f.range === "24h"
-      ? `${(totals.calls / 24).toFixed(1)}/hr avg`
-      : `${(totals.calls / nDays).toFixed(0)}/day avg`;
+      ? `${(count / 24).toFixed(1)}/hr avg`
+      : `${(count / nDays).toFixed(0)}/day avg`;
   const inputPct = totals.total_tokens
     ? Math.round((totals.input_tokens / totals.total_tokens) * 100)
     : 0;
@@ -200,7 +200,7 @@ export function UsagePage() {
           label="Calls"
           icon={Activity}
           value={totals.calls.toLocaleString()}
-          sub={avgLabel}
+          sub={avgLabel(totals.calls)}
         />
         <KpiCard
           label="Input tokens"
@@ -218,7 +218,7 @@ export function UsagePage() {
           label="Total tokens"
           icon={Sigma}
           value={fmtTokens(totals.total_tokens)}
-          sub={`${(totals.total_tokens / nDays).toFixed(0)}/day avg`}
+          sub={avgLabel(totals.total_tokens)}
         />
       </div>
 
