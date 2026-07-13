@@ -37,6 +37,29 @@ export class ApiError extends Error {
   }
 }
 
+/** Human-readable message from a FastAPI error body. Handles the two shapes:
+ * a string `detail` (HTTPException) and the validation-error array
+ * `detail: [{loc, msg, type}, ...]` (422) — the latter would otherwise
+ * `String()` to "[object Object]". Returns null when neither applies. */
+function messageFromDetail(detail: unknown): string | null {
+  if (typeof detail !== "object" || detail === null || !("detail" in detail)) {
+    return null;
+  }
+  const d = (detail as { detail: unknown }).detail;
+  if (typeof d === "string") return d;
+  if (Array.isArray(d)) {
+    const msgs = d
+      .map((e) =>
+        e && typeof e === "object" && "msg" in e
+          ? String((e as { msg: unknown }).msg)
+          : null,
+      )
+      .filter((m): m is string => !!m);
+    if (msgs.length) return msgs.join("; ");
+  }
+  return null;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -71,9 +94,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       detail = bodyText;
     }
     const message =
-      typeof detail === "object" && detail !== null && "detail" in detail
-        ? String((detail as { detail: unknown }).detail)
-        : `${res.status} ${res.statusText}`;
+      messageFromDetail(detail) ?? `${res.status} ${res.statusText}`;
     throw new ApiError(res.status, detail, message);
   }
   if (res.status === 204) return undefined as T;

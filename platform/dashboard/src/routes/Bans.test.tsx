@@ -251,6 +251,20 @@ describe("BansPage", () => {
     );
   });
 
+  it("does not fire DELETE when the revoke confirm is cancelled", async () => {
+    const calls = stubFetch({ role: "admin", bans: [BAN] });
+    const user = userEvent.setup();
+    renderWithProviders(<BansPage />, { initialRoute: "/bans" });
+
+    await user.click(await screen.findByRole("button", { name: /revoke/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+    // Dialog dismissed, and no DELETE was issued.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+  });
+
   it("opens a detail drawer with full info when a blocked attempt is clicked", async () => {
     stubFetch({ role: "admin", enforcements: [ENFORCEMENT] });
     const user = userEvent.setup();

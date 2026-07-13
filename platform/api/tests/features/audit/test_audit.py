@@ -920,6 +920,20 @@ def test_ban_enforcement_read_admin_is_200(
     assert "FROM ban_enforcement" in sql and "policy_decision" not in sql
 
 
+def test_ban_enforcement_read_clamps_limit_to_200(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """An over-large ``limit`` is clamped to 200 before the query runs."""
+    _login_as_stub_user(
+        project=MagicMock(org_id="org_1"), membership=MagicMock(role=ROLE_ADMIN)
+    )
+    fake_clickhouse.query.return_value.result_rows = []
+    r = client.get(f"{_BAN_READ_PATH}?limit=500")
+    assert r.status_code == 200, r.text
+    assert r.json()["limit"] == 200
+    assert fake_clickhouse.query.call_args.kwargs["parameters"]["lim"] == 200
+
+
 # ---------------------------------------------------------------------------
 # Health (liveness) vs readiness split
 # ---------------------------------------------------------------------------

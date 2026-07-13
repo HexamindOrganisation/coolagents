@@ -199,6 +199,10 @@ export function CreateBanDialog({
               placeholder="Why is this being banned? (shown in the blocked-attempts feed)"
               className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
             />
+            <p className="text-xs text-muted-foreground">
+              Sent to the SDK with the refusal, so the banned user may see it —
+              keep internal notes out.
+            </p>
           </div>
 
           <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
