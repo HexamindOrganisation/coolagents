@@ -20,7 +20,7 @@ Run with `marimo edit deploy/gates-demo/notebook.py`.
 
 import marimo
 
-__generated_with = "0.23.13"
+__generated_with = "0.23.14"
 app = marimo.App(width="medium")
 
 
@@ -119,10 +119,16 @@ def _(mo):
 
 @app.cell
 def _(Path, SERVER_PATH, mo):
+    import textwrap as _textwrap
+
     _src = Path(SERVER_PATH).read_text()
     _tools = _src[_src.index("server = FastMCP") :]
-    mo.md(
-        f"""
+    # Dedent the prose, then append the fenced block flush-left. Interpolating
+    # the column-0 file content directly into an indented f-string defeats
+    # marimo's dedent (common indent → 0), which would render the prose as an
+    # indented code block and leak the file's `#` lines as headings.
+    _intro = _textwrap.dedent(
+        """\
         ## 1 · The MCP server (we don't control this)
 
         A stock FastMCP server standing in for a real Google Docs MCP. It exposes
@@ -130,11 +136,9 @@ def _(Path, SERVER_PATH, mo):
         We can't edit it; we only gate it. It's spawned over **stdio**
         (`python gdocs_mcp_server.py`); a real deployment would point at, say, an
         official `@google/docs-mcp` or a Slack MCP server instead.
-
-        ```python
-        {_tools}```
         """
     )
+    mo.md(_intro + f"\n```python\n{_tools}\n```\n")
     return
 
 
@@ -182,9 +186,13 @@ def _(mo):
 
 @app.cell
 def _(POLICY_PATH, Path, mo):
+    import textwrap as _textwrap
+
     _policy = Path(POLICY_PATH).read_text()
-    mo.md(
-        f"""
+    # See the section-1 cell: dedent the prose, append the fenced YAML flush-left
+    # so the column-0 policy content doesn't defeat marimo's dedent.
+    _intro = _textwrap.dedent(
+        """\
         ## 3 · The policy (this is what you control)
 
         This is the `docs_agent` policy — seeded to the platform, shown/edited in
@@ -202,11 +210,9 @@ def _(POLICY_PATH, Path, mo):
         | `matches` (regex) | `export_doc` | exporting anywhere but the internal drive |
         | `== true` | `delete_doc` | accidental deletes (needs `confirm`) |
         | role inheritance / override | `admin` | admin reads `CONF-*`; editors can't |
-
-        ```yaml
-        {_policy}```
         """
     )
+    mo.md(_intro + f"\n```yaml\n{_policy}\n```\n")
     return
 
 
@@ -456,22 +462,20 @@ async def _(engine, mo, run_batch, try_it):
 
 @app.cell
 def _(mo):
-    mo.md(
-        """
-        ## 6 · Now run it for real — in a different app
+    mo.md("""
+    ## 6 · Now run it for real — in a different app
 
-        Everything above is the **definition**. hexgate's point is that this same
-        gated agent runs wherever you already work — here, in **hexkit**, a chat
-        UI that never imported hexgate. The gate rides along; blocked calls show
-        up as denials right in the conversation.
+    Everything above is the **definition**. hexgate's point is that this same
+    gated agent runs wherever you already work — here, in **hexkit**, a chat
+    UI that never imported hexgate. The gate rides along; blocked calls show
+    up as denials right in the conversation.
 
-        The live agent needs an OpenAI key (**BYOK** — sent straight to the
-        throwaway hexkit backend's memory, never stored). Paste it and send, then
-        open hexkit and sign in as `ana` (analyst), `ed` (editor), or `adah`
-        (admin) — password `hexademo` — to see the same request allowed for one
-        role and denied for another.
-        """
-    )
+    The live agent needs an OpenAI key (**BYOK** — sent straight to the
+    throwaway hexkit backend's memory, never stored). Paste it and send, then
+    open hexkit and sign in as `ana` (analyst), `ed` (editor), or `adah`
+    (admin) — password `hexademo` — to see the same request allowed for one
+    role and denied for another.
+    """)
     return
 
 
