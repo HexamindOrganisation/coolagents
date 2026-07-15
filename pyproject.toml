@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 # 0.2.0 (the original package name was taken on PyPI by a 2014
 # abandoned project; the team consolidated on `hexgate` for everything).
 name = "hexgate"
-version = "0.2.8"
+version = "0.2.9"
 description = "Hexgate — authorization infrastructure for AI agents (agent runtime + cloud client)."
 readme = "README.md"
 license = "MIT"
