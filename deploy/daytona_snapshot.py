@@ -74,9 +74,12 @@ def main() -> None:
             CreateSnapshotParams(
                 name=SNAPSHOT,
                 image=image,
-                # Daytona's per-sandbox ceiling — the demo runs two heavy Python
-                # processes (API + marimo kernel), so give it the max.
-                resources=Resources(cpu=4, memory=8, disk=10),
+                # Small per-sandbox footprint so many demos run concurrently
+                # within the Daytona account quota (~10× at 1 GB vs 8 GB). The
+                # demo only uses ~0.76 GB at peak (measured on the bigger combined
+                # stack), so 1 GB is enough. Bump `memory` to 2 if a live LLM run
+                # OOMs, or `disk` if the image doesn't fit at build time.
+                resources=Resources(cpu=1, memory=1, disk=5),
             ),
             on_logs=lambda chunk: print(chunk, end=""),
         )
