@@ -102,15 +102,28 @@ def main() -> None:
         print("\n==== MEMORY (cgroup — the whole point) ====")
         print(" ", _mem(sandbox))
         print("==== PORT READINESS  (proxy :8800 -> 404 is EXPECTED — it serves /api) ====")
+        any_up = False
         for label, port in ALL_PORTS.items():
             code = _stdout(sandbox.process.exec(
                 f"curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{port} || echo 000"
             )).strip()
+            any_up = any_up or (code not in ("", "000", "000000"))
             print(f"  {label:16} :{port}  -> {code}")
-        for log in ("gates", "gates-hexgate", "gates-agent", "gates-proxy", "gates-frontend"):
-            oom = _stdout(sandbox.process.exec(f"grep -i -m1 killed /tmp/{log}.log || true")).strip()
+        # Only greps logs that actually exist — a MISSING log means the stack
+        # never launched (not an OOM). If nothing came up, dump the top-level
+        # log (the boot command's stdout/stderr) so the real error is visible.
+        for log in ("gates-hexgate", "gates-agent", "gates-proxy", "gates-frontend"):
+            oom = _stdout(sandbox.process.exec(
+                f"test -f /tmp/{log}.log && grep -i -m1 killed /tmp/{log}.log || true"
+            )).strip()
             if oom:
                 print(f"  ⚠ possible OOM in {log}.log: {oom}")
+        if not any_up:
+            print("\n==== NOTHING CAME UP — /tmp/gates.log (boot command output) ====")
+            print(_stdout(sandbox.process.exec(
+                "cat /tmp/gates.log 2>/dev/null || echo '(no /tmp/gates.log — run-integrated.sh never ran; "
+                "is deploy/gates-demo/ in the snapshot? check HEXGATE_REF)'"
+            )))
 
         print("\n==== SIGNED URLS ====")
         print("  marimo notebook :", _signed(sandbox, MARIMO_PORT))

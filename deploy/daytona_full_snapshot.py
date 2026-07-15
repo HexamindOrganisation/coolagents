@@ -34,10 +34,11 @@ from daytona import (
 SNAPSHOT = "hexgate-hexkit-demo"
 HEXGATE_REPO = "https://github.com/HexamindOrganisation/hexgate"
 HEXKIT_REPO = "https://github.com/HexamindOrganisation/hexkit"
-# Branches to bake. Both default to main. Until the gates PR (#81) lands, run
-# with HEXGATE_REF=feat/gates-demo (hexkit's gdocs-agent #16 is already on main).
-# Override either with HEXGATE_REF / HEXKIT_REF.
-HEXGATE_REF = os.environ.get("HEXGATE_REF", "main")
+# Branches to bake. hexkit is on main (gdocs-agent #16 merged). hexgate is
+# pinned to the gates branch INTERIM so the demo builds with no override — the
+# gates code isn't on main yet. FLIP TO "main" WHEN #81 MERGES (tracked as the
+# productionization follow-up). Override either with HEXGATE_REF / HEXKIT_REF.
+HEXGATE_REF = os.environ.get("HEXGATE_REF", "feat/gates-demo")
 HEXKIT_REF = os.environ.get("HEXKIT_REF", "main")
 
 
