@@ -42,7 +42,11 @@ API_PORT = 8000
 VENV = "/app/platform/api/.venv/bin"
 MAX_LIVE_SANDBOXES = 20  # hard concurrent cap (fail-closed)
 MAX_LAUNCHES_PER_DAY = 200  # daily budget backstop against a slow drip
-PER_IP_COOLDOWN_SECONDS = 20  # per-IP rate limit (shared across containers)
+# Per-IP cooldown (shared across containers). 0 = OFF, so one machine can open
+# several demos at once (live showcase). Set > 0 to throttle rapid launches from
+# a single IP on a public/abuse-prone deploy; the concurrent cap + daily budget
+# are the real cost guards either way.
+PER_IP_COOLDOWN_SECONDS = 0
 
 
 @app.function(
@@ -195,8 +199,12 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
         ip = _client_ip(request)
         now = time.time()
 
-        # 2. Per-IP cooldown (shared via the Dict).
-        if ip and now - float(state.get(f"ip:{ip}", 0)) < PER_IP_COOLDOWN_SECONDS:
+        # 2. Per-IP cooldown (shared via the Dict). Skipped entirely when 0.
+        if (
+            PER_IP_COOLDOWN_SECONDS
+            and ip
+            and now - float(state.get(f"ip:{ip}", 0)) < PER_IP_COOLDOWN_SECONDS
+        ):
             return HTMLResponse(
                 _page(
                     "Slow down",
