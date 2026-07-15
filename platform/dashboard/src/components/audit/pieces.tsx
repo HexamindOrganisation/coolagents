@@ -20,10 +20,11 @@ import type {
   AuditFilters as Filters,
   SetAuditFilters as SetFilters,
 } from "@/lib/audit-filters";
+import { ActiveFilterChips } from "@/components/ui/active-filter-chips";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { FilterSelect } from "@/components/ui/filter-select";
+import { ALL, FilterSelect } from "@/components/ui/filter-select";
 import {
   Table,
   TableBody,
@@ -47,9 +48,6 @@ const toDatum = (r: AuditBreakdownRow): BreakdownDatum => ({
   deny: r.deny,
   needs_approval: r.needs_approval,
 });
-
-// Radix Select items can't carry value="" — UI-local stand-in for "all".
-const ALL = "__all__";
 
 // ————————————————————————————————————————————— Filter bar
 export function FilterBar({
@@ -133,55 +131,34 @@ export function FilterBar({
   );
 }
 
+const CHIP_KEYS: (keyof Filters)[] = [
+  "agent",
+  "role",
+  "tool",
+  "user",
+  "outcome",
+];
+
 export function ActiveChips({ f, setF }: { f: Filters; setF: SetFilters }) {
-  const set = <K extends keyof Filters>(k: K, v: Filters[K]) =>
-    setF((p) => ({ ...p, [k]: v }));
-  const lbl: Record<string, string> = {
-    agent: "agent",
-    role: "role",
-    tool: "tool",
-    user: "user",
-    outcome: "outcome",
-  };
-  const chips = (["agent", "role", "tool", "user", "outcome"] as const).filter(
-    (k) => f[k],
-  );
-  if (!chips.length) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <span className="text-[11.5px] text-muted-foreground">Filters</span>
-      {chips.map((k) => (
-        <Badge key={k} className="gap-1 pr-1 text-muted-foreground">
-          {lbl[k]}: <span className="font-mono text-foreground">{f[k]}</span>
-          <button
-            onClick={() => set(k, "")}
-            className="inline-flex cursor-pointer text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3" />
-          </button>
-        </Badge>
-      ))}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs"
-        onClick={() =>
-          setF((p) => ({
-            ...p,
-            agent: "",
-            role: "",
-            tool: "",
-            outcome: "",
-            customMode: false,
-            start_date: null,
-            end_date: null,
-            user: "",
-          }))
-        }
-      >
-        Clear all
-      </Button>
-    </div>
+    <ActiveFilterChips
+      f={f}
+      setF={setF}
+      chipKeys={CHIP_KEYS}
+      onClearAll={() =>
+        setF((p) => ({
+          ...p,
+          agent: "",
+          role: "",
+          tool: "",
+          outcome: "",
+          customMode: false,
+          start_date: null,
+          end_date: null,
+          user: "",
+        }))
+      }
+    />
   );
 }
 
@@ -295,21 +272,18 @@ export function BreakdownCard({
           ))}
         </>
       }
-      rows={data.map((row) => (
+      rows={data}
+      activeFilterValue={f[fkey]}
+      onFilterChange={(v) => setF((p) => ({ ...p, [fkey]: v }))}
+      renderRow={(row, { active, onClick }) => (
         <BreakdownBar
-          key={row.key}
           label={row.key}
           row={row}
           max={max}
-          active={!f[fkey] || f[fkey] === row.key}
-          onClick={() =>
-            setF((p) => ({
-              ...p,
-              [fkey]: p[fkey] === row.key ? "" : row.key,
-            }))
-          }
+          active={active}
+          onClick={onClick}
         />
-      ))}
+      )}
     />
   );
 }

@@ -3,10 +3,11 @@
  * metric/sort Select, a two-column grid of bar rows, an empty state, and a
  * footer legend. Shared by Audit's outcome-stacked breakdown and Usage's
  * single-metric breakdown; each caller supplies its own row markup via
- * `BarRow` and passes the rendered rows in.
+ * `renderRow`, while the shell owns the filter-toggle click semantics so
+ * it isn't reimplemented (and can't drift) per caller.
  */
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { Card } from "@/components/ui/card";
 import {
   Select,
@@ -55,7 +56,11 @@ export function BarRow({
   );
 }
 
-export function BreakdownCardShell<Dim extends string, Metric extends string>({
+export function BreakdownCardShell<
+  Dim extends string,
+  Metric extends string,
+  Row extends { key: string },
+>({
   dims,
   dim,
   onDimChange,
@@ -63,6 +68,9 @@ export function BreakdownCardShell<Dim extends string, Metric extends string>({
   metricOptions,
   onMetricChange,
   rows,
+  renderRow,
+  activeFilterValue,
+  onFilterChange,
   emptyMessage,
   legend,
 }: {
@@ -72,7 +80,13 @@ export function BreakdownCardShell<Dim extends string, Metric extends string>({
   metric: Metric;
   metricOptions: { value: Metric; label: string }[];
   onMetricChange: (m: Metric) => void;
-  rows: ReactNode[];
+  rows: Row[];
+  renderRow: (
+    row: Row,
+    opts: { active: boolean; onClick: () => void },
+  ) => ReactNode;
+  activeFilterValue: string;
+  onFilterChange: (next: string) => void;
   emptyMessage: string;
   legend: ReactNode;
 }) {
@@ -106,7 +120,16 @@ export function BreakdownCardShell<Dim extends string, Metric extends string>({
       </div>
       <div className="grid flex-1 grid-cols-2 gap-x-8">
         {rows.length ? (
-          rows
+          rows.map((row) => {
+            const active = !activeFilterValue || activeFilterValue === row.key;
+            const onClick = () =>
+              onFilterChange(activeFilterValue === row.key ? "" : row.key);
+            return (
+              <Fragment key={row.key}>
+                {renderRow(row, { active, onClick })}
+              </Fragment>
+            );
+          })
         ) : (
           <div className="py-2 text-[12.5px] text-muted-foreground">
             {emptyMessage}

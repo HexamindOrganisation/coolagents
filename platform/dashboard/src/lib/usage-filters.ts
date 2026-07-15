@@ -10,17 +10,11 @@
 
 import { create } from "zustand";
 
-import type { Range } from "./date-range";
+import type { BaseDashboardFilters } from "./date-range";
 
 // '' = "all".
-export interface UsageFilters {
-  agent: string;
+export interface UsageFilters extends BaseDashboardFilters {
   model: string;
-  user: string;
-  range: Range;
-  customMode: boolean;
-  start_date: Date | null;
-  end_date: Date | null;
 }
 
 export type SetUsageFilters = (

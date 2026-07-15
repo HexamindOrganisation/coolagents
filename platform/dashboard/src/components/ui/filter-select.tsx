@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const ALL = "__all__";
+export const ALL = "__all__";
 
 export function FilterSelect({
   value,

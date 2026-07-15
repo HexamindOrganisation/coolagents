@@ -14,6 +14,22 @@ export const RANGE_DAYS: Record<Range, number> = {
   "90d": 90,
 };
 
+// The preset/custom range fields DashboardRangePicker operates on.
+export interface RangePickerFilters {
+  range: Range;
+  customMode: boolean;
+  start_date: Date | null;
+  end_date: Date | null;
+}
+
+/** Fields every dashboard filter store (Audit, Usage) carries in common —
+ * kept here, not duplicated per-store, so a shared field added to one
+ * filter store is a type error until it's added to the other. */
+export interface BaseDashboardFilters extends RangePickerFilters {
+  agent: string;
+  user: string;
+}
+
 /** Effective day count for a window: explicit custom dates win when both
  * are set, otherwise falls back to the preset range's day count. */
 export function rangeDays(

@@ -14,21 +14,15 @@
 import { create } from "zustand";
 
 import type { AuditOutcome } from "./api";
-import { type Range, RANGE_DAYS } from "./date-range";
+import { type BaseDashboardFilters, RANGE_DAYS } from "./date-range";
 
 export { RANGE_DAYS };
 
 // '' = "all"; outcome applies to the events table only.
-export interface AuditFilters {
-  agent: string;
+export interface AuditFilters extends BaseDashboardFilters {
   role: string;
   tool: string;
-  user: string;
   outcome: "" | AuditOutcome;
-  range: Range;
-  customMode: boolean;
-  start_date: Date | null;
-  end_date: Date | null;
 }
 
 export type SetAuditFilters = (

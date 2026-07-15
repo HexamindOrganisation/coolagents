@@ -1,12 +1,10 @@
 import { useMemo, useState } from "react";
-import { X } from "lucide-react";
 import type { LlmInvocationBreakdownRow } from "@/lib/api";
 import type {
   SetUsageFilters as SetFilters,
   UsageFilters as Filters,
 } from "@/lib/usage-filters";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { ActiveFilterChips } from "@/components/ui/active-filter-chips";
 import { BarRow, BreakdownCardShell } from "@/components/ui/breakdown-card";
 import { FilterSelect } from "@/components/ui/filter-select";
 
@@ -58,6 +56,8 @@ export function UsageFilterBar({
   );
 }
 
+const CHIP_KEYS: (keyof Filters)[] = ["agent", "model", "user"];
+
 export function UsageActiveChips({
   f,
   setF,
@@ -65,48 +65,23 @@ export function UsageActiveChips({
   f: Filters;
   setF: SetFilters;
 }) {
-  const set = <K extends keyof Filters>(k: K, v: Filters[K]) =>
-    setF((p) => ({ ...p, [k]: v }));
-  const lbl: Record<string, string> = {
-    agent: "agent",
-    model: "model",
-    user: "user",
-  };
-  const chips = (["agent", "model", "user"] as const).filter((k) => f[k]);
-  if (!chips.length) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <span className="text-[11.5px] text-muted-foreground">Filters</span>
-      {chips.map((k) => (
-        <Badge key={k} className="gap-1 pr-1 text-muted-foreground">
-          {lbl[k]}: <span className="font-mono text-foreground">{f[k]}</span>
-          <button
-            onClick={() => set(k, "")}
-            className="inline-flex cursor-pointer text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3" />
-          </button>
-        </Badge>
-      ))}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs"
-        onClick={() =>
-          setF((p) => ({
-            ...p,
-            agent: "",
-            model: "",
-            user: "",
-            customMode: false,
-            start_date: null,
-            end_date: null,
-          }))
-        }
-      >
-        Clear all
-      </Button>
-    </div>
+    <ActiveFilterChips
+      f={f}
+      setF={setF}
+      chipKeys={CHIP_KEYS}
+      onClearAll={() =>
+        setF((p) => ({
+          ...p,
+          agent: "",
+          model: "",
+          user: "",
+          customMode: false,
+          start_date: null,
+          end_date: null,
+        }))
+      }
+    />
   );
 }
 
@@ -197,21 +172,18 @@ export function UsageBreakdownCard({
           {metric === "total_tokens" ? "total tokens" : "calls"}
         </span>
       }
-      rows={data.map((row) => (
+      rows={data}
+      activeFilterValue={f[fkey]}
+      onFilterChange={(v) => setF((p) => ({ ...p, [fkey]: v }))}
+      renderRow={(row, { active, onClick }) => (
         <UsageBar
-          key={row.key}
           row={row}
           max={max}
           metric={metric}
-          active={!f[fkey] || f[fkey] === row.key}
-          onClick={() =>
-            setF((p) => ({
-              ...p,
-              [fkey]: p[fkey] === row.key ? "" : row.key,
-            }))
-          }
+          active={active}
+          onClick={onClick}
         />
-      ))}
+      )}
     />
   );
 }

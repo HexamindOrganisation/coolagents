@@ -5,39 +5,20 @@ import {
   ArrowUpFromLine,
   Sigma,
 } from "lucide-react";
-import { endOfDay, format } from "date-fns";
 import { api } from "@/lib/api";
 import { useActive, useProjectScoped } from "@/lib/active";
 import { useProjects } from "@/lib/projects";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
-import { Button } from "@/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Calendar } from "@/components/ui/calendar";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { DashboardRangePicker } from "@/components/ui/dashboard-range-picker";
 import { KpiCard } from "@/components/audit/pieces";
 import { displayNoValue, scopeNoValue } from "@/components/audit/chart-tokens";
-import { RANGE_DAYS, rangeDays } from "@/lib/date-range";
+import { rangeDays } from "@/lib/date-range";
 import {
   UsageActiveChips,
   UsageBreakdownCard,
   UsageFilterBar,
 } from "@/components/usage/pieces";
-import {
-  type UsageFilters as Filters,
-  useUsageFilters,
-} from "@/lib/usage-filters";
-
-const DATE_FMT = "MMM d, yyyy";
-
-function impliedRangeLabel(range: Filters["range"]): string {
-  const now = new Date();
-  const start = new Date(now.getTime() - RANGE_DAYS[range] * 86_400_000);
-  return `${format(start, DATE_FMT)} → ${format(now, DATE_FMT)}`;
-}
+import { useUsageFilters } from "@/lib/usage-filters";
 
 // Compact token counts (1.2M / 84.6K) — KpiCard values elsewhere use
 // toLocaleString() directly, but raw token counts run into the millions
@@ -58,7 +39,6 @@ export function UsagePage() {
 
   const f = useUsageFilters((s) => s.filters);
   const setF = useUsageFilters((s) => s.setFilters);
-  const showDateRow = f.customMode;
 
   const scope = {
     window: f.range,
@@ -123,65 +103,7 @@ export function UsagePage() {
             <span className="font-mono text-foreground">{projectName}</span>
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <ToggleGroup
-            type="single"
-            value={f.customMode ? "custom" : f.range}
-            onValueChange={(v) => {
-              if (!v) return;
-              if (v === "custom") {
-                setF((p) => ({ ...p, customMode: true }));
-              } else {
-                setF((p) => ({
-                  ...p,
-                  range: v as Filters["range"],
-                  customMode: false,
-                  start_date: null,
-                  end_date: null,
-                }));
-              }
-            }}
-          >
-            {(["24h", "7d", "30d", "90d"] as const).map((r) => (
-              <ToggleGroupItem key={r} value={r}>
-                {r}
-              </ToggleGroupItem>
-            ))}
-            <ToggleGroupItem value="custom">Custom</ToggleGroupItem>
-          </ToggleGroup>
-          {showDateRow && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="h-8 text-[13px] font-normal"
-                >
-                  {f.start_date && f.end_date
-                    ? `${format(f.start_date, DATE_FMT)} → ${format(f.end_date, DATE_FMT)}`
-                    : f.start_date
-                      ? `${format(f.start_date, DATE_FMT)} → …`
-                      : impliedRangeLabel(f.range)}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="end">
-                <Calendar
-                  mode="range"
-                  selected={{
-                    from: f.start_date ?? undefined,
-                    to: f.end_date ?? undefined,
-                  }}
-                  onSelect={(range) =>
-                    setF((p) => ({
-                      ...p,
-                      start_date: range?.from ?? null,
-                      end_date: range?.to ? endOfDay(range.to) : null,
-                    }))
-                  }
-                />
-              </PopoverContent>
-            </Popover>
-          )}
-        </div>
+        <DashboardRangePicker f={f} setF={setF} />
       </header>
 
       <UsageFilterBar
