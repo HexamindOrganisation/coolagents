@@ -90,7 +90,9 @@ def web():
         fails OPEN — see /launch). Logs the error so a persistent failure is
         visible in `modal app logs` instead of silently bricking the demo."""
         try:
-            return len(daytona.list())
+            # daytona.list() returns a generator (SDK >= 0.197) — materialize
+            # before len(). list(...) is harmless if a list is returned instead.
+            return len(list(daytona.list()))
         except Exception as exc:  # noqa: BLE001
             print(f"[spawner] daytona.list() failed: {type(exc).__name__}: {exc}", flush=True)
             return None
@@ -304,7 +306,7 @@ tick();
 
         out = {"daytona_sdk": _md.version("daytona"), "api_url": os.environ.get("HEXGATE_API_URL")}
         try:
-            out["sandbox_count"] = len(daytona.list())
+            out["sandbox_count"] = len(list(daytona.list()))
             out["ok"] = True
         except Exception as exc:  # noqa: BLE001
             out["ok"] = False
