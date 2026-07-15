@@ -86,12 +86,13 @@ def web():
     TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET", "")
 
     def _running_count() -> int | None:
-        """Live sandbox count (the shared source of truth), or None if Daytona
-        can't be reached — the caller FAILS CLOSED on None so an API blip can't
-        turn the cap into unlimited launches."""
+        """Live sandbox count, or None if Daytona can't be read (caller then
+        fails OPEN — see /launch). Logs the error so a persistent failure is
+        visible in `modal app logs` instead of silently bricking the demo."""
         try:
             return len(daytona.list())
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spawner] daytona.list() failed: {type(exc).__name__}: {exc}", flush=True)
             return None
 
     def _today() -> str:
@@ -224,9 +225,12 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
                 status_code=503,
             )
 
-        # 4. Concurrent cap — FAIL CLOSED if the live count can't be read.
+        # 4. Concurrent cap. If the live count can't be read, LOG and PROCEED
+        #    (fail-open) — a Daytona list() blip must not brick a live demo. The
+        #    daily budget above is the hard backstop. Hit /debug to see why a
+        #    read failed.
         count = _running_count()
-        if count is None or count >= MAX_LIVE_SANDBOXES:
+        if count is not None and count >= MAX_LIVE_SANDBOXES:
             return HTMLResponse(
                 _page(
                     "Demo at capacity",
@@ -290,6 +294,22 @@ tick();
                 tail=poll,
             )
         )
+
+    @web_app.get("/debug")
+    def debug():
+        # Quick health probe: does daytona.list() work with the deployed
+        # DAYTONA_API_KEY? Surfaces the real error (auth / SDK version / API
+        # change) instead of the generic "at capacity" page.
+        import importlib.metadata as _md
+
+        out = {"daytona_sdk": _md.version("daytona"), "api_url": os.environ.get("HEXGATE_API_URL")}
+        try:
+            out["sandbox_count"] = len(daytona.list())
+            out["ok"] = True
+        except Exception as exc:  # noqa: BLE001
+            out["ok"] = False
+            out["error"] = f"{type(exc).__name__}: {exc}"
+        return JSONResponse(out)
 
     @web_app.get("/status")
     def status(sb: str):
