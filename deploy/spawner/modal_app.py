@@ -242,35 +242,52 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
                 status_code=503,
             )
 
-        sandbox = daytona.create(
-            CreateSandboxFromSnapshotParams(
-                snapshot=SNAPSHOT,
-                # Cost control: stop 15 min after the visitor goes idle (compute
-                # billing stops), and ephemeral → auto-delete on stop so no
-                # storage lingers. Net: pay only while it's actively used.
-                auto_stop_interval=15,
-                ephemeral=True,
+        # Create + boot. Wrapped so a Daytona failure (commonly a concurrent
+        # sandbox / resource quota when another demo is already live) surfaces
+        # as a readable page + a log line, not a blank 500.
+        try:
+            sandbox = daytona.create(
+                CreateSandboxFromSnapshotParams(
+                    snapshot=SNAPSHOT,
+                    # Cost control: stop 15 min after the visitor goes idle (compute
+                    # billing stops), and ephemeral → auto-delete on stop so no
+                    # storage lingers. Net: pay only while it's actively used.
+                    auto_stop_interval=15,
+                    ephemeral=True,
+                )
             )
-        )
-        _record_launch(ip)  # only count a launch that actually created a sandbox
-        dash_url = _signed(sandbox, API_PORT)
-        notebook_url = _signed(sandbox, MARIMO_PORT)
+            _record_launch(ip)  # only count a launch that actually created a sandbox
+            dash_url = _signed(sandbox, API_PORT)
+            notebook_url = _signed(sandbox, MARIMO_PORT)
 
-        # Fire-and-forget the stack (process.exec would block on a server that
-        # never exits; a background session doesn't).
-        sandbox.process.create_session("boot")
-        sandbox.process.execute_session_command(
-            "boot",
-            SessionExecuteRequest(
-                command=(
-                    f"cd /app && PATH={VENV}:$PATH "
-                    f"HEXGATE_DEMO=1 HEXGATE_COOKIE_SECURE=1 "
-                    f"HEXGATE_MARIMO_PORT={MARIMO_PORT} HEXGATE_DASH_URL='{dash_url}' "
-                    f"{VENV}/python deploy/boot.py > /tmp/boot.log 2>&1"
+            # Fire-and-forget the stack (process.exec would block on a server that
+            # never exits; a background session doesn't).
+            sandbox.process.create_session("boot")
+            sandbox.process.execute_session_command(
+                "boot",
+                SessionExecuteRequest(
+                    command=(
+                        f"cd /app && PATH={VENV}:$PATH "
+                        f"HEXGATE_DEMO=1 HEXGATE_COOKIE_SECURE=1 "
+                        f"HEXGATE_MARIMO_PORT={MARIMO_PORT} HEXGATE_DASH_URL='{dash_url}' "
+                        f"{VENV}/python deploy/boot.py > /tmp/boot.log 2>&1"
+                    ),
+                    run_async=True,
                 ),
-                run_async=True,
-            ),
-        )
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spawner] launch failed: {type(exc).__name__}: {exc}", flush=True)
+            return HTMLResponse(
+                _page(
+                    "Couldn't start the demo",
+                    "<h2>Couldn't start a sandbox</h2>"
+                    f"<p style='opacity:.7'>{type(exc).__name__}: {exc}</p>"
+                    "<p style='opacity:.5;font-size:.85rem'>Often a Daytona "
+                    "concurrent-sandbox or resource quota when another demo is "
+                    "already running.</p>",
+                ),
+                status_code=502,
+            )
 
         # "Starting…" page polls /status until marimo answers, then redirects.
         poll = f"""<script>
