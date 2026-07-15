@@ -59,21 +59,14 @@ def _():
 @app.cell
 def _(mo):
     mo.md("""
-    # 🔌🛡️ Hexgate — gating an agent's MCP tools
+    # 🔌🛡️ Hexgate — govern what your agent can actually do
 
-    Point an agent at a third-party **MCP server** and it inherits *every*
-    tool that server exposes. The server decides what's on the menu; **you**
-    decide what your agent may actually order.
+    An agent on an **MCP server** inherits **all** its tools. Hexgate is the gate
+    between them: one policy says **allow / deny** on every call — by role, by
+    arguments — *before* it runs.
 
-    Hexgate is the gate in between. It runs every tool call — native or MCP —
-    through one policy engine that resolves the caller's **role**, checks the
-    **arguments** against a constraint DSL, and returns **allow** or **deny**
-    *before the call ever reaches the server*.
-
-    This notebook is the agent's **definition**: its code, its tools, the gate
-    diagram, and the policy. Then it runs the gate for real. The same agent
-    can run inside any app — the last section links to one (hexkit) plus the
-    policy console.
+    Below: the agent, the policy, the gate deciding live. Then the same agent
+    running in a real app.
     """)
     return
 
@@ -108,9 +101,8 @@ def _(mo):
         [
             _diagram,
             mo.md(
-                "The agent never talks to the MCP server directly — hexgate wraps "
-                "each tool, so a denied call is stopped here and the server never "
-                "sees it. Same engine, same DSL, whether the tool is native or MCP."
+                "Every tool call detours through the gate: **allowed** → it runs; "
+                "**denied** → the server never sees it."
             ),
         ]
     )
@@ -129,13 +121,10 @@ def _(Path, SERVER_PATH, mo):
     # indented code block and leak the file's `#` lines as headings.
     _intro = _textwrap.dedent(
         """\
-        ## 1 · The MCP server (we don't control this)
+        ## 1 · The tools (we don't own these)
 
-        A stock FastMCP server standing in for a real Google Docs MCP. It exposes
-        six tools — some safe, some destructive, some that could exfiltrate data.
-        We can't edit it; we only gate it. It's spawned over **stdio**
-        (`python gdocs_mcp_server.py`); a real deployment would point at, say, an
-        official `@google/docs-mcp` or a Slack MCP server instead.
+        A Google Docs MCP server — six tools, someone else's code. Our agent
+        inherits all of them. We can't edit it; we just gate it.
         """
     )
     mo.md(_intro + f"\n```python\n{_tools}\n```\n")
@@ -145,12 +134,10 @@ def _(Path, SERVER_PATH, mo):
 @app.cell
 def _(mo):
     mo.md("""
-    ## 2 · The agent (this is what runs in hexkit)
+    ## 2 · The agent — 3 lines to gate it
 
-    Wiring an MCP server into a hexgate agent is three lines: open the
-    toolset, hand its tools to `create_agent`, and bind the policy. This is
-    verbatim what the **hexkit** backend runs (`demo/gdocs-agent/`) — a normal
-    LangChain graph, gated on every call.
+    Open the MCP toolset, hand its tools to `create_agent`, bind the policy.
+    That's the whole thing — and it's exactly what runs in hexkit.
 
     ```python
     from hexgate import create_agent
@@ -175,11 +162,9 @@ def _(mo):
         #     docs_agent policy you edit in the dashboard (section 6)
     ```
 
-    The policy lives on the **platform**, not in the code — so you edit it in the
-    dashboard and the next call reflects it. Below, we run that *same* policy
-    directly in this notebook (no model, no key) so you can see every decision;
-    the model just decides *which* call to propose — the gate decides whether it
-    goes through.
+    The policy lives on the **platform**, not the code — edit it in the dashboard,
+    the next call obeys. Below we run that same policy right here (no key needed):
+    the model picks *which* tool to call; the gate decides *whether* it runs.
     """)
     return
 
@@ -193,23 +178,16 @@ def _(POLICY_PATH, Path, mo):
     # so the column-0 policy content doesn't defeat marimo's dedent.
     _intro = _textwrap.dedent(
         """\
-        ## 3 · The policy (this is what you control)
+        ## 3 · The policy (what you control)
 
-        This is the `docs_agent` policy — seeded to the platform, shown/edited in
-        the dashboard (section 6), and bound by the hexkit agent. One file governs
-        three roles. It's **default-deny**, so the six-tool server can't smuggle
-        in a tool you never vetted, and each `allow` is narrowed by **argument
-        constraints**. Note the DSL features in play:
+        **Default-deny**, three roles — `analyst` < `editor` < `admin`. In plain
+        English:
 
-        | feature | where | what it stops |
-        |---|---|---|
-        | `startswith` | `read_doc` | reading `CONF-*` docs |
-        | `every(...)` + `endswith` | `share_doc` | sharing outside `@hexamind.ai` |
-        | `count(...)` | `share_doc` | mass fan-out (> 5 recipients) |
-        | `in consts.*` | `create_doc` | writing to un-sanctioned folders |
-        | `matches` (regex) | `export_doc` | exporting anywhere but the internal drive |
-        | `== true` | `delete_doc` | accidental deletes (needs `confirm`) |
-        | role inheritance / override | `admin` | admin reads `CONF-*`; editors can't |
+        - **analysts** read docs, but not the confidential `CONF-*` ones
+        - **editors** create, and share only inside `@hexamind.ai`
+        - **admins** can delete — but only with `confirm`
+
+        One file, on the platform. Here it is:
         """
     )
     mo.md(_intro + f"\n```yaml\n{_policy}\n```\n")
@@ -283,50 +261,40 @@ def _(
 
 @app.cell
 async def _(POLICY_PATH, load_policy_set, run_batch):
-    # The same handful of calls, some fired by an editor and some by an admin, to
-    # show the gate deciding on role + arguments — not just tool name.
+    # Three crisp pairs — the SAME tool, split only by role or by an argument.
+    _internal = {
+        "doc_id": "DOC-101",
+        "recipients": ["dana@hexamind.ai"],
+        "role": "viewer",
+    }
+    _external = {
+        "doc_id": "DOC-101",
+        "recipients": ["someone@gmail.com"],
+        "role": "viewer",
+    }
     CASES = [
-        ("analyst", "mcp-gdocs-search_docs", {"query": "launch"}),
-        ("analyst", "mcp-gdocs-read_doc", {"doc_id": "DOC-101"}),
-        ("analyst", "mcp-gdocs-read_doc", {"doc_id": "CONF-900"}),  # confidential
-        ("admin", "mcp-gdocs-read_doc", {"doc_id": "CONF-900"}),  # admin may
-        ("editor", "mcp-gdocs-create_doc", {"title": "", "folder": "Drafts"}),  # empty
-        ("editor", "mcp-gdocs-create_doc", {"title": "Plan", "folder": "Drafts"}),
         (
-            "editor",
-            "mcp-gdocs-share_doc",
-            {"doc_id": "DOC-101", "recipients": ["dana@hexamind.ai"], "role": "viewer"},
-        ),
-        (
-            "editor",
-            "mcp-gdocs-share_doc",
-            {
-                "doc_id": "DOC-101",
-                "recipients": ["someone@gmail.com"],
-                "role": "viewer",
-            },
-        ),  # external
-        (
-            "editor",
-            "mcp-gdocs-export_doc",
-            {"doc_id": "DOC-101", "url": "https://pastebin.com/x"},
-        ),
+            "analyst",
+            "mcp-gdocs-read_doc",
+            {"doc_id": "CONF-900"},
+        ),  # confidential → deny
         (
             "admin",
-            "mcp-gdocs-export_doc",
-            {"doc_id": "DOC-101", "url": "https://drive.hexamind.ai/exports/1"},
-        ),
+            "mcp-gdocs-read_doc",
+            {"doc_id": "CONF-900"},
+        ),  # admin override → allow
+        ("editor", "mcp-gdocs-share_doc", _internal),  # internal recipient → allow
+        ("editor", "mcp-gdocs-share_doc", _external),  # outside domain → deny
         (
             "editor",
             "mcp-gdocs-delete_doc",
             {"doc_id": "DOC-101", "confirm": True},
-        ),  # editors can't
+        ),  # editor → deny
         (
             "admin",
             "mcp-gdocs-delete_doc",
-            {"doc_id": "DOC-101", "confirm": False},
-        ),  # needs confirm
-        ("admin", "mcp-gdocs-delete_doc", {"doc_id": "DOC-101", "confirm": True}),
+            {"doc_id": "DOC-101", "confirm": True},
+        ),  # admin → allow
     ]
     engine = load_policy_set(POLICY_PATH)
     catalog, demo_rows = await run_batch(engine, CASES)
@@ -339,9 +307,9 @@ def _(catalog, mo):
     for _t in catalog:
         _rows.append(f"| `{_t['name']}` | {_t['desc']} | {', '.join(_t['params'])} |")
     mo.md(
-        "### The server's tools, auto-registered\n\n"
-        "Enumerated live over the connection — the proxy namespaces each one "
-        "`mcp-gdocs-<tool>` so the policy can address it:\n\n" + "\n".join(_rows)
+        "### The six tools our agent inherited\n\n"
+        "Auto-enumerated from the server, namespaced `mcp-gdocs-<tool>` so the "
+        "policy can address each one:\n\n" + "\n".join(_rows)
     )
     return
 
@@ -358,11 +326,10 @@ def _(demo_rows, mo):
             f"{_icon[_r['outcome']]} {_label[_r['outcome']]} | {_detail} |"
         )
     mo.md(
-        "## 4 · The gate in action\n\n"
-        "One row per call. Watch the pairs that differ only by **role** "
-        "(`read_doc` on `CONF-900`) or by an **argument** (`share_doc` recipient "
-        "domain, `delete_doc` confirm) — the tool name is the same; the gate "
-        "splits them.\n\n" + "\n".join(_rows)
+        "## 4 · Watch it decide\n\n"
+        "Read it in pairs: the **same call**, split only by **role** or an "
+        "**argument**. The tool name never changes — the gate does.\n\n"
+        + "\n".join(_rows)
     )
     return
 
@@ -370,10 +337,10 @@ def _(demo_rows, mo):
 @app.cell
 def _(mo):
     mo.md("""
-    ## 5 · Try it yourself
+    ## 5 · Your turn
 
-    Pick a role and a call, edit the arguments, submit. Allowed calls run for
-    real against the MCP server; denied calls are stopped before it.
+    Pick a role, edit the arguments, fire it through the gate. Allowed calls hit
+    the real server; denied ones stop here.
     """)
     return
 
@@ -430,7 +397,9 @@ async def _(engine, mo, run_batch, try_it):
         try:
             _args = json.loads(_v["args"] or "{}")
             if not isinstance(_args, dict):
-                raise ValueError("arguments must be a JSON object, e.g. {\"doc_id\": \"DOC-101\"}")
+                raise ValueError(
+                    'arguments must be a JSON object, e.g. {"doc_id": "DOC-101"}'
+                )
             _catalog, _res = await run_batch(engine, [(_v["role"], _v["tool"], _args)])
             _r = _res[0]
             _kind = {"allow": "success", "deny": "danger"}.get(_r["outcome"], "neutral")
@@ -463,18 +432,14 @@ async def _(engine, mo, run_batch, try_it):
 @app.cell
 def _(mo):
     mo.md("""
-    ## 6 · Now run it for real — in a different app
+    ## 6 · The same agent, in a real app
 
-    Everything above is the **definition**. hexgate's point is that this same
-    gated agent runs wherever you already work — here, in **hexkit**, a chat
-    UI that never imported hexgate. The gate rides along; blocked calls show
-    up as denials right in the conversation.
+    This exact agent runs in **hexkit** — a chat UI that never imported hexgate.
+    The gate rides along; blocked calls show up right in the conversation.
 
-    The live agent needs an OpenAI key (**BYOK** — sent straight to the
-    throwaway hexkit backend's memory, never stored). Paste it and send, then
-    open hexkit and sign in as `ana` (analyst), `ed` (editor), or `adah`
-    (admin) — password `hexademo` — to see the same request allowed for one
-    role and denied for another.
+    Add your OpenAI key (**BYOK** — kept in the throwaway backend's memory, never
+    stored), open hexkit, and sign in as `ana`, `ed`, or `adah` (password
+    `hexademo`) to watch the same request allowed for one role, denied for another.
     """)
     return
 
