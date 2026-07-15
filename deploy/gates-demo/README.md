@@ -51,16 +51,20 @@ in one Daytona sandbox, running the *same* gated agent.
 
 #### Build + spawn
 
-> **Interim (until #81 merges).** The combined snapshot/spawn are the local
-> scripts `deploy/daytona_full_snapshot.py` + `deploy/daytona_full_spawn.py`
-> (not committed yet). They default to cloning hexgate from `feat/gates-demo`
-> and hexkit from `main`; once #81 is on `main`, run with `HEXGATE_REF=main`.
+The combined snapshot/spawn are `deploy/daytona_full_snapshot.py` +
+`deploy/daytona_full_spawn.py` (the manual end-to-end launcher).
+
+> **Interim (until #81 merges).** These default to cloning both repos from
+> `main`, but the gates code isn't on `main` yet — so **for now prepend
+> `HEXGATE_REF=feat/gates-demo`** to the build. Drop it once #81 lands. (Wiring
+> this combined build into CI + a one-click launch is the post-#81 follow-up.)
 
 ```bash
 export DAYTONA_API_KEY=dtn_...
 
 # Build the combined snapshot (few minutes; --force to rebuild after a push).
-uv run --with daytona python deploy/daytona_full_snapshot.py
+# HEXGATE_REF pins hexgate to the gates branch until #81 is on main.
+HEXGATE_REF=feat/gates-demo uv run --with daytona python deploy/daytona_full_snapshot.py
 
 # Spawn a sandbox, boot the stack, print the signed URLs. Enter to delete.
 uv run --with daytona python deploy/daytona_full_spawn.py
