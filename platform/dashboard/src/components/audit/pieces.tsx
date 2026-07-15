@@ -20,16 +20,11 @@ import type {
   AuditFilters as Filters,
   SetAuditFilters as SetFilters,
 } from "@/lib/audit-filters";
+import { ActiveFilterChips } from "@/components/ui/active-filter-chips";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { ALL, FilterSelect } from "@/components/ui/filter-select";
 import {
   Table,
   TableBody,
@@ -38,9 +33,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Sparkline } from "@/components/ui/charts";
+import { BreakdownCardShell } from "@/components/ui/breakdown-card";
 import { BreakdownBar, type BreakdownDatum, DecisionBadge } from "./charts";
 import { OUTCOME_SERIES } from "./chart-tokens";
 import { fmtTs } from "./fmt";
@@ -53,41 +48,6 @@ const toDatum = (r: AuditBreakdownRow): BreakdownDatum => ({
   deny: r.deny,
   needs_approval: r.needs_approval,
 });
-
-// Radix Select items can't carry value="" — UI-local stand-in for "all".
-const ALL = "__all__";
-
-// Module-level (not re-created per render).
-function FilterSelect({
-  value,
-  all,
-  opts,
-  onChange,
-}: {
-  value: string;
-  all: string;
-  opts: string[];
-  onChange: (v: string) => void;
-}) {
-  return (
-    <Select
-      value={value || ALL}
-      onValueChange={(v) => onChange(v === ALL ? "" : v)}
-    >
-      <SelectTrigger className="h-8 w-auto min-w-32 gap-1.5 text-[13px]">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={ALL}>{all}</SelectItem>
-        {opts.map((o) => (
-          <SelectItem key={o} value={o} className="font-mono text-xs">
-            {o}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
-  );
-}
 
 // ————————————————————————————————————————————— Filter bar
 export function FilterBar({
@@ -171,55 +131,34 @@ export function FilterBar({
   );
 }
 
+const CHIP_KEYS: (keyof Filters)[] = [
+  "agent",
+  "role",
+  "tool",
+  "user",
+  "outcome",
+];
+
 export function ActiveChips({ f, setF }: { f: Filters; setF: SetFilters }) {
-  const set = <K extends keyof Filters>(k: K, v: Filters[K]) =>
-    setF((p) => ({ ...p, [k]: v }));
-  const lbl: Record<string, string> = {
-    agent: "agent",
-    role: "role",
-    tool: "tool",
-    user: "user",
-    outcome: "outcome",
-  };
-  const chips = (["agent", "role", "tool", "user", "outcome"] as const).filter(
-    (k) => f[k],
-  );
-  if (!chips.length) return null;
   return (
-    <div className="mb-4 flex flex-wrap items-center gap-1.5">
-      <span className="text-[11.5px] text-muted-foreground">Filters</span>
-      {chips.map((k) => (
-        <Badge key={k} className="gap-1 pr-1 text-muted-foreground">
-          {lbl[k]}: <span className="font-mono text-foreground">{f[k]}</span>
-          <button
-            onClick={() => set(k, "")}
-            className="inline-flex cursor-pointer text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-3" />
-          </button>
-        </Badge>
-      ))}
-      <Button
-        variant="ghost"
-        size="sm"
-        className="h-6 px-2 text-xs"
-        onClick={() =>
-          setF((p) => ({
-            ...p,
-            agent: "",
-            role: "",
-            tool: "",
-            outcome: "",
-            customMode: false,
-            start_date: null,
-            end_date: null,
-            user: "",
-          }))
-        }
-      >
-        Clear all
-      </Button>
-    </div>
+    <ActiveFilterChips
+      f={f}
+      setF={setF}
+      chipKeys={CHIP_KEYS}
+      onClearAll={() =>
+        setF((p) => ({
+          ...p,
+          agent: "",
+          role: "",
+          tool: "",
+          outcome: "",
+          customMode: false,
+          start_date: null,
+          end_date: null,
+          user: "",
+        }))
+      }
+    />
   );
 }
 
@@ -312,62 +251,40 @@ export function BreakdownCard({
   const fkey = dim;
 
   return (
-    <Card className="flex flex-col p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <Tabs value={dim} onValueChange={(v) => setDim(v as typeof dim)}>
-          <TabsList>
-            {DIMS.map((d) => (
-              <TabsTrigger key={d.id} value={d.id}>
-                {d.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-        <Select
-          value={sort}
-          onValueChange={(v) => setSort(v as "volume" | "denials")}
-        >
-          <SelectTrigger className="h-7 w-auto gap-1.5 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="volume">by volume</SelectItem>
-            <SelectItem value="denials">by denials</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid flex-1 grid-cols-2 gap-x-8">
-        {data.map((row) => (
-          <BreakdownBar
-            key={row.key}
-            label={row.key}
-            row={row}
-            max={max}
-            active={!f[fkey] || f[fkey] === row.key}
-            onClick={() =>
-              setF((p) => ({
-                ...p,
-                [fkey]: p[fkey] === row.key ? "" : row.key,
-              }))
-            }
-          />
-        ))}
-        {!data.length && (
-          <div className="py-2 text-[12.5px] text-muted-foreground">
-            No decisions match.
-          </div>
-        )}
-      </div>
-      <div className="mt-1 flex gap-3.5 border-t border-border pt-3 text-[11px] text-muted-foreground">
-        {OUTCOME_SERIES.map((s) => (
-          <span key={s.key} className="flex items-center gap-1.5">
-            <span className={`size-2 rounded-sm ${s.swatchClass}`} />
-            {s.label}
-          </span>
-        ))}
-        <span className="ml-auto">click a bar to filter →</span>
-      </div>
-    </Card>
+    <BreakdownCardShell
+      dims={DIMS}
+      dim={dim}
+      onDimChange={setDim}
+      metric={sort}
+      metricOptions={[
+        { value: "volume", label: "by volume" },
+        { value: "denials", label: "by denials" },
+      ]}
+      onMetricChange={setSort}
+      emptyMessage="No decisions match."
+      legend={
+        <>
+          {OUTCOME_SERIES.map((s) => (
+            <span key={s.key} className="flex items-center gap-1.5">
+              <span className={`size-2 rounded-sm ${s.swatchClass}`} />
+              {s.label}
+            </span>
+          ))}
+        </>
+      }
+      rows={data}
+      activeFilterValue={f[fkey]}
+      onFilterChange={(v) => setF((p) => ({ ...p, [fkey]: v }))}
+      renderRow={(row, { active, onClick }) => (
+        <BreakdownBar
+          label={row.key}
+          row={row}
+          max={max}
+          active={active}
+          onClick={onClick}
+        />
+      )}
+    />
   );
 }
 

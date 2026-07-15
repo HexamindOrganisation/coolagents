@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useNavigate, NavLink, Outlet } from "react-router-dom";
 import {
   Ban,
+  BarChart3,
   Building2,
   FileCode,
   Fingerprint,
@@ -92,6 +93,7 @@ const workspaceLinks = [
   { to: "/playground", label: "Playground", icon: MessageSquareCode },
   { to: "/audit", label: "Audit", icon: ScrollText },
   { to: "/bans", label: "Bans", icon: Ban },
+  { to: "/usage", label: "Usage", icon: BarChart3 },
   { to: "/tokens", label: "Tokens", icon: KeyRound },
   { to: "/orgs", label: "Organizations", icon: Building2 },
   { to: "/settings", label: "Settings", icon: Settings2 },

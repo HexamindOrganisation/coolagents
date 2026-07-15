@@ -8,7 +8,7 @@ import {
   Lightbulb,
   X,
 } from "lucide-react";
-import { endOfDay, format, startOfDay } from "date-fns";
+import { endOfDay, startOfDay } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { api, type AuditDecisionRow, type AuditOutcome } from "@/lib/api";
 import { useActive, useProjectScoped } from "@/lib/active";
@@ -17,25 +17,20 @@ import { useProjects } from "@/lib/projects";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Calendar } from "@/components/ui/calendar";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { DashboardRangePicker } from "@/components/ui/dashboard-range-picker";
 import { AreaChart, type ChartBucket, Donut } from "@/components/ui/charts";
 import { type Counts, DecisionBadge } from "@/components/audit/charts";
 import {
-  NO_VALUE_LABEL,
+  displayNoValue,
   OUT_LABEL,
   OUTCOME_SERIES,
+  scopeNoValue,
 } from "@/components/audit/chart-tokens";
 import {
-  RANGE_DAYS,
   type AuditFilters as Filters,
   useAuditFilters,
 } from "@/lib/audit-filters";
+import { rangeDays } from "@/lib/date-range";
 import { fmtTs } from "@/components/audit/fmt";
 import {
   ActiveChips,
@@ -45,14 +40,6 @@ import {
   FilterBar,
   KpiCard,
 } from "@/components/audit/pieces";
-
-const DATE_FMT = "MMM d, yyyy";
-
-function impliedRangeLabel(range: Filters["range"]): string {
-  const now = new Date();
-  const start = new Date(now.getTime() - RANGE_DAYS[range] * 86_400_000);
-  return `${format(start, DATE_FMT)} → ${format(now, DATE_FMT)}`;
-}
 
 const ZERO_COUNTS: Counts = { allow: 0, deny: 0, needs_approval: 0, total: 0 };
 
@@ -330,19 +317,18 @@ export function AuditPage() {
   const tableLimit = useAuditFilters((s) => s.tableLimit);
   const loadMore = useAuditFilters((s) => s.loadMore);
   const [sel, setSel] = useState<AuditDecisionRow | null>(null);
-  const showDateRow = f.customMode;
 
   // UI state → wire: '' = "all" locally, so unset filters are omitted
-  // (undefined). The "(none)" label maps to `role: ''` — the wire's
-  // no-role bucket; no sentinel string leaves the dashboard.
+  // (undefined). The "(none)" label (role/user) maps back to '' — the
+  // wire's no-value bucket; no sentinel string leaves the dashboard.
   const scope = {
     window: f.range,
     agent: f.agent || undefined,
-    role: f.role === NO_VALUE_LABEL ? "" : f.role || undefined,
+    role: scopeNoValue(f.role),
     tool: f.tool || undefined,
     start_date: f.start_date ? f.start_date.toISOString() : undefined,
     end_date: f.end_date ? f.end_date.toISOString() : undefined,
-    user: f.user || undefined,
+    user: scopeNoValue(f.user),
   };
 
   // Range-only (unscoped) summary: filter dropdown options + the "X of Y"
@@ -454,15 +440,7 @@ export function AuditPage() {
   const apprPct = counts.total
     ? Math.round((counts.needs_approval / counts.total) * 100)
     : 0;
-  const nDays =
-    f.start_date && f.end_date
-      ? Math.max(
-          1,
-          Math.round(
-            (f.end_date.getTime() - f.start_date.getTime()) / 86_400_000,
-          ),
-        )
-      : RANGE_DAYS[f.range];
+  const nDays = rangeDays(f.range, f.start_date, f.end_date);
   const avgLabel =
     !f.start_date && f.range === "24h"
       ? `${(counts.total / 24).toFixed(1)}/hr avg`
@@ -472,10 +450,6 @@ export function AuditPage() {
 
   const options = optionsQ.data;
   const rangeTotal = options?.totals.all ?? 0;
-  // Wire → display: the empty-role bucket arrives as a raw "" key; label
-  // it locally. Filter state then holds the label, mapped back in `scope`.
-  const displayRole = <T extends { key: string }>(r: T): T =>
-    r.key === "" ? { ...r, key: NO_VALUE_LABEL } : r;
   const related = (relatedQ.data?.rows ?? [])
     .filter((r) => r.event_id !== sel?.event_id)
     .slice(0, 6);
@@ -512,65 +486,7 @@ export function AuditPage() {
               <span className="font-mono text-foreground">{projectName}</span>
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <ToggleGroup
-              type="single"
-              value={f.customMode ? "custom" : f.range}
-              onValueChange={(v) => {
-                if (!v) return;
-                if (v === "custom") {
-                  setF((p) => ({ ...p, customMode: true }));
-                } else {
-                  setF((p) => ({
-                    ...p,
-                    range: v as Filters["range"],
-                    customMode: false,
-                    start_date: null,
-                    end_date: null,
-                  }));
-                }
-              }}
-            >
-              {(["24h", "7d", "30d", "90d"] as const).map((r) => (
-                <ToggleGroupItem key={r} value={r}>
-                  {r}
-                </ToggleGroupItem>
-              ))}
-              <ToggleGroupItem value="custom">Custom</ToggleGroupItem>
-            </ToggleGroup>
-            {showDateRow && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="h-8 text-[13px] font-normal"
-                  >
-                    {f.start_date && f.end_date
-                      ? `${format(f.start_date, DATE_FMT)} → ${format(f.end_date, DATE_FMT)}`
-                      : f.start_date
-                        ? `${format(f.start_date, DATE_FMT)} → …`
-                        : impliedRangeLabel(f.range)}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-auto p-0" align="end">
-                  <Calendar
-                    mode="range"
-                    selected={{
-                      from: f.start_date ?? undefined,
-                      to: f.end_date ?? undefined,
-                    }}
-                    onSelect={(range) =>
-                      setF((p) => ({
-                        ...p,
-                        start_date: range?.from ?? null,
-                        end_date: range?.to ? endOfDay(range.to) : null,
-                      }))
-                    }
-                  />
-                </PopoverContent>
-              </Popover>
-            )}
-          </div>
+          <DashboardRangePicker f={f} setF={setF} />
         </header>
 
         <FilterBar
@@ -579,7 +495,7 @@ export function AuditPage() {
           shown={listQ.data?.total ?? 0}
           total={rangeTotal}
           agents={options?.by_agent.map((r) => r.key) ?? []}
-          roles={options?.by_role.map((r) => displayRole(r).key) ?? []}
+          roles={options?.by_role.map((r) => displayNoValue(r).key) ?? []}
           tools={options?.by_tool.map((r) => r.key) ?? []}
         />
         <ActiveChips f={f} setF={setF} />
@@ -695,7 +611,7 @@ export function AuditPage() {
           <BreakdownCard
             byTool={summary?.by_tool ?? []}
             byAgent={summary?.by_agent ?? []}
-            byRole={summary?.by_role.map(displayRole) ?? []}
+            byRole={summary?.by_role.map(displayNoValue) ?? []}
             f={f}
             setF={setF}
           />

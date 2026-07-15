@@ -366,6 +366,38 @@ export interface AuditAnomaly {
   last_seen: string;
 }
 
+// --- Usage dashboard (mirrors platform/api/schemas.py LlmInvocation*) -------
+
+/** Totals for a slice: call volume + token counts. */
+export interface LlmInvocationTotals {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+/** One model/agent/user bucket. */
+export interface LlmInvocationBreakdownRow extends LlmInvocationTotals {
+  key: string;
+}
+
+export interface LlmInvocationSummary {
+  totals: LlmInvocationTotals;
+  by_model: LlmInvocationBreakdownRow[];
+  by_agent: LlmInvocationBreakdownRow[];
+  by_user: LlmInvocationBreakdownRow[];
+}
+
+/** Scope filters for the usage summary. `undefined` = no filter. */
+export interface LlmUsageScope {
+  window?: AuditWindow;
+  agent?: string;
+  model?: string;
+  user?: string;
+  start_date?: string;
+  end_date?: string;
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -461,4 +493,9 @@ export const api = {
     request<void>(`/v1/projects/${projectId}/bans/${banId}`, {
       method: "DELETE",
     }),
+
+  getLlmUsageSummary: (scope: LlmUsageScope, projectId: string) =>
+    request<LlmInvocationSummary>(
+      `/v1/projects/${projectId}/llm/summary${qs({ ...scope })}`,
+    ),
 };

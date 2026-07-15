@@ -12,9 +12,11 @@
  *      and the "Same session" list cross-links to the sibling event.
  *   5. The date filter row opens via the Custom toggle, reflects custom
  *      date selections, and collapses when a preset range is selected.
+ *   6. Clicking a breakdown bar sets the dimension filter; clicking it
+ *      again clears it.
  */
 
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes, useSearchParams } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -271,6 +273,33 @@ describe("AuditPage", () => {
     await user.click(screen.getByText("Denied"));
     await waitFor(() => {
       expect(screen.queryByText("Clear all")).not.toBeInTheDocument();
+    });
+  });
+
+  it("clicking a breakdown bar sets the dimension filter; clicking it again clears it", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await screen.findByText("blocked by policy");
+    // "read_file" also appears in the events table — scope the query to
+    // the breakdown card (identified by its Tabs) to avoid ambiguity, and
+    // grab the row once since a second lookup would stay ambiguous too.
+    const breakdownCard = screen
+      .getByRole("tablist")
+      .closest(".p-6") as HTMLElement;
+    const bar = within(breakdownCard)
+      .getByText("read_file")
+      .closest(".mb-\\[11px\\]") as HTMLElement;
+
+    await user.click(bar);
+    await waitFor(() => {
+      expect(useAuditFilters.getState().filters.tool).toBe("read_file");
+    });
+
+    await user.click(bar);
+    await waitFor(() => {
+      expect(useAuditFilters.getState().filters.tool).toBe("");
     });
   });
 
