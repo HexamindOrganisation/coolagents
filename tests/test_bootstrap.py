@@ -52,15 +52,46 @@ def _isolate_audit_and_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     _senders._logged_local_mode_suppressed.clear()
 
 
-def test_bootstrap_loads_requested_env_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Load environment values from the requested repo-relative env file."""
+def test_bootstrap_loads_env_file_from_cwd(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Load ``.env`` from the consumer's working directory — not relative to
+    the installed ``hexgate`` package. Regression: an SDK consumer running
+    ``hexgate register`` from their own project had their ``.env`` ignored
+    because the path was resolved against ``site-packages/hexgate/``."""
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "LANGFUSE_PUBLIC_KEY=cwd-public-key\nLANGFUSE_SECRET_KEY=cwd-secret-key\n"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    settings = bootstrap.bootstrap()
+
+    assert settings.langfuse_public_key == "cwd-public-key"
+    assert settings.langfuse_secret_key == "cwd-secret-key"
+
+
+def test_bootstrap_searches_cwd_upward_with_override_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``find_dotenv`` searches from the cwd (``usecwd=True``) for the
+    requested filename, and the resolved path is loaded with
+    ``override=False`` so a shell-set var still wins over ``.env``."""
     seen = _stub_dotenv_with_required_keys(monkeypatch)
+    find_calls: dict[str, object] = {}
 
-    settings = bootstrap.bootstrap("test.env")
+    def fake_find_dotenv(filename: str, usecwd: bool) -> str:
+        find_calls["filename"] = filename
+        find_calls["usecwd"] = usecwd
+        return f"/resolved/{filename}"
 
-    assert seen["path"] == Path(bootstrap.__file__).parent.parent / "test.env"
-    assert settings.langfuse_public_key == "public-key"
-    assert settings.langfuse_secret_key == "secret-key"
+    monkeypatch.setattr(bootstrap, "find_dotenv", fake_find_dotenv)
+
+    bootstrap.bootstrap("test.env")
+
+    assert find_calls == {"filename": "test.env", "usecwd": True}
+    assert seen["path"] == "/resolved/test.env"
 
 
 # ---------------------------------------------------------------------------
