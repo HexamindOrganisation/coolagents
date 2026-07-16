@@ -1,13 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAgentSelection } from "@/lib/agent_param";
-import {
-  Ban,
-  BookOpen,
-  Bot,
-  FileText,
-  ShieldCheck,
-  Wrench,
-} from "lucide-react";
+import { Ban, Bot, FileText, ShieldCheck, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   api,
@@ -19,7 +12,8 @@ import { useProjectScoped } from "@/lib/active";
 import { useCanManageBans } from "@/lib/bans";
 import { Badge } from "@/components/ui/badge";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
-import { DOC_PATHS, docsUrl } from "@/lib/docs";
+import { DocsLink } from "@/components/DocsLink";
+import { DOC_PATHS } from "@/lib/docs";
 
 /**
  * /agents — read-only manifest view.
@@ -70,15 +64,11 @@ export function AgentsPage() {
           loading={manifests.isLoading}
         />
         <div className="flex-1" />
-        <a
-          href={docsUrl(DOC_PATHS.registerAgent)}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
-        >
-          <BookOpen className="size-3" />
-          register an agent →
-        </a>
+        <DocsLink
+          path={DOC_PATHS.registerAgent}
+          label="register an agent →"
+          compact
+        />
         {active && (
           <div className="flex items-center gap-4">
             <Link
