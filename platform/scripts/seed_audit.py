@@ -15,6 +15,16 @@ from clickhouse_connect.driver.client import Client
 import sys
 from pathlib import Path
 
+from typing import Tuple
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
 
 from hexgate_api.constants import DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME
@@ -230,6 +240,24 @@ def build_rows(
     ) + generate_anomalies(rng, now, agent_name, project_id, number_anomalies)
 
 
+def _validate_seed_args(number_users: int, number_anomalies: int) -> Tuple[int, int]:
+    if number_users < 1:
+        logging.info("number_users < 1, defaulting to 1")
+        number_users = 1
+    elif number_users > len(USER_IDS):
+        logging.info(
+            "number_users > %d, defaulting to %d", len(USER_IDS), len(USER_IDS)
+        )
+        number_users = len(USER_IDS)
+    if number_anomalies < 0:
+        logging.info("number_anomalies < 0, defaulting to 0")
+        number_anomalies = 0
+    elif number_anomalies > 100:
+        logging.info("number_anomalies > 100, defaulting to 100")
+        number_anomalies = 100
+    return number_users, number_anomalies
+
+
 def seed(
     client: Client,
     agent_name: str,
@@ -300,6 +328,9 @@ if __name__ == "__main__":
         print("Seed rows cleared.")
     else:
         _validate_columns(client)
+        args.number_users, args.number_anomalies = _validate_seed_args(
+            args.number_users, args.number_anomalies
+        )
         n = seed(
             client,
             args.agent_name,
