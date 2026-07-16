@@ -1,4 +1,4 @@
-# Example: generate data for 10 users and 3 anomalies, project 00000000-0000-0000-0000-000000000003 and agent support-bot.
+# Example: generate data for 40 users and 3 anomalies, project 00000000-0000-0000-0000-000000000003 and agent support-bot.
 # cd platform/api && uv run python ../scripts/seed_audit.py --number_users 40 --number_anomalies 3 --project_id 00000000-0000-0000-0000-000000000003 --agent_name support-bot
 #
 # Example: clear seed rows for project 00000000-0000-0000-0000-000000000003.
@@ -39,48 +39,51 @@ from hexgate_api.core.clickhouse import get_clickhouse
 # clear() scopes deletes to USER_IDS so real audit rows are not affected.
 
 USER_IDS = [
-    "Alice",
-    "Bob",
-    "Charlie",
-    "Dave",
-    "Eve",
-    "Frank",
-    "Grace",
-    "Heidi",
-    "Ivan",
-    "Judy",
-    "Karl",
-    "Liam",
-    "Mallory",
-    "Nina",
-    "Oscar",
-    "Peggy",
-    "Quentin",
-    "Rupert",
-    "Sybil",
-    "Trent",
-    "Uma",
-    "Victor",
-    "Wendy",
-    "Xander",
-    "Yara",
-    "Zach",
-    "Amber",
-    "Brian",
-    "Clara",
-    "Derek",
-    "Elena",
-    "Felix",
-    "Gina",
-    "Hugo",
-    "Iris",
-    "Jack",
-    "Kira",
-    "Leo",
-    "Maya",
-    "Noah",
+    f"test_{name}"
+    for name in [
+        "Alice",
+        "Bob",
+        "Charlie",
+        "Dave",
+        "Eve",
+        "Frank",
+        "Grace",
+        "Heidi",
+        "Ivan",
+        "Judy",
+        "Karl",
+        "Liam",
+        "Mallory",
+        "Nina",
+        "Oscar",
+        "Peggy",
+        "Quentin",
+        "Rupert",
+        "Sybil",
+        "Trent",
+        "Uma",
+        "Victor",
+        "Wendy",
+        "Xander",
+        "Yara",
+        "Zach",
+        "Amber",
+        "Brian",
+        "Clara",
+        "Derek",
+        "Elena",
+        "Felix",
+        "Gina",
+        "Hugo",
+        "Iris",
+        "Jack",
+        "Kira",
+        "Leo",
+        "Maya",
+        "Noah",
+    ]
 ]
-ANOMALY_USERS = ["Bob", "Mallory"]
+ANOMALY_USERS = ["test_Bob", "test_Mallory"]
 
 # ── Traffic shape ─────────────────────────────────────────────────────────────
 # Normal: 300 rows per user over 30 days, outcomes weighted 80% allow / 10% deny / 10% needs_approval.
@@ -140,8 +143,8 @@ def _normal_row(
 def _anomaly_row(
     rng: random.Random,
     timestamp: datetime,
-    agent_name: str,
     project_id: str,
+    agent_name: str,
     anomaly_user: str,
 ) -> list:
     return [
@@ -221,7 +224,7 @@ def generate_anomalies(
             anomaly_base - timedelta(minutes=rng.randint(0, 5)) for _ in range(requests)
         ]
         rows.extend(
-            _anomaly_row(rng, ts, agent_name, project_id, anomaly_user)
+            _anomaly_row(rng, ts, project_id, agent_name, anomaly_user)
             for ts in timestamps
         )
     return rows
@@ -277,9 +280,10 @@ def seed(
 
 
 def clear(client: Client, project_id: str) -> None:
-    users = ", ".join(f"'{u}'" for u in USER_IDS)
     client.command(
-        f"ALTER TABLE policy_decision DELETE WHERE user_id IN ({users}) AND project_id = '{project_id}'",
+        "ALTER TABLE policy_decision DELETE WHERE user_id IN {users:Array(String)} "
+        "AND project_id = {pid:String}",
+        parameters={"users": USER_IDS, "pid": project_id},
         settings={"mutations_sync": "2"},
     )
 
