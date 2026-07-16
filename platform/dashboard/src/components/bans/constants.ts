@@ -12,6 +12,9 @@ import type { AuditWindow } from "@/lib/api";
  */
 export const PROPAGATION_HINT = "the next run";
 
+/** Public documentation for the ban feature, linked from the page header. */
+export const BAN_DOCS_URL = "https://docs.hexgate.ai/concepts/bans";
+
 /** Blocked-attempts feed window options, in the order they render. */
 export const WINDOWS: AuditWindow[] = ["24h", "7d", "30d", "90d"];
 
