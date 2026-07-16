@@ -97,11 +97,3 @@ if __name__ == "__main__":
 ## Runnable example
 
 `examples/openai_demo.py` — `HexgateRunner` (OpenAI Agents SDK) end-to-end.
-
-<Note>
-Demo files end in `_demo.py` so their filenames don't shadow the installed
-packages they import (`agents`, `google`, `langchain`, `openai`, `pydantic_ai`).
-Without the suffix, running a script inside `examples/` would put the directory
-on `sys.path[0]` and Python would import the demo files instead of the real
-packages.
-</Note>
