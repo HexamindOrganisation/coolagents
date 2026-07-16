@@ -227,12 +227,13 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
                 status_code=503,
             )
 
-        # 4. Concurrent cap. If the live count can't be read, LOG and PROCEED
-        #    (fail-open) — a Daytona list() blip must not brick a live demo. The
-        #    daily budget above is the hard backstop. Hit /debug to see why a
-        #    read failed.
+        # 4. Concurrent cap — FAIL CLOSED: if the live count can't be read, block
+        #    rather than let a Daytona outage turn the cap into unlimited launches
+        #    (Guillaume's guarantee). _running_count logs the reason and /debug
+        #    surfaces it; the earlier "always at capacity" was the list()-generator
+        #    bug (now fixed), not fail-closed itself.
         count = _running_count()
-        if count is not None and count >= MAX_LIVE_SANDBOXES:
+        if count is None or count >= MAX_LIVE_SANDBOXES:
             return HTMLResponse(
                 _page(
                     "Demo at capacity",
