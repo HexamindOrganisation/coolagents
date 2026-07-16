@@ -13,11 +13,15 @@ pnpm dev
 
 ## Routes
 
-- `/` — overview KPIs
-- `/agents` — file-tree YAML editor + live mini-graph per agent
+- `/agents` — read-only manifest view (tools, model, system prompt) per registered agent
+- `/policies` — edit each agent's policy (roles × tools × argument constraints)
 - `/graph` — read-only project overview (everyone → agents → tools)
 - `/playground` — chat with a serving agent, watch tool decisions stream live
+- `/audit` — every policy decision for the project
+- `/bans` — stop an agent or a user from running (overrides every policy)
+- `/usage` — LLM token usage for the project
 - `/tokens` — mint, list, revoke dev tokens
+- `/orgs` — organizations you belong to and their members
 - `/settings` — project settings
 
 The dev server proxies `/v1/*` (HTTP and WebSocket) to `localhost:8000`, so HMR

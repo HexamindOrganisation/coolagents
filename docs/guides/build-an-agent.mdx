@@ -84,8 +84,10 @@ only verifies against the platform instance that minted it.
    for native). See [User scope](/concepts/user-scope).
 2. **`approval_required` tools.** If the policy uses that mode, dev decides what
    happens — pass `approval_handler=` (True / False / callable) when wrapping.
-   Default for `hexgate serve` is auto-approve; for `hexgate chat` it prompts the
-   TTY. See [Approval-required tool calls](/concepts/approval-required).
+   The CLI default is `ask` for both commands: `hexgate chat` prompts the TTY,
+   and `hexgate serve` routes the request to the connected Playground (pass
+   `--approval-mode auto-approve` for headless runs). See
+   [Approval-required tool calls](/concepts/approval-required).
 
 Everything else — fetch, verify, hot-reload, role selection, signature check,
 decision rendering, tracing — the runtime handles.

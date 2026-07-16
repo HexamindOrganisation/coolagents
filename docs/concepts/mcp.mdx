@@ -101,13 +101,12 @@ Runs [`deploy/mcp_gate_demo.py`](https://github.com/HexamindOrganisation/hexgate
 ## What hexgate does NOT do (yet)
 
 - **Catalog threat scanning** — typosquatting and prompt-injection
-  pattern detection on tool descriptions at registration time. Tracked
-  as a follow-up (mirrors Microsoft AGT's `McpSecurityScanner`).
+  pattern detection on tool descriptions at registration time is not
+  performed.
 - **Response-side gating** — gating based on the return value of an
   MCP call. Today only the invocation is gated; returned content is
   passed through to the model.
 - **Reconnection** — a dropped transport surfaces as a tool-call
   error; the toolset doesn't auto-reconnect.
-- **Declarative `mcp_servers:` block in `agent.yaml`** — programmatic
-  attachment via `MCPToolset(...)` only for v1. Yaml wiring is the
-  next PR.
+- **Declarative `mcp_servers:` block in `agent.yaml`** — attach servers
+  programmatically via `MCPToolset(...)`; there's no YAML wiring yet.
