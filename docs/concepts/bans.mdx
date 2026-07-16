@@ -41,9 +41,34 @@ Only one active ban can target the same agent or user at a time.
 Bans take effect on the target's **next run**. The SDK re-checks the ban feed at the start of each run (a cheap `ETag`/`304` round-trip), so creating or lifting a ban does **not** interrupt a run that is already in progress — it applies from the next invocation.
 </Note>
 
-## What your integration sees
+## Handling the ban in your code
 
-When a banned agent or user tries to run, the SDK raises a typed [`AgentBannedError`](/sdk/index) **before the first token**. It is a real exception, never a disguised assistant message — so it can't be mistaken for model output, isn't written to conversation history, and gives your backend a single, explicit place to catch it.
+When a banned agent or user tries to run, the SDK raises a typed **`AgentBannedError`** **before the first token**. This is the one thing you need to handle as a developer: the ban surfaces as a real exception, never as a disguised assistant message — so it can't be mistaken for model output, isn't written to conversation history, and gives your backend a single, explicit place to catch it.
+
+`AgentBannedError` subclasses `RuntimeError`, so an unhandled ban won't silently pass as a normal result — it propagates like any other error until you catch it. Import it from `hexgate.security.errors`:
+
+```python
+from hexgate.security.errors import AgentBannedError
+```
+
+### The fields on the error
+
+| Field | Type | Use it for |
+|---|---|---|
+| `code` | `str` | Branching in your code — `"agent_banned"` or `"user_banned"`. Stable and machine-checkable. |
+| `ban_type` | `str` | Same distinction as `code`, without the suffix — `"agent"` or `"user"`. |
+| `target` | `str` | The banned `agent_name` (agent ban) or `user_id` (user ban) — handy for logging. |
+| `reason` | `str \| None` | The operator-supplied reason, if one was given. May be `None`. |
+| `user_message` | `str` | A safe, human-readable default you can show to the end-user verbatim. |
+
+The `user_message` default is written to be shown as-is:
+
+- **Agent ban** — "This agent is currently disabled by an administrator."
+- **User ban** — "Your access to this agent has been suspended by an administrator."
+
+### Catching it
+
+Wrap the run and decide what your product should do — return a clean error to the caller, log it, alert, or fall back:
 
 ```python
 from hexgate.security.errors import AgentBannedError
@@ -51,20 +76,30 @@ from hexgate.security.errors import AgentBannedError
 try:
     result = await agent.ainvoke(prompt)
 except AgentBannedError as exc:
-    # exc.ban_type   -> "agent" | "user"
-    # exc.code       -> "agent_banned" | "user_banned"  (stable, machine-checkable)
-    # exc.target     -> the banned agent_name or user_id
-    # exc.reason     -> operator-supplied reason, or None
-    # exc.user_message -> a safe, human-readable default you can show verbatim
-    return {"error": exc.user_message}
+    logger.warning("run refused: %s target=%s reason=%s",
+                   exc.code, exc.target, exc.reason)
+    # Show the safe default, or map exc.code to your own copy / i18n.
+    return {"blocked": True, "message": exc.user_message}
 ```
 
-The default `user_message` is safe to surface to end-users as-is:
+The same `try/except` works on every entrypoint — sync (`invoke` / `run_sync`), async (`ainvoke` / `run`), and streaming. If you want different behavior per ban type, branch on the stable `code`:
 
-- **Agent ban** — "This agent is currently disabled by an administrator."
-- **User ban** — "Your access to this agent has been suspended by an administrator."
+```python
+except AgentBannedError as exc:
+    if exc.code == "user_banned":
+        # e.g. sign this end-user out of the agent UI
+        ...
+    else:  # "agent_banned"
+        # e.g. surface an "agent temporarily unavailable" state
+        ...
+```
 
-On streaming entrypoints the check runs before the first chunk, so a banned run yields nothing — no partial output, no fake terminal message.
+<Note>
+On **streaming** entrypoints the check runs before the first chunk, so a banned
+run yields nothing — no partial output and no fake terminal message. Wrap the
+call that opens the stream in your `try/except`; the `AgentBannedError` is
+raised there, before you start iterating chunks.
+</Note>
 
 ## Seeing what was blocked
 
@@ -79,13 +114,6 @@ The ban check is wired into every run path across the native agent factory and a
 <Note>
 Bans require the platform. In fully local modes (`HEXGATE_LOCAL_MODE`, `HEXGATE_LOCAL_POLICY`, or no resolvable API key) there is no ban gate and bans are a no-op.
 </Note>
-
-## Known limitations
-
-- **Propagation is poll-based.** A ban applies on the next run, not instantly; a long-running conversation won't see a new ban until it next invokes the agent. Push invalidation is planned.
-- **No expiry.** A ban stays active until an operator revokes it — there is no time-based auto-lift yet.
-- **Fail-open on cold start.** If the SDK has never successfully fetched the ban feed (e.g. the control plane is unreachable at startup), it degrades to enforcing no bans rather than blocking everything. Once a feed has been fetched, a later outage keeps the last-known bans.
-- **`user_id` is trusted from the runtime scope.** User bans rely on the `user_id` your integration supplies. That is bypassable by your own process, not by your end-users, which matches the threat model — a trusted integrator stopping an abusive end-user.
 
 ## Where to next
 
