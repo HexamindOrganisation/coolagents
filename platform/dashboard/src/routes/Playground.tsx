@@ -24,6 +24,8 @@ import {
   type ChatMessage,
   type ToolCall,
 } from "@/lib/playground";
+import { DocsLink } from "@/components/DocsLink";
+import { DOC_PATHS } from "@/lib/docs";
 import { api, type AgentRead } from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
@@ -137,6 +139,9 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
           <p className="mt-1 text-sm text-muted-foreground">
             Simulate an agent session against the active bundle.
           </p>
+          <div className="-ml-3 mt-1">
+            <DocsLink path={DOC_PATHS.playground} label="Playground docs" />
+          </div>
         </div>
 
         {state.agentName && (

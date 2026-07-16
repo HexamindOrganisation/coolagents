@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  BookOpen,
   Check,
   Copy,
   Fingerprint,
@@ -27,6 +26,8 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
+import { DocsLink } from "@/components/DocsLink";
+import { DOC_PATHS } from "@/lib/docs";
 import { api, type TokenMintResponse } from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
 import { cn } from "@/lib/utils";
@@ -307,10 +308,7 @@ export function TokensPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" className="gap-2 text-muted-foreground">
-            <BookOpen className="size-4" />
-            Token docs
-          </Button>
+          <DocsLink path={DOC_PATHS.tokens} label="Token docs" />
           {scope.projectId && (
             <MintDialog projectId={scope.projectId} onSuccess={setJustMinted} />
           )}
