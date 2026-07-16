@@ -51,6 +51,40 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    # A picture of the one idea: every tool call detours through the gate, which
+    # answers allow / deny / approval from the policy + the caller's role.
+    _diagram = mo.mermaid(
+        """
+        flowchart LR
+            You["🧑 you<br/>define agent + tools"] --> Agent["🤖 agent"]
+            Agent -->|"tool call + args"| Gate
+            subgraph HG ["🛡️ hexgate"]
+                Gate["PolicyEnforcer"] --> Q{"role +<br/>args ok?"}
+            end
+            Q -->|allow| Tool["🔧 tool runs"]
+            Q -->|deny| Blk["⛔ blocked"]
+            Q -->|approval| Human["🙋 you approve<br/>in the Playground"]
+            Human -->|approved| Tool
+        """
+    )
+    mo.vstack(
+        [
+            mo.md("## How hexgate works"),
+            _diagram,
+            mo.md(
+                "Your agent runs behind the **gate**: every tool call is checked "
+                "against a **policy** — the caller's **role** and the call's "
+                "**arguments** — and comes back **allow / deny / approval** before "
+                "it runs. The policy lives on the platform; you watch decisions "
+                "and approve them live in the dashboard **Playground**."
+            ),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(mo):
     mo.md("""
     ## 1 · Define your tools
     """)
@@ -162,6 +196,38 @@ def _(api_key, build_agent, mo, serve_manager, start):
             "enter your key above and click **Start agent**."
         )
     out
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ## The policy that governs it
+
+    A policy is a small YAML file: **default-deny**, then per-tool rules with
+    optional **argument constraints**. Here's one for the tools above — view and
+    edit it live in the Playground's **Policies** tab, and the next message obeys
+    it.
+
+    ```yaml
+    version: 1
+
+    default_policy:
+      mode: deny                 # nothing runs unless a rule allows it
+
+    tools:
+      get_order_status:
+        mode: allow              # safe read — always allowed
+
+      refund_order:
+        mode: approval_required  # side-effecting — a human approves it
+        constraints:
+          - args.amount <= 100   # ...and only up to $100; larger is denied
+    ```
+
+    So a status lookup just **runs**, a small refund **pauses for your approval**
+    in the Playground, and a refund over $100 is **denied**.
+    """)
     return
 
 
