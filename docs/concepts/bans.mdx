@@ -1,0 +1,122 @@
+---
+title: "Bans"
+description: "An operator kill-switch that refuses a run before the model executes, overriding policy."
+---
+
+A **ban** is an operator-controlled block that stops an agent from running at all. Unlike a policy `deny` — which decides whether a single tool call is allowed while the agent runs — a ban refuses the whole run **before the model executes**. No tokens are spent, no tool fires, and the ban wins over any `allow` or `approval_required` decision the policy would have made.
+
+Bans are the "stop it now" switch: an agent is misbehaving, or an end-user is abusing your product, and you need it off across every conversation without editing and re-signing a policy.
+
+There are exactly two ban types, both scoped to a single project:
+
+| Type | Blocks | Across |
+|---|---|---|
+| **Agent ban** | one agent | all users |
+| **User ban** | one `user_id` | all agents in the project |
+
+A user ban matches the `user_id` from the [`User` scope](/concepts/user-scope) your integration supplies at runtime. If a run has no `User`, only the agent dimension is evaluated.
+
+## Ban vs. policy
+
+A ban is a separate primitive, evaluated *around* policy rather than inside it. Reach for the right one:
+
+| You want to… | Use |
+|---|---|
+| Stop an agent or user from running **at all** | a **ban** |
+| Block **one tool** while the agent keeps running | policy [`deny`](/policy/yaml-shape) |
+| Require a human before a tool runs | [`approval_required`](/concepts/approval-required) |
+
+Bans live outside the policy on purpose: policy is per-agent, compiled to signed WASM, and evaluated locally, so folding a ban into it would mean recompiling and re-signing on every toggle — and a user ban spans *every* agent, so it can't live in any single agent's policy anyway.
+
+## Creating and lifting a ban
+
+Bans are managed from the **Bans page** in the [dashboard](/platform/dashboard) (org `owner`/`admin` only):
+
+- **Create** — pick a type (Agent or User), choose the target (an agent from the project, or a free-text `user_id`), and optionally add a reason. The reason is shown later alongside blocked attempts.
+- **Revoke** — lifting a ban is a soft delete: the record is kept as an audit trail of who banned what and when, but the target is allowed to run again.
+
+Only one active ban can target the same agent or user at a time.
+
+<Note>
+Bans take effect on the target's **next run**. The SDK re-checks the ban feed at the start of each run (a cheap `ETag`/`304` round-trip), so creating or lifting a ban does **not** interrupt a run that is already in progress — it applies from the next invocation.
+</Note>
+
+## Handling the ban in your code
+
+When a banned agent or user tries to run, the SDK raises a typed **`AgentBannedError`** **before the first token**. This is the one thing you need to handle as a developer: the ban surfaces as a real exception, never as a disguised assistant message — so it can't be mistaken for model output, isn't written to conversation history, and gives your backend a single, explicit place to catch it.
+
+`AgentBannedError` subclasses `RuntimeError`, so an unhandled ban won't silently pass as a normal result — it propagates like any other error until you catch it. Import it from `hexgate.security.errors`:
+
+```python
+from hexgate.security.errors import AgentBannedError
+```
+
+### The fields on the error
+
+| Field | Type | Use it for |
+|---|---|---|
+| `code` | `str` | Branching in your code — `"agent_banned"` or `"user_banned"`. Stable and machine-checkable. |
+| `ban_type` | `str` | Same distinction as `code`, without the suffix — `"agent"` or `"user"`. |
+| `target` | `str` | The banned `agent_name` (agent ban) or `user_id` (user ban) — handy for logging. |
+| `reason` | `str \| None` | The operator-supplied reason, if one was given. May be `None`. |
+| `user_message` | `str` | A safe, human-readable default you can show to the end-user verbatim. |
+
+The `user_message` default is written to be shown as-is:
+
+- **Agent ban** — "This agent is currently disabled by an administrator."
+- **User ban** — "Your access to this agent has been suspended by an administrator."
+
+### Catching it
+
+Wrap the run and decide what your product should do — return a clean error to the caller, log it, alert, or fall back:
+
+```python
+from hexgate.security.errors import AgentBannedError
+
+try:
+    result = await agent.ainvoke(prompt)
+except AgentBannedError as exc:
+    logger.warning("run refused: %s target=%s reason=%s",
+                   exc.code, exc.target, exc.reason)
+    # Show the safe default, or map exc.code to your own copy / i18n.
+    return {"blocked": True, "message": exc.user_message}
+```
+
+The same `try/except` works on every entrypoint — sync (`invoke` / `run_sync`), async (`ainvoke` / `run`), and streaming. If you want different behavior per ban type, branch on the stable `code`:
+
+```python
+except AgentBannedError as exc:
+    if exc.code == "user_banned":
+        # e.g. sign this end-user out of the agent UI
+        ...
+    else:  # "agent_banned"
+        # e.g. surface an "agent temporarily unavailable" state
+        ...
+```
+
+<Note>
+On **streaming** entrypoints the check runs before the first chunk, so a banned
+run yields nothing — no partial output and no fake terminal message. Wrap the
+call that opens the stream in your `try/except`; the `AgentBannedError` is
+raised there, before you start iterating chunks.
+</Note>
+
+## Seeing what was blocked
+
+Every refused run reports a best-effort **blocked attempt** to the audit pipeline. The dashboard's **Blocked attempts** panel (on the Bans page) lists them by time, type, target, and reason, with a detail drawer per attempt. Blocked attempts are retained for 90 days.
+
+These are distinct from the [audit trail](/concepts/audit-trail) of policy decisions — a ban is refused before any tool call, so it has no tool, arguments, or outcome to record.
+
+## Adapter coverage
+
+The ban check is wired into every run path across the native agent factory and all four framework adapters — OpenAI Agents, LangChain, Pydantic AI, and Google ADK — firing after the policy refresh and before the model call, on both sync and streaming entrypoints.
+
+<Note>
+Bans require the platform. In fully local modes (`HEXGATE_LOCAL_MODE`, `HEXGATE_LOCAL_POLICY`, or no resolvable API key) there is no ban gate and bans are a no-op.
+</Note>
+
+## Where to next
+
+- [User scope](/concepts/user-scope) — how `user_id` reaches the runtime, the basis for user bans.
+- [Policy decision](/concepts/policy-decision) — the per-tool-call decisions a ban sits in front of.
+- [Audit trail](/concepts/audit-trail) — the decision telemetry that runs alongside blocked-attempt reporting.

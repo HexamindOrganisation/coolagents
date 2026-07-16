@@ -12,7 +12,7 @@ import {
   CreateBanDialog,
   type CreateBanInitial,
 } from "@/components/bans/CreateBanDialog";
-import { PROPAGATION_HINT } from "@/components/bans/constants";
+import { BAN_DOCS_URL, PROPAGATION_HINT } from "@/components/bans/constants";
 
 /** Non-admin block. Both ban reads (`GET …/bans` and the ban-enforcement
  * feed) are `require_project_admin` server-side, so members can't list at
@@ -120,9 +120,15 @@ export function BansPage() {
           </p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
-          <Button variant="ghost" className="gap-2 text-muted-foreground">
-            <BookOpen className="size-4" />
-            Ban docs
+          <Button
+            asChild
+            variant="ghost"
+            className="gap-2 text-muted-foreground"
+          >
+            <a href={BAN_DOCS_URL} target="_blank" rel="noreferrer">
+              <BookOpen className="size-4" />
+              Ban docs
+            </a>
           </Button>
           {canManage && projectId && (
             <Button
