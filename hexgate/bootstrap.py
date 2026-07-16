@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 from hexgate import audit
 from hexgate.config.env import resolve_api_key
@@ -43,11 +44,11 @@ def bootstrap(env_file: str = ".env", *, local_only: bool = False) -> Settings:
     debug sessions later when they wonder why their policy edits
     aren't taking.
     """
-    # Search the consumer's cwd, not this installed module's dir — their
-    # .env lives where they run `hexgate register`. "" (not found) → no-op.
-    env_path = find_dotenv(env_file, usecwd=True)
-    # override=False: shell wins over .env (uvicorn/vite/cargo/npm convention).
-    load_dotenv(env_path, override=False)
+    # Resolve against the consumer's cwd, no upward walk — a stray ancestor
+    # .env must never load silently. Missing → no-op.
+    env_path = Path.cwd() / env_file
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
     if local_only:
         # Set BEFORE audit.configure() so the first call sees the gate.
         os.environ[_LOCAL_MODE_ENV] = "1"

@@ -15,27 +15,18 @@ from hexgate.tracing import _senders
 
 def _stub_dotenv_with_required_keys(
     monkeypatch: pytest.MonkeyPatch, **extra: str
-) -> dict[str, Path]:
-    """Replace ``load_dotenv`` with a stub that populates the provider keys
-    a typical CLI run reads into ``Settings``. Returns a dict the caller can
-    inspect for the captured env path."""
-    seen: dict[str, Path] = {}
-
-    def fake_load_dotenv(path: Path, override: bool) -> None:
-        seen["path"] = path
-        # Phase 7: ``override=False`` so the shell wins over .env,
-        # matching uvicorn/vite/cargo/npm convention.
-        assert override is False
-        monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-        monkeypatch.setenv("LINKUP_API_KEY", "linkup-key")
-        monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
-        monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "public-key")
-        monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-key")
-        for k, v in extra.items():
-            monkeypatch.setenv(k, v)
-
-    monkeypatch.setattr(bootstrap, "load_dotenv", fake_load_dotenv)
-    return seen
+) -> None:
+    """Set the provider keys a typical CLI run reads into ``Settings`` and
+    stub ``load_dotenv`` to a no-op, so tests exercising downstream behavior
+    don't depend on a real ``.env`` on disk."""
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("LINKUP_API_KEY", "linkup-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "public-key")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret-key")
+    for k, v in extra.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(bootstrap, "load_dotenv", lambda *a, **k: None)
 
 
 @pytest.fixture(autouse=True)
@@ -72,26 +63,54 @@ def test_bootstrap_loads_env_file_from_cwd(
     assert settings.langfuse_secret_key == "cwd-secret-key"
 
 
-def test_bootstrap_searches_cwd_upward_with_override_false(
-    monkeypatch: pytest.MonkeyPatch,
+def test_bootstrap_shell_var_wins_over_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """``find_dotenv`` searches from the cwd (``usecwd=True``) for the
-    requested filename, and the resolved path is loaded with
-    ``override=False`` so a shell-set var still wins over ``.env``."""
-    seen = _stub_dotenv_with_required_keys(monkeypatch)
-    find_calls: dict[str, object] = {}
+    """``override=False``: a shell-set var wins over the same key in ``.env``,
+    matching the uvicorn/vite/cargo/npm convention."""
+    (tmp_path / ".env").write_text("LANGFUSE_PUBLIC_KEY=from-env-file\n")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "from-shell")
+    monkeypatch.chdir(tmp_path)
 
-    def fake_find_dotenv(filename: str, usecwd: bool) -> str:
-        find_calls["filename"] = filename
-        find_calls["usecwd"] = usecwd
-        return f"/resolved/{filename}"
+    settings = bootstrap.bootstrap()
 
-    monkeypatch.setattr(bootstrap, "find_dotenv", fake_find_dotenv)
+    assert settings.langfuse_public_key == "from-shell"
 
-    bootstrap.bootstrap("test.env")
 
-    assert find_calls == {"filename": "test.env", "usecwd": True}
-    assert seen["path"] == "/resolved/test.env"
+def test_bootstrap_ignores_ancestor_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A ``.env`` in a parent directory must NOT be loaded — resolution is
+    scoped to the cwd, with no upward walk. Regression guard for the silent
+    ancestor-load introduced by ``find_dotenv(usecwd=True)``."""
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "LANGFUSE_PUBLIC_KEY=ancestor-public-key\n"
+        "LANGFUSE_SECRET_KEY=ancestor-secret-key\n"
+    )
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    monkeypatch.chdir(subdir)
+
+    settings = bootstrap.bootstrap()
+
+    assert settings.langfuse_public_key != "ancestor-public-key"
+    assert settings.langfuse_secret_key != "ancestor-secret-key"
+
+
+def test_bootstrap_no_env_file_is_noop(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing ``.env`` is a clean no-op — no raise, no keys populated."""
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    settings = bootstrap.bootstrap()
+
+    assert settings.langfuse_public_key is None
+    assert settings.langfuse_secret_key is None
 
 
 # ---------------------------------------------------------------------------
