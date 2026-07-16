@@ -83,13 +83,14 @@ USER_IDS = [
         "Noah",
     ]
 ]
-ANOMALY_USERS = ["test_Bob", "test_Mallory"]
-
 # ── Traffic shape ─────────────────────────────────────────────────────────────
 # Normal: 300 rows per user over 30 days, outcomes weighted 80% allow / 10% deny / 10% needs_approval.
-# Anomaly: for each anomaly, one user (sampled from ANOMALY_USERS) spikes 20-50 denies
-# in a 5-minute window at a random point in the last 30 days,
-# probing restricted tools (refund_customer, create_ticket).
+# Anomaly: for each anomaly, one user (sampled from the seeded normal subset,
+# USER_IDS[:number_users]) spikes 20-50 denies in a 5-minute window at a random
+# point in the last 30 days, probing restricted tools (refund_customer, create_ticket).
+# Sampling from the seeded subset (not a fixed list) ensures the anomaly user
+# already has normal-behavior rows, so the anomaly reads as a deviation rather
+# than a user's only activity.
 
 ROWS_PER_USER = 300
 NUMBER_ANOMALIES = 1
@@ -214,10 +215,11 @@ def generate_anomalies(
     agent_name: str,
     project_id: str,
     number_anomalies: int,
+    number_users: int,
 ) -> list[list]:
     rows = []
     for _ in range(number_anomalies):
-        anomaly_user = rng.choice(ANOMALY_USERS)
+        anomaly_user = rng.choice(USER_IDS[:number_users])
         anomaly_base = now - timedelta(days=rng.randint(0, 29))
         requests = rng.randint(REQUESTS_PER_ANOMALY_MIN, REQUESTS_PER_ANOMALY_MAX)
         timestamps = [
@@ -240,7 +242,9 @@ def build_rows(
     rng = random.Random(0)
     return generate_normal_data(
         rng, now, project_id, agent_name, number_users
-    ) + generate_anomalies(rng, now, agent_name, project_id, number_anomalies)
+    ) + generate_anomalies(
+        rng, now, agent_name, project_id, number_anomalies, number_users
+    )
 
 
 def _validate_seed_args(number_users: int, number_anomalies: int) -> Tuple[int, int]:
@@ -303,7 +307,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--agent_name",
-        default=DEFAULT_PROJECT_NAME,
+        default="support-agent",
         help="Agent name to use for seed rows.",
     )
     parser.add_argument(
