@@ -25,10 +25,12 @@ _GDOCS_POLICY = Path(__file__).resolve().parent / "gates-demo" / "policy.yaml"
 _GDOCS_AGENT_NAME = "docs_agent"
 
 
-async def _seed_gdocs_agent(session) -> None:
+async def _seed_gdocs_agent() -> None:
     """Idempotently seed the ``docs_agent`` policy into the default project.
 
-    Mirrors ``ensure_seeded_agents`` for one agent: create the row with
+    Opens its OWN session so a seed failure (e.g. a commit-time DB error) can't
+    poison the token-mint session — the mint is what the demo actually depends
+    on. Mirrors ``ensure_seeded_agents`` for one agent: create the row with
     ``policy_yaml`` from :data:`_GDOCS_POLICY`. No bundle needed — the API's
     ``backfill_bundles`` compiles one at startup if ``opa`` is present, and the
     SDK bind path falls back to the pydantic engine from ``policy_yaml`` if not.
@@ -39,30 +41,32 @@ async def _seed_gdocs_agent(session) -> None:
         return
 
     from hexgate_api.constants import DEFAULT_PROJECT_ID
+    from hexgate_api.core.db import async_session_factory
     from hexgate_api.core.ids import new_id
     from hexgate_api.features.agents.service import get_agent
     from hexgate_api.models import Agent
 
-    if await get_agent(session, DEFAULT_PROJECT_ID, _GDOCS_AGENT_NAME) is not None:
-        return  # already seeded (warm DB)
+    async with async_session_factory() as session:
+        if await get_agent(session, DEFAULT_PROJECT_ID, _GDOCS_AGENT_NAME) is not None:
+            return  # already seeded (warm DB)
 
-    session.add(
-        Agent(
-            id=new_id(Agent),
-            project_id=DEFAULT_PROJECT_ID,
-            name=_GDOCS_AGENT_NAME,
-            agent_yaml=(
-                "name: docs_agent\nmodel: gpt-4o-mini\n"
-                "system_prompt: system.md\npolicy: policy.yaml\n"
-            ),
-            policy_yaml=_GDOCS_POLICY.read_text(),
-            system_md=(
-                "A Google-Docs assistant whose MCP tools (mcp-gdocs-*) are gated "
-                "by role — analyst < editor < admin. Runs inside hexkit.\n"
-            ),
+        session.add(
+            Agent(
+                id=new_id(Agent),
+                project_id=DEFAULT_PROJECT_ID,
+                name=_GDOCS_AGENT_NAME,
+                agent_yaml=(
+                    "name: docs_agent\nmodel: gpt-4o-mini\n"
+                    "system_prompt: system.md\npolicy: policy.yaml\n"
+                ),
+                policy_yaml=_GDOCS_POLICY.read_text(),
+                system_md=(
+                    "A Google-Docs assistant whose MCP tools (mcp-gdocs-*) are gated "
+                    "by role — analyst < editor < admin. Runs inside hexkit.\n"
+                ),
+            )
         )
-    )
-    await session.commit()
+        await session.commit()
     print(f"[provision] seeded {_GDOCS_AGENT_NAME} policy for the dashboard", file=sys.stderr)
 
 
@@ -77,13 +81,6 @@ async def _mint() -> str:
     keystore.ensure_keypair()
     async with async_session_factory() as session:
         await ensure_default_seed(session)
-        # Best-effort: the gates demo's docs_agent is enrichment for the
-        # dashboard/hexkit half. A bad policy.yaml or seed error must NOT take
-        # down the core BYOK notebook path — log and carry on.
-        try:
-            await _seed_gdocs_agent(session)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[provision] docs_agent seed skipped: {exc}", file=sys.stderr)
         _, full_token = await mint_dev_token(
             session,
             DEFAULT_PROJECT_ID,
@@ -94,6 +91,14 @@ async def _mint() -> str:
             env="live",
             signing_key_bytes=keystore._private_key_bytes(),
         )
+
+    # Best-effort, in its OWN session (see _seed_gdocs_agent): the gates demo's
+    # docs_agent is enrichment for the dashboard/hexkit half. A seed error must
+    # NOT take down the token mint above (the core BYOK notebook path).
+    try:
+        await _seed_gdocs_agent()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[provision] docs_agent seed skipped: {exc}", file=sys.stderr)
     return full_token
 
 
