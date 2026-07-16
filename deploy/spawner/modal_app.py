@@ -42,7 +42,11 @@ API_PORT = 8000
 VENV = "/app/platform/api/.venv/bin"
 MAX_LIVE_SANDBOXES = 20  # hard concurrent cap (fail-closed)
 MAX_LAUNCHES_PER_DAY = 200  # daily budget backstop against a slow drip
-PER_IP_COOLDOWN_SECONDS = 20  # per-IP rate limit (shared across containers)
+# Per-IP cooldown (shared across containers). 0 = OFF, so one machine can open
+# several demos at once (live showcase). Set > 0 to throttle rapid launches from
+# a single IP on a public/abuse-prone deploy; the concurrent cap + daily budget
+# are the real cost guards either way.
+PER_IP_COOLDOWN_SECONDS = 0
 
 
 @app.function(
@@ -82,12 +86,15 @@ def web():
     TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET", "")
 
     def _running_count() -> int | None:
-        """Live sandbox count (the shared source of truth), or None if Daytona
-        can't be reached — the caller FAILS CLOSED on None so an API blip can't
-        turn the cap into unlimited launches."""
+        """Live sandbox count, or None if Daytona can't be read (caller then
+        fails OPEN — see /launch). Logs the error so a persistent failure is
+        visible in `modal app logs` instead of silently bricking the demo."""
         try:
-            return len(daytona.list())
-        except Exception:  # noqa: BLE001
+            # daytona.list() returns a generator (SDK >= 0.197) — materialize
+            # before len(). list(...) is harmless if a list is returned instead.
+            return len(list(daytona.list()))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spawner] daytona.list() failed: {type(exc).__name__}: {exc}", flush=True)
             return None
 
     def _today() -> str:
@@ -195,8 +202,12 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
         ip = _client_ip(request)
         now = time.time()
 
-        # 2. Per-IP cooldown (shared via the Dict).
-        if ip and now - float(state.get(f"ip:{ip}", 0)) < PER_IP_COOLDOWN_SECONDS:
+        # 2. Per-IP cooldown (shared via the Dict). Skipped entirely when 0.
+        if (
+            PER_IP_COOLDOWN_SECONDS
+            and ip
+            and now - float(state.get(f"ip:{ip}", 0)) < PER_IP_COOLDOWN_SECONDS
+        ):
             return HTMLResponse(
                 _page(
                     "Slow down",
@@ -216,7 +227,11 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
                 status_code=503,
             )
 
-        # 4. Concurrent cap — FAIL CLOSED if the live count can't be read.
+        # 4. Concurrent cap — FAIL CLOSED: if the live count can't be read, block
+        #    rather than let a Daytona outage turn the cap into unlimited launches
+        #    (Guillaume's guarantee). _running_count logs the reason and /debug
+        #    surfaces it; the earlier "always at capacity" was the list()-generator
+        #    bug (now fixed), not fail-closed itself.
         count = _running_count()
         if count is None or count >= MAX_LIVE_SANDBOXES:
             return HTMLResponse(
@@ -228,35 +243,52 @@ background:#3b82f6;color:#fff;cursor:pointer;margin-top:1rem}}</style></head>
                 status_code=503,
             )
 
-        sandbox = daytona.create(
-            CreateSandboxFromSnapshotParams(
-                snapshot=SNAPSHOT,
-                # Cost control: stop 15 min after the visitor goes idle (compute
-                # billing stops), and ephemeral → auto-delete on stop so no
-                # storage lingers. Net: pay only while it's actively used.
-                auto_stop_interval=15,
-                ephemeral=True,
+        # Create + boot. Wrapped so a Daytona failure (commonly a concurrent
+        # sandbox / resource quota when another demo is already live) surfaces
+        # as a readable page + a log line, not a blank 500.
+        try:
+            sandbox = daytona.create(
+                CreateSandboxFromSnapshotParams(
+                    snapshot=SNAPSHOT,
+                    # Cost control: stop 15 min after the visitor goes idle (compute
+                    # billing stops), and ephemeral → auto-delete on stop so no
+                    # storage lingers. Net: pay only while it's actively used.
+                    auto_stop_interval=15,
+                    ephemeral=True,
+                )
             )
-        )
-        _record_launch(ip)  # only count a launch that actually created a sandbox
-        dash_url = _signed(sandbox, API_PORT)
-        notebook_url = _signed(sandbox, MARIMO_PORT)
+            _record_launch(ip)  # only count a launch that actually created a sandbox
+            dash_url = _signed(sandbox, API_PORT)
+            notebook_url = _signed(sandbox, MARIMO_PORT)
 
-        # Fire-and-forget the stack (process.exec would block on a server that
-        # never exits; a background session doesn't).
-        sandbox.process.create_session("boot")
-        sandbox.process.execute_session_command(
-            "boot",
-            SessionExecuteRequest(
-                command=(
-                    f"cd /app && PATH={VENV}:$PATH "
-                    f"HEXGATE_DEMO=1 HEXGATE_COOKIE_SECURE=1 "
-                    f"HEXGATE_MARIMO_PORT={MARIMO_PORT} HEXGATE_DASH_URL='{dash_url}' "
-                    f"{VENV}/python deploy/boot.py > /tmp/boot.log 2>&1"
+            # Fire-and-forget the stack (process.exec would block on a server that
+            # never exits; a background session doesn't).
+            sandbox.process.create_session("boot")
+            sandbox.process.execute_session_command(
+                "boot",
+                SessionExecuteRequest(
+                    command=(
+                        f"cd /app && PATH={VENV}:$PATH "
+                        f"HEXGATE_DEMO=1 HEXGATE_COOKIE_SECURE=1 "
+                        f"HEXGATE_MARIMO_PORT={MARIMO_PORT} HEXGATE_DASH_URL='{dash_url}' "
+                        f"{VENV}/python deploy/boot.py > /tmp/boot.log 2>&1"
+                    ),
+                    run_async=True,
                 ),
-                run_async=True,
-            ),
-        )
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[spawner] launch failed: {type(exc).__name__}: {exc}", flush=True)
+            return HTMLResponse(
+                _page(
+                    "Couldn't start the demo",
+                    "<h2>Couldn't start a sandbox</h2>"
+                    f"<p style='opacity:.7'>{type(exc).__name__}: {exc}</p>"
+                    "<p style='opacity:.5;font-size:.85rem'>Often a Daytona "
+                    "concurrent-sandbox or resource quota when another demo is "
+                    "already running.</p>",
+                ),
+                status_code=502,
+            )
 
         # "Starting…" page polls /status until marimo answers, then redirects.
         poll = f"""<script>
@@ -282,6 +314,22 @@ tick();
                 tail=poll,
             )
         )
+
+    @web_app.get("/debug")
+    def debug():
+        # Quick health probe: does daytona.list() work with the deployed
+        # DAYTONA_API_KEY? Surfaces the real error (auth / SDK version / API
+        # change) instead of the generic "at capacity" page.
+        import importlib.metadata as _md
+
+        out = {"daytona_sdk": _md.version("daytona"), "api_url": os.environ.get("HEXGATE_API_URL")}
+        try:
+            out["sandbox_count"] = len(list(daytona.list()))
+            out["ok"] = True
+        except Exception as exc:  # noqa: BLE001
+            out["ok"] = False
+            out["error"] = f"{type(exc).__name__}: {exc}"
+        return JSONResponse(out)
 
     @web_app.get("/status")
     def status(sb: str):

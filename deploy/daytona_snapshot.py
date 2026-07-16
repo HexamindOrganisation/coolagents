@@ -74,9 +74,13 @@ def main() -> None:
             CreateSnapshotParams(
                 name=SNAPSHOT,
                 image=image,
-                # Daytona's per-sandbox ceiling — the demo runs two heavy Python
-                # processes (API + marimo kernel), so give it the max.
-                resources=Resources(cpu=4, memory=8, disk=10),
+                # Small per-sandbox footprint so many demos run concurrently
+                # within the Daytona account quota (~5× at 2 GB vs 8 GB). 2 GB
+                # leaves headroom over the ~0.76 GB idle peak for a live LLM turn
+                # (uvicorn + marimo kernel + ChatOpenAI) and the dashboard build.
+                # Drop to 1 to pack more in if runs stay light; raise `disk` if
+                # the image doesn't fit at build time.
+                resources=Resources(cpu=1, memory=2, disk=5),
             ),
             on_logs=lambda chunk: print(chunk, end=""),
         )

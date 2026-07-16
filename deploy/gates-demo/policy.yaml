@@ -1,0 +1,75 @@
+# The gate for the fake Google Docs MCP server.
+#
+# Default-deny: the server ships six tools, but the agent can touch NOTHING
+# unless a rule allows it — so a server that later adds a seventh tool can't
+# smuggle it past you. Every rule below is allow/deny plus a constraint on the
+# call's arguments, resolved by hexgate's constraint DSL:
+#
+#   startswith / endswith / matches  — string checks
+#   count(...)                       — list length
+#   every(list, <cond>)              — quantifier over a list
+#   consts.<name>                    — named constants (single source of truth)
+#   role / tool                      — call-scope facts
+#
+# Three roles inherit from a read-only base; the caller's role is resolved at
+# call time from the platform user, so ONE policy governs the analyst, the
+# editor, and the admin.
+
+version: 1
+
+roles:
+  # ---- shared read-only base (is_mixin keeps it out of the selectable roles) ----
+  reader:
+    is_mixin: true
+    consts:
+      company_domain: "@hexamind.ai"     # documented here; endswith() takes a literal
+      max_recipients: 5                  # no fan-out sharing
+      writable_folders: ["Drafts", "Team Drive", "Shared"]
+    default_policy:
+      mode: deny                         # nothing is callable unless named below
+    tools:
+      "mcp-gdocs-search_docs":
+        mode: allow                      # searching titles is always safe
+      "mcp-gdocs-read_doc":
+        mode: allow
+        constraints:
+          - not startswith(args.doc_id, "CONF-")   # confidential docs are off-limits
+
+  # ---- analyst: read-only, nothing more ----
+  analyst:
+    inherits: [reader]
+
+  # ---- editor: create + share, but only inside the company ----
+  editor:
+    inherits: [reader]
+    tools:
+      "mcp-gdocs-create_doc":
+        mode: allow
+        constraints:
+          - args.title != ""                          # no untitled junk
+          - args.folder in consts.writable_folders    # only sanctioned folders
+      "mcp-gdocs-share_doc":
+        mode: allow
+        constraints:
+          - every(args.recipients, endswith(., "@hexamind.ai"))  # no external sharing
+          - count(args.recipients) <= consts.max_recipients      # no mass fan-out
+          - args.role != "owner"                                 # never hand off ownership
+      "mcp-gdocs-export_doc":
+        mode: deny                                    # exfiltration path — blocked
+      "mcp-gdocs-delete_doc":
+        mode: deny                                    # destructive — editors can't
+
+  # ---- admin: everything, with guardrails still on the dangerous calls ----
+  admin:
+    inherits: [editor]
+    tools:
+      "mcp-gdocs-read_doc":
+        mode: allow                                   # admins may read confidential docs
+      "mcp-gdocs-export_doc":
+        mode: allow
+        constraints:
+          - matches(args.url, "^https://drive\\.hexamind\\.ai/")  # only the internal drive
+      "mcp-gdocs-delete_doc":
+        mode: allow
+        constraints:
+          - args.confirm == true                      # deletes must be deliberate
