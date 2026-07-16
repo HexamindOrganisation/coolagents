@@ -98,7 +98,7 @@ Full documentation lives at **[docs.hexgate.ai](https://docs.hexgate.ai)**.
 
 | | |
 |---|---|
-| [Build an agent](https://docs.hexgate.ai/guides/build-an-agent) | The two shapes — wrap an existing agent, or let the platform own the YAML. |
+| [Build an agent](https://docs.hexgate.ai/guides/build-an-agent) | Define tools directly with `create_agent`, or wrap an existing framework agent. |
 | [Framework adapters](https://docs.hexgate.ai/adapters/openai) | OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI. |
 | [Policy](https://docs.hexgate.ai/policy/yaml-shape) | YAML shape, constraints, WASM bundles, signing, local override. |
 | [User scope + roles](https://docs.hexgate.ai/concepts/user-scope) | Per-request identity, role resolution, biscuit attenuation. |
