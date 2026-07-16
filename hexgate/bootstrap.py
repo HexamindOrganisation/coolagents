@@ -44,12 +44,11 @@ def bootstrap(env_file: str = ".env", *, local_only: bool = False) -> Settings:
     debug sessions later when they wonder why their policy edits
     aren't taking.
     """
-    env_path = Path(__file__).parent.parent / env_file
-    # ``override=False``: shell wins over .env, matching the convention
-    # uvicorn / vite / cargo / npm follow. A pre-existing test
-    # (test_bootstrap_loads_requested_env_file) pinned this contract;
-    # the code had drifted to ``True``. Flipped back here.
-    load_dotenv(env_path, override=False)
+    # Resolve against the consumer's cwd, no upward walk — a stray ancestor
+    # .env must never load silently. Missing → no-op.
+    env_path = Path.cwd() / env_file
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
     if local_only:
         # Set BEFORE audit.configure() so the first call sees the gate.
         os.environ[_LOCAL_MODE_ENV] = "1"
