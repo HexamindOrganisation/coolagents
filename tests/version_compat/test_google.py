@@ -17,7 +17,11 @@ from tests.version_compat.conftest import AGENT_NAMES
 
 pytestmark = pytest.mark.version_compat
 
-MODEL = "gemini-2.0-flash"
+# All probes run on OpenAI + OPENAI_API_KEY so the matrix needs a single
+# provider key. Google ADK is model-native to Gemini, so it reaches OpenAI
+# through its LiteLLM wrapper. Construction is keyless (Tier 0/1 stays
+# offline); only the Tier 2 run touches OPENAI_API_KEY.
+MODEL = "openai/gpt-4o-mini"
 
 
 def get_weather(city: str) -> str:
@@ -32,10 +36,11 @@ def delete_user(user_id: str) -> str:
 
 def _build_agent():
     from google.adk.agents import Agent
+    from google.adk.models.lite_llm import LiteLlm
 
     return Agent(
         name=AGENT_NAMES["google"],
-        model=MODEL,
+        model=LiteLlm(model=MODEL),
         tools=[get_weather, delete_user],
     )
 
@@ -78,8 +83,8 @@ def test_allow_decision(probe_user):
 
 
 @pytest.mark.skipif(
-    not (os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")),
-    reason="Tier 2 e2e needs GOOGLE_API_KEY / GEMINI_API_KEY",
+    not os.environ.get("OPENAI_API_KEY"),
+    reason="Tier 2 e2e needs OPENAI_API_KEY (LiteLLM → OpenAI)",
 )
 async def test_e2e_allow_executes(probe_user):
     """Tier 2 — a full runner drives the seam and runs the allowed tool."""
@@ -90,13 +95,13 @@ async def test_e2e_allow_executes(probe_user):
 
     session_service = InMemorySessionService()
     await session_service.create_session(
-        app_name="version-probe",
+        app_name="version_probe",
         user_id=probe_user.user_id,
         session_id=probe_user.session_id,
     )
     runner = HexgateRunner(
         agent=_build_agent(),
-        app_name="version-probe",
+        app_name="version_probe",
         session_service=session_service,
         api_key="local-probe-key",
     )

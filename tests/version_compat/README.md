@@ -27,8 +27,9 @@ Three checks per framework:
   deny marker and the underlying function **never ran** (`_probe.was_executed`).
   Deterministic, no LLM. This is the version-matrix signal.
 - **Tier 2 — `test_e2e_*`**: a full model run drives the framework's own
-  tool-calling loop through the seam. Auto-skips without a provider key
-  (`OPENAI_API_KEY`, or `GOOGLE_API_KEY`/`GEMINI_API_KEY` for google).
+  tool-calling loop through the seam. Every probe runs on OpenAI `gpt-4o-mini`
+  with `OPENAI_API_KEY` (google-adk reaches OpenAI via its LiteLLM wrapper), so
+  the matrix needs a single provider key. Auto-skips when it's unset.
 
 ## Running
 
@@ -66,18 +67,6 @@ First register each `version_probe_*` agent (see `AGENT_NAMES` in
 `conftest.py`) on the platform with a policy equivalent to `probe_policy.yaml`
 (allow `get_weather`, deny `delete_user`) — the wrappers fail-loud on a 404.
 
-## Known results (as of this scaffolding)
-
-Installed: pydantic-ai-slim 1.89.1 · openai-agents 0.15.1 · google-adk 1.32.0
-· langchain 1.2.16 / langchain-core 1.3.2 / langgraph 1.1.10 · deepagents 0.6.10.
-
-- pydantic_ai, openai-agents, google-adk, langchain — Tier 0/1 **pass**.
-- **deepagents 0.6.10 is incompatible with langchain 1.2.16**: `create_deep_agent`
-  fails at import (`cannot import name 'InputAgentState' from
-  langchain.agents.middleware.types`). The module skips with that reason. This
-  is a real matrix result — the driver (plan step 4) will vary the versions to
-  find the compatible langchain range for deepagents.
-
 ## Running the matrix
 
 `scripts/version_matrix.py` drives this suite across a version grid — each
@@ -97,9 +86,19 @@ OPENAI_API_KEY=sk-... python scripts/version_matrix.py \
 ```
 
 The table (per-cell T0/T1/T2 + supported Tier-1-green range) prints to the
-console and writes to `build/version-matrix/results.md`. A **Tier 1 ✗** is the
-critical signal (the wrap broke); **T1✓ T2✗** means investigate.
+console and writes to `build/version-matrix/results.md`.
 
-## Next (plan step 3)
+## Verdicts & findings
 
-- One platform-backed confirmation pass per framework (`HEXGATE_PROBE_MODE=saas`).
+Each cell is classified as:
+
+- **OK** — enforcement (Tier 1) works; e2e (Tier 2) passed or was skipped.
+- **BROKEN ⚠** — Tier 1 failed: the wrap stopped attaching. The signal that matters.
+- **T1✓ T2✗** — enforcement works but the e2e run failed; investigate (may be model
+  flakiness or an unrelated ecosystem-version clash, not a wrap break).
+- **UNUSABLE / INCOMPAT** — the framework or probe couldn't load or construct at that
+  version (old API, transitive-dep conflict).
+
+Current per-framework supported ranges and open issues are recorded in
+`plans/framework-version-compat-testing.md`; the last generated table is
+`build/version-matrix/results.md`.
