@@ -5,14 +5,14 @@ description: "wrap_langchain_agent — policy-gated tools, in-place installation
 
 <Note>
 New to the adapters? Start with the [wrapping overview and comparison
-table](/adapters/openai#overview-how-framework-wrapping-works).
+table](/adapters/overview#how-framework-wrapping-works).
 </Note>
 
 <Info>
 **Compatible versions:** `langchain` **1.0.0 and 1.2.15 – 1.3.14** (with a matching
-`langgraph`). 1.1.0 and 1.2.5 have a known import break — use 1.2.15+. deepagents,
-which rides this adapter, is verified for **0.1.4 – 0.6.12**. See the [full
-compatibility table](/adapters/openai#compatible-framework-versions).
+`langgraph`) — 1.1.0 and 1.2.5 have a known import break, use 1.2.15+. See the [full
+compatibility table](/adapters/overview#compatible-framework-versions), which also
+covers deepagents (it rides this adapter).
 </Info>
 
 `wrap_langchain_agent` builds a `PolicyEnforcer` once and installs it on each tool
