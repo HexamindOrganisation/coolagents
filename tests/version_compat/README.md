@@ -45,10 +45,10 @@ Default is **local + offline**: policy resolves from `probe_policy.yaml` via
 
 ```bash
 # Tier 0 + Tier 1 only (no keys, no network):
-uv run pytest -m version_compat tests/version_compat/
+make version-compat            # or: uv run pytest -m version_compat tests/version_compat/
 
 # + Tier 2 end-to-end:
-OPENAI_API_KEY=sk-... uv run pytest -m version_compat tests/version_compat/
+OPENAI_API_KEY=sk-... make version-compat
 ```
 
 `opa` must be on `PATH` (compiles the local YAML). Confirmed with opa 1.17.
@@ -86,7 +86,7 @@ Installed: pydantic-ai-slim 1.89.1 · openai-agents 0.15.1 · google-adk 1.32.0
 
 ```bash
 # Preview the grid (floor + samples + latest per framework):
-python scripts/version_matrix.py --dry-run
+make version-matrix ARGS="--dry-run"   # or: python scripts/version_matrix.py --dry-run
 
 # Full grid, Tier 0/1 only:
 python scripts/version_matrix.py
