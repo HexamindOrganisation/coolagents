@@ -15,6 +15,8 @@ from tests.version_compat import _probe
 from tests.version_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
 from tests.version_compat.conftest import AGENT_NAMES
 
+pytestmark = pytest.mark.version_compat
+
 # Tier 2 talks to a real model; Tier 0/1 use pydantic_ai's TestModel so no
 # provider key is needed at construction and the seam test stays offline.
 MODEL = "openai:gpt-4o-mini"

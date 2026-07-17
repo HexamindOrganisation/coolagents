@@ -30,10 +30,13 @@ except Exception as exc:  # noqa: BLE001 — surface any import-time incompatibi
     _create_deep_agent = None
     _IMPORT_ERROR = exc
 
-pytestmark = pytest.mark.skipif(
-    _IMPORT_ERROR is not None,
-    reason=f"deepagents incompatible with installed langchain: {_IMPORT_ERROR!r}",
-)
+pytestmark = [
+    pytest.mark.version_compat,
+    pytest.mark.skipif(
+        _IMPORT_ERROR is not None,
+        reason=f"deepagents incompatible with installed langchain: {_IMPORT_ERROR!r}",
+    ),
+]
 
 
 def _build_tools():

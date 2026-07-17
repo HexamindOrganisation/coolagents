@@ -15,6 +15,8 @@ from tests.version_compat import _probe
 from tests.version_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
 from tests.version_compat.conftest import AGENT_NAMES
 
+pytestmark = pytest.mark.version_compat
+
 MODEL = "gemini-2.0-flash"
 
 

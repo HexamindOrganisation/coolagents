@@ -32,6 +32,12 @@ Three checks per framework:
 
 ## Running
 
+This suite is **opt-in**: every module is marked `version_compat`, and the
+default `pytest` run excludes it (`addopts = ... -m "not version_compat"` in
+`pytest.ini`). So `make test` / `make coverage` / CI never run it — the
+per-commit regression gate for the *pinned* versions is `tests/adapters/`.
+Run this one explicitly with `-m version_compat`.
+
 Default is **local + offline**: policy resolves from `probe_policy.yaml` via
 `HEXGATE_LOCAL_POLICY` (opa-compiled to WASM), audit is inert
 (`HEXGATE_LOCAL_MODE=1`), and the ban gate auto-disables. A red result means
@@ -39,10 +45,10 @@ Default is **local + offline**: policy resolves from `probe_policy.yaml` via
 
 ```bash
 # Tier 0 + Tier 1 only (no keys, no network):
-uv run pytest tests/version_compat/
+uv run pytest -m version_compat tests/version_compat/
 
 # + Tier 2 end-to-end:
-OPENAI_API_KEY=sk-... uv run pytest tests/version_compat/
+OPENAI_API_KEY=sk-... uv run pytest -m version_compat tests/version_compat/
 ```
 
 `opa` must be on `PATH` (compiles the local YAML). Confirmed with opa 1.17.
@@ -52,7 +58,8 @@ OPENAI_API_KEY=sk-... uv run pytest tests/version_compat/
 To prove the platform enforcement path (not just local YAML):
 
 ```bash
-HEXGATE_PROBE_MODE=saas HEXGATE_API_KEY=... uv run pytest tests/version_compat/
+HEXGATE_PROBE_MODE=saas HEXGATE_API_KEY=... \
+  uv run pytest -m version_compat tests/version_compat/
 ```
 
 First register each `version_probe_*` agent (see `AGENT_NAMES` in
