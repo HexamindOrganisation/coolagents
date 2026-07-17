@@ -94,11 +94,6 @@ if __name__ == "__main__":
   executes inside `propagate_attributes(user_id=..., session_id=...,
   metadata={"user_role": ...}, tags=["google.runner.run.<agent_name>"])`.
 
-<Note>
-Tool execution stays in the calling thread's contextvar scope (PR #30 fixed a
-worker-thread leak that previously dropped the `User` role at tool-call sites).
-</Note>
-
 ## Runnable example
 
 `examples/google_demo.py` — `HexgateRunner` (Google ADK) end-to-end with

@@ -17,43 +17,41 @@ policy bundle. The caller's role is a third input, but it isn't passed at the
 call site — `decide` resolves it internally from the active [`User`
 scope](/concepts/user-scope) via a contextvar.
 
-## Where enforcement actually happens
+## Where enforcement happens
 
-Walk through one tool call:
+Enforcement sits at the tool boundary. When you wrap or load an agent, each tool
+is replaced with a guarded version that runs the enforcer before the real tool:
 
-1. The model emits a tool call. The framework's tool dispatcher invokes the tool.
-2. The tool is *not the dev's original* — it's a copy the adapter made, whose body
-   starts with `enforcer.decide(tool_name, args)`. The role isn't a parameter —
-   `decide` reads it from the active `User` contextvar (`get_current_user()`),
-   so the call site only supplies the tool name and its arguments.
-3. `PolicyEnforcer.decide` reads `self.policy` — either a `PolicySet` (pydantic
-   engine, default fallback) or a `PolicyBundle` (WASM engine, what production
-   runs).
-4. Decision is `allow` → the original tool runs. `deny` → returns a
-   `[policy_denied]` marker the model sees as the tool result.
-   `approval_required` → either calls the dev-supplied approval handler or returns
-   an `[approval_required]` marker.
-5. **Before step 2, every turn:** `refresh_policy()` delegates to
-   `self._binding.refresh()` (a `PolicyBinding`), which calls
-   `self._binding.source.fetch()`. If the source returns a new bundle instance,
-   the binding swaps `enforcer.policy` in place. Tools don't get re-wrapped — they
-   hold a reference to the enforcer, not the bundle.
+1. The model emits a tool call; the framework dispatches it.
+2. The guarded tool asks the enforcer to decide, passing the tool name and its
+   arguments. The caller's role isn't a parameter — it's resolved from the active
+   [`User` scope](/concepts/user-scope) (a contextvar), so the call site only
+   supplies the tool name and arguments.
+3. The enforcer evaluates the call against the active policy. Two engines back
+   this — an in-process pydantic engine (the default) and a WASM engine (what
+   production runs) — and both return the same `Decision`.
+4. `allow` → the original tool runs. `deny` → the model sees a `[policy_denied]`
+   marker as the tool result. `approval_required` → the dev-supplied handler is
+   called, or an `[approval_required]` marker is returned.
+5. **At the start of every turn** — each agent run (one `ainvoke` /
+   `astream_events` call, typically handling a single user message) — the policy
+   is refreshed once, up front. If it changed, the new version takes effect on
+   the tool calls in that run — no restart, no re-wrapping.
 
-The binding's `source` (`agent._binding.source`) is set automatically by the
-loader based on env:
+The refresh source is chosen automatically from your environment:
 
-- `HEXGATE_LOCAL_POLICY` set → `YamlPolicySource` or `BundleDirPolicySource` (mtime-driven refresh)
-- `HEXGATE_API_KEY` set, no local override → `PlatformPolicySource` (ETag / `304 Not Modified` refresh)
-- Neither → no source attached; enforcement uses whatever was loaded once
+- `HEXGATE_LOCAL_POLICY` set → a local YAML file or bundle directory, refreshed on file change
+- `HEXGATE_API_KEY` set, no local override → the platform, refreshed via ETag / `304 Not Modified`
+- Neither → no refresh; enforcement uses whatever was loaded once
 
 ## What the per-turn refresh covers
 
-Only the policy bundle. `system_prompt`, the manifest's tool list, and the model
-id are read once at agent construction and stay fixed for the lifetime of the
-process. Edit those on the dashboard and the change lands at the next `hexgate
-serve` restart — not at the next turn. The split is deliberate: policy is the
-operator's primary lever (and the one that needs to be auditable per-decision),
-while the manifest is an author-time concept.
+Only the policy. The `system_prompt`, the manifest's tool list, and the model id
+are read once at agent construction and stay fixed for the life of the process.
+Edit those on the dashboard and the change lands at the next `hexgate serve`
+restart — not at the next turn. That split is intentional: policy is the
+operator's live, per-decision-auditable lever, while the manifest (tools, model,
+prompt) is owned by your code.
 
 ## `approval_required` without a handler
 

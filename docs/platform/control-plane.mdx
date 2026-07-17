@@ -41,12 +41,10 @@ The SQLite DB lives at `platform/api/hexgate.db`; delete it and restart to wipe
 dev state.
 
 <Note>
-**Schema management.** Tables are created with SQLAlchemy `create_all` — there is
-no migration runner yet, so a model change is applied by recreating the schema
-(`make postgres-reset` locally), not by an incremental migration. Plan schema
-upgrades as a maintenance step until a migration tool is wired in. The opt-in
-`tests/test_postgres_smoke.py` exercises the Postgres path; the rest of the suite
-runs on SQLite.
+**Schema management.** Tables are created with SQLAlchemy `create_all`; there is
+no migration runner, so a model change is applied by recreating the schema
+(`make postgres-reset` locally) rather than by an incremental migration. Plan
+schema upgrades as a maintenance step.
 </Note>
 
 ## Endpoints

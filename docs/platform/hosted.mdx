@@ -30,7 +30,8 @@ path needs only `HEXGATE_API_KEY`. Self-hosting is the same SDK code with
 ## Use it from the SDK
 
 With the key set, any adapter or loader routes policy + audit through the cloud —
-no other code change. This is [Shape B](/guides/build-an-agent#shape-b-i-want-the-platform-to-own-the-agents-yaml):
+no other code change. Load a registered agent by name and its policy comes from
+the platform (see the [platform workflow](/platform/workflow)):
 
 ```python
 from hexgate import load_hexgate_agent, stream_agent, User
@@ -42,7 +43,7 @@ async with User(user_id="alice", role="billing"):
         ...
 ```
 
-Or wrap an existing framework agent ([Shape A](/guides/build-an-agent#shape-a-i-have-an-existing-framework-agent)) — the
+Or [wrap an existing framework agent](/guides/build-an-agent#wrap-an-existing-framework-agent) — the
 adapter picks up `HEXGATE_API_KEY` from the environment automatically.
 
 ## Serve a local agent to the cloud dashboard

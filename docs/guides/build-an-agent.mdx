@@ -1,6 +1,6 @@
 ---
 title: "Build an agent"
-description: "From create_agent to a policy-gated, user-scoped runtime — the two shapes and the whole config surface."
+description: "From create_agent to a policy-gated, user-scoped runtime — and the whole config surface."
 ---
 
 ## Core primitives
@@ -24,15 +24,10 @@ agent, handler = create_agent(
 )
 ```
 
-## Two shapes
+## Wrap an existing framework agent
 
-Devs pick one of two shapes. Both end up at the same enforcement seam — they
-differ only in **where the policy comes from**.
-
-### Shape A — "I have an existing framework agent"
-
-Dev wrote an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent. They
-wrap it once and they're done:
+Already have an OpenAI Agents / LangChain / Google ADK / Pydantic AI agent? Wrap
+it once and you're done:
 
 ```python
 from hexgate.adapters.openai import HexgateRunner   # or .langchain.wrap_langchain_agent, .google.HexgateRunner, .pydantic_ai.wrap_pydantic_agent
@@ -46,7 +41,7 @@ await runner.run(
 )
 ```
 
-That's it. They get:
+That's it. You get:
 
 - Tool-call enforcement at every tool boundary (`PolicyEnforcer.decide()`)
 - Role resolution from the active `User.role` at call time
@@ -55,24 +50,9 @@ That's it. They get:
 
 See [Framework adapters](/adapters/openai) for the per-framework wrapping details.
 
-### Shape B — "I want the platform to own the agent's YAML"
-
-Dev authored the agent's `agent.yaml` / `policy.yaml` / `system.md` in the
-dashboard. The SDK fetches them:
-
-```python
-from hexgate import load_hexgate_agent, stream_agent, User
-
-agent, handler = load_hexgate_agent("default")      # explicit name — the SDK's loader requires it
-
-async with User(user_id="alice", role="billing"):
-    async for ev in stream_agent(agent, handler, "refund 30"):
-        ...
-```
-
-Same enforcement seam, same `User` scope. The difference is whose system of
-record holds the YAML — the dev's code vs the dashboard. For the full
-platform-owned path (register → edit → test → deploy), see the
+Whichever way you define the agent, the **policy** can live in your code or on
+the platform. To let operators own and edit it in the dashboard without a
+redeploy (register → edit → test → deploy), see the
 [platform workflow](/platform/workflow).
 
 ## Env vars: that *is* the whole config surface
@@ -104,8 +84,10 @@ only verifies against the platform instance that minted it.
    for native). See [User scope](/concepts/user-scope).
 2. **`approval_required` tools.** If the policy uses that mode, dev decides what
    happens — pass `approval_handler=` (True / False / callable) when wrapping.
-   Default for `hexgate serve` is auto-approve; for `hexgate chat` it prompts the
-   TTY. See [Approval-required tool calls](/concepts/approval-required).
+   The CLI default is `ask` for both commands: `hexgate chat` prompts the TTY,
+   and `hexgate serve` routes the request to the connected Playground (pass
+   `--approval-mode auto-approve` for headless runs). See
+   [Approval-required tool calls](/concepts/approval-required).
 
 Everything else — fetch, verify, hot-reload, role selection, signature check,
 decision rendering, tracing — the runtime handles.

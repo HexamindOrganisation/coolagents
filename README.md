@@ -7,7 +7,7 @@
 **Runtime authorization for AI agents.**
 On every tool call, Hexgate decides whether *this user*, in *this role*, may run *this tool* with *these arguments* — allow, deny, or require approval. For OpenAI Agents, LangChain, Google ADK, Pydantic AI, or a native runtime.
 
-[**Website**](https://hexgate.ai) · [**Docs**](https://docs.hexgate.ai) · [PyPI](https://pypi.org/project/hexgate/)
+[**Website**](https://hexgate.ai) · [**Docs**](https://docs.hexgate.ai)
 <br>
 [![PyPI](https://img.shields.io/pypi/v/hexgate?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/hexgate/)
 [![CI](https://github.com/HexamindOrganisation/hexgate/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/HexamindOrganisation/hexgate/actions/workflows/tests.yml)
@@ -99,7 +99,7 @@ Full documentation lives at **[docs.hexgate.ai](https://docs.hexgate.ai)**.
 
 | | |
 |---|---|
-| [Build an agent](https://docs.hexgate.ai/guides/build-an-agent) | The two shapes — wrap an existing agent, or let the platform own the YAML. |
+| [Build an agent](https://docs.hexgate.ai/guides/build-an-agent) | Define tools directly with `create_agent`, or wrap an existing framework agent. |
 | [Framework adapters](https://docs.hexgate.ai/adapters/openai) | OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI. |
 | [Policy](https://docs.hexgate.ai/policy/yaml-shape) | YAML shape, constraints, WASM bundles, signing, local override. |
 | [User scope + roles](https://docs.hexgate.ai/concepts/user-scope) | Per-request identity, role resolution, biscuit attenuation. |
