@@ -27,6 +27,14 @@ class _FakeResult:
         return self._usage
 
 
+class _FakePropertyResult(_FakeResult):
+    """usage exposed as a property — pydantic_ai 2.x form (RunUsage, non-callable)."""
+
+    @property
+    def usage(self) -> RunUsage:  # type: ignore[override]
+        return self._usage
+
+
 @pytest.fixture()
 def emitted(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Capture emit_llm_usage() calls without touching the sender registry."""
@@ -109,3 +117,24 @@ def test_emit_run_usage_when_agent_has_no_model_then_model_is_empty(
 
     [call] = emitted
     assert call["model"] == ""
+
+
+def test_emit_run_usage_handles_usage_exposed_as_property(
+    emitted: list[dict[str, Any]],
+) -> None:
+    """pydantic_ai 2.x exposes usage as a property, not a callable method —
+    both forms must resolve without raising."""
+    agent = Agent(model=TestModel())
+    response = SimpleNamespace(model_name="gpt-4o")
+    result = _FakePropertyResult(input_tokens=10, output_tokens=20, response=response)
+
+    emit_run_usage("my-agent", agent, result, api_key="k")
+
+    [call] = emitted
+    assert call == {
+        "agent_name": "my-agent",
+        "model": "gpt-4o",
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "api_key": "k",
+    }

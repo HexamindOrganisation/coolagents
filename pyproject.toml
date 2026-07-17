@@ -31,8 +31,8 @@ dependencies = [
     "websockets>=13.0",
     # Floor is 0.8.0, not lower: the openai adapter imports `RunState` from
     # `agents` (added in 0.8.0), so on 0.0.10–0.7.0 the adapter fails to import
-    # and policy enforcement can't be installed at all. Verified by the version
-    # matrix (tests/version_compat/): 0.7.0 BROKEN, 0.8.0 enforces.
+    # and policy enforcement can't be installed at all. Verified by the
+    # framework-version matrix (tests/framework_compat/): 0.7.0 BROKEN, 0.8.0 enforces.
     "openai-agents>=0.8.0",
     "langgraph>=0.2",
     "nest_asyncio>=1.6",
