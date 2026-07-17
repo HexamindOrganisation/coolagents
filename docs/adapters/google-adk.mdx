@@ -8,6 +8,12 @@ New to the adapters? Start with the [wrapping overview and comparison
 table](/adapters/openai#overview-how-framework-wrapping-works).
 </Note>
 
+<Info>
+**Compatible versions:** `google-adk` **1.14.0 – 2.5.0** (verified by hexgate's
+framework-version matrix, spanning the 1.x → 2.x line). See the [full compatibility
+table](/adapters/openai#compatible-framework-versions).
+</Info>
+
 The Google ADK wrapper exposes its own `HexgateRunner`. It's constructed up front
 with the agent, app name, and session service (mirroring the ADK `Runner`
 constructor) — the underlying ADK `Runner` is built once and reused since role

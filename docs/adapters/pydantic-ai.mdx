@@ -8,6 +8,12 @@ New to the adapters? Start with the [wrapping overview and comparison
 table](/adapters/openai#overview-how-framework-wrapping-works).
 </Note>
 
+<Info>
+**Compatible versions:** `pydantic-ai-slim` **1.88.0 – 2.12.0** (verified by
+hexgate's framework-version matrix, spanning the 1.x → 2.x line). See the [full
+compatibility table](/adapters/openai#compatible-framework-versions).
+</Info>
+
 `wrap_pydantic_agent` returns a `HexgatePydanticAgent` proxy backed by a clone of
 the original agent whose tools are gated by a freshly built `PolicyEnforcer`.
 Tools registered via the `Agent(...)` constructor or via `@agent.tool` /
