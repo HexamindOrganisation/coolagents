@@ -39,8 +39,9 @@ def _build_tools():
 def _model():
     from langchain_openai import ChatOpenAI
 
-    # Dummy key: construction only; Tier 1 never calls the model.
-    return ChatOpenAI(model="gpt-4o-mini", api_key="sk-probe-dummy")
+    # Real key when present (Tier 2 e2e); dummy for offline Tier 0/1 construction.
+    key = os.environ.get("OPENAI_API_KEY", "sk-probe-dummy")
+    return ChatOpenAI(model="gpt-4o-mini", api_key=key)
 
 
 def _build_wrapped(tools):

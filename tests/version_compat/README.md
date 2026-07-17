@@ -78,9 +78,28 @@ Installed: pydantic-ai-slim 1.89.1 · openai-agents 0.15.1 · google-adk 1.32.0
   is a real matrix result — the driver (plan step 4) will vary the versions to
   find the compatible langchain range for deepagents.
 
-## Next (plan steps 4–5)
+## Running the matrix
 
-- `scripts/version_matrix.py` — iterate `(framework, version)` cells in isolated
-  `uv` venvs, run Tier 0/1 then Tier 2 on greens, emit the compatibility table,
-  bisect range boundaries.
-- One platform-backed confirmation pass per framework.
+`scripts/version_matrix.py` drives this suite across a version grid — each
+`(framework, version)` cell installed into an isolated `uv` venv under
+`build/version-matrix/` (gitignored), results classified per tier.
+
+```bash
+# Preview the grid (floor + samples + latest per framework):
+python scripts/version_matrix.py --dry-run
+
+# Full grid, Tier 0/1 only:
+python scripts/version_matrix.py
+
+# One framework, explicit versions, + Tier 2 e2e:
+OPENAI_API_KEY=sk-... python scripts/version_matrix.py \
+  --frameworks pydantic --versions pydantic=1.88.0,1.89.1,2.12.0
+```
+
+The table (per-cell T0/T1/T2 + supported Tier-1-green range) prints to the
+console and writes to `build/version-matrix/results.md`. A **Tier 1 ✗** is the
+critical signal (the wrap broke); **T1✓ T2✗** means investigate.
+
+## Next (plan step 3)
+
+- One platform-backed confirmation pass per framework (`HEXGATE_PROBE_MODE=saas`).
