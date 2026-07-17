@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from hexgate.runtime import User
-from tests.version_compat import _probe
+from tests.framework_compat import _probe
 
 PROBE_DIR = Path(__file__).parent
 PROBE_POLICY = PROBE_DIR / "probe_policy.yaml"

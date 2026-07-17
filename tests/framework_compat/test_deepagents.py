@@ -12,9 +12,9 @@ import os
 
 import pytest
 
-from tests.version_compat import _probe
-from tests.version_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
-from tests.version_compat.conftest import AGENT_NAMES
+from tests.framework_compat import _probe
+from tests.framework_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
+from tests.framework_compat.conftest import AGENT_NAMES
 
 INSTRUCTIONS = "You are a helpful assistant. Use the available tools."
 
@@ -31,7 +31,7 @@ except Exception as exc:  # noqa: BLE001 — surface any import-time incompatibi
     _IMPORT_ERROR = exc
 
 pytestmark = [
-    pytest.mark.version_compat,
+    pytest.mark.framework_compat,
     pytest.mark.skipif(
         _IMPORT_ERROR is not None,
         reason=f"deepagents incompatible with installed langchain: {_IMPORT_ERROR!r}",

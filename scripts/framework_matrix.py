@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Framework version-compatibility matrix driver.
 
-Runs the opt-in probe suite (``tests/version_compat/``, marker
-``version_compat``) against a grid of framework versions, each installed
+Runs the opt-in probe suite (``tests/framework_compat/``, marker
+``framework_compat``) against a grid of framework versions, each installed
 into an isolated ``uv`` venv, and emits a compatibility table.
 
 For each ``(framework, version)`` cell it:
@@ -18,20 +18,20 @@ A Tier 1 failure is the critical signal: the wrap stopped attaching for
 that version. A Tier 1 pass with a Tier 2 failure is *investigate*
 (possibly model flakiness), not an automatic hard fail.
 
-Everything lands under ``build/version-matrix/`` (gitignored). Policy is
+Everything lands under ``build/framework-matrix/`` (gitignored). Policy is
 local + offline (the probe conftest sets ``HEXGATE_LOCAL_POLICY`` /
 ``HEXGATE_LOCAL_MODE``); ``opa`` must be on ``PATH``.
 
 Examples::
 
     # Default grid (floor + samples + latest) for every framework:
-    python scripts/version_matrix.py
+    python scripts/framework_matrix.py
 
     # Just pydantic_ai, explicit versions:
-    python scripts/version_matrix.py --versions pydantic=1.88.0,1.89.1,2.12.0
+    python scripts/framework_matrix.py --versions pydantic=1.88.0,1.89.1,2.12.0
 
     # Preview the plan without installing anything:
-    python scripts/version_matrix.py --dry-run
+    python scripts/framework_matrix.py --dry-run
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ from pathlib import Path
 from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-PROBE_DIR = REPO_ROOT / "tests" / "version_compat"
-WORK_DIR = REPO_ROOT / "build" / "version-matrix"
+PROBE_DIR = REPO_ROOT / "tests" / "framework_compat"
+WORK_DIR = REPO_ROOT / "build" / "framework-matrix"
 VENVS_DIR = WORK_DIR / "venvs"
 JUNIT_DIR = WORK_DIR / "junit"
 LOGS_DIR = WORK_DIR / "logs"
@@ -68,7 +68,7 @@ DEFAULT_LIMIT = 6
 # under --no-e2e so the matrix stays offline and incurs no live API spend.
 E2E_PROVIDER_KEYS = ("OPENAI_API_KEY",)
 
-# Test-node name fragment -> tier. See tests/version_compat/README.md.
+# Test-node name fragment -> tier. See tests/framework_compat/README.md.
 _TIER_BY_FRAGMENT = {
     "contract": 0,
     "deny_path": 1,
@@ -348,7 +348,7 @@ def run_cell(
             "-m",
             "pytest",
             "-m",
-            "version_compat",
+            "framework_compat",
             str(PROBE_DIR / framework.test_file),
             f"--junitxml={xml_path}",
             "-o",

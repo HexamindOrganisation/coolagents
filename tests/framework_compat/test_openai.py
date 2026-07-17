@@ -11,11 +11,11 @@ import os
 
 import pytest
 
-from tests.version_compat import _probe
-from tests.version_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
-from tests.version_compat.conftest import AGENT_NAMES
+from tests.framework_compat import _probe
+from tests.framework_compat._probe import ALLOWED_TOOL, DENIED_TOOL, DENY_MARKER
+from tests.framework_compat.conftest import AGENT_NAMES
 
-pytestmark = pytest.mark.version_compat
+pytestmark = pytest.mark.framework_compat
 
 
 def _build_agent():

@@ -1,4 +1,4 @@
-"""Shared execution bookkeeping for the framework version-compat probes.
+"""Shared execution bookkeeping for the framework-compat probes.
 
 Each framework's probe defines the same two tools; their bodies call
 :func:`record_execution`. Tier 1 asserts the *denied* tool never ran — if

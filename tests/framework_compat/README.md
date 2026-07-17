@@ -33,11 +33,11 @@ Three checks per framework:
 
 ## Running
 
-This suite is **opt-in**: every module is marked `version_compat`, and the
-default `pytest` run excludes it (`addopts = ... -m "not version_compat"` in
+This suite is **opt-in**: every module is marked `framework_compat`, and the
+default `pytest` run excludes it (`addopts = ... -m "not framework_compat"` in
 `pytest.ini`). So `make test` / `make coverage` / CI never run it — the
 per-commit regression gate for the *pinned* versions is `tests/adapters/`.
-Run this one explicitly with `-m version_compat`.
+Run this one explicitly with `-m framework_compat`.
 
 Default is **local + offline**: policy resolves from `probe_policy.yaml` via
 `HEXGATE_LOCAL_POLICY` (opa-compiled to WASM), audit is inert
@@ -46,10 +46,10 @@ Default is **local + offline**: policy resolves from `probe_policy.yaml` via
 
 ```bash
 # Tier 0 + Tier 1 only (no keys, no network):
-make version-compat            # or: uv run pytest -m version_compat tests/version_compat/
+make framework-compat          # or: uv run pytest -m framework_compat tests/framework_compat/
 
 # + Tier 2 end-to-end:
-OPENAI_API_KEY=sk-... make version-compat
+OPENAI_API_KEY=sk-... make framework-compat
 ```
 
 `opa` must be on `PATH` (compiles the local YAML). Confirmed with opa 1.17.
@@ -60,7 +60,7 @@ To prove the platform enforcement path (not just local YAML):
 
 ```bash
 HEXGATE_PROBE_MODE=saas HEXGATE_API_KEY=... \
-  uv run pytest -m version_compat tests/version_compat/
+  uv run pytest -m framework_compat tests/framework_compat/
 ```
 
 First register each `version_probe_*` agent (see `AGENT_NAMES` in
@@ -69,25 +69,25 @@ First register each `version_probe_*` agent (see `AGENT_NAMES` in
 
 ## Running the matrix
 
-`scripts/version_matrix.py` drives this suite across a version grid — each
+`scripts/framework_matrix.py` drives this suite across a version grid — each
 `(framework, version)` cell installed into an isolated `uv` venv under
-`build/version-matrix/` (gitignored), results classified per tier.
+`build/framework-matrix/` (gitignored), results classified per tier.
 
 ```bash
 # Preview the grid (floor + samples + latest per framework):
-make version-matrix ARGS="--dry-run"   # or: python scripts/version_matrix.py --dry-run
+make framework-matrix ARGS="--dry-run"   # or: python scripts/framework_matrix.py --dry-run
 
 # Full grid. Tier 2 e2e runs automatically when OPENAI_API_KEY is in the
 # environment; pass --no-e2e to force it off (no live API calls) regardless:
-python scripts/version_matrix.py --no-e2e
+python scripts/framework_matrix.py --no-e2e
 
 # One framework, explicit versions, + Tier 2 e2e:
-OPENAI_API_KEY=sk-... python scripts/version_matrix.py \
+OPENAI_API_KEY=sk-... python scripts/framework_matrix.py \
   --frameworks pydantic --versions pydantic=1.88.0,1.89.1,2.12.0
 ```
 
 The table (per-cell T0/T1/T2 + supported Tier-1-green range) prints to the
-console and writes to `build/version-matrix/results.md`.
+console and writes to `build/framework-matrix/results.md`.
 
 ## Verdicts & findings
 
@@ -102,4 +102,4 @@ Each cell is classified as:
 
 Current per-framework supported ranges and open issues are recorded in
 `plans/framework-version-compat-testing.md`; the last generated table is
-`build/version-matrix/results.md`.
+`build/framework-matrix/results.md`.
