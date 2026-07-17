@@ -187,37 +187,43 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 
 class VenvManager:
-    """One reused venv per framework; the primary dist is repinned per cell."""
+    """One reused venv per framework; every cell re-resolves the full graph.
+
+    Each cell installs ``-e .[dev]`` together with ``<dist>==<version>`` so uv
+    re-resolves *coupled* transitive deps (langgraph for langchain, the openai
+    base lib for openai-agents, …) to a set consistent with the pinned version.
+    Pinning only the primary dist and reusing whatever was already installed
+    silently leaves stale companions — which manifests as spurious Tier 2
+    failures / import errors, not a real wrap break.
+    """
 
     def __init__(self, uv: str) -> None:
         self._uv = uv
-        self._initialized: set[str] = set()
+        self._created: set[str] = set()
 
     def python_for(self, framework: Framework) -> Path:
         return VENVS_DIR / framework.key / "bin" / "python"
 
     def ensure(self, framework: Framework) -> Path:
-        """Create the venv and install hexgate + dev extras once per framework."""
+        """Create the (empty) venv once per framework."""
         python = self.python_for(framework)
-        if framework.key in self._initialized:
+        if framework.key in self._created:
             return python
         venv_dir = VENVS_DIR / framework.key
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
         created = _run([self._uv, "venv", str(venv_dir), "--python", PYTHON_VERSION])
         if created.returncode != 0:
             raise RuntimeError(f"uv venv failed for {framework.key}: {created.stderr}")
-        installed = _run(
-            [self._uv, "pip", "install", "--python", str(python), "-e", ".[dev]"]
-        )
-        if installed.returncode != 0:
-            raise RuntimeError(
-                f"base install failed for {framework.key}: {installed.stderr[-800:]}"
-            )
-        self._initialized.add(framework.key)
+        self._created.add(framework.key)
         return python
 
     def pin(self, framework: Framework, version: str) -> subprocess.CompletedProcess:
-        """Force ``<dist>==<version>`` (plus any extra pins) into the venv."""
+        """Re-resolve + install hexgate with ``<dist>==<version>`` pinned.
+
+        Installing ``-e .[dev]`` alongside the pin (rather than reinstalling
+        only the primary dist) lets uv move coupled companions to a coherent
+        set for this version.
+        """
         python = self.python_for(framework)
         specs = [f"{framework.dist}=={version}", *framework.pin_extra]
         return _run(
@@ -227,8 +233,8 @@ class VenvManager:
                 "install",
                 "--python",
                 str(python),
-                "--reinstall-package",
-                framework.dist,
+                "-e",
+                ".[dev]",
                 *specs,
             ]
         )
