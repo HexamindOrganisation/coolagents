@@ -33,8 +33,10 @@ is replaced with a guarded version that runs the enforcer before the real tool:
 4. `allow` → the original tool runs. `deny` → the model sees a `[policy_denied]`
    marker as the tool result. `approval_required` → the dev-supplied handler is
    called, or an `[approval_required]` marker is returned.
-5. **At the start of every turn** the policy is refreshed. If it changed, the new
-   version takes effect on the next tool call — no restart, no re-wrapping.
+5. **At the start of every turn** — each agent run (one `ainvoke` /
+   `astream_events` call, typically handling a single user message) — the policy
+   is refreshed once, up front. If it changed, the new version takes effect on
+   the tool calls in that run — no restart, no re-wrapping.
 
 The refresh source is chosen automatically from your environment:
 
