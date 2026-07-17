@@ -59,6 +59,7 @@ JUNIT_DIR = WORK_DIR / "junit"
 DEFAULT_OUT = WORK_DIR / "results.md"
 
 PYPI_JSON = "https://pypi.org/pypi/{dist}/json"
+PYPI_TIMEOUT_SECONDS = 30
 PYTHON_VERSION = "3.13"
 DEFAULT_LIMIT = 6
 
@@ -118,8 +119,13 @@ class CellResult:
 def discover_versions(dist: str) -> list[Version]:
     """Return sorted stable versions of ``dist`` from PyPI (prereleases dropped)."""
     url = PYPI_JSON.format(dist=dist)
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        data = json.load(resp)
+    try:
+        with urllib.request.urlopen(url, timeout=PYPI_TIMEOUT_SECONDS) as resp:
+            data = json.load(resp)
+    except (OSError, json.JSONDecodeError) as exc:
+        # OSError covers URLError/HTTPError/socket timeouts; raise a domain
+        # error so one unreachable dist is reported, not a run-aborting crash.
+        raise RuntimeError(f"PyPI lookup failed for {dist!r}: {exc}") from exc
     versions: list[Version] = []
     for raw in data.get("releases", {}):
         try:
@@ -247,17 +253,22 @@ def _tier_of(node_name: str) -> int | None:
     return None
 
 
-def parse_junit(xml_path: Path) -> dict[int, str]:
+def parse_junit(xml_path: Path) -> tuple[dict[int, str], list[str]]:
     """Aggregate a JUnit report into a per-tier outcome map.
 
     Within a tier: any fail/error -> fail; else any pass -> pass; else all
-    skipped -> skip.
+    skipped -> skip. Testcases whose name maps to no tier are returned
+    separately so the caller can flag a stale fragment map — silently
+    dropping a failing unmapped test would render the cell falsely green.
     """
     raw: dict[int, list[str]] = {0: [], 1: [], 2: []}
+    unclassified: list[str] = []
     tree = ET.parse(xml_path)
     for case in tree.iter("testcase"):
-        tier = _tier_of(case.get("name", ""))
+        name = case.get("name", "")
+        tier = _tier_of(name)
         if tier is None:
+            unclassified.append(name)
             continue
         child_tags = {child.tag for child in case}
         if {"failure", "error"} & child_tags:
@@ -277,7 +288,7 @@ def parse_junit(xml_path: Path) -> dict[int, str]:
             tiers[tier] = TIER_PASS
         else:
             tiers[tier] = TIER_SKIP
-    return tiers
+    return tiers, unclassified
 
 
 def classify(tiers: dict[int, str]) -> str:
@@ -296,12 +307,18 @@ def classify(tiers: dict[int, str]) -> str:
     return "UNKNOWN"
 
 
+def _last_line(text: str) -> str:
+    """Last non-empty line of ``text``, or ``""`` — safe on whitespace-only input."""
+    lines = text.strip().splitlines()
+    return lines[-1] if lines else ""
+
+
 def run_cell(manager: VenvManager, framework: Framework, version: str) -> CellResult:
     result = CellResult(framework=framework.key, version=version)
     pin = manager.pin(framework, version)
     if pin.returncode != 0:
         result.status = "INSTALL-FAIL"
-        result.detail = pin.stderr.strip().splitlines()[-1] if pin.stderr else ""
+        result.detail = _last_line(pin.stderr)
         return result
 
     xml_path = JUNIT_DIR / f"{framework.key}-{version}.xml"
@@ -325,12 +342,16 @@ def run_cell(manager: VenvManager, framework: Framework, version: str) -> CellRe
     )
     if not xml_path.exists():
         result.status = "ERROR"
-        tail = (proc.stdout + proc.stderr).strip().splitlines()
-        result.detail = tail[-1] if tail else f"pytest rc={proc.returncode}"
+        result.detail = (
+            _last_line(proc.stdout + proc.stderr) or f"pytest rc={proc.returncode}"
+        )
         return result
 
-    result.tiers = parse_junit(xml_path)
+    result.tiers, unclassified = parse_junit(xml_path)
     result.status = classify(result.tiers)
+    if unclassified:
+        result.status = f"{result.status} + UNMAPPED⚠"
+        result.detail = "unmapped tests: " + ", ".join(sorted(unclassified))
     return result
 
 
@@ -368,13 +389,21 @@ def render_table(results: list[CellResult]) -> str:
     for r in results:
         by_fw.setdefault(r.framework, []).append(r)
     for fw, cells in by_fw.items():
-        ok = [c.version for c in cells if c.tiers.get(1) == TIER_PASS]
-        if ok:
-            lines.append(
-                f"- **{fw}**: {ok[0]} … {ok[-1]} ({len(ok)}/{len(cells)} green)"
-            )
-        else:
+        green_at = [i for i, c in enumerate(cells) if c.tiers.get(1) == TIER_PASS]
+        if not green_at:
             lines.append(f"- **{fw}**: no Tier-1-green version in the tested set")
+            continue
+        green = [cells[i].version for i in green_at]
+        # cells are in ascending-version order; a break in the index run means a
+        # non-green version sits between greens — never render that as a range.
+        contiguous = green_at == list(range(green_at[0], green_at[-1] + 1))
+        if contiguous and len(green) > 1:
+            span = f"{green[0]} … {green[-1]}"
+        elif len(green) == 1:
+            span = green[0]
+        else:
+            span = ", ".join(green)
+        lines.append(f"- **{fw}**: {span} ({len(green)}/{len(cells)} green)")
     return "\n".join(lines) + "\n"
 
 
@@ -454,22 +483,27 @@ def main() -> int:
         raise SystemExit(f"unknown frameworks: {unknown}")
     explicit = _parse_explicit(args.versions)
 
-    plan: list[tuple[Framework, list[str]]] = []
+    plan: list[tuple[Framework, list[str], str | None]] = []
     for key in selected:
         fw = FRAMEWORKS[key]
-        versions = select_versions(
-            fw,
-            limit=args.limit,
-            explicit=explicit.get(key),
-            include_installed=not args.no_installed,
-            latest_only=args.latest_only,
-        )
-        plan.append((fw, versions))
+        try:
+            versions = select_versions(
+                fw,
+                limit=args.limit,
+                explicit=explicit.get(key),
+                include_installed=not args.no_installed,
+                latest_only=args.latest_only,
+            )
+            error: str | None = None
+        except RuntimeError as exc:
+            versions, error = [], str(exc)
+        plan.append((fw, versions, error))
 
     print("Plan:")
-    for fw, versions in plan:
-        print(f"  {fw.key:11} ({fw.dist}): {', '.join(versions) or '(none found)'}")
-    total = sum(len(v) for _, v in plan)
+    for fw, versions, error in plan:
+        detail = error or (", ".join(versions) or "(none found)")
+        print(f"  {fw.key:11} ({fw.dist}): {detail}")
+    total = sum(len(v) for _, v, _ in plan)
     print(f"  → {total} cells\n")
     if args.dry_run:
         return 0
@@ -478,7 +512,12 @@ def main() -> int:
     manager = VenvManager(uv)
     results: list[CellResult] = []
     try:
-        for fw, versions in plan:
+        for fw, versions, error in plan:
+            if error is not None:
+                results.append(
+                    CellResult(fw.key, "?", status="DISCOVERY-FAIL", detail=error[:200])
+                )
+                continue
             if not versions:
                 continue
             try:
