@@ -56,12 +56,17 @@ PROBE_DIR = REPO_ROOT / "tests" / "version_compat"
 WORK_DIR = REPO_ROOT / "build" / "version-matrix"
 VENVS_DIR = WORK_DIR / "venvs"
 JUNIT_DIR = WORK_DIR / "junit"
+LOGS_DIR = WORK_DIR / "logs"
 DEFAULT_OUT = WORK_DIR / "results.md"
 
 PYPI_JSON = "https://pypi.org/pypi/{dist}/json"
 PYPI_TIMEOUT_SECONDS = 30
 PYTHON_VERSION = "3.13"
 DEFAULT_LIMIT = 6
+
+# Env vars the probe modules gate Tier 2 e2e on; stripped from the child env
+# under --no-e2e so the matrix stays offline and incurs no live API spend.
+E2E_PROVIDER_KEYS = ("OPENAI_API_KEY",)
 
 # Test-node name fragment -> tier. See tests/version_compat/README.md.
 _TIER_BY_FRAGMENT = {
@@ -313,7 +318,21 @@ def _last_line(text: str) -> str:
     return lines[-1] if lines else ""
 
 
-def run_cell(manager: VenvManager, framework: Framework, version: str) -> CellResult:
+def _write_error_log(framework: Framework, version: str, proc) -> Path:
+    """Persist a failed cell's full pytest output and return the log path."""
+    log_path = LOGS_DIR / f"{framework.key}-{version}.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        f"pytest rc={proc.returncode}\n\n=== stdout ===\n{proc.stdout}\n"
+        f"\n=== stderr ===\n{proc.stderr}",
+        encoding="utf-8",
+    )
+    return log_path
+
+
+def run_cell(
+    manager: VenvManager, framework: Framework, version: str, env: dict[str, str]
+) -> CellResult:
     result = CellResult(framework=framework.key, version=version)
     pin = manager.pin(framework, version)
     if pin.returncode != 0:
@@ -338,13 +357,18 @@ def run_cell(manager: VenvManager, framework: Framework, version: str) -> CellRe
             "no:cacheprovider",
             "-q",
         ],
-        env=os.environ.copy(),
+        env=env,
     )
     if not xml_path.exists():
         result.status = "ERROR"
-        result.detail = (
+        # No JUnit XML means pytest died before writing it (collection error,
+        # plugin/internal crash); the last output line is usually the summary
+        # bar, so keep the full output in a log and point detail at it.
+        log_path = _write_error_log(framework, version, proc)
+        summary = (
             _last_line(proc.stdout + proc.stderr) or f"pytest rc={proc.returncode}"
         )
+        result.detail = f"{summary} (log: {log_path.relative_to(REPO_ROOT)})"
         return result
 
     result.tiers, unclassified = parse_junit(xml_path)
@@ -463,6 +487,11 @@ def main() -> int:
         help="don't delete the per-framework venvs on exit",
     )
     parser.add_argument(
+        "--no-e2e",
+        action="store_true",
+        help="force Tier 2 e2e off (strip provider keys) — no live API calls",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the plan and exit without installing",
@@ -505,6 +534,18 @@ def main() -> int:
         print(f"  {fw.key:11} ({fw.dist}): {detail}")
     total = sum(len(v) for _, v, _ in plan)
     print(f"  → {total} cells\n")
+
+    child_env = os.environ.copy()
+    if args.no_e2e:
+        for key in E2E_PROVIDER_KEYS:
+            child_env.pop(key, None)
+        print("Tier 2 e2e disabled (--no-e2e): running offline.\n")
+    elif any(child_env.get(key) for key in E2E_PROVIDER_KEYS):
+        print(
+            f"note: provider key detected — Tier 2 e2e will make live API "
+            f"calls for up to {total} cells (pass --no-e2e to disable).\n"
+        )
+
     if args.dry_run:
         return 0
 
@@ -532,7 +573,7 @@ def main() -> int:
                 continue
             for version in versions:
                 print(f"[{fw.key} {version}] installing + testing…", flush=True)
-                cell = run_cell(manager, fw, version)
+                cell = run_cell(manager, fw, version, child_env)
                 results.append(cell)
                 print(f"    → {cell.status}", flush=True)
     finally:

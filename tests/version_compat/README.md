@@ -77,8 +77,9 @@ First register each `version_probe_*` agent (see `AGENT_NAMES` in
 # Preview the grid (floor + samples + latest per framework):
 make version-matrix ARGS="--dry-run"   # or: python scripts/version_matrix.py --dry-run
 
-# Full grid, Tier 0/1 only:
-python scripts/version_matrix.py
+# Full grid. Tier 2 e2e runs automatically when OPENAI_API_KEY is in the
+# environment; pass --no-e2e to force it off (no live API calls) regardless:
+python scripts/version_matrix.py --no-e2e
 
 # One framework, explicit versions, + Tier 2 e2e:
 OPENAI_API_KEY=sk-... python scripts/version_matrix.py \
