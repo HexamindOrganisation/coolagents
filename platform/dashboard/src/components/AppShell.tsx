@@ -5,13 +5,11 @@ import {
   BarChart3,
   Building2,
   FileCode,
-  Fingerprint,
   KeyRound,
   LogOut,
   MessageSquareCode,
   Network,
   ScrollText,
-  Server,
   Settings2,
   ShieldCheck,
   type LucideIcon,
@@ -99,11 +97,6 @@ const workspaceLinks = [
   { to: "/settings", label: "Settings", icon: Settings2 },
 ];
 
-const environmentLinks = [
-  { to: "/control-plane", label: "Control plane", icon: Server, status: "OK" },
-  { to: "/signing-key", label: "Signing key", icon: Fingerprint },
-];
-
 function NavItem({
   to,
   label,
@@ -169,17 +162,6 @@ export function AppShell() {
             </div>
             <div className="flex flex-col gap-0.5">
               {workspaceLinks.map((l) => (
-                <NavItem key={l.to} {...l} />
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <div className="px-3 pb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-              Environment
-            </div>
-            <div className="flex flex-col gap-0.5">
-              {environmentLinks.map((l) => (
                 <NavItem key={l.to} {...l} />
               ))}
             </div>

@@ -12,6 +12,8 @@ import { useProjectScoped } from "@/lib/active";
 import { useCanManageBans } from "@/lib/bans";
 import { Badge } from "@/components/ui/badge";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
+import { DocsLink } from "@/components/DocsLink";
+import { DOC_PATHS } from "@/lib/docs";
 
 /**
  * /agents — read-only manifest view.
@@ -62,6 +64,11 @@ export function AgentsPage() {
           loading={manifests.isLoading}
         />
         <div className="flex-1" />
+        <DocsLink
+          path={DOC_PATHS.registerAgent}
+          label="register an agent →"
+          compact
+        />
         {active && (
           <div className="flex items-center gap-4">
             <Link

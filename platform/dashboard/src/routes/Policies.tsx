@@ -20,6 +20,8 @@ import { useProjectScoped } from "@/lib/active";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { NoProjectEmptyState } from "@/components/NoProjectEmptyState";
+import { DocsLink } from "@/components/DocsLink";
+import { DOC_PATHS } from "@/lib/docs";
 import { PolicyEditor } from "@/components/PolicyEditor";
 import { nodeTypes } from "@/components/graph/nodes";
 import { buildPolicyGraph } from "@/lib/policy_graph";
@@ -75,7 +77,10 @@ export function PoliciesPage() {
             loading={agents.isLoading}
           />
         </div>
-        <Tabs value={tab} onChange={setTab} />
+        <div className="flex items-center gap-2">
+          <Tabs value={tab} onChange={setTab} />
+          <DocsLink path={DOC_PATHS.policies} label="Policy docs" />
+        </div>
       </header>
 
       {/* URL asked for an agent this project doesn't have — show a banner
