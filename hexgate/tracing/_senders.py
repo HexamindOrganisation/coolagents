@@ -202,7 +202,17 @@ class AuditSender:
         thread would get killed the instant that script exits, before the
         send completes — silently reproducing the exact bug this fallback
         exists to fix. CPython's own interpreter-shutdown sequence joins
-        non-daemon threads instead, bounded by ``self._http_timeout``."""
+        non-daemon threads instead, bounded by ``self._http_timeout``.
+
+        The ``self._closing`` check below is a fast path only, not the
+        authoritative one — it's rechecked under ``self._sync_lock`` right
+        before registering the thread, in the same critical section
+        ``close()`` uses to flip ``self._closing`` and snapshot
+        ``self._sync_threads`` together. Without that, a thread could read
+        ``self._closing`` as ``False`` here, then still be constructing/
+        registering itself when ``close()`` takes its snapshot moments
+        later — landing after the snapshot, never joined, and racing
+        ``self._sync_client.close()``."""
         if self._closing:
             return
         if not self._sync_semaphore.acquire(blocking=False):
@@ -223,9 +233,14 @@ class AuditSender:
             daemon=False,
             name="hexgate-audit-send-sync",
         )
-        # Add before start(): close() must never observe a thread that's
-        # already running but not yet tracked.
+        # Authoritative recheck + registration, one atomic step: if close()
+        # already flipped _closing and took its snapshot, don't hand it a
+        # thread it'll never wait for — give the semaphore slot back and
+        # drop instead of starting a thread that'll race a closed client.
         with self._sync_lock:
+            if self._closing:
+                self._sync_semaphore.release()
+                return
             self._sync_threads.add(thread)
         thread.start()
 
@@ -258,7 +273,14 @@ class AuditSender:
 
     async def close(self, drain_timeout: float = 5.0) -> None:
         """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
-        self._closing = True
+        # Flip _closing and snapshot _sync_threads as one atomic step, under
+        # the same lock _spawn_sync_send uses for its own closing-recheck +
+        # registration. Otherwise a thread could pass _spawn_sync_send's
+        # check just before this line, and still be registering itself when
+        # the snapshot below is taken — landing after it, never joined.
+        with self._sync_lock:
+            self._closing = True
+            pending = list(self._sync_threads)
         if self._tasks:
             try:
                 await asyncio.wait_for(
@@ -280,8 +302,6 @@ class AuditSender:
         # out from under it would abort the send (a bare RuntimeError if
         # the client closes before the request starts, since that's not an
         # httpx.RequestError and isn't caught by _send_sync's handler).
-        with self._sync_lock:
-            pending = list(self._sync_threads)
         if pending:
             timed_out = await asyncio.to_thread(
                 self._join_sync_threads, pending, drain_timeout

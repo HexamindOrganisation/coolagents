@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -202,6 +202,49 @@ def test_spawn_sync_send_when_closing_then_no_thread_is_created() -> None:
     sender._spawn_sync_send(_event())
 
     assert {t.ident for t in threading.enumerate()} == before
+
+
+def test_spawn_sync_send_when_closing_flips_mid_construction_then_not_registered() -> (
+    None
+):
+    """Regression: the fast self._closing check at the top of
+    _spawn_sync_send isn't authoritative — a thread can pass it, then still
+    be constructing/registering when close() flips _closing and snapshots
+    _sync_threads moments later. The authoritative recheck happens under
+    self._sync_lock, in the same critical section close() uses, so it must
+    catch this case: freeze a caller right after it constructs its Thread
+    object (before the lock-protected recheck), flip _closing + snapshot
+    exactly as close() does, then let it proceed and confirm it backs out
+    cleanly instead of registering into a snapshot that's already been
+    taken."""
+    sender = AuditSender("http://x/y", "k")
+    constructed = threading.Event()
+    proceed = threading.Event()
+    real_thread_cls = threading.Thread
+
+    class _PausingThread(real_thread_cls):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)
+            constructed.set()
+            proceed.wait(timeout=2)
+
+    with patch("hexgate.tracing._senders.threading.Thread", _PausingThread):
+        spawner = real_thread_cls(target=sender._spawn_sync_send, args=(_event(),))
+        spawner.start()
+        assert constructed.wait(timeout=2), "thread construction never happened"
+
+        # Simulate close()'s atomic flip+snapshot while the caller above is
+        # paused between constructing its thread and registering it.
+        with sender._sync_lock:
+            sender._closing = True
+            pending = list(sender._sync_threads)
+        assert pending == [], "race window: nothing registered yet"
+
+        proceed.set()
+        spawner.join(timeout=2)
+
+    assert sender._sync_threads == set()  # backed out, didn't register
+    assert sender._sync_semaphore.acquire(blocking=False)  # slot given back, not leaked
 
 
 def test_spawn_sync_send_when_saturated_then_event_is_dropped(
