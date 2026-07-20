@@ -302,15 +302,28 @@ class AuditSender:
         # out from under it would abort the send (a bare RuntimeError if
         # the client closes before the request starts, since that's not an
         # httpx.RequestError and isn't caught by _send_sync's handler).
+        #
+        # Unlike the async drain above — where a asyncio.wait_for timeout
+        # actually cancels the tasks, so nothing is still running by the
+        # time aclose() fires — Thread.join(timeout=...) timing out leaves
+        # the thread genuinely alive with no way to cancel it (no forced
+        # thread termination in Python). So on a timed-out sync drain, skip
+        # closing the client rather than racing whatever's still running:
+        # leave it for the OS to reclaim at process exit, and let a later
+        # close() call (safe to call multiple times) finish the job once
+        # the thread has actually completed.
         if pending:
             timed_out = await asyncio.to_thread(
                 self._join_sync_threads, pending, drain_timeout
             )
             if timed_out:
                 _log.warning(
-                    "audit close: sync drain timed out with %d thread(s) pending",
+                    "audit close: sync drain timed out with %d thread(s) still "
+                    "running; leaving the sync client open rather than closing "
+                    "it out from under them",
                     timed_out,
                 )
+                return
         self._sync_client.close()
 
     @staticmethod

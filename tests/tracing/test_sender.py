@@ -408,9 +408,15 @@ async def test_close_joins_in_flight_sync_send_before_closing_the_client() -> No
     client.post.assert_called_once()
 
 
-async def test_close_when_sync_drain_times_out_then_warning_is_logged(
+async def test_close_when_sync_drain_times_out_then_client_is_not_closed(
     caplog: "logging.LogCaptureFixture",
 ) -> None:
+    """Unlike the async drain — where a asyncio.wait_for timeout actually
+    cancels the tasks, so aclose() never races anything still running — a
+    timed-out Thread.join() leaves the thread genuinely alive with no way
+    to cancel it. So close() must NOT close the client in this case: doing
+    so would race the still-running thread's in-flight _sync_client.post()
+    exactly like the TOCTOU this module already guards against."""
     sender = AuditSender("http://x/y", "k")
     hang = threading.Event()
     client = MagicMock()
@@ -430,12 +436,43 @@ async def test_close_when_sync_drain_times_out_then_warning_is_logged(
         await sender.close(drain_timeout=0.01)
 
     assert any("sync drain timed out" in r.message for r in caplog.records)
-    client.close.assert_called_once()  # still closes even after a timed-out drain
+    client.close.assert_not_called()  # would race the still-running thread
 
     hang.set()  # release the still-running thread so it doesn't outlive the test
     for t in threading.enumerate():
         if t.name == "hexgate-audit-send-sync":
             t.join(timeout=2)
+
+
+async def test_close_when_called_again_after_a_timed_out_drain_then_it_closes() -> None:
+    """The deferral above isn't a permanent leak: close() is safe to call
+    multiple times, so a second call — once the thread has actually
+    finished — picks up where the first left off and closes normally."""
+    sender = AuditSender("http://x/y", "k")
+    hang = threading.Event()
+    client = MagicMock()
+
+    def _post(endpoint: str, json: dict) -> MagicMock:
+        hang.wait(timeout=2)
+        return MagicMock(status_code=202, text="")
+
+    client.post = MagicMock(side_effect=_post)
+    client.close = MagicMock()
+    sender._sync_client = client
+
+    sender._spawn_sync_send(_event())
+    await asyncio.sleep(0.05)
+
+    await sender.close(drain_timeout=0.01)
+    client.close.assert_not_called()
+
+    hang.set()
+    for t in threading.enumerate():
+        if t.name == "hexgate-audit-send-sync":
+            t.join(timeout=2)
+
+    await sender.close()  # nothing left to join now — safe to close
+    client.close.assert_called_once()
 
 
 async def test_close_when_client_is_none_then_no_error_is_raised() -> None:
