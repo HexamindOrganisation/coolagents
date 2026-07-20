@@ -92,8 +92,14 @@ class AuditSender:
         # documented shutdown pattern, hexgate/audit.py:4) — a fresh loop
         # started just for that call reaches close() same as any other
         # caller, so this can and does overlap with an in-flight sync send.
+        #
+        # Also guards self._sync_dropped: unlike self._dropped (only ever
+        # touched on the single event-loop thread), _spawn_sync_send can
+        # run concurrently on real OS threads whenever several no-loop
+        # callers hit saturation at once — a plain += there would be a
+        # lost-update race.
         self._sync_threads: set[threading.Thread] = set()
-        self._sync_threads_lock = threading.Lock()
+        self._sync_lock = threading.Lock()
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -200,13 +206,15 @@ class AuditSender:
         if self._closing:
             return
         if not self._sync_semaphore.acquire(blocking=False):
-            self._sync_dropped += 1
-            if self._sync_dropped % 100 == 1:
+            with self._sync_lock:
+                self._sync_dropped += 1
+                dropped = self._sync_dropped
+            if dropped % 100 == 1:
                 _log.warning(
                     "audit sender saturated (no event loop path); %d events "
                     "dropped (platform slow, or too many concurrent "
                     "synchronous callers?)",
-                    self._sync_dropped,
+                    dropped,
                 )
             return
         thread = threading.Thread(
@@ -217,7 +225,7 @@ class AuditSender:
         )
         # Add before start(): close() must never observe a thread that's
         # already running but not yet tracked.
-        with self._sync_threads_lock:
+        with self._sync_lock:
             self._sync_threads.add(thread)
         thread.start()
 
@@ -245,7 +253,7 @@ class AuditSender:
                 _log.warning("audit ingest network error: %s", exc)
         finally:
             self._sync_semaphore.release()
-            with self._sync_threads_lock:
+            with self._sync_lock:
                 self._sync_threads.discard(threading.current_thread())
 
     async def close(self, drain_timeout: float = 5.0) -> None:
@@ -272,7 +280,7 @@ class AuditSender:
         # out from under it would abort the send (a bare RuntimeError if
         # the client closes before the request starts, since that's not an
         # httpx.RequestError and isn't caught by _send_sync's handler).
-        with self._sync_threads_lock:
+        with self._sync_lock:
             pending = list(self._sync_threads)
         if pending:
             timed_out = await asyncio.to_thread(
