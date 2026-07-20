@@ -20,7 +20,9 @@ dependencies = [
     "biscuit-python>=0.4",
     "cryptography>=42",
     "httpx>=0.28.1",
-    "langchain",
+    # Floor 1.2.15: 1.1.0/1.2.5 fail to import (transitive langgraph mismatch).
+    # Verified by the framework-version matrix (tests/framework_compat/).
+    "langchain>=1.2.15",
     "langchain-openai",
     "langchain-core",
     "langfuse",
@@ -29,12 +31,10 @@ dependencies = [
     "pyyaml>=6.0.2",
     "rich>=13.9.4",
     "websockets>=13.0",
-    # Floor is 0.8.0, not lower: the openai adapter imports `RunState` from
-    # `agents` (added in 0.8.0), so on 0.0.10–0.7.0 the adapter fails to import
-    # and policy enforcement can't be installed at all. Verified by the
-    # framework-version matrix (tests/framework_compat/): 0.7.0 BROKEN, 0.8.0 enforces.
+    # Floor 0.8.0: the adapter imports `RunState` (added in 0.8.0); below that it
+    # fails to import. Verified by the framework-version matrix (tests/framework_compat/).
     "openai-agents>=0.8.0",
-    "langgraph>=0.2",
+    "langgraph>=1.1.10",
     "nest_asyncio>=1.6",
     "openinference-instrumentation-openai-agents>=0.1",
     "google-adk>=1.14",
