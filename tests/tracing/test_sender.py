@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -32,6 +33,13 @@ def _stub_client(status: int = 202) -> MagicMock:
     client = MagicMock()
     client.post = AsyncMock(return_value=MagicMock(status_code=status, text=""))
     client.aclose = AsyncMock()
+    return client
+
+
+def _stub_sync_client(status: int = 202) -> MagicMock:
+    client = MagicMock()
+    client.post = MagicMock(return_value=MagicMock(status_code=status, text=""))
+    client.close = MagicMock()
     return client
 
 
@@ -95,12 +103,14 @@ async def test_503_triggers_one_retry() -> None:
 async def test_close_drains_in_flight_then_acloses_client() -> None:
     sender = AuditSender("http://x/y", "k")
     sender._client = _stub_client()
+    sender._sync_client = MagicMock()
     sender.emit(_event())
     sender.emit(_event())
     assert len(sender._tasks) == 2
     await sender.close()
     assert len(sender._tasks) == 0
     sender._client.aclose.assert_awaited_once()
+    sender._sync_client.close.assert_called_once()
 
 
 async def test_post_close_emit_is_noop() -> None:
@@ -124,18 +134,137 @@ async def test_network_error_logged_not_raised(
     assert any("network error" in r.message for r in caplog.records)
 
 
-def test_no_running_loop_skips_silently(caplog: "logging.LogCaptureFixture") -> None:
-    """No running loop and no bound loop (built outside any loop): emit
-    no-ops with a one-time warning."""
+def test_emit_when_no_running_loop_then_falls_back_to_spawn_sync_send() -> None:
+    """No running loop and no bound loop (built outside any loop, e.g. a
+    pydantic_ai run_sync()-only caller): emit dispatches to the bounded
+    background-thread fallback instead of dropping the event."""
     sender = AuditSender("http://x/y", "k")
     assert sender._loop is None
-    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-        sender.emit(_event())
-        sender.emit(_event())  # second call: silent
+    sender._spawn_sync_send = MagicMock()
+    event = _event()
+
+    sender.emit(event)
+
+    sender._spawn_sync_send.assert_called_once_with(event)
+
+
+def test_emit_when_call_soon_threadsafe_raises_then_falls_back_to_sync_send() -> None:
+    """Loop torn down between the is_closed() check and call_soon_threadsafe:
+    this race no longer drops the event — it falls back to the same path
+    used when there's no loop at all, instead of being swallowed silently."""
+    sender = AuditSender("http://x/y", "k")
+    assert sender._loop is None  # built outside any running loop
+    fake_loop = MagicMock()
+    fake_loop.is_closed.return_value = False
+    fake_loop.call_soon_threadsafe.side_effect = RuntimeError("loop closed mid-call")
+    sender._loop = fake_loop
+    sender._spawn_sync_send = MagicMock()
+    event = _event()
+
+    sender.emit(event)  # must not raise
+
     assert len(sender._tasks) == 0
-    assert sender._warned_no_loop is True
-    no_loop_warnings = [r for r in caplog.records if "no live bound loop" in r.message]
-    assert len(no_loop_warnings) == 1
+    sender._spawn_sync_send.assert_called_once_with(event)
+
+
+def test_spawn_sync_send_happy_path() -> None:
+    """Spawns a non-daemon background thread that sends the event via
+    _send_sync. Non-daemon is the invariant under test: a run_sync()-only
+    script commonly exits moments after emit() returns, and a daemon thread
+    would get killed before the send completes — silently reproducing the
+    exact drop this fallback exists to fix."""
+    sender = AuditSender("http://x/y", "k")
+    release = threading.Event()
+    client = MagicMock()
+
+    def _post(endpoint: str, json: dict) -> MagicMock:
+        release.wait(timeout=2)
+        return MagicMock(status_code=202, text="")
+
+    client.post = MagicMock(side_effect=_post)
+    sender._sync_client = client
+
+    sender._spawn_sync_send(_event())
+
+    matching = [t for t in threading.enumerate() if t.name == "hexgate-audit-send-sync"]
+    assert len(matching) == 1
+    assert matching[0].daemon is False
+    release.set()
+    matching[0].join(timeout=2)
+    client.post.assert_called_once()
+
+
+def test_spawn_sync_send_when_closing_then_no_thread_is_created() -> None:
+    sender = AuditSender("http://x/y", "k")
+    sender._closing = True
+    before = {t.ident for t in threading.enumerate()}
+
+    sender._spawn_sync_send(_event())
+
+    assert {t.ident for t in threading.enumerate()} == before
+
+
+def test_spawn_sync_send_when_saturated_then_event_is_dropped(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    """Mirrors test_semaphore_saturation_drops_events, but for the
+    thread-based fallback path: bounded the same way, by the same
+    max_in_flight value, applied to threading.Semaphore instead of
+    asyncio.Semaphore."""
+    sender = AuditSender("http://x/y", "k", max_in_flight=1)
+    sender._sync_semaphore.acquire()  # simulate one send already in flight
+    try:
+        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+            for _ in range(5):
+                sender._spawn_sync_send(_event())
+        assert sender._sync_dropped == 5
+        assert any("dropped" in r.message for r in caplog.records)
+    finally:
+        sender._sync_semaphore.release()
+
+
+def test_send_sync_happy_path() -> None:
+    """_send_sync has no loop dependency, unlike _send, so it can be called
+    directly from the test thread — no need to spawn or join anything."""
+    sender = AuditSender("http://x/y", "k")
+    sender._sync_client = _stub_sync_client()
+
+    sender._send_sync(_event())
+
+    sender._sync_client.post.assert_called_once()
+    args, kwargs = sender._sync_client.post.call_args
+    assert args[0] == "http://x/y"
+    assert kwargs["json"]["outcome"] == "deny"
+
+
+def test_send_sync_when_status_is_503_then_retries_once() -> None:
+    sender = AuditSender("http://x/y", "k", http_timeout=0.01)
+    client = MagicMock()
+    client.post = MagicMock(
+        side_effect=[
+            MagicMock(status_code=503, text="busy"),
+            MagicMock(status_code=202, text=""),
+        ]
+    )
+    sender._sync_client = client
+
+    sender._send_sync(_event())
+
+    assert client.post.call_count == 2
+
+
+def test_send_sync_when_request_error_then_logged_not_raised(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    sender = AuditSender("http://x/y", "k")
+    client = MagicMock()
+    client.post = MagicMock(side_effect=httpx.ConnectError("refused"))
+    sender._sync_client = client
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        sender._send_sync(_event())
+
+    assert any("network error" in r.message for r in caplog.records)
 
 
 async def test_emit_from_executor_thread_routes_to_bound_loop() -> None:
@@ -155,22 +284,8 @@ async def test_emit_from_executor_thread_routes_to_bound_loop() -> None:
             break
         await asyncio.sleep(0)
 
-    assert sender._warned_no_loop is False  # routed, not dropped
     await asyncio.gather(*sender._tasks)
     sender._client.post.assert_called_once()
-
-
-def test_emit_when_call_soon_threadsafe_raises_then_error_is_swallowed() -> None:
-    """Loop torn down between the is_closed() check and call_soon_threadsafe:
-    the race is swallowed, not raised."""
-    sender = AuditSender("http://x/y", "k")
-    assert sender._loop is None  # built outside any running loop
-    fake_loop = MagicMock()
-    fake_loop.is_closed.return_value = False
-    fake_loop.call_soon_threadsafe.side_effect = RuntimeError("loop closed mid-call")
-    sender._loop = fake_loop
-    sender.emit(_event())  # must not raise
-    assert len(sender._tasks) == 0
 
 
 def test_spawn_send_when_closing_then_no_task_is_created() -> None:

@@ -12,6 +12,8 @@ import asyncio
 import logging
 import os
 import random
+import threading
+import time
 from typing import Any, Protocol
 
 import httpx
@@ -30,11 +32,17 @@ class _PayloadEvent(Protocol):
 
 
 class AuditSender:
-    """Fire-and-forget POST for a single ``(api_key, path)`` pair. Bounded
-    by an asyncio.Semaphore.
+    """Fire-and-forget POST for a single ``(api_key, path)`` pair.
 
-    emit() is sync and non-blocking — schedules a background task. Drops with
-    a periodic log when the semaphore is saturated (platform slow/unreachable).
+    emit() is sync and non-blocking. When a live event loop is available it
+    schedules an asyncio task, bounded by ``self._semaphore``
+    (``max_in_flight``). When none is available anywhere in the process
+    (e.g. a purely-synchronous caller like pydantic_ai's ``run_sync()``,
+    which drives its own loop internally and closes it before returning
+    control here), it spawns a plain background thread instead, bounded the
+    same way by ``self._sync_semaphore``. Both paths drop with a periodic
+    log when saturated (platform slow/unreachable, or too many concurrent
+    callers) rather than growing an unbounded backlog.
     Named for its original use (policy decisions); reused unmodified for any
     event type whose payload is a flat JSON dict via ``as_payload()``.
     """
@@ -67,10 +75,25 @@ class AuditSender:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._dropped = 0
-        self._warned_no_loop = False
+        # Fallback for when no asyncio loop exists anywhere in the process
+        # (e.g. a caller built purely on pydantic_ai's run_sync()): a plain
+        # background thread instead of an asyncio task. Bounded by the same
+        # max_in_flight ceiling as self._semaphore, just applied to a
+        # different resource (OS threads instead of asyncio tasks).
+        # httpx.Client, unlike AsyncClient, has no event-loop affinity, so
+        # it's safe to build eagerly here rather than lazily on first use.
+        self._sync_semaphore = threading.Semaphore(max_in_flight)
+        self._sync_client = self._new_sync_client()
+        self._sync_dropped = 0
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
+            timeout=self._http_timeout,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+        )
+
+    def _new_sync_client(self) -> httpx.Client:
+        return httpx.Client(
             timeout=self._http_timeout,
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
@@ -94,21 +117,20 @@ class AuditSender:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Called off-loop (sync tool on a run_in_executor thread): route
-            # to the build-time loop instead of dropping the event.
+            # Called off-loop: either a sync tool dispatched to a
+            # run_in_executor thread (a live loop is still bound, just not
+            # running on *this* thread), or a purely synchronous caller with
+            # no loop anywhere in the process (e.g. pydantic_ai's
+            # run_sync()). Prefer handing back to the bound loop; only fall
+            # to a plain background thread when no loop exists at all.
             loop = self._loop
-            if loop is None or loop.is_closed():
-                if not self._warned_no_loop:
-                    _log.warning(
-                        "audit emit called with no running loop and no live "
-                        "bound loop; skipping"
-                    )
-                    self._warned_no_loop = True
-                return
-            try:
-                loop.call_soon_threadsafe(self._spawn_send, event)
-            except RuntimeError:
-                pass  # loop torn down between the is_closed() check and the call
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(self._spawn_send, event)
+                    return
+                except RuntimeError:
+                    pass  # loop torn down between the is_closed() check and the call
+            self._spawn_sync_send(event)
             return
         self._ensure_loop_state(loop)
         self._spawn_send(event)
@@ -155,8 +177,62 @@ class AuditSender:
             except httpx.RequestError as exc:
                 _log.warning("audit ingest network error: %s", exc)
 
+    def _spawn_sync_send(self, event: _PayloadEvent) -> None:
+        """Fallback for when no asyncio loop exists anywhere to schedule
+        ``_spawn_send`` on. Bounded by ``self._sync_semaphore`` the same way
+        ``_spawn_send`` is bounded by ``self._semaphore`` — saturated
+        callers are dropped immediately rather than piling up an unbounded
+        number of OS threads. Threads are non-daemon: a short-lived
+        run_sync()-only script is the common caller here, and a daemon
+        thread would get killed the instant that script exits, before the
+        send completes — silently reproducing the exact bug this fallback
+        exists to fix. CPython's own interpreter-shutdown sequence joins
+        non-daemon threads instead, bounded by ``self._http_timeout``."""
+        if self._closing:
+            return
+        if not self._sync_semaphore.acquire(blocking=False):
+            self._sync_dropped += 1
+            if self._sync_dropped % 100 == 1:
+                _log.warning(
+                    "audit sender saturated (no event loop path); %d events "
+                    "dropped (platform slow, or too many concurrent "
+                    "synchronous callers?)",
+                    self._sync_dropped,
+                )
+            return
+        threading.Thread(
+            target=self._send_sync,
+            args=(event,),
+            daemon=False,
+            name="hexgate-audit-send-sync",
+        ).start()
+
+    def _send_sync(self, event: _PayloadEvent) -> None:
+        """Synchronous mirror of ``_send`` for the no-event-loop fallback.
+        Runs entirely on its own thread; always releases
+        ``self._sync_semaphore`` so the next caller past the cap can
+        proceed."""
+        try:
+            payload = event.as_payload()
+            try:
+                response = self._sync_client.post(self._endpoint, json=payload)
+                if response.status_code == 503:
+                    delay = min(self._http_timeout, 2.0)
+                    time.sleep(random.uniform(delay / 2, delay))
+                    response = self._sync_client.post(self._endpoint, json=payload)
+                if response.status_code >= 400:
+                    _log.error(
+                        "audit ingest failed: %s %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+            except httpx.RequestError as exc:
+                _log.warning("audit ingest network error: %s", exc)
+        finally:
+            self._sync_semaphore.release()
+
     async def close(self, drain_timeout: float = 5.0) -> None:
-        """Stop accepting new emits; drain in-flight tasks; close the HTTP client."""
+        """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
         self._closing = True
         if self._tasks:
             try:
@@ -171,6 +247,12 @@ class AuditSender:
                 )
         if self._client is not None:
             await self._client.aclose()
+        # Sync-fallback sends aren't tracked/drained here (see
+        # _spawn_sync_send): that branch is only reachable when no loop
+        # exists anywhere in the process, and close()/shutdown() are only
+        # reachable from a caller that has one — the two can't overlap in
+        # any realistic single-sender lifetime.
+        self._sync_client.close()
 
 
 # --- Shared (api_key, path) registry ----------------------------------------
