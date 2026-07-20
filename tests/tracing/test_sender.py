@@ -330,6 +330,71 @@ async def test_close_when_drain_times_out_then_warning_is_logged(
     assert task.cancelled()
 
 
+async def test_close_joins_in_flight_sync_send_before_closing_the_client() -> None:
+    """Regression: close() must not tear down self._sync_client while a
+    fallback thread is still using it. A run_sync()-only script commonly
+    wraps its final cleanup in a fresh asyncio.run(hexgate.shutdown()) —
+    that reaches close() on a brand-new loop while a _send_sync() thread
+    spawned moments earlier may still be in flight, so this race is real,
+    not hypothetical."""
+    sender = AuditSender("http://x/y", "k")
+    started = threading.Event()
+    release = threading.Event()
+    client = MagicMock()
+
+    def _post(endpoint: str, json: dict) -> MagicMock:
+        started.set()
+        release.wait(timeout=2)
+        return MagicMock(status_code=202, text="")
+
+    client.post = MagicMock(side_effect=_post)
+    client.close = MagicMock()
+    sender._sync_client = client
+
+    sender._spawn_sync_send(_event())
+    assert started.wait(timeout=2), "sync send never started"
+
+    close_task = asyncio.create_task(sender.close())
+    await asyncio.sleep(0.05)  # let close() reach the join
+    assert not client.close.called, "client closed while a send was still in flight"
+
+    release.set()
+    await close_task
+
+    client.close.assert_called_once()
+    client.post.assert_called_once()
+
+
+async def test_close_when_sync_drain_times_out_then_warning_is_logged(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    sender = AuditSender("http://x/y", "k")
+    hang = threading.Event()
+    client = MagicMock()
+
+    def _post(endpoint: str, json: dict) -> MagicMock:
+        hang.wait(timeout=5)
+        return MagicMock(status_code=202, text="")
+
+    client.post = MagicMock(side_effect=_post)
+    client.close = MagicMock()
+    sender._sync_client = client
+
+    sender._spawn_sync_send(_event())
+    await asyncio.sleep(0.05)  # let the thread actually start
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
+        await sender.close(drain_timeout=0.01)
+
+    assert any("sync drain timed out" in r.message for r in caplog.records)
+    client.close.assert_called_once()  # still closes even after a timed-out drain
+
+    hang.set()  # release the still-running thread so it doesn't outlive the test
+    for t in threading.enumerate():
+        if t.name == "hexgate-audit-send-sync":
+            t.join(timeout=2)
+
+
 async def test_close_when_client_is_none_then_no_error_is_raised() -> None:
     sender = AuditSender("http://x/y", "k")
     sender._client = None

@@ -85,6 +85,15 @@ class AuditSender:
         self._sync_semaphore = threading.Semaphore(max_in_flight)
         self._sync_client = self._new_sync_client()
         self._sync_dropped = 0
+        # Tracked so close() can join outstanding sends before tearing down
+        # self._sync_client out from under them. Needed for real: a script
+        # built purely on run_sync() can still spin up its own
+        # asyncio.run(hexgate.shutdown()) as its very last action (the
+        # documented shutdown pattern, hexgate/audit.py:4) — a fresh loop
+        # started just for that call reaches close() same as any other
+        # caller, so this can and does overlap with an in-flight sync send.
+        self._sync_threads: set[threading.Thread] = set()
+        self._sync_threads_lock = threading.Lock()
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -200,18 +209,24 @@ class AuditSender:
                     self._sync_dropped,
                 )
             return
-        threading.Thread(
+        thread = threading.Thread(
             target=self._send_sync,
             args=(event,),
             daemon=False,
             name="hexgate-audit-send-sync",
-        ).start()
+        )
+        # Add before start(): close() must never observe a thread that's
+        # already running but not yet tracked.
+        with self._sync_threads_lock:
+            self._sync_threads.add(thread)
+        thread.start()
 
     def _send_sync(self, event: _PayloadEvent) -> None:
         """Synchronous mirror of ``_send`` for the no-event-loop fallback.
         Runs entirely on its own thread; always releases
         ``self._sync_semaphore`` so the next caller past the cap can
-        proceed."""
+        proceed, and discards itself from ``self._sync_threads`` so close()
+        isn't left waiting on threads that already finished."""
         try:
             payload = event.as_payload()
             try:
@@ -230,6 +245,8 @@ class AuditSender:
                 _log.warning("audit ingest network error: %s", exc)
         finally:
             self._sync_semaphore.release()
+            with self._sync_threads_lock:
+                self._sync_threads.discard(threading.current_thread())
 
     async def close(self, drain_timeout: float = 5.0) -> None:
         """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
@@ -247,12 +264,36 @@ class AuditSender:
                 )
         if self._client is not None:
             await self._client.aclose()
-        # Sync-fallback sends aren't tracked/drained here (see
-        # _spawn_sync_send): that branch is only reachable when no loop
-        # exists anywhere in the process, and close()/shutdown() are only
-        # reachable from a caller that has one — the two can't overlap in
-        # any realistic single-sender lifetime.
+        # Join outstanding sync-fallback sends before closing the client
+        # they share: a run_sync()-only script commonly wraps its final
+        # cleanup in its own asyncio.run(hexgate.shutdown()), so close()
+        # reaching here concurrently with an in-flight _send_sync() thread
+        # is a real case, not a hypothetical one — closing self._sync_client
+        # out from under it would abort the send (a bare RuntimeError if
+        # the client closes before the request starts, since that's not an
+        # httpx.RequestError and isn't caught by _send_sync's handler).
+        with self._sync_threads_lock:
+            pending = list(self._sync_threads)
+        if pending:
+            timed_out = await asyncio.to_thread(
+                self._join_sync_threads, pending, drain_timeout
+            )
+            if timed_out:
+                _log.warning(
+                    "audit close: sync drain timed out with %d thread(s) pending",
+                    timed_out,
+                )
         self._sync_client.close()
+
+    @staticmethod
+    def _join_sync_threads(threads: list[threading.Thread], timeout: float) -> int:
+        """Join every thread within one shared ``timeout`` budget (not
+        ``timeout`` each — mirrors ``asyncio.wait_for``'s total-time bound
+        for the async drain above). Returns how many are still alive."""
+        deadline = time.monotonic() + timeout
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        return sum(1 for t in threads if t.is_alive())
 
 
 # --- Shared (api_key, path) registry ----------------------------------------
