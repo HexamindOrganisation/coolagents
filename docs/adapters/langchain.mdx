@@ -106,8 +106,10 @@ wrapper holds the policy.
 
 <Note>
 The policy is resolved by agent name, so pass `name="devops_agent"` to
-`create_react_agent`. Without it the compiled graph has no name and the wrapper
-falls back to the `default` policy.
+`create_react_agent` — it must match the agent you registered on the platform.
+Omit it and the compiled graph keeps LangGraph's default name (`"LangGraph"`),
+so the wrapper resolves the policy for an agent called `LangGraph` and fails
+with a 404 unless one is registered under that name.
 </Note>
 
 ## Runnable example

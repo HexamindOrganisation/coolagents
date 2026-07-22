@@ -65,7 +65,7 @@ async def main() -> None:
     )
 
     async for event in runner.run_async(new_message=message, user=user):
-        if event.is_final_response():
+        if event.is_final_response() and event.content and event.content.parts:
             print(event.content.parts[0].text)
 
 
