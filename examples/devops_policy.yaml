@@ -1,0 +1,77 @@
+# Role-aware policy for the devops_agent examples (examples/devops_*.py).
+#
+# Paste into the platform policy editor for the `devops_agent` agent.
+# Allow / deny only -- no approval gates in this demo.
+#
+# Escalation ladder, least -> most privileged:
+#   default < operator < admin        (release is a side demo role)
+#
+# Fail-closed everywhere: mode defaults to deny.
+
+version: 1
+
+roles:
+  # ---- mixin: read-only base shared by every human role -----------------
+  read_only:
+    is_mixin: true
+    consts:
+      prod_replica_cap: 400
+    tools:
+      read_logs:
+        mode: allow
+
+  # ---- default: read logs, nothing else ---------------------------------
+  default:
+    inherits: [read_only]
+    default_policy:
+      mode: deny
+
+  # ---- release: demo role showcasing the string + boolean grammar -------
+  # Scoped to web/api services, non-prod only.
+  # Feature per line: startswith+or / matches / in+or
+  release:
+    inherits: [read_only]
+    default_policy:
+      mode: deny
+    tools:
+      restart_service:
+        mode: allow
+        constraints:
+          - 'startswith(args.service, "web-") or startswith(args.service, "api-")'
+          - 'args.env != "prod"'
+      scale_deployment:
+        mode: allow
+        constraints:
+          - 'matches(args.service, "^(web|api)-[a-z0-9]+$")'
+          - 'args.env in ["dev", "staging"] or args.replicas <= 2'
+          - 'args.replicas <= 20'
+
+  # ---- operator: day-to-day ops, dev/staging only -----------------------
+  operator:
+    inherits: [read_only]
+    default_policy:
+      mode: deny
+    tools:
+      restart_service:
+        mode: allow
+        constraints:
+          - 'args.env in ["dev", "staging"]'
+      scale_deployment:
+        mode: allow
+        constraints:
+          - 'args.env in ["dev", "staging"]'
+          - 'args.replicas <= 10'
+
+  # ---- admin: lifts env bounds, higher replica cap ----------------------
+  admin:
+    inherits: [operator]
+    default_policy:
+      mode: deny
+    tools:
+      restart_service:
+        mode: allow
+      scale_deployment:
+        mode: allow
+        constraints:
+          - 'args.replicas <= consts.prod_replica_cap'
+

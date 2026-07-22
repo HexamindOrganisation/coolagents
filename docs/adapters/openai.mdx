@@ -49,27 +49,47 @@ from dotenv import load_dotenv
 from hexgate.runtime import User
 from hexgate.adapters.openai import HexgateRunner
 
+INSTRUCTION = (
+    "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
+    "service logs, restart services, and scale deployments. Pull the service "
+    "name, replica count, and environment (dev/staging/prod) from the request "
+    "and act directly — the policy layer gates sensitive actions."
+)
+
 
 @function_tool
-def get_weather(city: str) -> str:
-    return f"{city}: sunny, 23°C"
+def read_logs(service: str, env: str) -> str:
+    """Return recent log lines for `service` in `env` (dev/staging/prod)."""
+    return f"(stub) {service}@{env}: 200 OK, 200 OK, WARN upstream slow"
+
+
+@function_tool
+def restart_service(service: str, env: str) -> str:
+    """Restart `service` in `env`."""
+    return f"(stub) restarted {service}@{env}"
+
+
+@function_tool
+def scale_deployment(service: str, replicas: int, env: str) -> str:
+    """Scale `service` to `replicas` pods in `env`."""
+    return f"(stub) scaled {service}@{env} to {replicas} replicas"
 
 
 async def main():
     load_dotenv()
 
     agent = Agent(
-        name="Weather Agent",
-        instructions="Use get_weather when asked about weather.",
-        tools=[get_weather],
+        name="devops_agent",
+        instructions=INSTRUCTION,
+        tools=[read_logs, restart_service, scale_deployment],
         model="gpt-4o-mini",
     )
 
     runner = HexgateRunner()  # picks up HEXGATE_API_KEY from env
     result = await runner.run(
         agent,
-        "What's the weather in Cherbourg?",
-        user=User(user_id="user_1", session_id="session_1", role="member"),
+        "Scale the checkout service to 5 replicas in staging.",
+        user=User(user_id="engineer_1", session_id="session_1", role="operator"),
     )
     print(result)
 
@@ -96,4 +116,4 @@ if __name__ == "__main__":
 
 ## Runnable example
 
-`examples/openai_demo.py` — `HexgateRunner` (OpenAI Agents SDK) end-to-end.
+`examples/devops_openai.py` — `HexgateRunner` (OpenAI Agents SDK) end-to-end.

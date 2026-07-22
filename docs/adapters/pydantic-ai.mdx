@@ -23,21 +23,33 @@ from pydantic_ai import Agent
 from hexgate.runtime import User
 from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
 
+INSTRUCTION = (
+    "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
+    "service logs, restart services, and scale deployments. Pull the service "
+    "name, replica count, and environment (dev/staging/prod) from the request "
+    "and act directly — the policy layer gates sensitive actions."
+)
+
 
 async def main():
     load_dotenv()
 
-    agent = Agent("openai:gpt-4o-mini")
+    agent = Agent("openai:gpt-4o-mini", name="devops_agent", instructions=INSTRUCTION)
 
     @agent.tool_plain
-    def get_weather(city: str) -> str:
-        """Return a weather report for a city."""
-        return f"The weather in {city} is 21°C and sunny."
+    def read_logs(service: str, env: str) -> str:
+        """Return recent log lines for `service` in `env` (dev/staging/prod)."""
+        return f"(stub) {service}@{env}: 200 OK, 200 OK, WARN upstream slow"
 
     @agent.tool_plain
-    def delete_user(user_id: str) -> str:
-        """Delete a user account. Destructive."""
-        return f"User {user_id} deleted."
+    def restart_service(service: str, env: str) -> str:
+        """Restart `service` in `env`."""
+        return f"(stub) restarted {service}@{env}"
+
+    @agent.tool_plain
+    def scale_deployment(service: str, replicas: int, env: str) -> str:
+        """Scale `service` to `replicas` pods in `env`."""
+        return f"(stub) scaled {service}@{env} to {replicas} replicas"
 
     agent = wrap_pydantic_agent(
         agent=agent,
@@ -45,11 +57,11 @@ async def main():
     )
 
     result = await agent.run(
-        "What is the weather in Tokyo?",
+        "Scale the checkout service to 5 replicas in staging.",
         user=User(
-            user_id="pydantic_ai_user_1",
-            role="member",
-            session_id="pydantic_ai_session_1",
+            user_id="engineer_1",
+            role="operator",
+            session_id="session_1",
         ),
     )
     print(result.output)
@@ -80,4 +92,4 @@ if __name__ == "__main__":
 
 ## Runnable example
 
-`examples/pydantic_ai_demo.py` — `wrap_pydantic_agent` (Pydantic AI) end-to-end.
+`examples/devops_pydantic_ai.py` — `wrap_pydantic_agent` (Pydantic AI) end-to-end.

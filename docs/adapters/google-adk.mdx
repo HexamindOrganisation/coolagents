@@ -15,7 +15,6 @@ resolution happens at call time. `run` / `run_async` then yield ADK events.
 
 ```python
 import asyncio
-from datetime import datetime
 
 from dotenv import load_dotenv
 from google.adk.agents import Agent
@@ -26,44 +25,57 @@ from google.genai import types
 from hexgate.runtime import User
 from hexgate.adapters.google import HexgateRunner
 
+INSTRUCTION = (
+    "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
+    "service logs, restart services, and scale deployments. Pull the service "
+    "name, replica count, and environment (dev/staging/prod) from the request "
+    "and act directly — the policy layer gates sensitive actions."
+)
 
-def get_weather(city: str) -> str:
-    """Get the current weather for a given city."""
-    return f"{city}: sunny, 23°C, humidity 50%, wind 10 m/s"
+
+def read_logs(service: str, env: str) -> str:
+    """Return recent log lines for `service` in `env` (dev/staging/prod)."""
+    return f"(stub) {service}@{env}: 200 OK, 200 OK, WARN upstream slow"
 
 
-def get_current_time() -> str:
-    """Return the current local time as an ISO-8601 string."""
-    return datetime.now().isoformat()
+def restart_service(service: str, env: str) -> str:
+    """Restart `service` in `env`."""
+    return f"(stub) restarted {service}@{env}"
+
+
+def scale_deployment(service: str, replicas: int, env: str) -> str:
+    """Scale `service` to `replicas` pods in `env`."""
+    return f"(stub) scaled {service}@{env} to {replicas} replicas"
 
 
 async def main():
     load_dotenv()
 
     agent = Agent(
-        name="google_runner_example_agent",
+        name="devops_agent",
         model=LiteLlm(model="openai/gpt-4o"),
-        instruction="Use get_current_time and get_weather when asked.",
-        tools=[get_current_time, get_weather],
+        instruction=INSTRUCTION,
+        tools=[read_logs, restart_service, scale_deployment],
     )
 
-    user = User(user_id="google_user_1", session_id="google_session_1", role="user")
+    user = User(user_id="engineer_1", session_id="session_1", role="operator")
 
     session_service = InMemorySessionService()
     await session_service.create_session(
-        app_name="google_runner_example",
+        app_name="devops_demo",
         user_id=user.user_id,
         session_id=user.session_id,
     )
 
     runner = HexgateRunner(
         agent=agent,
-        app_name="google_runner_example",
+        app_name="devops_demo",
         session_service=session_service,
     )  # picks up HEXGATE_API_KEY from env
 
     user_msg = types.Content(
-        role="user", parts=[types.Part(text="What is the weather in New Delhi?")]
+        role="user",
+        parts=[types.Part(text="Scale the checkout service to 5 replicas in staging.")],
     )
 
     async for event in runner.run_async(new_message=user_msg, user=user):
@@ -96,5 +108,5 @@ if __name__ == "__main__":
 
 ## Runnable example
 
-`examples/google_demo.py` — `HexgateRunner` (Google ADK) end-to-end with
+`examples/devops_google.py` — `HexgateRunner` (Google ADK) end-to-end with
 `InMemorySessionService`.
