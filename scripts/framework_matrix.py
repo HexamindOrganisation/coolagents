@@ -165,7 +165,16 @@ def select_versions(
     folded in when asked.
     """
     if explicit:
-        return [str(v) for v in sorted({Version(v) for v in explicit})]
+        try:
+            parsed = sorted({Version(v) for v in explicit})
+        except InvalidVersion as exc:
+            # InvalidVersion is a ValueError, not a RuntimeError — surface it as
+            # a domain error so main() reports DISCOVERY-FAIL for this framework
+            # instead of aborting the whole run with a raw traceback.
+            raise RuntimeError(
+                f"invalid version in --versions for {framework.key!r}: {exc}"
+            ) from exc
+        return [str(v) for v in parsed]
 
     available = discover_versions(framework.dist)
     if framework.floor is not None:
@@ -200,12 +209,14 @@ def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 class VenvManager:
     """One reused venv per framework; every cell re-resolves the full graph.
 
-    Each cell installs ``-e .[dev]`` together with ``<dist>==<version>`` so uv
-    re-resolves *coupled* transitive deps (langgraph for langchain, the openai
-    base lib for openai-agents, …) to a set consistent with the pinned version.
-    Pinning only the primary dist and reusing whatever was already installed
-    silently leaves stale companions — which manifests as spurious Tier 2
-    failures / import errors, not a real wrap break.
+    Each cell installs ``-e .[dev]`` together with ``<dist>==<version>`` under
+    ``--reinstall`` so uv re-resolves *coupled* transitive deps (langgraph for
+    langchain, the openai base lib for openai-agents, …) to a set consistent
+    with the pinned version. Without ``--reinstall`` uv prefers already-present
+    packages and only moves one when a constraint forces it, so a companion
+    (e.g. langgraph) pulled by an earlier, higher cell can survive into a later,
+    lower one — reporting a pairing a fresh resolve would never pick. That
+    manifests as spurious Tier 2 failures / import errors, not a real wrap break.
     """
 
     def __init__(self, uv: str) -> None:
@@ -231,9 +242,10 @@ class VenvManager:
     def pin(self, framework: Framework, version: str) -> subprocess.CompletedProcess:
         """Re-resolve + install hexgate with ``<dist>==<version>`` pinned.
 
-        Installing ``-e .[dev]`` alongside the pin (rather than reinstalling
-        only the primary dist) lets uv move coupled companions to a coherent
-        set for this version.
+        ``--reinstall`` forces uv to reinstall every package and re-resolve the
+        graph from scratch rather than preferring what the previous cell left in
+        the venv, so coupled companions move to a set coherent with this version
+        instead of silently persisting stale.
         """
         python = self.python_for(framework)
         specs = [f"{framework.dist}=={version}", *framework.pin_extra]
@@ -242,6 +254,7 @@ class VenvManager:
                 self._uv,
                 "pip",
                 "install",
+                "--reinstall",
                 "--python",
                 str(python),
                 "-e",
@@ -390,6 +403,17 @@ def _cell(value: str) -> str:
     )
 
 
+def _md_inline(text: str) -> str:
+    """Flatten free-form text for a markdown table cell.
+
+    Detail strings come from uv/pytest stderr, whose dependency-conflict
+    messages routinely contain ``|`` (constraint expressions) and newlines —
+    either of which would break the row's column/row structure. Escape the
+    pipes and collapse line breaks to a space.
+    """
+    return text.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
 def render_table(results: list[CellResult]) -> str:
     lines = [
         "# Framework version-compatibility matrix",
@@ -401,10 +425,11 @@ def render_table(results: list[CellResult]) -> str:
         "| --- | --- | :-: | :-: | :-: | --- |",
     ]
     for r in results:
+        detail = f" — {_md_inline(r.detail)}" if r.detail else ""
         lines.append(
             f"| {r.framework} | {r.version} | {_cell(r.tiers.get(0, TIER_NA))} | "
             f"{_cell(r.tiers.get(1, TIER_NA))} | {_cell(r.tiers.get(2, TIER_NA))} | "
-            f"{r.status}{(' — ' + r.detail) if r.detail else ''} |"
+            f"{r.status}{detail} |"
         )
     lines.append("")
     lines.append("## Supported range (Tier 1 green)")
