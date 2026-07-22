@@ -48,7 +48,7 @@ async def main() -> None:
         "Scale the checkout service to 5 replicas in staging.",
         user=User(user_id="engineer_1", session_id="session_1", role="operator"),
     )
-    print(result)
+    print(result.final_output)
 
 
 if __name__ == "__main__":
