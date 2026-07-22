@@ -103,8 +103,15 @@ FRAMEWORKS: dict[str, Framework] = {
     "deepagents": Framework("deepagents", "deepagents", "test_deepagents.py", None),
 }
 
-# Per-tier outcome, and the overall cell verdict.
-TIER_PASS, TIER_FAIL, TIER_SKIP, TIER_NA = "pass", "fail", "skip", "n/a"
+# Per-tier outcome, and the overall cell verdict. PARTIAL = some tests in the
+# tier passed while others were skipped, so the tier did not run in full.
+TIER_PASS, TIER_FAIL, TIER_SKIP, TIER_PARTIAL, TIER_NA = (
+    "pass",
+    "fail",
+    "skip",
+    "partial",
+    "n/a",
+)
 
 
 @dataclass
@@ -274,10 +281,14 @@ def _tier_of(node_name: str) -> int | None:
 def parse_junit(xml_path: Path) -> tuple[dict[int, str], list[str]]:
     """Aggregate a JUnit report into a per-tier outcome map.
 
-    Within a tier: any fail/error -> fail; else any pass -> pass; else all
-    skipped -> skip. Testcases whose name maps to no tier are returned
-    separately so the caller can flag a stale fragment map — silently
-    dropping a failing unmapped test would render the cell falsely green.
+    Within a tier: any fail/error -> fail; else pass mixed with skip -> partial
+    (the tier ran only in part); else any pass -> pass; else all skipped ->
+    skip. The partial case matters for Tier 1, whose deny-path and
+    allow-decision tests are both load-bearing: if one is skipped while the
+    other passes, folding that into PASS would render the cell falsely green.
+    Testcases whose name maps to no tier are returned separately so the caller
+    can flag a stale fragment map — silently dropping a failing unmapped test
+    would likewise render the cell falsely green.
     """
     raw: dict[int, list[str]] = {0: [], 1: [], 2: []}
     unclassified: list[str] = []
@@ -302,6 +313,8 @@ def parse_junit(xml_path: Path) -> tuple[dict[int, str], list[str]]:
             tiers[tier] = TIER_NA
         elif TIER_FAIL in outcomes:
             tiers[tier] = TIER_FAIL
+        elif TIER_PASS in outcomes and TIER_SKIP in outcomes:
+            tiers[tier] = TIER_PARTIAL
         elif TIER_PASS in outcomes:
             tiers[tier] = TIER_PASS
         else:
@@ -318,6 +331,8 @@ def classify(tiers: dict[int, str]) -> str:
         return "UNUSABLE"
     if t1 == TIER_FAIL:
         return "BROKEN ⚠"
+    if t1 == TIER_PARTIAL:
+        return "T1 INCOMPLETE ⚠"
     if t1 == TIER_PASS and t2 == TIER_FAIL:
         return "T1✓ T2✗ (investigate)"
     if t1 == TIER_PASS:
@@ -397,10 +412,17 @@ def run_cell(
 # ---------------------------------------------------------------------------
 
 
+_CELL_GLYPH = {
+    TIER_PASS: "✓",
+    TIER_FAIL: "✗",
+    TIER_SKIP: "–",
+    TIER_PARTIAL: "◐",
+    TIER_NA: "",
+}
+
+
 def _cell(value: str) -> str:
-    return {TIER_PASS: "✓", TIER_FAIL: "✗", TIER_SKIP: "–", TIER_NA: ""}.get(
-        value, value
-    )
+    return _CELL_GLYPH.get(value, value)
 
 
 def _md_inline(text: str) -> str:
@@ -419,7 +441,8 @@ def render_table(results: list[CellResult]) -> str:
         "# Framework version-compatibility matrix",
         "",
         "T0 = contract · T1 = deny-path/allow (deterministic seam) · "
-        "T2 = LLM e2e (blank when no provider key).",
+        "T2 = LLM e2e (blank when no provider key). "
+        "✓ pass · ✗ fail · – skip · ◐ ran only in part.",
         "",
         "| Framework | Version | T0 | T1 | T2 | Status |",
         "| --- | --- | :-: | :-: | :-: | --- |",
@@ -464,10 +487,18 @@ def render_table(results: list[CellResult]) -> str:
 def _parse_explicit(pairs: list[str] | None) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for pair in pairs or []:
-        key, _, versions = pair.partition("=")
+        key, sep, versions = pair.partition("=")
         if key not in FRAMEWORKS:
             raise SystemExit(f"unknown framework in --versions: {key!r}")
-        out[key] = [v.strip() for v in versions.split(",") if v.strip()]
+        parsed = [v.strip() for v in versions.split(",") if v.strip()]
+        # Reject a bare "FW" (no "=") or "FW=" (no versions): silently treating
+        # it as an empty list falls through to version discovery, so a mistyped
+        # explicit request would run 6 discovered cells with no warning.
+        if not sep or not parsed:
+            raise SystemExit(
+                f"--versions expects FW=v1,v2 but got {pair!r} with no versions"
+            )
+        out[key] = parsed
     return out
 
 
