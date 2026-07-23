@@ -1,0 +1,19 @@
+# Probe policy for the framework version-compatibility suite.
+#
+# Loaded offline via HEXGATE_LOCAL_POLICY (compiled to WASM by opa, the
+# production-shaped enforcement path). Deliberately minimal: one allowed
+# tool, one denied tool. The `default` role is mandatory (PolicySet
+# requires it) and is the fallback for any User.role, so the probes need
+# no role-specific entries.
+#
+# For the SaaS confirmation pass, paste an equivalent policy into the
+# platform editor for each `version-probe-*` agent name.
+
+version: 1
+
+roles:
+  default:
+    default_policy: { mode: deny }
+    tools:
+      get_weather: { mode: allow }
+      delete_user: { mode: deny }

@@ -51,6 +51,14 @@ test-one: ## Run one test path: make test-one T=tests/security/test_bundle.py
 	@test -n "$(T)" || (echo "Set T=<path>, e.g. make test-one T=tests/security/test_bundle.py" && exit 1)
 	$(UV) pytest $(T) -v
 
+.PHONY: framework-compat
+framework-compat: ## Run the opt-in framework-compat probes on installed versions
+	$(UV) pytest -m framework_compat tests/framework_compat/ -v
+
+.PHONY: framework-matrix
+framework-matrix: ## Run the framework-matrix driver: make framework-matrix ARGS="--dry-run"
+	$(UV) python scripts/framework_matrix.py $(ARGS)
+
 .PHONY: coverage
 coverage: ## Run the SDK suite with branch coverage (terminal + xml for CI)
 	# `uv run` without --active so pytest-cov resolves from the project's
