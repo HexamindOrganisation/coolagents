@@ -5,8 +5,15 @@ description: "wrap_langchain_agent — policy-gated tools, in-place installation
 
 <Note>
 New to the adapters? Start with the [wrapping overview and comparison
-table](/adapters/openai#overview-how-framework-wrapping-works).
+table](/adapters/overview#how-framework-wrapping-works).
 </Note>
+
+<Info>
+**Compatible versions:** see the [compatibility
+table](/adapters/overview#compatible-framework-versions) for the verified
+`langchain` range. deepagents rides this adapter but has its own row and range
+in that table — check the deepagents row, not the langchain one.
+</Info>
 
 `wrap_langchain_agent` builds a `PolicyEnforcer` once and installs it on each tool
 in place (`install_enforcer_on_tool`) so the same instances inside the compiled

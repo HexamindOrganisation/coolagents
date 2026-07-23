@@ -5,8 +5,14 @@ description: "wrap_pydantic_agent — gates every tool through PolicyEnforcer."
 
 <Note>
 New to the adapters? Start with the [wrapping overview and comparison
-table](/adapters/openai#overview-how-framework-wrapping-works).
+table](/adapters/overview#how-framework-wrapping-works).
 </Note>
+
+<Info>
+**Compatible versions:** see the [compatibility
+table](/adapters/overview#compatible-framework-versions) for the verified
+`pydantic-ai-slim` range.
+</Info>
 
 `wrap_pydantic_agent` returns a `HexgatePydanticAgent` proxy backed by a clone of
 the original agent whose tools are gated by a freshly built `PolicyEnforcer`.

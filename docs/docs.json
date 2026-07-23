@@ -39,6 +39,7 @@
           {
             "group": "Framework adapters",
             "pages": [
+              "adapters/overview",
               "adapters/openai",
               "adapters/langchain",
               "adapters/google-adk",
