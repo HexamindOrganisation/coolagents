@@ -29,6 +29,7 @@ from hexgate.security.models import (
     PolicyMode,
     ToolPolicy,
 )
+from hexgate.security.network import NET_HTTP_REQUEST, net_constraints
 from hexgate.security.policy_set import PolicySet, load_policy_map
 
 
@@ -162,6 +163,73 @@ class PolicyBuilder:
         )
         self._tools[tool] = FileToolPolicy(
             mode=mode, constraints=_normalize(when), file_scope=scope
+        )
+        return self
+
+    def net_allow(
+        self,
+        *,
+        hosts: Iterable[str] = (),
+        subdomains: Iterable[str] = (),
+        schemes: Iterable[str] = ("https",),
+        ports: Iterable[int] = (),
+        when: WhenArg = (),
+        any_host: bool = False,
+    ) -> PolicyBuilder:
+        """Allow outbound egress to matching hosts (the ``net.http_request`` tool).
+
+        Sugar over :meth:`allow` for the egress plane: renders host / subdomain /
+        scheme / port allowlists into ordinary constraint strings (see
+        :mod:`hexgate.security.network`), so the rule compiles to both the
+        pydantic and WASM engines with no special-casing. ``schemes`` defaults to
+        HTTPS only — pass ``schemes=()`` to allow any scheme. Extra ``when``
+        constraints are AND-ed on.
+
+        A host restriction is **required**: pass ``hosts=``, ``subdomains=``, or
+        the explicit ``any_host=True`` opt-in. Omitting all three raises
+        ``ValueError`` — a scheme/port filter alone would silently authorize
+        egress to *every* host, which is almost never intended.
+        """
+        return self._net("allow", hosts, subdomains, schemes, ports, when, any_host)
+
+    def net_approve(
+        self,
+        *,
+        hosts: Iterable[str] = (),
+        subdomains: Iterable[str] = (),
+        schemes: Iterable[str] = ("https",),
+        ports: Iterable[int] = (),
+        when: WhenArg = (),
+        any_host: bool = False,
+    ) -> PolicyBuilder:
+        """Require approval for egress to matching hosts (see :meth:`net_allow`)."""
+        return self._net(
+            "approval_required", hosts, subdomains, schemes, ports, when, any_host
+        )
+
+    def _net(
+        self,
+        mode: PolicyMode,
+        hosts: Iterable[str],
+        subdomains: Iterable[str],
+        schemes: Iterable[str],
+        ports: Iterable[int],
+        when: WhenArg,
+        any_host: bool,
+    ) -> PolicyBuilder:
+        hosts, subdomains = list(hosts), list(subdomains)
+        if not any_host and not hosts and not subdomains:
+            raise ValueError(
+                "net_allow/net_approve requires a host restriction: pass hosts=, "
+                "subdomains=, or any_host=True to deliberately allow every host. "
+                "A scheme/port filter alone would authorize egress to ALL hosts."
+            )
+        constraints = net_constraints(
+            hosts=hosts, subdomains=subdomains, schemes=schemes, ports=ports
+        )
+        constraints.extend(_normalize(when))
+        self._tools[NET_HTTP_REQUEST] = BaseToolPolicy(
+            mode=mode, constraints=constraints
         )
         return self
 
