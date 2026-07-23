@@ -33,27 +33,40 @@ from langgraph.prebuilt import create_react_agent
 from hexgate.runtime import User
 from hexgate.adapters.langchain import wrap_langchain_agent
 
+INSTRUCTION = (
+    "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
+    "service logs, restart services, and scale deployments. Pull the service "
+    "name, replica count, and environment (dev/staging/prod) from the request "
+    "and act directly — the policy layer gates sensitive actions."
+)
+
 
 @tool
-def get_weather(city: str) -> str:
-    """Return a weather report for a city."""
-    return f"The weather in {city} is 21°C and sunny."
+def read_logs(service: str, env: str) -> str:
+    """Return recent log lines for `service` in `env` (dev/staging/prod)."""
+    return f"(stub) {service}@{env}: 200 OK, 200 OK, WARN upstream slow"
 
 
 @tool
-def delete_user(user_id: str) -> str:
-    """Delete a user account. Destructive."""
-    return f"User {user_id} deleted."
+def restart_service(service: str, env: str) -> str:
+    """Restart `service` in `env`."""
+    return f"(stub) restarted {service}@{env}"
 
 
-TOOLS = [get_weather, delete_user]
+@tool
+def scale_deployment(service: str, replicas: int, env: str) -> str:
+    """Scale `service` to `replicas` pods in `env`."""
+    return f"(stub) scaled {service}@{env} to {replicas} replicas"
+
+
+TOOLS = [read_logs, restart_service, scale_deployment]
 
 
 async def main():
     load_dotenv()
 
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    graph = create_react_agent(llm, TOOLS)
+    graph = create_react_agent(llm, TOOLS, name="devops_agent", prompt=INSTRUCTION)
 
     agent = wrap_langchain_agent(
         agent=graph,
@@ -62,8 +75,9 @@ async def main():
     )
 
     result = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": "What is the weather in Tokyo?"}]},
-        user=User(user_id="langchain_user_1", role="member", session_id="session_abc"),
+        {"messages": [{"role": "user",
+                       "content": "Scale the checkout service to 5 replicas in staging."}]},
+        user=User(user_id="engineer_1", role="operator", session_id="session_1"),
     )
     print(result)
 
@@ -96,3 +110,16 @@ Because LangChain BYO-graph tools are mutated in place by design, the same
 `tools` list you pass to `create_react_agent` flows through already gated — the
 wrapper holds the policy.
 </Note>
+
+<Note>
+The policy is resolved by agent name, so pass `name="devops_agent"` to
+`create_react_agent` — it must match the agent you registered on the platform.
+Omit it and the compiled graph keeps LangGraph's default name (`"LangGraph"`),
+so the wrapper resolves the policy for an agent called `LangGraph` and fails
+with a 404 unless one is registered under that name.
+</Note>
+
+## Runnable example
+
+`examples/devops_langchain.py` — `wrap_langchain_agent` (LangChain / LangGraph)
+end-to-end.
