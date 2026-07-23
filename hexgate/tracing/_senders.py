@@ -108,8 +108,16 @@ class AuditSender:
         )
 
     def _new_sync_client(self) -> httpx.Client:
+        # Connect gets its own short budget, separate from the read/write/pool
+        # timeout: an unreachable host (dead IP, packet black hole) fails at
+        # the connect stage, and this thread is non-daemon, so a slow connect
+        # timeout directly extends how long process exit can hang on it
+        # (see close()'s finalizer-thread comment for why that thread can
+        # outlive an explicit close() entirely). A live host's TCP handshake
+        # is sub-second, so 2s is generous for the happy path while still
+        # capping the unreachable-host case well below self._http_timeout.
         return httpx.Client(
-            timeout=self._http_timeout,
+            timeout=httpx.Timeout(self._http_timeout, connect=2.0),
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
 
@@ -249,15 +257,18 @@ class AuditSender:
         Runs entirely on its own thread; always releases
         ``self._sync_semaphore`` so the next caller past the cap can
         proceed, and discards itself from ``self._sync_threads`` so close()
-        isn't left waiting on threads that already finished."""
+        isn't left waiting on threads that already finished.
+
+        Unlike ``_send``, does not retry on a 503: this thread is
+        non-daemon (see ``_spawn_sync_send``), so on a run_sync()-only
+        script that never calls ``hexgate.shutdown()``, whatever it's
+        blocked on directly extends how long process exit hangs. A retry
+        would add a full extra ``self._http_timeout`` plus jitter sleep to
+        that; one attempt keeps the bound to a single request."""
         try:
             payload = event.as_payload()
             try:
                 response = self._sync_client.post(self._endpoint, json=payload)
-                if response.status_code == 503:
-                    delay = min(self._http_timeout, 2.0)
-                    time.sleep(random.uniform(delay / 2, delay))
-                    response = self._sync_client.post(self._endpoint, json=payload)
                 if response.status_code >= 400:
                     _log.error(
                         "audit ingest failed: %s %s",
@@ -308,33 +319,58 @@ class AuditSender:
         # time aclose() fires — Thread.join(timeout=...) timing out leaves
         # the thread genuinely alive with no way to cancel it (no forced
         # thread termination in Python). So on a timed-out sync drain, skip
-        # closing the client rather than racing whatever's still running:
-        # leave it for the OS to reclaim at process exit, and let a later
-        # close() call (safe to call multiple times) finish the job once
-        # the thread has actually completed.
+        # closing the client here rather than racing whatever's still
+        # running, and hand the close off to a finalizer thread that blocks
+        # on the stragglers instead. A *later* close() call can't be counted
+        # on to finish the job: shutdown() (the only realistic caller,
+        # hexgate/audit.py:4) clears the shared registry and closes each
+        # sender exactly once, so once this call returns nothing will ever
+        # call close() on this sender again — without the finalizer,
+        # self._sync_client (and its connection pool) would leak for the
+        # rest of the process. The finalizer thread is non-daemon, same as
+        # the sync-fallback send threads, so the interpreter still waits
+        # for it at exit.
         if pending:
-            timed_out = await asyncio.to_thread(
+            stragglers = await asyncio.to_thread(
                 self._join_sync_threads, pending, drain_timeout
             )
-            if timed_out:
+            if stragglers:
                 _log.warning(
                     "audit close: sync drain timed out with %d thread(s) still "
-                    "running; leaving the sync client open rather than closing "
-                    "it out from under them",
-                    timed_out,
+                    "running; handing off to a finalizer thread to close the "
+                    "sync client once they finish",
+                    len(stragglers),
                 )
+                threading.Thread(
+                    target=self._finalize_sync_close,
+                    args=(stragglers,),
+                    daemon=False,
+                    name="hexgate-audit-close-finalizer",
+                ).start()
                 return
         self._sync_client.close()
 
     @staticmethod
-    def _join_sync_threads(threads: list[threading.Thread], timeout: float) -> int:
+    def _join_sync_threads(
+        threads: list[threading.Thread], timeout: float
+    ) -> list[threading.Thread]:
         """Join every thread within one shared ``timeout`` budget (not
         ``timeout`` each — mirrors ``asyncio.wait_for``'s total-time bound
-        for the async drain above). Returns how many are still alive."""
+        for the async drain above). Returns whichever threads are still
+        alive once the budget runs out."""
         deadline = time.monotonic() + timeout
         for t in threads:
             t.join(timeout=max(0.0, deadline - time.monotonic()))
-        return sum(1 for t in threads if t.is_alive())
+        return [t for t in threads if t.is_alive()]
+
+    def _finalize_sync_close(self, stragglers: list[threading.Thread]) -> None:
+        """Run off the event loop, on its own thread, when close() times out
+        waiting for sync-fallback sends: block on the stragglers (no
+        timeout — they will finish) and only then close self._sync_client,
+        so it's never torn down out from under an in-flight send."""
+        for t in stragglers:
+            t.join()
+        self._sync_client.close()
 
 
 # --- Shared (api_key, path) registry ----------------------------------------

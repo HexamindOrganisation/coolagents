@@ -70,6 +70,17 @@ def test_constructor_sets_bearer_header() -> None:
     assert sender._client.headers["Authorization"] == "Bearer k"
 
 
+def test_sync_client_uses_a_short_dedicated_connect_timeout() -> None:
+    """The sync-fallback client's connect timeout is much shorter than
+    http_timeout: its send thread is non-daemon, so a slow connect to an
+    unreachable host directly extends how long process exit can hang for a
+    run_sync()-only script that never calls hexgate.shutdown()."""
+    sender = AuditSender("http://x/y", "k", http_timeout=5.0)
+    timeout = sender._sync_client.timeout
+    assert timeout.connect == 2.0
+    assert timeout.read == 5.0
+
+
 async def test_semaphore_saturation_drops_events(
     caplog: "logging.LogCaptureFixture",
 ) -> None:
@@ -280,20 +291,23 @@ def test_send_sync_happy_path() -> None:
     assert kwargs["json"]["outcome"] == "deny"
 
 
-def test_send_sync_when_status_is_503_then_retries_once() -> None:
+def test_send_sync_when_status_is_503_then_no_retry(
+    caplog: "logging.LogCaptureFixture",
+) -> None:
+    """Unlike the async path's _send, _send_sync does not retry on a 503:
+    this thread is non-daemon, so a retry (a full http_timeout plus jitter
+    sleep) would directly extend how long process exit hangs for a
+    run_sync()-only script that never calls hexgate.shutdown()."""
     sender = AuditSender("http://x/y", "k", http_timeout=0.01)
     client = MagicMock()
-    client.post = MagicMock(
-        side_effect=[
-            MagicMock(status_code=503, text="busy"),
-            MagicMock(status_code=202, text=""),
-        ]
-    )
+    client.post = MagicMock(return_value=MagicMock(status_code=503, text="busy"))
     sender._sync_client = client
 
-    sender._send_sync(_event())
+    with caplog.at_level(logging.ERROR, logger=_LOGGER_NAME):
+        sender._send_sync(_event())
 
-    assert client.post.call_count == 2
+    assert client.post.call_count == 1
+    assert any("ingest failed" in r.message for r in caplog.records)
 
 
 def test_send_sync_when_request_error_then_logged_not_raised(
@@ -440,14 +454,17 @@ async def test_close_when_sync_drain_times_out_then_client_is_not_closed(
 
     hang.set()  # release the still-running thread so it doesn't outlive the test
     for t in threading.enumerate():
-        if t.name == "hexgate-audit-send-sync":
+        if t.name in ("hexgate-audit-send-sync", "hexgate-audit-close-finalizer"):
             t.join(timeout=2)
 
 
-async def test_close_when_called_again_after_a_timed_out_drain_then_it_closes() -> None:
-    """The deferral above isn't a permanent leak: close() is safe to call
-    multiple times, so a second call — once the thread has actually
-    finished — picks up where the first left off and closes normally."""
+async def test_close_when_sync_drain_times_out_then_finalizer_closes_client() -> None:
+    """The deferral above isn't a permanent leak: close() hands the timed-out
+    straggler off to a finalizer thread that blocks on it and closes the
+    client once it actually finishes — no second close() call needed.
+    shutdown() only ever calls close() once per sender (it clears the
+    registry right after), so relying on a later call would leak the client
+    for good."""
     sender = AuditSender("http://x/y", "k")
     hang = threading.Event()
     client = MagicMock()
@@ -468,10 +485,9 @@ async def test_close_when_called_again_after_a_timed_out_drain_then_it_closes() 
 
     hang.set()
     for t in threading.enumerate():
-        if t.name == "hexgate-audit-send-sync":
+        if t.name in ("hexgate-audit-send-sync", "hexgate-audit-close-finalizer"):
             t.join(timeout=2)
 
-    await sender.close()  # nothing left to join now — safe to close
     client.close.assert_called_once()
 
 
