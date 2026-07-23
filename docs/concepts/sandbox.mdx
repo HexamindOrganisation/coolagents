@@ -8,6 +8,12 @@ configured from the agent's workspace. This is filesystem + network enforcement
 at the kernel level — a separate concern from [policy enforcement](/concepts/policy-decision),
 which decides *whether* a tool may be invoked at all.
 
+<Note>
+This sandbox governs the `bash` tool's process at the kernel level and needs
+`srt`. For host-level control over the whole agent process's HTTP(S) traffic,
+including SDK and adapter calls, see [network egress](/concepts/egress).
+</Note>
+
 ## Runtime requirement
 
 The `bash` tool depends on **`srt`** (Anthropic's `sandbox-runtime`). It wraps
