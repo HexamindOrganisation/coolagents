@@ -17,13 +17,14 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
+    import asyncio
     import inspect
 
     import httpx
     import marimo as mo
 
     from hexgate import PolicyBuilder, User
-    from hexgate.egress import NET_TOOL, egress_guard
+    from hexgate.egress import NET_TOOL, egress_guard, tcp_egress_guard
     from hexgate.security.enforcer import build_enforcer
     from hexgate.security.policy_set import load_policy_set
 
@@ -31,12 +32,14 @@ def _():
         NET_TOOL,
         PolicyBuilder,
         User,
+        asyncio,
         build_enforcer,
         egress_guard,
         httpx,
         inspect,
         load_policy_set,
         mo,
+        tcp_egress_guard,
     )
 
 
@@ -53,6 +56,10 @@ def _(mo):
         The **egress proxy** closes that gap: it routes the process's outbound
         HTTP(S) through the *same* policy engine, mapped to a synthetic
         `net.http_request` tool. Network egress becomes **just another gated tool**.
+
+        The same plane reaches beyond HTTP. A raw-TCP **reachability gate**
+        (`net.tcp_connect`) decides database and broker connections by host and
+        port before TLS starts. That's section 4.
 
         This demo is **code-only** — no platform, no API key, no YAML file. The
         policy is written in Python and drives a live in-process proxy.
@@ -234,6 +241,97 @@ async def _(mo, probe, url_form):
             )
         _out = mo.vstack([mo.md(f"`GET {_url}`"), _result, _decision_md])
     _out
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        """
+        ## 4 · Beyond HTTP: the raw-TCP reachability gate
+
+        A database driver opens a raw TCP socket and ignores `HTTP_PROXY`, so the
+        HTTP proxy above never sees it. `net_tcp_allow` + `tcp_egress_guard` gate
+        that connection by host and port, decided before any bytes flow (so before
+        TLS), then tunnel it or drop it. Below, a local echo server stands in for a
+        database: one policy allows its port, the other only allows `5432`.
+        """
+    )
+    return
+
+
+@app.cell
+async def _(
+    PolicyBuilder,
+    User,
+    asyncio,
+    build_enforcer,
+    load_policy_set,
+    mo,
+    tcp_egress_guard,
+):
+    async def _mock_db():
+        async def _handle(reader, writer):
+            while data := await reader.read(1024):
+                writer.write(b"reply:" + data)
+                await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        return server, server.sockets[0].getsockname()[1]
+
+    async def _probe(policy, target):
+        decisions = []
+        enforcer = build_enforcer(
+            load_policy_set(policy),
+            agent_name="tcp-demo",
+            decision_observer=decisions.append,
+        )
+        async with tcp_egress_guard(
+            enforcer, User(user_id="notebook", role="agent"), target=target
+        ) as proxy:
+            try:
+                reader, writer = await asyncio.open_connection(proxy.host, proxy.port)
+                writer.write(b"SELECT 1")
+                await writer.drain()
+                data = await asyncio.wait_for(reader.read(100), timeout=3)
+                writer.close()
+                outcome = data.decode() if data else "connection dropped"
+            except (OSError, asyncio.TimeoutError):
+                outcome = "connection refused"
+        return (decisions[0] if decisions else None), outcome
+
+    _db, _port = await _mock_db()
+    try:
+        _allow = (
+            PolicyBuilder(default="deny")
+            .net_tcp_allow(hosts=["127.0.0.1"], ports=[_port])
+            .build()
+        )
+        _deny = (
+            PolicyBuilder(default="deny")
+            .net_tcp_allow(hosts=["127.0.0.1"], ports=[5432])
+            .build()
+        )
+        _da, _ra = await _probe(_allow, ("127.0.0.1", _port))
+        _dd, _rd = await _probe(_deny, ("127.0.0.1", _port))
+    finally:
+        _db.close()
+        await _db.wait_closed()
+
+    _mark = {"allow": "✅ allow", "deny": "❌ deny", "needs_approval": "🔶 approval"}
+    mo.md(
+        "\n".join(
+            [
+                f"| policy | decision on `127.0.0.1:{_port}` | result |",
+                "|---|---|---|",
+                f"| `net_tcp_allow(ports=[{_port}])` | "
+                f"{_mark.get(_da.outcome.value) if _da else '?'} | `{_ra}` |",
+                "| `net_tcp_allow(ports=[5432])` | "
+                f"{_mark.get(_dd.outcome.value) if _dd else '?'} | `{_rd}` |",
+            ]
+        )
+    )
     return
 
 

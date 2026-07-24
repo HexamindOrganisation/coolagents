@@ -52,10 +52,12 @@ class Gate:
         enforcer: PolicyEnforcer,
         user: User,
         *,
+        tool: str = NET_TOOL,
         approval_handler: ApprovalHandler | None = None,
     ) -> None:
         self._enforcer = enforcer
         self._user = user
+        self._tool = tool
         self._approval_handler = approval_handler
 
     async def check(self, args: dict[str, Any]) -> GateResult:
@@ -68,7 +70,7 @@ class Gate:
         duration of the synchronous decide call.
         """
         with self._user.sync_scope():
-            decision = self._enforcer.decide(NET_TOOL, args)
+            decision = self._enforcer.decide(self._tool, args)
 
         if decision.allowed:
             return GateResult(True, decision)

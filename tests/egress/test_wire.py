@@ -6,7 +6,12 @@ import asyncio
 
 import pytest
 
-from hexgate.egress.wire import parse_request_line, read_headers, strip_proxy_headers
+from hexgate.egress.wire import (
+    open_upstream,
+    parse_request_line,
+    read_headers,
+    strip_proxy_headers,
+)
 
 
 def test_parse_request_line() -> None:
@@ -53,3 +58,10 @@ async def test_read_headers_raises_on_truncated_block() -> None:
     reader.feed_eof()
     with pytest.raises(ValueError):
         await read_headers(reader)
+
+
+async def test_open_upstream_bounded_by_timeout() -> None:
+    # 192.0.2.1 is TEST-NET-1 (RFC 5737): non-routable, so the connect either
+    # times out or is refused — never hangs. Either way open_upstream raises.
+    with pytest.raises((TimeoutError, OSError)):
+        await open_upstream("192.0.2.1", 9, timeout=0.2)

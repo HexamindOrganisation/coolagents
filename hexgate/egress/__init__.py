@@ -1,9 +1,12 @@
 """Optional network-egress enforcement plane for Hexgate.
 
-Routes an agent's outbound HTTP(S) through the same ``PolicyEnforcer`` that
-gates tool calls, mapped to the synthetic ``net.http_request`` tool. A second
-enforcement plane alongside the declared-tool-call one: it gates the *actual*
-destination a process reaches, not just the tool the model asked for.
+Routes an agent's outbound traffic through the same ``PolicyEnforcer`` that
+gates tool calls. HTTP(S) egress maps to the synthetic ``net.http_request``
+tool (``EgressProxy``); a raw-TCP connection maps to ``net.tcp_connect``
+(``TcpEgressProxy``, the reachability gate for databases and other non-HTTP
+services). A second enforcement plane alongside the declared-tool-call one: it
+gates the *actual* destination a process reaches, not just the tool the model
+asked for.
 
 Framework-agnostic and base-install: stdlib ``asyncio`` plus the
 framework-agnostic ``hexgate.security``, ``hexgate.runtime``, and
@@ -26,6 +29,7 @@ from hexgate.egress.model import (
     split_authority,
 )
 from hexgate.egress.proxy import EgressProxy, egress_guard
+from hexgate.egress.tcp import TcpEgressProxy, tcp_egress_guard
 from hexgate.egress.transport import Transport, TunnelTransport
 
 __all__ = [
@@ -33,10 +37,12 @@ __all__ = [
     "EgressProxy",
     "Gate",
     "GateResult",
+    "TcpEgressProxy",
     "Transport",
     "TunnelTransport",
     "connect_to_args",
     "egress_guard",
     "http_to_args",
     "split_authority",
+    "tcp_egress_guard",
 ]

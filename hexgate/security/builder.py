@@ -29,7 +29,11 @@ from hexgate.security.models import (
     PolicyMode,
     ToolPolicy,
 )
-from hexgate.security.network import NET_HTTP_REQUEST, net_constraints
+from hexgate.security.network import (
+    NET_HTTP_REQUEST,
+    NET_TCP_CONNECT,
+    net_constraints,
+)
 from hexgate.security.policy_set import PolicySet, load_policy_map
 
 
@@ -190,7 +194,9 @@ class PolicyBuilder:
         ``ValueError`` — a scheme/port filter alone would silently authorize
         egress to *every* host, which is almost never intended.
         """
-        return self._net("allow", hosts, subdomains, schemes, ports, when, any_host)
+        return self._net_rule(
+            NET_HTTP_REQUEST, "allow", hosts, subdomains, schemes, ports, when, any_host
+        )
 
     def net_approve(
         self,
@@ -203,12 +209,62 @@ class PolicyBuilder:
         any_host: bool = False,
     ) -> PolicyBuilder:
         """Require approval for egress to matching hosts (see :meth:`net_allow`)."""
-        return self._net(
-            "approval_required", hosts, subdomains, schemes, ports, when, any_host
+        return self._net_rule(
+            NET_HTTP_REQUEST,
+            "approval_required",
+            hosts,
+            subdomains,
+            schemes,
+            ports,
+            when,
+            any_host,
         )
 
-    def _net(
+    def net_tcp_allow(
         self,
+        *,
+        hosts: Iterable[str] = (),
+        subdomains: Iterable[str] = (),
+        ports: Iterable[int] = (),
+        when: WhenArg = (),
+        any_host: bool = False,
+    ) -> PolicyBuilder:
+        """Allow a raw-TCP egress connection (the ``net.tcp_connect`` tool).
+
+        The reachability gate for non-HTTP services (databases, caches, message
+        brokers). Renders a host / port allowlist into ``net.tcp_connect``
+        constraints, decided before any bytes flow, so it covers TLS'd
+        connections without inspecting them. A host restriction is required:
+        pass ``hosts=``, ``subdomains=``, or ``any_host=True``.
+        """
+        return self._net_rule(
+            NET_TCP_CONNECT, "allow", hosts, subdomains, (), ports, when, any_host
+        )
+
+    def net_tcp_approve(
+        self,
+        *,
+        hosts: Iterable[str] = (),
+        subdomains: Iterable[str] = (),
+        ports: Iterable[int] = (),
+        when: WhenArg = (),
+        any_host: bool = False,
+    ) -> PolicyBuilder:
+        """Require approval for a raw-TCP connection (see :meth:`net_tcp_allow`)."""
+        return self._net_rule(
+            NET_TCP_CONNECT,
+            "approval_required",
+            hosts,
+            subdomains,
+            (),
+            ports,
+            when,
+            any_host,
+        )
+
+    def _net_rule(
+        self,
+        tool: str,
         mode: PolicyMode,
         hosts: Iterable[str],
         subdomains: Iterable[str],
@@ -217,20 +273,20 @@ class PolicyBuilder:
         when: WhenArg,
         any_host: bool,
     ) -> PolicyBuilder:
+        """Shared assembly for the HTTP (``net_allow``) and TCP (``net_tcp_allow``)
+        egress rules. TCP passes ``schemes=()`` (no scheme before a raw connect)."""
         hosts, subdomains = list(hosts), list(subdomains)
         if not any_host and not hosts and not subdomains:
             raise ValueError(
-                "net_allow/net_approve requires a host restriction: pass hosts=, "
-                "subdomains=, or any_host=True to deliberately allow every host. "
-                "A scheme/port filter alone would authorize egress to ALL hosts."
+                "a host restriction is required: pass hosts=, subdomains=, or "
+                "any_host=True. A scheme/port filter alone would authorize egress "
+                "to every host."
             )
         constraints = net_constraints(
             hosts=hosts, subdomains=subdomains, schemes=schemes, ports=ports
         )
         constraints.extend(_normalize(when))
-        self._tools[NET_HTTP_REQUEST] = BaseToolPolicy(
-            mode=mode, constraints=constraints
-        )
+        self._tools[tool] = BaseToolPolicy(mode=mode, constraints=constraints)
         return self
 
     def build(self) -> AgentPolicy:

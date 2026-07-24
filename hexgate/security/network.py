@@ -16,10 +16,16 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 
-# The synthetic tool every egress request is attributed to. Defined here (not in
-# hexgate.egress) so the policy layer (PolicyBuilder.net_allow) and the proxy
-# share one definition — egress depends downward on security, never the reverse.
+# The synthetic tool every HTTP(S) egress request is attributed to. Defined here
+# (not in hexgate.egress) so the policy layer (PolicyBuilder.net_allow) and the
+# proxy share one definition — egress depends downward on security, never the
+# reverse.
 NET_HTTP_REQUEST = "net.http_request"
+
+# The synthetic tool a raw-TCP egress connection (e.g. a database driver opening
+# a socket) is attributed to. Gated on host + port before any bytes flow, so it
+# works for any TCP service regardless of the wire protocol on top.
+NET_TCP_CONNECT = "net.tcp_connect"
 
 
 def host_match_constraint(

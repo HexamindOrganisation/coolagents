@@ -19,7 +19,7 @@ from typing import Protocol
 
 from hexgate.egress.gate import Gate
 from hexgate.egress.model import connect_to_args, http_to_args
-from hexgate.egress.wire import pipe, refuse, strip_proxy_headers
+from hexgate.egress.wire import open_upstream, pipe, refuse, strip_proxy_headers
 
 _log = logging.getLogger(__name__)
 
@@ -122,8 +122,8 @@ async def _open(
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter] | None:
     """Open an upstream connection, or write a 502 and return ``None``."""
     try:
-        return await asyncio.open_connection(host, port)
-    except OSError as exc:
+        return await open_upstream(host, port)
+    except (OSError, TimeoutError) as exc:
         _log.info("egress upstream connect failed for %s:%s: %s", host, port, exc)
         await refuse(writer, 502, "Bad Gateway", f"cannot reach {host}:{port}")
         return None
