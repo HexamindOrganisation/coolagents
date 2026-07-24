@@ -4,8 +4,7 @@ than through hexgate.audit or hexgate.tracing.usage.
 
 Moved here from tests/audit/test_configure.py under Design C: this is the
 generic registry machinery both audit.py and usage.py import, not
-decisions-specific behavior — see Specs/token_counts.md for the full
-writeup.
+decisions-specific behavior.
 """
 
 from __future__ import annotations
@@ -62,7 +61,7 @@ def test_same_key_distinct_paths_get_distinct_senders() -> None:
     """The whole point of the (api_key, path) composite key: one
     HEXGATE_API_KEY covers both decisions and LLM usage for the same
     project, but each event type needs its own live connection to its own
-    endpoint — see Specs/token_counts.md."""
+    endpoint."""
     decisions_sender = senders_mod.get_or_create_sender(_DECISIONS_PATH, "k1")
     usage_sender = senders_mod.get_or_create_sender(_USAGE_PATH, "k1")
     assert decisions_sender is not usage_sender

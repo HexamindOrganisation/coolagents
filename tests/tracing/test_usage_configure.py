@@ -50,8 +50,7 @@ def test_get_usage_sender_scoped_by_key() -> None:
 
 def test_same_key_gets_distinct_sender_from_audit() -> None:
     """The one HEXGATE_API_KEY that covers a project's decisions also
-    covers its LLM usage, but each event type gets its own live sender —
-    see Specs/token_counts.md."""
+    covers its LLM usage, but each event type gets its own live sender."""
     decisions_sender = audit_mod.configure("k1")
     usage_sender = usage_mod.configure_usage_sender("k1")
     assert decisions_sender is not usage_sender

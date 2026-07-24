@@ -12,6 +12,8 @@ import asyncio
 import logging
 import os
 import random
+import threading
+import time
 from typing import Any, Protocol
 
 import httpx
@@ -30,11 +32,17 @@ class _PayloadEvent(Protocol):
 
 
 class AuditSender:
-    """Fire-and-forget POST for a single ``(api_key, path)`` pair. Bounded
-    by an asyncio.Semaphore.
+    """Fire-and-forget POST for a single ``(api_key, path)`` pair.
 
-    emit() is sync and non-blocking — schedules a background task. Drops with
-    a periodic log when the semaphore is saturated (platform slow/unreachable).
+    emit() is sync and non-blocking. When a live event loop is available it
+    schedules an asyncio task, bounded by ``self._semaphore``
+    (``max_in_flight``). When none is available anywhere in the process
+    (e.g. a purely-synchronous caller like pydantic_ai's ``run_sync()``,
+    which drives its own loop internally and closes it before returning
+    control here), it spawns a plain background thread instead, bounded the
+    same way by ``self._sync_semaphore``. Both paths drop with a periodic
+    log when saturated (platform slow/unreachable, or too many concurrent
+    callers) rather than growing an unbounded backlog.
     Named for its original use (policy decisions); reused unmodified for any
     event type whose payload is a flat JSON dict via ``as_payload()``.
     """
@@ -67,11 +75,49 @@ class AuditSender:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._dropped = 0
-        self._warned_no_loop = False
+        # Fallback for when no asyncio loop exists anywhere in the process
+        # (e.g. a caller built purely on pydantic_ai's run_sync()): a plain
+        # background thread instead of an asyncio task. Bounded by the same
+        # max_in_flight ceiling as self._semaphore, just applied to a
+        # different resource (OS threads instead of asyncio tasks).
+        # httpx.Client, unlike AsyncClient, has no event-loop affinity, so
+        # it's safe to build eagerly here rather than lazily on first use.
+        self._sync_semaphore = threading.Semaphore(max_in_flight)
+        self._sync_client = self._new_sync_client()
+        self._sync_dropped = 0
+        # Tracked so close() can join outstanding sends before tearing down
+        # self._sync_client out from under them. Needed for real: a script
+        # built purely on run_sync() can still spin up its own
+        # asyncio.run(hexgate.shutdown()) as its very last action (the
+        # documented shutdown pattern, hexgate/audit.py:4) — a fresh loop
+        # started just for that call reaches close() same as any other
+        # caller, so this can and does overlap with an in-flight sync send.
+        #
+        # Also guards self._sync_dropped: unlike self._dropped (only ever
+        # touched on the single event-loop thread), _spawn_sync_send can
+        # run concurrently on real OS threads whenever several no-loop
+        # callers hit saturation at once — a plain += there would be a
+        # lost-update race.
+        self._sync_threads: set[threading.Thread] = set()
+        self._sync_lock = threading.Lock()
 
     def _new_client(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(
             timeout=self._http_timeout,
+            headers={"Authorization": f"Bearer {self._api_key}"},
+        )
+
+    def _new_sync_client(self) -> httpx.Client:
+        # Connect gets its own short budget, separate from the read/write/pool
+        # timeout: an unreachable host (dead IP, packet black hole) fails at
+        # the connect stage, and this thread is non-daemon, so a slow connect
+        # timeout directly extends how long process exit can hang on it
+        # (see close()'s finalizer-thread comment for why that thread can
+        # outlive an explicit close() entirely). A live host's TCP handshake
+        # is sub-second, so 2s is generous for the happy path while still
+        # capping the unreachable-host case well below self._http_timeout.
+        return httpx.Client(
+            timeout=httpx.Timeout(self._http_timeout, connect=2.0),
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
 
@@ -94,21 +140,20 @@ class AuditSender:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            # Called off-loop (sync tool on a run_in_executor thread): route
-            # to the build-time loop instead of dropping the event.
+            # Called off-loop: either a sync tool dispatched to a
+            # run_in_executor thread (a live loop is still bound, just not
+            # running on *this* thread), or a purely synchronous caller with
+            # no loop anywhere in the process (e.g. pydantic_ai's
+            # run_sync()). Prefer handing back to the bound loop; only fall
+            # to a plain background thread when no loop exists at all.
             loop = self._loop
-            if loop is None or loop.is_closed():
-                if not self._warned_no_loop:
-                    _log.warning(
-                        "audit emit called with no running loop and no live "
-                        "bound loop; skipping"
-                    )
-                    self._warned_no_loop = True
-                return
-            try:
-                loop.call_soon_threadsafe(self._spawn_send, event)
-            except RuntimeError:
-                pass  # loop torn down between the is_closed() check and the call
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(self._spawn_send, event)
+                    return
+                except RuntimeError:
+                    pass  # loop torn down between the is_closed() check and the call
+            self._spawn_sync_send(event)
             return
         self._ensure_loop_state(loop)
         self._spawn_send(event)
@@ -155,9 +200,98 @@ class AuditSender:
             except httpx.RequestError as exc:
                 _log.warning("audit ingest network error: %s", exc)
 
+    def _spawn_sync_send(self, event: _PayloadEvent) -> None:
+        """Fallback for when no asyncio loop exists anywhere to schedule
+        ``_spawn_send`` on. Bounded by ``self._sync_semaphore`` the same way
+        ``_spawn_send`` is bounded by ``self._semaphore`` — saturated
+        callers are dropped immediately rather than piling up an unbounded
+        number of OS threads. Threads are non-daemon: a short-lived
+        run_sync()-only script is the common caller here, and a daemon
+        thread would get killed the instant that script exits, before the
+        send completes — silently reproducing the exact bug this fallback
+        exists to fix. CPython's own interpreter-shutdown sequence joins
+        non-daemon threads instead, bounded by ``self._http_timeout``.
+
+        The ``self._closing`` check below is a fast path only, not the
+        authoritative one — it's rechecked under ``self._sync_lock`` right
+        before registering the thread, in the same critical section
+        ``close()`` uses to flip ``self._closing`` and snapshot
+        ``self._sync_threads`` together. Without that, a thread could read
+        ``self._closing`` as ``False`` here, then still be constructing/
+        registering itself when ``close()`` takes its snapshot moments
+        later — landing after the snapshot, never joined, and racing
+        ``self._sync_client.close()``."""
+        if self._closing:
+            return
+        if not self._sync_semaphore.acquire(blocking=False):
+            with self._sync_lock:
+                self._sync_dropped += 1
+                dropped = self._sync_dropped
+            if dropped % 100 == 1:
+                _log.warning(
+                    "audit sender saturated (no event loop path); %d events "
+                    "dropped (platform slow, or too many concurrent "
+                    "synchronous callers?)",
+                    dropped,
+                )
+            return
+        thread = threading.Thread(
+            target=self._send_sync,
+            args=(event,),
+            daemon=False,
+            name="hexgate-audit-send-sync",
+        )
+        # Authoritative recheck + registration, one atomic step: if close()
+        # already flipped _closing and took its snapshot, don't hand it a
+        # thread it'll never wait for — give the semaphore slot back and
+        # drop instead of starting a thread that'll race a closed client.
+        with self._sync_lock:
+            if self._closing:
+                self._sync_semaphore.release()
+                return
+            self._sync_threads.add(thread)
+        thread.start()
+
+    def _send_sync(self, event: _PayloadEvent) -> None:
+        """Synchronous mirror of ``_send`` for the no-event-loop fallback.
+        Runs entirely on its own thread; always releases
+        ``self._sync_semaphore`` so the next caller past the cap can
+        proceed, and discards itself from ``self._sync_threads`` so close()
+        isn't left waiting on threads that already finished.
+
+        Unlike ``_send``, does not retry on a 503: this thread is
+        non-daemon (see ``_spawn_sync_send``), so on a run_sync()-only
+        script that never calls ``hexgate.shutdown()``, whatever it's
+        blocked on directly extends how long process exit hangs. A retry
+        would add a full extra ``self._http_timeout`` plus jitter sleep to
+        that; one attempt keeps the bound to a single request."""
+        try:
+            payload = event.as_payload()
+            try:
+                response = self._sync_client.post(self._endpoint, json=payload)
+                if response.status_code >= 400:
+                    _log.error(
+                        "audit ingest failed: %s %s",
+                        response.status_code,
+                        response.text[:200],
+                    )
+            except httpx.RequestError as exc:
+                _log.warning("audit ingest network error: %s", exc)
+        finally:
+            self._sync_semaphore.release()
+            with self._sync_lock:
+                self._sync_threads.discard(threading.current_thread())
+
     async def close(self, drain_timeout: float = 5.0) -> None:
-        """Stop accepting new emits; drain in-flight tasks; close the HTTP client."""
-        self._closing = True
+        """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
+        # Flip _closing and snapshot _sync_threads as one atomic step, under
+        # the same lock _spawn_sync_send uses for its own closing-recheck +
+        # registration. Otherwise a thread could pass _spawn_sync_send's
+        # check just before this line, and still be registering itself when
+        # the snapshot below is taken — landing after it, never joined.
+        with self._sync_lock:
+            self._closing = True
+            pending = list(self._sync_threads)
         if self._tasks:
             try:
                 await asyncio.wait_for(
@@ -171,6 +305,72 @@ class AuditSender:
                 )
         if self._client is not None:
             await self._client.aclose()
+        # Join outstanding sync-fallback sends before closing the client
+        # they share: a run_sync()-only script commonly wraps its final
+        # cleanup in its own asyncio.run(hexgate.shutdown()), so close()
+        # reaching here concurrently with an in-flight _send_sync() thread
+        # is a real case, not a hypothetical one — closing self._sync_client
+        # out from under it would abort the send (a bare RuntimeError if
+        # the client closes before the request starts, since that's not an
+        # httpx.RequestError and isn't caught by _send_sync's handler).
+        #
+        # Unlike the async drain above — where a asyncio.wait_for timeout
+        # actually cancels the tasks, so nothing is still running by the
+        # time aclose() fires — Thread.join(timeout=...) timing out leaves
+        # the thread genuinely alive with no way to cancel it (no forced
+        # thread termination in Python). So on a timed-out sync drain, skip
+        # closing the client here rather than racing whatever's still
+        # running, and hand the close off to a finalizer thread that blocks
+        # on the stragglers instead. A *later* close() call can't be counted
+        # on to finish the job: shutdown() (the only realistic caller,
+        # hexgate/audit.py:4) clears the shared registry and closes each
+        # sender exactly once, so once this call returns nothing will ever
+        # call close() on this sender again — without the finalizer,
+        # self._sync_client (and its connection pool) would leak for the
+        # rest of the process. The finalizer thread is non-daemon, same as
+        # the sync-fallback send threads, so the interpreter still waits
+        # for it at exit.
+        if pending:
+            stragglers = await asyncio.to_thread(
+                self._join_sync_threads, pending, drain_timeout
+            )
+            if stragglers:
+                _log.warning(
+                    "audit close: sync drain timed out with %d thread(s) still "
+                    "running; handing off to a finalizer thread to close the "
+                    "sync client once they finish",
+                    len(stragglers),
+                )
+                threading.Thread(
+                    target=self._finalize_sync_close,
+                    args=(stragglers,),
+                    daemon=False,
+                    name="hexgate-audit-close-finalizer",
+                ).start()
+                return
+        self._sync_client.close()
+
+    @staticmethod
+    def _join_sync_threads(
+        threads: list[threading.Thread], timeout: float
+    ) -> list[threading.Thread]:
+        """Join every thread within one shared ``timeout`` budget (not
+        ``timeout`` each — mirrors ``asyncio.wait_for``'s total-time bound
+        for the async drain above). Returns whichever threads are still
+        alive once the budget runs out."""
+        deadline = time.monotonic() + timeout
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - time.monotonic()))
+        return [t for t in threads if t.is_alive()]
+
+    def _finalize_sync_close(self, stragglers: list[threading.Thread]) -> None:
+        """Run off the event loop, on its own thread, when close() times out
+        waiting for sync-fallback sends: block on the stragglers (no
+        timeout — they will finish) and only then close self._sync_client,
+        so it's never torn down out from under an in-flight send."""
+        for t in stragglers:
+            t.join()
+        self._sync_client.close()
 
 
 # --- Shared (api_key, path) registry ----------------------------------------
