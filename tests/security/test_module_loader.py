@@ -69,3 +69,30 @@ def test_invalid_module_names_the_offending_file(tmp_path):
     )
     with pytest.raises(ValueError, match="broken.yaml"):
         load_local_modules(tmp_path)
+
+
+def test_malformed_yaml_names_the_offending_file(tmp_path):
+    _write(tmp_path, "policies/capabilities/bad.yaml", "tools: [unclosed\n")
+    with pytest.raises(ValueError, match="bad.yaml"):
+        load_local_modules(tmp_path)
+
+
+def test_yml_extension_is_loaded(tmp_path):
+    _write(tmp_path, "policies/guardrails/org.yml", "tools:\n  t: { mode: deny }\n")
+    guardrails, _ = load_local_modules(tmp_path)
+    assert [g.name for g in guardrails] == ["org"]
+
+
+def test_nested_same_stem_modules_stay_distinct(tmp_path):
+    _write(
+        tmp_path,
+        "policies/capabilities/team_a/refunds.yaml",
+        "tools:\n  r: { mode: allow }\n",
+    )
+    _write(
+        tmp_path,
+        "policies/capabilities/team_b/refunds.yaml",
+        "tools:\n  s: { mode: allow }\n",
+    )
+    _, capabilities = load_local_modules(tmp_path)
+    assert sorted(c.name for c in capabilities) == ["team_a/refunds", "team_b/refunds"]

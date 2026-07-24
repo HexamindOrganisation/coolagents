@@ -43,10 +43,11 @@ def load_local_modules(
 ) -> tuple[list[ModuleContent], list[ModuleContent]]:
     """Load ``(guardrails, capabilities)`` from a repo root's ``policies/`` tree.
 
-    Guardrails come from ``<root>/policies/guardrails/**.yaml``, capabilities
-    from ``<root>/policies/capabilities/**.yaml``. Missing directories yield an
-    empty list (a repo may ship only one tier). Each file's stem is the module
-    name; its content hash is the sha256 of its canonical JSON.
+    Guardrails come from ``<root>/policies/guardrails/`` (``*.yaml`` / ``*.yml``,
+    recursively), capabilities from ``<root>/policies/capabilities/``. Missing
+    directories yield an empty list (a repo may ship only one tier). A module's
+    name is its path under the tier dir without suffix (so nested files with the
+    same stem stay distinct); its content hash is the sha256 of its canonical JSON.
     """
     root = Path(root)
     guardrails = _read_dir(root.joinpath(*GUARDRAIL_SUBDIR), "guardrail")
@@ -57,16 +58,23 @@ def load_local_modules(
 def _read_dir(directory: Path, kind: LayerKind) -> list[ModuleContent]:
     if not directory.is_dir():
         return []
+    files = sorted({*directory.glob("**/*.yaml"), *directory.glob("**/*.yml")})
     modules: list[ModuleContent] = []
-    for file in sorted(directory.glob("**/*.yaml")):
-        payload = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+    for file in files:
+        # Parse + validate inside the try so a malformed-YAML file names itself
+        # in the error too, not just a schema-invalid one.
         try:
+            payload = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
             policy = AgentPolicy.model_validate(payload)
         except Exception as exc:  # noqa: BLE001 — surface the offending file
-            raise ValueError(f"module {file.name!r} is invalid: {exc}") from exc
+            raise ValueError(
+                f"module {file.relative_to(directory).as_posix()!r} is invalid: {exc}"
+            ) from exc
         modules.append(
             ModuleContent(
-                name=file.stem,
+                # Path-relative name (no suffix) so nested files with the same
+                # stem stay distinct, e.g. "team/refunds" vs "refunds".
+                name=file.relative_to(directory).with_suffix("").as_posix(),
                 kind=kind,
                 policy=policy,
                 source=str(file),

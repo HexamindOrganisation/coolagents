@@ -31,7 +31,12 @@ against the live grammar.
 from __future__ import annotations
 
 from hexgate.security.constraints import parse_constraint
-from hexgate.security.models import AgentPolicy, BaseToolPolicy, ToolPolicy
+from hexgate.security.models import (
+    AgentPolicy,
+    BaseToolPolicy,
+    FileToolPolicy,
+    ToolPolicy,
+)
 from hexgate.security.modules import (
     LinkError,
     LinkResult,
@@ -69,6 +74,9 @@ def link(
     guardrails: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
+    _reject_file_scope(guardrails, capabilities)
+    consts = _merge_consts(guardrails, capabilities)
+
     trace = RuleTrace()
     tools: dict[str, ToolPolicy] = {}
     for name in _tool_names(guardrails, capabilities):
@@ -76,16 +84,56 @@ def link(
         if rule is not None:
             tools[name] = rule
 
-    # consts from every layer are merged so const refs resolve + compile.
-    consts: dict[str, object] = {}
-    for module in (*guardrails, *capabilities):
-        consts.update(module.policy.consts)
-
     # Effective default is fail-closed: a tool no layer grants is denied.
     effective = AgentPolicy(
         default_policy=BaseToolPolicy(mode="deny"), tools=tools, consts=consts
     )
     return effective, trace
+
+
+def _merge_consts(
+    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+) -> dict[str, object]:
+    """Merge consts across layers, **guardrails win**.
+
+    A capability may not redefine a guardrail's constant to a different value —
+    that would let a lower-authority layer loosen a guardrail cap expressed as
+    ``args.amount <= consts.max`` by shadowing ``max``. Such a collision is a
+    hard :class:`LinkError`; a capability-only const is merged normally.
+    """
+    guard_consts: dict[str, object] = {}
+    for module in guardrails:
+        guard_consts.update(module.policy.consts)
+    merged = dict(guard_consts)
+    for cap in capabilities:
+        for name, value in cap.policy.consts.items():
+            if name in guard_consts and guard_consts[name] != value:
+                raise LinkError(
+                    f"capability {cap.name!r} redefines guardrail constant "
+                    f"consts.{name} ({value!r} vs guardrail {guard_consts[name]!r}); "
+                    f"capabilities may not override guardrail constants ({cap.source})"
+                )
+            merged[name] = value
+    return merged
+
+
+def _reject_file_scope(
+    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject ``file_scope`` in a module — composing it isn't supported yet.
+
+    Silently dropping it in the fold would erase a path fence (``file_scope`` is
+    enforced by the pydantic engine), so fail loud instead. Keep file-scoped
+    tools in a single-file policy until module composition supports them.
+    """
+    for module in (*guardrails, *capabilities):
+        for tool_name, tp in module.policy.tools.items():
+            if isinstance(tp, FileToolPolicy) and tp.file_scope is not None:
+                raise LinkError(
+                    f"module {module.name!r} tool {tool_name!r} uses file_scope, "
+                    f"which module composition does not support yet — keep it in a "
+                    f"single-file policy or drop file_scope ({module.source})"
+                )
 
 
 def _fold_tool(
@@ -172,8 +220,9 @@ def _union(grants: list[ToolPolicy]) -> str | None:
     for tp in grants:
         if not tp.constraints:
             return None
-        exprs.append(f"({_and_expr(tp.constraints)})")
-    joined = " or ".join(exprs)
+        exprs.append(_and_expr(tp.constraints))
+    # One grant needs no OR wrapper; multiple are parenthesised and OR-joined.
+    joined = exprs[0] if len(exprs) == 1 else " or ".join(f"({e})" for e in exprs)
     parse_constraint(joined)  # fail loud on assembled grammar we can't parse
     return joined
 

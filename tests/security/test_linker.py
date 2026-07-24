@@ -216,6 +216,49 @@ def test_capability_deny_raises():
         link([], [bad])
 
 
+def test_capability_cannot_override_guardrail_const():
+    """A capability redefining a guardrail const would loosen a cap — reject it."""
+    guard = _mod(
+        "g",
+        "guardrail",
+        {"refund": _allow(["args.amount <= consts.cap"])},
+        consts={"cap": 1000},
+    )
+    cap = _mod("c", "capability", {"refund": _allow()}, consts={"cap": 1_000_000})
+    with pytest.raises(LinkError, match="may not override guardrail constants"):
+        link([guard], [cap])
+
+
+def test_matching_const_across_tiers_is_allowed():
+    """Same const value in both tiers is harmless — only a differing value errors."""
+    guard = _mod(
+        "g",
+        "guardrail",
+        {"refund": _allow(["args.amount <= consts.cap"])},
+        consts={"cap": 1000},
+    )
+    cap = _mod("c", "capability", {"refund": _allow()}, consts={"cap": 1000})
+    effective, _ = link([guard], [cap])
+    assert effective.consts["cap"] == 1000
+
+
+def test_file_scope_in_module_raises():
+    """file_scope can't survive composition yet — fail loud, don't silently drop."""
+    from hexgate.security import FileScope, FileToolPolicy
+
+    guard = _mod(
+        "g",
+        "guardrail",
+        {
+            "write_file": FileToolPolicy(
+                mode="allow", file_scope=FileScope(allowed_paths=["/tmp/**"])
+            )
+        },
+    )
+    with pytest.raises(LinkError, match="file_scope"):
+        link([guard], [])
+
+
 # --- provenance + policy-set wiring ---
 
 
