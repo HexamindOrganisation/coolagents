@@ -36,15 +36,18 @@ async def read_headers(reader: asyncio.StreamReader) -> bytes:
 
     The returned bytes include the final ``\\r\\n`` separator, so a plain-HTTP
     forwarder can concatenate a rewritten request line and send it verbatim.
-    Bounded by ``_MAX_HEADER_BYTES`` — a client that never sends the blank line
-    raises ``ValueError`` (fail closed) rather than growing unbounded.
+    Raises ``ValueError`` (fail closed) if the client disconnects before the
+    blank line, or if the block exceeds ``_MAX_HEADER_BYTES``, rather than
+    forwarding a truncated request.
     """
     blocks: list[bytes] = []
     total = 0
     while True:
         line = await reader.readline()
+        if line == b"":
+            raise ValueError("connection closed before end of headers")
         blocks.append(line)
-        if line in (b"\r\n", b"\n", b""):
+        if line in (b"\r\n", b"\n"):
             break
         total += len(line)
         if total > _MAX_HEADER_BYTES:

@@ -4,8 +4,8 @@ The egress proxy translates each outbound request into the same
 ``(tool_name, arguments)`` shape the
 :class:`~hexgate.security.enforcer.PolicyEnforcer` already evaluates for tool
 calls, so network egress is gated by the same policy engine, ``Decision``
-type, and audit path as everything else — network egress is *just another
-gated tool*. See ``egress-proxy-plan.md`` for the design rationale.
+type, and audit path as everything else. Network egress is just another gated
+tool. See the network-egress concept doc (``docs/concepts/egress.mdx``).
 """
 
 from __future__ import annotations
@@ -51,11 +51,12 @@ def http_to_args(method: str, absolute_uri: str) -> dict[str, Any]:
     without dropping the query string).
     """
     parts = urlsplit(absolute_uri)
+    scheme = parts.scheme or "http"
     return {
         "method": method,
-        "scheme": parts.scheme or "http",
+        "scheme": scheme,
         "host": parts.hostname or "",
-        "port": parts.port or 80,
+        "port": parts.port or (443 if scheme == "https" else 80),
         "url": absolute_uri,
         "path": parts.path or "/",
         "query": parts.query,

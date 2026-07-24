@@ -32,6 +32,12 @@ def test_http_to_args_explicit_port() -> None:
     assert args["port"] == 8080
 
 
+def test_http_to_args_https_absolute_uri_defaults_443() -> None:
+    args = http_to_args("GET", "https://example.com/x")
+    assert args["scheme"] == "https"
+    assert args["port"] == 443
+
+
 def test_http_to_args_root_path() -> None:
     assert http_to_args("GET", "http://example.com")["path"] == "/"
 

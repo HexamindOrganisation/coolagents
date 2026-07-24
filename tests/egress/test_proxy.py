@@ -211,6 +211,44 @@ async def test_malformed_request_line_returns_400() -> None:
         await proxy.stop()
 
 
+async def test_connect_upstream_unreachable_returns_502() -> None:
+    # Grab a port, then close its server so the upstream connect is refused.
+    dead, dead_port = await _start_tcp_echo()
+    dead.close()
+    await dead.wait_closed()
+    proxy = _proxy("127.0.0.1")
+    await proxy.start()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+        writer.write(f"CONNECT 127.0.0.1:{dead_port} HTTP/1.1\r\n\r\n".encode())
+        await writer.drain()
+        status = await asyncio.wait_for(reader.readline(), timeout=5)
+        assert b"502" in status
+        writer.close()
+    finally:
+        await proxy.stop()
+
+
+async def test_stop_cancels_inflight_tunnel() -> None:
+    echo, echo_port = await _start_tcp_echo()
+    proxy = _proxy("127.0.0.1")
+    await proxy.start()
+    reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+    writer.write(f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n".encode())
+    await writer.drain()
+    assert b"200" in await asyncio.wait_for(reader.readline(), timeout=5)
+    await asyncio.wait_for(reader.readline(), timeout=5)  # trailing blank line
+    try:
+        # The tunnel is open. stop() must cancel the handler, not leave it
+        # relaying — the client then sees EOF.
+        await proxy.stop()
+        assert await asyncio.wait_for(reader.read(100), timeout=5) == b""
+        writer.close()
+    finally:
+        echo.close()
+        await echo.wait_closed()
+
+
 def test_port_before_start_raises() -> None:
     proxy = _proxy("anything")
     with pytest.raises(RuntimeError):

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from hexgate.egress.wire import parse_request_line, strip_proxy_headers
+import asyncio
+
+import pytest
+
+from hexgate.egress.wire import parse_request_line, read_headers, strip_proxy_headers
 
 
 def test_parse_request_line() -> None:
@@ -34,3 +38,18 @@ def test_strip_proxy_headers_removes_proxy_scoped() -> None:
 def test_strip_proxy_headers_noop_when_absent() -> None:
     block = b"Host: example.com\r\nAccept: */*\r\n\r\n"
     assert strip_proxy_headers(block) == block
+
+
+async def test_read_headers_reads_full_block() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"Host: example.com\r\nAccept: */*\r\n\r\n")
+    reader.feed_eof()
+    assert await read_headers(reader) == b"Host: example.com\r\nAccept: */*\r\n\r\n"
+
+
+async def test_read_headers_raises_on_truncated_block() -> None:
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"Host: example.com\r\n")  # client dies before the blank line
+    reader.feed_eof()
+    with pytest.raises(ValueError):
+        await read_headers(reader)

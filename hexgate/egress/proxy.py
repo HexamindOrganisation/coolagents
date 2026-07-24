@@ -3,8 +3,9 @@
 ``EgressProxy`` is an optional second enforcement plane. Point an agent's
 process at it (via ``HTTP_PROXY`` / ``HTTPS_PROXY``, which ``egress_guard``
 sets for you) and every outbound HTTP(S) request is routed through the same
-:class:`~hexgate.security.enforcer.PolicyEnforcer` that gates tool calls —
-mapped to the synthetic ``net.http_request`` tool. See ``egress-proxy-plan.md``.
+:class:`~hexgate.security.enforcer.PolicyEnforcer` that gates tool calls,
+mapped to the synthetic ``net.http_request`` tool. See the network-egress
+concept doc (``docs/concepts/egress.mdx``).
 
 Scope (Tier 1): host-level filtering. HTTPS is gated on the ``CONNECT`` host;
 the tunnel relays ciphertext untouched (no TLS interception). Like
@@ -72,6 +73,9 @@ class EgressProxy:
         self._requested_port = port
         self._server: asyncio.AbstractServer | None = None
         self._port: int | None = None
+        # In-flight connection-handler tasks, so stop() can cancel open tunnels
+        # instead of leaving them relaying after the guard restores env vars.
+        self._conns: set[asyncio.Task[None]] = set()
 
     @property
     def host(self) -> str:
@@ -95,10 +99,18 @@ class EgressProxy:
         _log.info("egress proxy listening on %s:%s", self._host, self._port)
 
     async def stop(self) -> None:
-        """Stop accepting and close the listening socket. Idempotent."""
+        """Stop accepting, cancel open connections, close the socket. Idempotent."""
         if self._server is None:
             return
         self._server.close()
+        # Cancel handlers still relaying (e.g. an open CONNECT tunnel) BEFORE
+        # wait_closed(): on Python 3.12+ wait_closed() blocks until active
+        # connections finish, so an open tunnel would otherwise deadlock it.
+        for task in list(self._conns):
+            task.cancel()
+        if self._conns:
+            await asyncio.gather(*self._conns, return_exceptions=True)
+            self._conns.clear()
         with contextlib.suppress(Exception):
             await self._server.wait_closed()
         self._server = None
@@ -107,6 +119,9 @@ class EgressProxy:
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._conns.add(task)
         try:
             request_line = await reader.readline()
             if not request_line:
@@ -130,6 +145,9 @@ class EgressProxy:
         except Exception:
             _log.exception("egress proxy connection handler failed")
             close_writer(writer)
+        finally:
+            if task is not None:
+                self._conns.discard(task)
 
 
 @contextlib.asynccontextmanager
