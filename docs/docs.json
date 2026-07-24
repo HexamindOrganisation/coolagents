@@ -33,7 +33,8 @@
               "concepts/approval-required",
               "concepts/approval-frameworks-compared",
               "concepts/bans",
-              "concepts/sandbox"
+              "concepts/sandbox",
+              "concepts/egress"
             ]
           },
           {

@@ -62,6 +62,29 @@ policies = (
 )
 ```
 
+## Gate network egress
+
+`net_allow` and `net_approve` are builder sugar for the [egress
+plane](/concepts/egress). They render a host/scheme/port allowlist into ordinary
+`net.http_request` constraints, so an egress rule enforces the same way in both
+the pydantic and WASM engines.
+
+```python
+from hexgate import PolicyBuilder
+
+policy = (
+    PolicyBuilder(default="deny")
+    .net_allow(hosts=["api.github.com"], subdomains=["githubusercontent.com"])
+    .net_approve(hosts=["api.stripe.com"])
+    .build()
+)
+```
+
+`subdomains` matches the apex and any child (`example.com` and `*.example.com`).
+A host restriction is required: pass `hosts=`, `subdomains=`, or `any_host=True`.
+Calling `net_allow()` with only a scheme or port filter raises, because it would
+authorize every host.
+
 ## Unit-test a policy
 
 The `assert_*` helpers evaluate a policy the same way the runtime enforces it:

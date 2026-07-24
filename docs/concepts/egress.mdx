@@ -1,0 +1,118 @@
+---
+title: "Network egress"
+description: "Gate an agent's outbound HTTP(S) by destination host, through the same policy engine that gates tool calls."
+---
+
+Policy normally decides one thing: may this caller invoke this tool with these
+arguments. That check sees what the model asked for. It does not see where a
+tool actually goes on the network. A tool that shells out to `curl`, or an SDK
+that makes its own HTTP calls, can reach any host without the tool-argument
+policy noticing.
+
+The egress proxy adds a second check. It routes the process's outbound HTTP(S)
+through an in-process forward proxy and asks the same `PolicyEnforcer` about each
+request, keyed on the destination host. Egress becomes another gated tool,
+`net.http_request`, sharing the [decision](/concepts/policy-decision) type and
+the [audit trail](/concepts/audit-trail) with everything else.
+
+This is separate from the [workspace sandbox](/concepts/sandbox), which enforces
+network rules in the kernel for the `bash` tool only. The egress proxy is
+framework-agnostic and covers any HTTP client running in the agent's process.
+
+## Turn it on
+
+`egress_guard` starts the proxy and points the process's HTTP clients at it (via
+`HTTP_PROXY` / `HTTPS_PROXY`, which most clients read by default). The agent's
+request code does not change.
+
+```python
+from hexgate import PolicyBuilder, User
+from hexgate.egress import egress_guard
+from hexgate.security.enforcer import build_enforcer
+from hexgate.security.policy_set import load_policy_set
+
+policy = PolicyBuilder(default="deny").net_allow(hosts=["api.github.com"]).build()
+enforcer = build_enforcer(load_policy_set(policy), agent_name="support-agent")
+
+async with egress_guard(enforcer, User(user_id="alice", role="agent")):
+    ...  # every outbound HTTP(S) request in this block is gated
+```
+
+Requests to `api.github.com` connect. Anything else is refused before a byte
+leaves the process, and the deny lands in the audit stream next to the tool-call
+decisions.
+
+## Write the policy
+
+In code, `net_allow` renders the host allowlist into constraints:
+
+```python
+policy = (
+    PolicyBuilder(default="deny")
+    .net_allow(hosts=["api.github.com", "raw.githubusercontent.com"])
+    .build()
+)
+```
+
+The same rule in YAML, where egress is the `net.http_request` tool:
+
+```yaml
+roles:
+  agent:
+    default_policy: { mode: deny }
+    tools:
+      net.http_request:
+        mode: allow
+        constraints:
+          - args.host in ["api.github.com", "raw.githubusercontent.com"]
+          - args.scheme in ["https"]
+```
+
+Pass `subdomains=["example.com"]` to match the apex and any `*.example.com`. A
+host restriction is required: `net_allow()` with only a scheme or port filter
+raises, since a rule with no host clause would allow every host. Use
+`any_host=True` when you do want that.
+
+## What the proxy sees
+
+For HTTPS, the client opens the connection with a plaintext
+`CONNECT api.github.com:443` line before TLS starts. The proxy decides on the
+host there, then relays the encrypted bytes without touching them. It never
+holds the keys, so on HTTPS a request exposes only its host, port, and scheme.
+
+| Field | HTTPS | Plain HTTP |
+|---|---|---|
+| `args.host`, `args.port`, `args.scheme` | visible | visible |
+| `args.path`, `args.query` | encrypted | visible |
+| headers, body | encrypted | on the wire |
+
+Almost all API traffic is HTTPS, so plan around host-level control. Reading the
+path or body of an HTTPS request needs TLS interception, which the SDK does not
+do (see [Limits](#limits)).
+
+## Layering
+
+Egress control sits alongside the other enforcement points. Deploy whichever
+combination fits the threat model.
+
+| Layer | Question | Mechanism |
+|---|---|---|
+| Tool policy | May this caller invoke this tool at all? | adapter / `enforce_policy(...)` |
+| Egress | May the process reach this host? | `egress_guard(...)` |
+| Sandbox | What can a spawned shell do? | OS-level via `srt` |
+
+## Limits
+
+- **Bypassable unless the runtime forces it.** The proxy relies on `HTTP_PROXY` /
+  `HTTPS_PROXY`. Code that sets `trust_env=False`, or a tool that unsets those
+  vars, skips it. Treat it as intent-shaping in a plain SDK deployment. A sandbox
+  that forces all egress through the proxy is the hard boundary.
+- **Host-level on HTTPS.** Path, query, and body are encrypted. Constraining
+  those needs TLS interception, which belongs to a controlled runtime rather than
+  a library.
+- **One guard per process.** `egress_guard` sets process-global proxy env vars,
+  so a nested or concurrent guard raises instead of clobbering the first.
+
+For destinations that don't speak HTTP (a Postgres or Redis connection, say), the
+same policy shape works but the proxy would have to understand that protocol.
+That's not covered today.
