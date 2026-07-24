@@ -1,0 +1,4 @@
+# The support agent's own inline leaf (capability). Grants only.
+tools:
+  send_email: { mode: allow }
+  escalate: { mode: approval_required }

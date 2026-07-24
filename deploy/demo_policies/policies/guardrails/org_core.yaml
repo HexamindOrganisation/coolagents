@@ -1,0 +1,7 @@
+# Org guardrail (security-owned). Floor posture: default_policy allow means it
+# only SUBTRACTS what it names — unlisted tools pass through to capabilities.
+# Its `allow` on refund_order is a CEILING (a cap), not a grant.
+default_policy: { mode: allow }
+tools:
+  delete_database: { mode: deny }                       # absolute — no layer can undo
+  refund_order: { mode: allow, constraints: ["args.amount <= 1000"] }   # cap
