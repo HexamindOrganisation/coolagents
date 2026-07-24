@@ -189,6 +189,30 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_test.set_defaults(func=_main_test)
 
+    # ---- resolve ----
+    p_resolve = sub.add_parser(
+        "resolve",
+        help="Link a bundle of policy modules into one effective policy.",
+        description=(
+            "Loads guardrail + capability modules from <dir>/policies/, composes "
+            "them (fences intersect, grants union, denies win) into a single "
+            "effective policy, and prints it. The intermediate artifact between "
+            "many module files and the signed WASM bundle — inspect it to see "
+            "exactly what the engines will enforce."
+        ),
+    )
+    p_resolve.add_argument(
+        "--dir",
+        default=".",
+        help="Repo root containing a policies/ tree (default: current dir).",
+    )
+    p_resolve.add_argument(
+        "-o",
+        "--output",
+        help="Write the effective policy YAML here (default: stdout).",
+    )
+    p_resolve.set_defaults(func=_main_resolve)
+
 
 def main(args: argparse.Namespace) -> int:
     """Entry point used by the top-level dispatcher in hexgate/cli/__init__.py."""
@@ -414,6 +438,50 @@ def _main_show_rego(args: argparse.Namespace) -> int:
         print(f"compile error: {exc}", file=sys.stderr)
         return 1
     sys.stdout.write(rego)
+    return 0
+
+
+def _main_resolve(args: argparse.Namespace) -> int:
+    """Link the local module bundle into one effective policy and print it."""
+    from hexgate.security import (
+        LinkError,
+        link_policy_set,
+        load_local_modules,
+    )
+
+    guardrails, capabilities = load_local_modules(args.dir)
+    if not guardrails and not capabilities:
+        print(
+            f"no modules found under {args.dir}/policies/"
+            " (expected policies/guardrails/ and/or policies/capabilities/)",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        result = link_policy_set(guardrails, capabilities)
+    except (LinkError, PolicySetError, ConstraintParseError, ValidationError) as exc:
+        print(f"link error: {exc}", file=sys.stderr)
+        return 1
+
+    effective = result.effective[DEFAULT_ROLE_NAME]
+    # Full dump (not exclude_defaults): a tool set to the default `deny` mode
+    # would otherwise render as `{}`, hiding the outcome in an inspection view.
+    text = yaml.safe_dump(effective.model_dump(mode="json"), sort_keys=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"✓ wrote effective policy to {args.output}")
+    else:
+        sys.stdout.write(text)
+
+    # Provenance to stderr so stdout stays a clean policy document.
+    print("\nlayers (resolution order):", file=sys.stderr)
+    for prov in result.layers:
+        print(f"  [{prov.kind:10}] {prov.module}  ({prov.source})", file=sys.stderr)
+    if result.trace.shadowed:
+        print("shadowed (ineligible under a ceiling):", file=sys.stderr)
+        for tool, by in sorted(result.trace.shadowed.items()):
+            print(f"  {tool}  ← {by.module} ({by.source})", file=sys.stderr)
     return 0
 
 

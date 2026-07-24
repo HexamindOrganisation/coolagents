@@ -81,6 +81,16 @@ from hexgate.security.policy_set import (
     load_policy_set,
     load_policy_set_from_dict,
 )
+from hexgate.security.modules import (
+    LayerKind,
+    LinkError,
+    LinkResult,
+    ModuleContent,
+    Provenance,
+    RuleTrace,
+)
+from hexgate.security.linker import link, link_policy_set
+from hexgate.security.module_loader import ModuleLoader, load_local_modules
 from hexgate.security.rego import compile_default_only, compile_to_rego
 from hexgate.security.rego_wasm import (
     DEFAULT_ENTRYPOINTS,
@@ -112,6 +122,16 @@ from hexgate.security.testing import (
 __all__ = [
     "AgentBannedError",
     "AgentPolicy",
+    "LayerKind",
+    "LinkError",
+    "LinkResult",
+    "ModuleContent",
+    "ModuleLoader",
+    "Provenance",
+    "RuleTrace",
+    "link",
+    "link_policy_set",
+    "load_local_modules",
     "EMPTY_BAN_SET",
     "BanContentError",
     "BanEnforcementEvent",
