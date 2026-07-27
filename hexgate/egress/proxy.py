@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator, Sequence
 from hexgate.approvals import ApprovalHandler
 from hexgate.egress.gate import Gate
 from hexgate.egress.model import split_authority
+from hexgate.egress.server import ProxyServer
 from hexgate.egress.transport import Transport, TunnelTransport
 from hexgate.egress.wire import close_writer, parse_request_line, read_headers, refuse
 from hexgate.runtime.context import User
@@ -47,12 +48,13 @@ _PROXY_ENV_VARS = (
 _guard_active = False
 
 
-class EgressProxy:
+class EgressProxy(ProxyServer):
     """An asyncio forward proxy that authorizes each request via ``Gate``.
 
     One proxy serves one agent run: the ``user`` fixes the identity every
     egress decision is attributed to. Start it, point the process's HTTP
-    clients at ``http://{host}:{port}``, and every request is gated.
+    clients at ``http://{host}:{port}``, and every request is gated. Socket
+    lifecycle (bind / accept / teardown) is inherited from :class:`ProxyServer`.
     """
 
     def __init__(
@@ -65,63 +67,20 @@ class EgressProxy:
         approval_handler: ApprovalHandler | None = None,
         transport: Transport | None = None,
     ) -> None:
+        super().__init__(host=host, port=port)
         self._gate = Gate(enforcer, user, approval_handler=approval_handler)
         self._transport: Transport = (
             transport if transport is not None else TunnelTransport()
         )
-        self._host = host
-        self._requested_port = port
-        self._server: asyncio.AbstractServer | None = None
-        self._port: int | None = None
-        # In-flight connection-handler tasks, so stop() can cancel open tunnels
-        # instead of leaving them relaying after the guard restores env vars.
-        self._conns: set[asyncio.Task[None]] = set()
 
-    @property
-    def host(self) -> str:
-        return self._host
-
-    @property
-    def port(self) -> int:
-        """The bound port. Raises if the proxy has not been started."""
-        if self._port is None:
-            raise RuntimeError("EgressProxy is not started; call start() first")
-        return self._port
-
-    async def start(self) -> None:
-        """Bind and begin accepting connections. Idempotent."""
-        if self._server is not None:
-            return
-        self._server = await asyncio.start_server(
-            self._handle_client, self._host, self._requested_port
-        )
-        self._port = self._server.sockets[0].getsockname()[1]
+    def _log_listening(self) -> None:
         _log.info("egress proxy listening on %s:%s", self._host, self._port)
 
-    async def stop(self) -> None:
-        """Stop accepting, cancel open connections, close the socket. Idempotent."""
-        if self._server is None:
-            return
-        self._server.close()
-        # Cancel handlers still relaying (e.g. an open CONNECT tunnel) BEFORE
-        # wait_closed(): on Python 3.12+ wait_closed() blocks until active
-        # connections finish, so an open tunnel would otherwise deadlock it.
-        for task in list(self._conns):
-            task.cancel()
-        if self._conns:
-            await asyncio.gather(*self._conns, return_exceptions=True)
-            self._conns.clear()
-        with contextlib.suppress(Exception):
-            await self._server.wait_closed()
-        self._server = None
-        self._port = None
-
-    async def _handle_client(
+    async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        task = asyncio.current_task()
-        if task is not None:
-            self._conns.add(task)
+        # Task tracking and the generic error-close are handled by ProxyServer;
+        # here we only parse the proxied request and dispatch to the transport.
         try:
             request_line = await reader.readline()
             if not request_line:
@@ -142,12 +101,6 @@ class EgressProxy:
         except ValueError:
             # Malformed request line / CONNECT target / oversized headers.
             await refuse(writer, 400, "Bad Request", "malformed request")
-        except Exception:
-            _log.exception("egress proxy connection handler failed")
-            close_writer(writer)
-        finally:
-            if task is not None:
-                self._conns.discard(task)
 
 
 @contextlib.asynccontextmanager

@@ -125,6 +125,22 @@ def strip_proxy_headers(header_block: bytes) -> bytes:
     return b"\r\n".join(kept)
 
 
+_UPSTREAM_CONNECT_TIMEOUT = 10.0
+
+
+async def open_upstream(
+    host: str, port: int, *, timeout: float = _UPSTREAM_CONNECT_TIMEOUT
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Open a TCP connection to an upstream, bounded by a connect timeout.
+
+    Wraps :func:`asyncio.open_connection` in ``wait_for`` so a black-holed
+    target (SYN dropped, no RST) can't hang the handler indefinitely. Raises
+    ``OSError`` (refused / unreachable) or ``TimeoutError`` (no response within
+    ``timeout``); callers treat both as "cannot reach upstream".
+    """
+    return await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
+
+
 def close_writer(writer: asyncio.StreamWriter) -> None:
     """Close a stream writer, swallowing the error if it's already gone."""
     with contextlib.suppress(OSError):

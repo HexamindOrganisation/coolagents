@@ -14,6 +14,7 @@ import pytest
 from hexgate import C, PolicyBuilder
 from hexgate.security.network import (
     NET_HTTP_REQUEST,
+    NET_TCP_CONNECT,
     host_match_constraint,
     net_constraints,
 )
@@ -143,6 +144,37 @@ def test_net_allow_any_host_opt_in() -> None:
     )  # still HTTPS-only
 
 
+# --- net_tcp_allow (raw-TCP reachability gate) --------------------------------
+
+
+def _tcp_decide(ps, host, port):
+    return ps.evaluate(
+        role="default",
+        tool=NET_TCP_CONNECT,
+        args={"host": host, "port": port, "protocol": "tcp"},
+    ).outcome.value
+
+
+def test_net_tcp_allow_host_and_port() -> None:
+    ps = _ps(
+        PolicyBuilder(default="deny").net_tcp_allow(hosts=["db.internal"], ports=[5432])
+    )
+    assert _tcp_decide(ps, "db.internal", 5432) == "allow"
+    assert _tcp_decide(ps, "db.internal", 6379) == "deny"  # wrong port
+    assert _tcp_decide(ps, "evil.internal", 5432) == "deny"  # wrong host
+
+
+def test_net_tcp_allow_requires_host_restriction() -> None:
+    with pytest.raises(ValueError, match="host restriction"):
+        PolicyBuilder(default="deny").net_tcp_allow(ports=[5432])
+
+
+def test_net_tcp_approve_mode() -> None:
+    ps = _ps(PolicyBuilder(default="deny").net_tcp_approve(hosts=["db.internal"]))
+    assert _tcp_decide(ps, "db.internal", 5432) == "needs_approval"
+    assert _tcp_decide(ps, "evil.internal", 5432) == "deny"
+
+
 # --- pydantic <-> WASM parity -------------------------------------------------
 
 
@@ -177,3 +209,30 @@ def test_net_allow_pydantic_wasm_parity() -> None:
             else ("needs_approval" if rego.requires_approval else "deny")
         )
         assert py == wo, f"engines disagree on {host}/{scheme}: pydantic={py} wasm={wo}"
+
+
+@pytest.mark.skipif(not _OPA, reason="opa not on PATH")
+def test_net_tcp_allow_pydantic_wasm_parity() -> None:
+    from hexgate.security import WasmPolicy, compile_to_wasm
+    from hexgate.security.rego import compile_to_rego
+
+    policy = (
+        PolicyBuilder(default="deny")
+        .net_tcp_allow(hosts=["db.internal"], ports=[5432])
+        .build()
+    )
+    payload = {"roles": {"default": policy.model_dump(exclude_defaults=True)}}
+    ps = load_policy_set_from_dict(payload)
+    wasm = WasmPolicy.from_bytes(compile_to_wasm(compile_to_rego(payload)).wasm)
+
+    cases = [("db.internal", 5432), ("db.internal", 6379), ("evil.internal", 5432)]
+    for host, port in cases:
+        args = {"host": host, "port": port, "protocol": "tcp"}
+        py = ps.evaluate(role="default", tool=NET_TCP_CONNECT, args=args).outcome.value
+        rego = wasm.decide(role="default", tool=NET_TCP_CONNECT, args=args)
+        wo = (
+            "allow"
+            if rego.allow
+            else ("needs_approval" if rego.requires_approval else "deny")
+        )
+        assert py == wo, f"engines disagree on {host}:{port}: pydantic={py} wasm={wo}"
