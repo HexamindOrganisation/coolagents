@@ -32,17 +32,10 @@ Hexgate is two things that move together:
 
 You can use the SDK three ways: **local** (YAML/bundle on disk, no platform), **Hexgate Cloud** (remote enforcement + audit — just set `HEXGATE_API_KEY`), or **self-hosted** (run the control plane yourself). `HEXGATE_API_URL` defaults to `https://app.hexgate.ai`, so remote enforcement is one env var away.
 
-```text
-   end user (id + role)          tool call (name + args)
-            └───────────────┬────────────────┘
-                            ▼
-              PolicyEnforcer.decide()  ◄──  policy (local YAML / bundle
-                            ▼                or signed cloud bundle)
-            allow  ·  deny  ·  approval
-                            │
-                            ▼
-      audit log — who called what, and whether it was allowed
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/decision-flow-dark.svg">
+  <img src="./assets/decision-flow-light.svg" alt="End user and tool call merge into PolicyEnforcer.decide(), checked against policy on its right edge, resolving to allow, deny, or approval, always recorded to the audit log." />
+</picture>
 
 ## Quickstart
 
