@@ -449,7 +449,11 @@ def _main_resolve(args: argparse.Namespace) -> int:
         load_local_modules,
     )
 
-    guardrails, capabilities = load_local_modules(args.dir)
+    try:
+        guardrails, capabilities = load_local_modules(args.dir)
+    except (ValueError, OSError) as exc:
+        print(f"load error: {exc}", file=sys.stderr)
+        return 1
     if not guardrails and not capabilities:
         print(
             f"no modules found under {args.dir}/policies/"

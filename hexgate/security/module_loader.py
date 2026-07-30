@@ -63,9 +63,12 @@ def _read_dir(directory: Path, kind: LayerKind) -> list[ModuleContent]:
     for file in files:
         # Parse + validate inside the try so a malformed-YAML file names itself
         # in the error too, not just a schema-invalid one.
+        # Everything that can fail on a bad file — parse, validate, hash — runs
+        # inside the try so the error always names the offending file.
         try:
             payload = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
             policy = AgentPolicy.model_validate(payload)
+            content_hash = _canonical_hash(payload)
         except Exception as exc:  # noqa: BLE001 — surface the offending file
             raise ValueError(
                 f"module {file.relative_to(directory).as_posix()!r} is invalid: {exc}"
@@ -78,13 +81,17 @@ def _read_dir(directory: Path, kind: LayerKind) -> list[ModuleContent]:
                 kind=kind,
                 policy=policy,
                 source=str(file),
-                content_hash=_canonical_hash(payload),
+                content_hash=content_hash,
             )
         )
     return modules
 
 
 def _canonical_hash(payload: object) -> str:
-    """sha256 of the module's canonical JSON — stable across dict ordering."""
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    """sha256 of the module's canonical JSON — stable across dict ordering.
+
+    ``default=str`` so non-JSON scalars YAML can produce (e.g. an unquoted date
+    becomes ``datetime.date``) serialize deterministically instead of raising.
+    """
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

@@ -83,6 +83,18 @@ def test_yml_extension_is_loaded(tmp_path):
     assert [g.name for g in guardrails] == ["org"]
 
 
+def test_unquoted_yaml_date_does_not_crash_hashing(tmp_path):
+    """A YAML date scalar becomes datetime.date; hashing it must not raise."""
+    _write(
+        tmp_path,
+        "policies/capabilities/dated.yaml",
+        "consts: { window_start: 2026-01-01 }\ntools:\n  t: { mode: allow }\n",
+    )
+    _, capabilities = load_local_modules(tmp_path)
+    assert len(capabilities) == 1
+    assert capabilities[0].content_hash  # computed, no TypeError
+
+
 def test_nested_same_stem_modules_stay_distinct(tmp_path):
     _write(
         tmp_path,

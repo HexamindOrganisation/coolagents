@@ -94,26 +94,42 @@ def link(
 def _merge_consts(
     guardrails: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> dict[str, object]:
-    """Merge consts across layers, **guardrails win**.
+    """Merge consts across layers. A constant defined twice with **different**
+    values is a hard :class:`LinkError`, never a silent last-wins.
 
-    A capability may not redefine a guardrail's constant to a different value —
-    that would let a lower-authority layer loosen a guardrail cap expressed as
-    ``args.amount <= consts.max`` by shadowing ``max``. Such a collision is a
-    hard :class:`LinkError`; a capability-only const is merged normally.
+    Two collisions matter: a capability redefining a guardrail's constant would
+    let a lower-authority layer loosen a cap like ``args.amount <= consts.max``;
+    and two guardrails disagreeing on a value would silently pick one. Both are
+    rejected. Equal values (or a name unique to one module) merge normally.
     """
-    guard_consts: dict[str, object] = {}
-    for module in guardrails:
-        guard_consts.update(module.policy.consts)
-    merged = dict(guard_consts)
-    for cap in capabilities:
-        for name, value in cap.policy.consts.items():
-            if name in guard_consts and guard_consts[name] != value:
+    merged: dict[str, object] = {}
+    owner: dict[str, ModuleContent] = {}
+    owner_is_guardrail: dict[str, bool] = {}
+
+    def _put(module: ModuleContent, is_guardrail: bool) -> None:
+        for name, value in module.policy.consts.items():
+            if name in merged and merged[name] != value:
+                prev = owner[name]
+                if owner_is_guardrail[name] and not is_guardrail:
+                    raise LinkError(
+                        f"capability {module.name!r} redefines guardrail constant "
+                        f"consts.{name} ({value!r} vs {merged[name]!r} from "
+                        f"{prev.name!r}); capabilities may not override guardrail "
+                        f"constants ({module.source})"
+                    )
                 raise LinkError(
-                    f"capability {cap.name!r} redefines guardrail constant "
-                    f"consts.{name} ({value!r} vs guardrail {guard_consts[name]!r}); "
-                    f"capabilities may not override guardrail constants ({cap.source})"
+                    f"consts.{name} defined twice with conflicting values: "
+                    f"{merged[name]!r} in {prev.name!r} vs {value!r} in "
+                    f"{module.name!r} ({module.source})"
                 )
             merged[name] = value
+            owner[name] = module
+            owner_is_guardrail[name] = is_guardrail
+
+    for module in guardrails:
+        _put(module, is_guardrail=True)
+    for module in capabilities:
+        _put(module, is_guardrail=False)
     return merged
 
 
@@ -174,7 +190,10 @@ def _fold_tool(
         if tp is not None and tp.mode in _GRANT_MODES:
             ceiling_constraints.extend(tp.constraints)  # fences intersect (AND)
             contributors.append(_prov(g))
-        elif tp is None and is_ceiling:
+        elif is_ceiling and (tp is None or tp.mode not in _GRANT_MODES):
+            # A ceiling only permits tools it explicitly allows/approves. If it
+            # doesn't (unlisted, or mentioned only via a conditional deny), the
+            # tool is ineligible — a capability grant can't make it eligible.
             trace.shadow(tool, _prov(g))
             return None
 

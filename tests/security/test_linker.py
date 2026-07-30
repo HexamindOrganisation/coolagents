@@ -229,6 +229,37 @@ def test_capability_cannot_override_guardrail_const():
         link([guard], [cap])
 
 
+def test_ceiling_conditional_deny_only_does_not_grant_eligibility():
+    """A ceiling that mentions a tool ONLY via a conditional deny must not let a
+    capability grant slip through — the tool isn't in the ceiling's allow set."""
+    ceiling = _mod(
+        "org",
+        "guardrail",
+        {"refund": _deny(["args.amount > 10000"])},  # conditional deny, no allow
+        default_mode="deny",  # ceiling
+    )
+    cap = _mod("c", "capability", {"refund": _allow()})
+    effective, trace = link([ceiling], [cap])
+    # ineligible: the ceiling never granted refund, so a $5000 refund is denied.
+    assert evaluate_tool_call(effective, "refund", {"amount": 5000}).outcome is (
+        DecisionOutcome.DENY
+    )
+    assert "refund" in trace.shadowed
+
+
+def test_two_guardrails_conflicting_const_raises():
+    """Two guardrails disagreeing on a const value must not silently last-win."""
+    g1 = _mod(
+        "org",
+        "guardrail",
+        {"refund": _allow(["args.amount <= consts.cap"])},
+        consts={"cap": 100},
+    )
+    g2 = _mod("team", "guardrail", {"lookup": _allow()}, consts={"cap": 100000})
+    with pytest.raises(LinkError, match="conflicting values"):
+        link([g1, g2], [])
+
+
 def test_matching_const_across_tiers_is_allowed():
     """Same const value in both tiers is harmless — only a differing value errors."""
     guard = _mod(
