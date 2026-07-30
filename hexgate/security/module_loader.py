@@ -1,6 +1,6 @@
 """Load policy modules from local files — the SDK / dev path.
 
-Reads a repo's ``policies/guardrails/`` and ``policies/capabilities/``
+Reads a repo's ``policies/boundaries/`` and ``policies/capabilities/``
 directories into :class:`~hexgate.security.modules.ModuleContent`, hashing each
 for content identity. Devs point the linker + analyzer at this with no platform.
 
@@ -21,16 +21,16 @@ import yaml
 from hexgate.security.models import AgentPolicy
 from hexgate.security.modules import LayerKind, ModuleContent
 
-GUARDRAIL_SUBDIR = ("policies", "guardrails")
+BOUNDARY_SUBDIR = ("policies", "boundaries")
 CAPABILITY_SUBDIR = ("policies", "capabilities")
 
 
 class ModuleLoader(Protocol):
     """Resolve the modules that apply to an agent.
 
-    Returns ``(guardrails, capabilities)`` in resolution order. The local-files
+    Returns ``(boundaries, capabilities)`` in resolution order. The local-files
     loader ignores ``agent_name`` (it returns the repo's whole bundle); the
-    platform loader will use it to scope-attach org guardrails + imports.
+    platform loader will use it to scope-attach org boundaries + imports.
     """
 
     def load(
@@ -41,18 +41,18 @@ class ModuleLoader(Protocol):
 def load_local_modules(
     root: str | Path,
 ) -> tuple[list[ModuleContent], list[ModuleContent]]:
-    """Load ``(guardrails, capabilities)`` from a repo root's ``policies/`` tree.
+    """Load ``(boundaries, capabilities)`` from a repo root's ``policies/`` tree.
 
-    Guardrails come from ``<root>/policies/guardrails/`` (``*.yaml`` / ``*.yml``,
+    Boundaries come from ``<root>/policies/boundaries/`` (``*.yaml`` / ``*.yml``,
     recursively), capabilities from ``<root>/policies/capabilities/``. Missing
     directories yield an empty list (a repo may ship only one tier). A module's
     name is its path under the tier dir without suffix (so nested files with the
     same stem stay distinct); its content hash is the sha256 of its canonical JSON.
     """
     root = Path(root)
-    guardrails = _read_dir(root.joinpath(*GUARDRAIL_SUBDIR), "guardrail")
+    boundaries = _read_dir(root.joinpath(*BOUNDARY_SUBDIR), "boundary")
     capabilities = _read_dir(root.joinpath(*CAPABILITY_SUBDIR), "capability")
-    return guardrails, capabilities
+    return boundaries, capabilities
 
 
 def _read_dir(directory: Path, kind: LayerKind) -> list[ModuleContent]:

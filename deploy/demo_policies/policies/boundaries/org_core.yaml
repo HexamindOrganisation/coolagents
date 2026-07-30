@@ -1,4 +1,4 @@
-# Org guardrail (security-owned). Floor posture: default_policy allow means it
+# Org boundary (security-owned). Floor posture: default_policy allow means it
 # only SUBTRACTS what it names — unlisted tools pass through to capabilities.
 # Its `allow` on refund_order is a CEILING (a cap), not a grant.
 default_policy: { mode: allow }

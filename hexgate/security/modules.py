@@ -21,14 +21,14 @@ from hexgate.security.models import AgentPolicy
 if TYPE_CHECKING:  # avoid an import cycle — policy_set imports models, not this
     from hexgate.security.policy_set import PolicySet
 
-LayerKind = Literal["guardrail", "capability"]
+LayerKind = Literal["boundary", "capability"]
 
 
 class LinkError(ValueError):
     """Raised when a bundle of modules can't be composed.
 
     The common case is a capability that tries to ``deny`` — capabilities may
-    only grant; a deny belongs to a guardrail.
+    only grant; a deny belongs to a boundary.
     """
 
 
@@ -69,7 +69,7 @@ class RuleTrace:
     """Per-tool provenance the analyzer + editor consume.
 
     ``contributors[tool]`` — the layers that fed the effective rule for ``tool``.
-    ``shadowed[tool]`` — a higher-tier layer (a guardrail ceiling) that made a
+    ``shadowed[tool]`` — a higher-tier layer (a boundary ceiling) that made a
     tool ineligible, so any lower grant for it is inert. This is the raw material
     the analyzer turns into ``dead`` / ``shadowed`` lints.
     """

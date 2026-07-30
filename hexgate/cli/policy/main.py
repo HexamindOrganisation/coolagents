@@ -194,7 +194,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "resolve",
         help="Link a bundle of policy modules into one effective policy.",
         description=(
-            "Loads guardrail + capability modules from <dir>/policies/, composes "
+            "Loads boundary + capability modules from <dir>/policies/, composes "
             "them (fences intersect, grants union, denies win) into a single "
             "effective policy, and prints it. The intermediate artifact between "
             "many module files and the signed WASM bundle — inspect it to see "
@@ -450,20 +450,20 @@ def _main_resolve(args: argparse.Namespace) -> int:
     )
 
     try:
-        guardrails, capabilities = load_local_modules(args.dir)
+        boundaries, capabilities = load_local_modules(args.dir)
     except (ValueError, OSError) as exc:
         print(f"load error: {exc}", file=sys.stderr)
         return 1
-    if not guardrails and not capabilities:
+    if not boundaries and not capabilities:
         print(
             f"no modules found under {args.dir}/policies/"
-            " (expected policies/guardrails/ and/or policies/capabilities/)",
+            " (expected policies/boundaries/ and/or policies/capabilities/)",
             file=sys.stderr,
         )
         return 1
 
     try:
-        result = link_policy_set(guardrails, capabilities)
+        result = link_policy_set(boundaries, capabilities)
     except (LinkError, PolicySetError, ConstraintParseError, ValidationError) as exc:
         print(f"link error: {exc}", file=sys.stderr)
         return 1

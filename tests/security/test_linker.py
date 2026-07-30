@@ -2,11 +2,11 @@
 
 The fold is the crown jewel, so these are pure (no opa needed) except the final
 parity test. Fixtures mirror ``policy-modules-plan.md``'s worked example, with
-the two guardrail postures kept internally consistent:
+the two boundary postures kept internally consistent:
 
-- **floor** guardrail (``default_policy: allow``) — only subtracts what it names;
+- **floor** boundary (``default_policy: allow``) — only subtracts what it names;
   unlisted tools pass through to capabilities.
-- **ceiling** guardrail (``default_policy: deny``) — a tool it doesn't list is
+- **ceiling** boundary (``default_policy: deny``) — a tool it doesn't list is
   ineligible, so a capability grant for it is inert (shadowed).
 """
 
@@ -57,14 +57,14 @@ def _approval():
     return BaseToolPolicy(mode="approval_required")
 
 
-# --- floor guardrail: the worked-example table (unlisted tools pass through) ---
+# --- floor boundary: the worked-example table (unlisted tools pass through) ---
 
 
 @pytest.fixture
 def floor_bundle():
-    guardrail = _mod(
+    boundary = _mod(
         "org.core",
-        "guardrail",
+        "boundary",
         {
             "delete_database": _deny(),
             "refund_order": _allow(["args.amount <= 1000"]),
@@ -84,7 +84,7 @@ def floor_bundle():
         "capability",
         {"send_email": _allow(), "escalate": _approval()},
     )
-    return [guardrail], [payments, leaf]
+    return [boundary], [payments, leaf]
 
 
 @pytest.mark.parametrize(
@@ -112,13 +112,13 @@ def test_floor_refund_intersects_ceiling_and_grant(floor_bundle):
     assert any("currency" in c for c in cons)
 
 
-# --- ceiling guardrail: a tool it doesn't list is ineligible ---
+# --- ceiling boundary: a tool it doesn't list is ineligible ---
 
 
 def test_ceiling_gates_eligibility_and_records_shadow():
     ceiling = _mod(
         "org.ceiling",
-        "guardrail",
+        "boundary",
         {
             "delete_database": _deny(),
             "refund_order": _allow(["args.amount <= 1000"]),
@@ -168,10 +168,10 @@ def test_two_capabilities_union():
     )
 
 
-def test_two_guardrails_intersect_stricter_cap():
+def test_two_boundaries_intersect_stricter_cap():
     """Two ceilings on one tool intersect: the stricter bound wins."""
-    g1 = _mod("g1", "guardrail", {"refund": _allow(["args.amount <= 1000"])})
-    g2 = _mod("g2", "guardrail", {"refund": _allow(["args.amount <= 500"])})
+    g1 = _mod("g1", "boundary", {"refund": _allow(["args.amount <= 1000"])})
+    g2 = _mod("g2", "boundary", {"refund": _allow(["args.amount <= 500"])})
     grant = _mod("cap", "capability", {"refund": _allow()})
     effective, _ = link([g1, g2], [grant])
 
@@ -183,19 +183,19 @@ def test_two_guardrails_intersect_stricter_cap():
     )
 
 
-def test_unconditional_guardrail_deny_is_absolute():
-    """A guardrail deny beats any capability grant."""
-    guard = _mod("g", "guardrail", {"wire": _deny()}, default_mode="allow")
+def test_unconditional_boundary_deny_is_absolute():
+    """A boundary deny beats any capability grant."""
+    guard = _mod("g", "boundary", {"wire": _deny()}, default_mode="allow")
     grant = _mod("c", "capability", {"wire": _allow()})
     effective, _ = link([guard], [grant])
     assert evaluate_tool_call(effective, "wire", {}).outcome is DecisionOutcome.DENY
 
 
-def test_conditional_guardrail_deny_subtracts_region():
-    """A guardrail deny WITH constraints subtracts that region from the grant."""
+def test_conditional_boundary_deny_subtracts_region():
+    """A boundary deny WITH constraints subtracts that region from the grant."""
     guard = _mod(
         "g",
-        "guardrail",
+        "boundary",
         {"refund": _deny(["args.amount > 1000"])},
         default_mode="allow",
     )
@@ -216,16 +216,16 @@ def test_capability_deny_raises():
         link([], [bad])
 
 
-def test_capability_cannot_override_guardrail_const():
-    """A capability redefining a guardrail const would loosen a cap — reject it."""
+def test_capability_cannot_override_boundary_const():
+    """A capability redefining a boundary const would loosen a cap — reject it."""
     guard = _mod(
         "g",
-        "guardrail",
+        "boundary",
         {"refund": _allow(["args.amount <= consts.cap"])},
         consts={"cap": 1000},
     )
     cap = _mod("c", "capability", {"refund": _allow()}, consts={"cap": 1_000_000})
-    with pytest.raises(LinkError, match="may not override guardrail constants"):
+    with pytest.raises(LinkError, match="may not override boundary constants"):
         link([guard], [cap])
 
 
@@ -234,7 +234,7 @@ def test_ceiling_conditional_deny_only_does_not_grant_eligibility():
     capability grant slip through — the tool isn't in the ceiling's allow set."""
     ceiling = _mod(
         "org",
-        "guardrail",
+        "boundary",
         {"refund": _deny(["args.amount > 10000"])},  # conditional deny, no allow
         default_mode="deny",  # ceiling
     )
@@ -247,15 +247,15 @@ def test_ceiling_conditional_deny_only_does_not_grant_eligibility():
     assert "refund" in trace.shadowed
 
 
-def test_two_guardrails_conflicting_const_raises():
-    """Two guardrails disagreeing on a const value must not silently last-win."""
+def test_two_boundaries_conflicting_const_raises():
+    """Two boundaries disagreeing on a const value must not silently last-win."""
     g1 = _mod(
         "org",
-        "guardrail",
+        "boundary",
         {"refund": _allow(["args.amount <= consts.cap"])},
         consts={"cap": 100},
     )
-    g2 = _mod("team", "guardrail", {"lookup": _allow()}, consts={"cap": 100000})
+    g2 = _mod("team", "boundary", {"lookup": _allow()}, consts={"cap": 100000})
     with pytest.raises(LinkError, match="conflicting values"):
         link([g1, g2], [])
 
@@ -264,7 +264,7 @@ def test_matching_const_across_tiers_is_allowed():
     """Same const value in both tiers is harmless — only a differing value errors."""
     guard = _mod(
         "g",
-        "guardrail",
+        "boundary",
         {"refund": _allow(["args.amount <= consts.cap"])},
         consts={"cap": 1000},
     )
@@ -279,7 +279,7 @@ def test_file_scope_in_module_raises():
 
     guard = _mod(
         "g",
-        "guardrail",
+        "boundary",
         {
             "write_file": FileToolPolicy(
                 mode="allow", file_scope=FileScope(allowed_paths=["/tmp/**"])
@@ -302,7 +302,7 @@ def test_provenance_records_contributing_layers(floor_bundle):
 def test_link_policy_set_merges_consts_and_builds_default_role():
     guard = _mod(
         "g",
-        "guardrail",
+        "boundary",
         {"refund": _allow(["args.amount <= consts.cap"])},
         consts={"cap": 1000},
     )

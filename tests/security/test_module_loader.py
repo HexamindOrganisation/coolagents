@@ -15,10 +15,10 @@ def _write(root: Path, rel: str, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
-def test_loads_guardrails_and_capabilities_with_correct_kinds(tmp_path):
+def test_loads_boundaries_and_capabilities_with_correct_kinds(tmp_path):
     _write(
         tmp_path,
-        "policies/guardrails/org.yaml",
+        "policies/boundaries/org.yaml",
         "default_policy: { mode: deny }\ntools:\n  delete_database: { mode: deny }\n",
     )
     _write(
@@ -27,13 +27,13 @@ def test_loads_guardrails_and_capabilities_with_correct_kinds(tmp_path):
         "tools:\n  refund_order: { mode: allow }\n",
     )
 
-    guardrails, capabilities = load_local_modules(tmp_path)
+    boundaries, capabilities = load_local_modules(tmp_path)
 
-    assert [g.name for g in guardrails] == ["org"]
-    assert guardrails[0].kind == "guardrail"
+    assert [g.name for g in boundaries] == ["org"]
+    assert boundaries[0].kind == "boundary"
     assert [c.name for c in capabilities] == ["payments"]
     assert capabilities[0].kind == "capability"
-    assert "delete_database" in guardrails[0].policy.tools
+    assert "delete_database" in boundaries[0].policy.tools
 
 
 def test_content_hash_is_stable_and_distinct(tmp_path):
@@ -49,15 +49,15 @@ def test_content_hash_is_stable_and_distinct(tmp_path):
 
 
 def test_missing_directories_return_empty(tmp_path):
-    guardrails, capabilities = load_local_modules(tmp_path)
-    assert guardrails == []
+    boundaries, capabilities = load_local_modules(tmp_path)
+    assert boundaries == []
     assert capabilities == []
 
 
 def test_only_one_tier_present(tmp_path):
-    _write(tmp_path, "policies/guardrails/g.yaml", "tools:\n  t: { mode: deny }\n")
-    guardrails, capabilities = load_local_modules(tmp_path)
-    assert len(guardrails) == 1
+    _write(tmp_path, "policies/boundaries/g.yaml", "tools:\n  t: { mode: deny }\n")
+    boundaries, capabilities = load_local_modules(tmp_path)
+    assert len(boundaries) == 1
     assert capabilities == []
 
 
@@ -78,9 +78,9 @@ def test_malformed_yaml_names_the_offending_file(tmp_path):
 
 
 def test_yml_extension_is_loaded(tmp_path):
-    _write(tmp_path, "policies/guardrails/org.yml", "tools:\n  t: { mode: deny }\n")
-    guardrails, _ = load_local_modules(tmp_path)
-    assert [g.name for g in guardrails] == ["org"]
+    _write(tmp_path, "policies/boundaries/org.yml", "tools:\n  t: { mode: deny }\n")
+    boundaries, _ = load_local_modules(tmp_path)
+    assert [g.name for g in boundaries] == ["org"]
 
 
 def test_unquoted_yaml_date_does_not_crash_hashing(tmp_path):

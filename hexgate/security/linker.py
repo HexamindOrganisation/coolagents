@@ -13,8 +13,8 @@ Rules (see ``policy-modules-plan.md``): **fences intersect, grants union, denies
 win.** Per ``(tool, args)`` the most restrictive layer wins:
 ``deny > approval_required > allow > implicit-deny``.
 
-- **Guardrail** — caps + hard denies. An unconditional deny is absolute. A
-  ``default_policy: deny`` guardrail is a *ceiling*: a tool it doesn't list is
+- **Boundary** — caps + hard denies. An unconditional deny is absolute. A
+  ``default_policy: deny`` boundary is a *ceiling*: a tool it doesn't list is
   ineligible. Its ``allow`` entries are ceilings (permit up to a constraint),
   not grants.
 - **Capability** — grants only (``allow`` / ``approval_required``). A capability
@@ -23,7 +23,7 @@ win.** Per ``(tool, args)`` the most restrictive layer wins:
 
 Constraint algebra reuses the existing DSL nodes: intersection is list
 concatenation (``constraints: list[str]`` is implicit-AND), union is a top-level
-``or`` expression, and a conditional guardrail deny subtracts via ``and not(…)``.
+``or`` expression, and a conditional boundary deny subtracts via ``and not(…)``.
 Every assembled expression is re-parsed with :func:`parse_constraint` to validate
 against the live grammar.
 """
@@ -50,18 +50,18 @@ _GRANT_MODES = ("allow", "approval_required")
 
 
 def link_policy_set(
-    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> LinkResult:
     """Fold a bundle into one effective :class:`PolicySet` + provenance.
 
-    ``guardrails`` are the scope-inherited layers (caps/denies); ``capabilities``
+    ``boundaries`` are the scope-inherited layers (caps/denies); ``capabilities``
     are the imported packs + the agent's inline leaf, in resolution order. This
     iteration folds into the single ``default`` role; per-role scoping is a
     follow-up.
     """
-    effective, trace = link(guardrails, capabilities)
+    effective, trace = link(boundaries, capabilities)
     policy_set = PolicySet({DEFAULT_ROLE_NAME: effective})
-    layers = [_prov(m) for m in (*guardrails, *capabilities)]
+    layers = [_prov(m) for m in (*boundaries, *capabilities)]
     return LinkResult(
         policy_set=policy_set,
         effective={DEFAULT_ROLE_NAME: effective},
@@ -71,16 +71,16 @@ def link_policy_set(
 
 
 def link(
-    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
-    _reject_file_scope(guardrails, capabilities)
-    consts = _merge_consts(guardrails, capabilities)
+    _reject_file_scope(boundaries, capabilities)
+    consts = _merge_consts(boundaries, capabilities)
 
     trace = RuleTrace()
     tools: dict[str, ToolPolicy] = {}
-    for name in _tool_names(guardrails, capabilities):
-        rule = _fold_tool(name, guardrails, capabilities, trace)
+    for name in _tool_names(boundaries, capabilities):
+        rule = _fold_tool(name, boundaries, capabilities, trace)
         if rule is not None:
             tools[name] = rule
 
@@ -92,29 +92,29 @@ def link(
 
 
 def _merge_consts(
-    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> dict[str, object]:
     """Merge consts across layers. A constant defined twice with **different**
     values is a hard :class:`LinkError`, never a silent last-wins.
 
-    Two collisions matter: a capability redefining a guardrail's constant would
+    Two collisions matter: a capability redefining a boundary's constant would
     let a lower-authority layer loosen a cap like ``args.amount <= consts.max``;
-    and two guardrails disagreeing on a value would silently pick one. Both are
+    and two boundaries disagreeing on a value would silently pick one. Both are
     rejected. Equal values (or a name unique to one module) merge normally.
     """
     merged: dict[str, object] = {}
     owner: dict[str, ModuleContent] = {}
-    owner_is_guardrail: dict[str, bool] = {}
+    owner_is_boundary: dict[str, bool] = {}
 
-    def _put(module: ModuleContent, is_guardrail: bool) -> None:
+    def _put(module: ModuleContent, is_boundary: bool) -> None:
         for name, value in module.policy.consts.items():
             if name in merged and merged[name] != value:
                 prev = owner[name]
-                if owner_is_guardrail[name] and not is_guardrail:
+                if owner_is_boundary[name] and not is_boundary:
                     raise LinkError(
-                        f"capability {module.name!r} redefines guardrail constant "
+                        f"capability {module.name!r} redefines boundary constant "
                         f"consts.{name} ({value!r} vs {merged[name]!r} from "
-                        f"{prev.name!r}); capabilities may not override guardrail "
+                        f"{prev.name!r}); capabilities may not override boundary "
                         f"constants ({module.source})"
                     )
                 raise LinkError(
@@ -124,17 +124,17 @@ def _merge_consts(
                 )
             merged[name] = value
             owner[name] = module
-            owner_is_guardrail[name] = is_guardrail
+            owner_is_boundary[name] = is_boundary
 
-    for module in guardrails:
-        _put(module, is_guardrail=True)
+    for module in boundaries:
+        _put(module, is_boundary=True)
     for module in capabilities:
-        _put(module, is_guardrail=False)
+        _put(module, is_boundary=False)
     return merged
 
 
 def _reject_file_scope(
-    guardrails: list[ModuleContent], capabilities: list[ModuleContent]
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> None:
     """Reject ``file_scope`` in a module — composing it isn't supported yet.
 
@@ -142,7 +142,7 @@ def _reject_file_scope(
     enforced by the pydantic engine), so fail loud instead. Keep file-scoped
     tools in a single-file policy until module composition supports them.
     """
-    for module in (*guardrails, *capabilities):
+    for module in (*boundaries, *capabilities):
         for tool_name, tp in module.policy.tools.items():
             if isinstance(tp, FileToolPolicy) and tp.file_scope is not None:
                 raise LinkError(
@@ -154,7 +154,7 @@ def _reject_file_scope(
 
 def _fold_tool(
     tool: str,
-    guardrails: list[ModuleContent],
+    boundaries: list[ModuleContent],
     capabilities: list[ModuleContent],
     trace: RuleTrace,
 ) -> ToolPolicy | None:
@@ -165,13 +165,13 @@ def _fold_tool(
         if tp is not None and tp.mode == "deny":
             raise LinkError(
                 f"capability {cap.name!r} denies {tool!r}; capabilities may only "
-                f"grant — move the deny to a guardrail ({cap.source})"
+                f"grant — move the deny to a boundary ({cap.source})"
             )
 
-    # 1. Unconditional guardrail deny wins absolutely. A *conditional* deny
+    # 1. Unconditional boundary deny wins absolutely. A *conditional* deny
     #    (has constraints) instead subtracts its region from the grant (step 5).
     conditional_denies: list[tuple[ModuleContent, list[str]]] = []
-    for g in guardrails:
+    for g in boundaries:
         tp = g.policy.tools.get(tool)
         if tp is not None and tp.mode == "deny":
             if tp.constraints:
@@ -180,11 +180,11 @@ def _fold_tool(
                 trace.record(tool, [_prov(g)])
                 return BaseToolPolicy(mode="deny")
 
-    # 2. Ceiling eligibility + ceiling constraints. A ceiling guardrail
+    # 2. Ceiling eligibility + ceiling constraints. A ceiling boundary
     #    (default_policy: deny) that doesn't list the tool makes it ineligible.
     contributors: list[Provenance] = []
     ceiling_constraints: list[str] = []
-    for g in guardrails:
+    for g in boundaries:
         tp = g.policy.tools.get(tool)
         is_ceiling = g.policy.default_policy.mode == "deny"
         if tp is not None and tp.mode in _GRANT_MODES:
@@ -209,7 +209,7 @@ def _fold_tool(
 
     mode = (
         "approval_required"
-        if _any_approval([tp for _, tp in grants], guardrails, tool)
+        if _any_approval([tp for _, tp in grants], boundaries, tool)
         else "allow"
     )
 
@@ -252,14 +252,14 @@ def _and_expr(constraints: list[str]) -> str:
 
 
 def _any_approval(
-    grants: list[ToolPolicy], guardrails: list[ModuleContent], tool: str
+    grants: list[ToolPolicy], boundaries: list[ModuleContent], tool: str
 ) -> bool:
     """Approval is stricter than allow: any approval among grants/ceilings wins."""
     if any(tp.mode == "approval_required" for tp in grants):
         return True
     return any(
         (tp := g.policy.tools.get(tool)) is not None and tp.mode == "approval_required"
-        for g in guardrails
+        for g in boundaries
     )
 
 

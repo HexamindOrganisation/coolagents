@@ -5,7 +5,7 @@ local — no platform, no API key):
 
   many module .yaml files  →  link()  →  one effective policy  →  (rego → wasm)
 
-You'll see the two tiers compose — **guardrails** (caps + hard denies) over
+You'll see the two tiers compose — **boundaries** (caps + hard denies) over
 **capabilities** (grants) — under the rule *fences intersect, grants union,
 denies win*. Edit a decision's args and watch allow / deny / approval resolve
 live. If `opa` is on PATH, each decision is also checked against the compiled
@@ -79,7 +79,7 @@ def _(mo):
         Instead of one policy file per agent, an agent's policy is a **stack of
         modules** composed into one effective policy:
 
-        - **Guardrails** (security-owned) — caps + hard denies. A guardrail
+        - **Boundaries** (security-owned) — caps + hard denies. A boundary
           `allow` is a *ceiling*, not a grant.
         - **Capabilities** (team-owned) — additive grants only.
 
@@ -100,7 +100,7 @@ def _(mo):
 def _(dedent):
     # Three modules — the same files that live in deploy/demo_policies/. Edit
     # them here and the whole notebook re-resolves.
-    GUARDRAILS = {
+    BOUNDARIES = {
         "org_core": dedent(
             """
             # floor: only subtracts what it names; unlisted tools pass through.
@@ -127,26 +127,26 @@ def _(dedent):
             """
         ),
     }
-    return CAPABILITIES, GUARDRAILS
+    return CAPABILITIES, BOUNDARIES
 
 
 @app.cell
-def _(CAPABILITIES, GUARDRAILS, Path, load_local_modules, tempfile):
+def _(CAPABILITIES, BOUNDARIES, Path, load_local_modules, tempfile):
     # Write the modules to a temp policies/ tree and load them through the real
     # local-files loader — exactly what `hexgate policy resolve --dir` does.
     _root = Path(tempfile.mkdtemp(prefix="hexgate-demo-"))
-    for _kind, _mods in (("guardrails", GUARDRAILS), ("capabilities", CAPABILITIES)):
+    for _kind, _mods in (("boundaries", BOUNDARIES), ("capabilities", CAPABILITIES)):
         _dir = _root / "policies" / _kind
         _dir.mkdir(parents=True, exist_ok=True)
         for _name, _body in _mods.items():
             (_dir / f"{_name}.yaml").write_text(_body, encoding="utf-8")
 
-    guardrails, capabilities = load_local_modules(_root)
-    return capabilities, guardrails
+    boundaries, capabilities = load_local_modules(_root)
+    return capabilities, boundaries
 
 
 @app.cell
-def _(capabilities, guardrails, mo):
+def _(capabilities, boundaries, mo):
     def _row(m):
         tools = ", ".join(sorted(m.policy.tools)) or "—"
         return {
@@ -157,7 +157,7 @@ def _(capabilities, guardrails, mo):
         }
 
     mo.ui.table(
-        [_row(m) for m in (*guardrails, *capabilities)],
+        [_row(m) for m in (*boundaries, *capabilities)],
         selection=None,
     )
     return
@@ -178,8 +178,8 @@ def _(mo):
 
 
 @app.cell
-def _(capabilities, guardrails, link_policy_set):
-    result = link_policy_set(guardrails, capabilities)
+def _(capabilities, boundaries, link_policy_set):
+    result = link_policy_set(boundaries, capabilities)
     effective = result.effective["default"]
     return effective, result
 
@@ -214,7 +214,7 @@ def _(mo, result):
         "\n\n**Shadowed (ineligible under a ceiling):** "
         + ", ".join(f"`{t}` ← {p.module}" for t, p in result.trace.shadowed.items())
         if result.trace.shadowed
-        else "\n\n**Shadowed:** none (floor guardrail — nothing gated out)."
+        else "\n\n**Shadowed:** none (floor boundary — nothing gated out)."
     )
     mo.md(
         "**Provenance** — every rule traces to its source layers\n\n"
@@ -238,7 +238,9 @@ def _(OPA, WasmPolicy, compile_to_rego, compile_to_wasm, effective):
 def _(result, verdict_from_rego, wasm_engine):
     def decide(tool, args):
         """Return (pydantic_outcome, wasm_outcome) for a tool call."""
-        py = result.policy_set.evaluate(role="default", tool=tool, args=args).outcome.value
+        py = result.policy_set.evaluate(
+            role="default", tool=tool, args=args
+        ).outcome.value
         if wasm_engine is None:
             return py, None
         wo = verdict_from_rego(
@@ -258,7 +260,7 @@ def _(mo):
         ## 3 · Try a decision
 
         Pick a tool and edit the args, then **▶ Check**. `refund_order` shows the
-        interesting cases: over the $1000 cap → deny (guardrail), wrong currency →
+        interesting cases: over the $1000 cap → deny (boundary), wrong currency →
         deny (no grant), `delete_database` → always deny, unlisted tool → deny.
         """
     )
@@ -280,7 +282,9 @@ def _(effective, mo):
         )
         .batch(
             tool=mo.ui.dropdown(_tools, value="refund_order"),
-            args=mo.ui.text_area(value='{"amount": 800, "currency": "USD"}', full_width=True),
+            args=mo.ui.text_area(
+                value='{"amount": 800, "currency": "USD"}', full_width=True
+            ),
         )
         .form(submit_button_label="▶ Check decision")
     )
@@ -299,7 +303,9 @@ def _(OPA, decide, json, mo, try_it):
         return mo.callout(mo.md(f"**{engine}**\n\n### {label}"), kind=kind)
 
     if try_it.value is None:
-        _out = mo.callout(mo.md("Pick a tool + args, then **▶ Check decision**."), kind="info")
+        _out = mo.callout(
+            mo.md("Pick a tool + args, then **▶ Check decision**."), kind="info"
+        )
     else:
         _v = try_it.value
         try:
@@ -368,14 +374,14 @@ def _(A, D, M, evaluate_outcomes, link, mo):
     _eur = M("eur", "capability", {"refund": A(['args.currency == "EUR"'])})
     _union, _ = link([], [_usd, _eur])
 
-    # fences INTERSECT — two guardrail caps → the stricter wins
-    _g1 = M("cap1000", "guardrail", {"refund": A(["args.amount <= 1000"])})
-    _g2 = M("cap500", "guardrail", {"refund": A(["args.amount <= 500"])})
+    # fences INTERSECT — two boundary caps → the stricter wins
+    _g1 = M("cap1000", "boundary", {"refund": A(["args.amount <= 1000"])})
+    _g2 = M("cap500", "boundary", {"refund": A(["args.amount <= 500"])})
     _intersect, _ = link([_g1, _g2], [M("c", "capability", {"refund": A()})])
 
-    # deny WINS — guardrail deny beats a capability grant
+    # deny WINS — boundary deny beats a capability grant
     _dw, _ = link(
-        [M("g", "guardrail", {"wire": D()})], [M("c", "capability", {"wire": A()})]
+        [M("g", "boundary", {"wire": D()})], [M("c", "capability", {"wire": A()})]
     )
 
     mo.vstack(
@@ -389,7 +395,7 @@ def _(A, D, M, evaluate_outcomes, link, mo):
             evaluate_outcomes(
                 _intersect, [("refund", {"amount": 400}), ("refund", {"amount": 700})]
             ),
-            mo.md("**deny wins** — guardrail deny beats the grant"),
+            mo.md("**deny wins** — boundary deny beats the grant"),
             evaluate_outcomes(_dw, [("wire", {})]),
         ]
     )
@@ -414,15 +420,13 @@ def _(mo):
 @app.cell
 def _(A, D, LinkError, M, link, mo):
     # Capabilities may only grant — a capability that tries to deny is a hard
-    # LinkError, so a team can never silently punch a hole in a guardrail.
+    # LinkError, so a team can never silently punch a hole in a boundary.
     try:
         link([], [M("rogue", "capability", {"refund": D()})])
         _msg = "no error (unexpected)"
     except LinkError as exc:
         _msg = str(exc)
-    mo.callout(
-        mo.md(f"**capabilities can't deny**\n\n```\n{_msg}\n```"), kind="danger"
-    )
+    mo.callout(mo.md(f"**capabilities can't deny**\n\n```\n{_msg}\n```"), kind="danger")
     return
 
 
@@ -432,8 +436,8 @@ def _(mo):
         """
         ## 5 · Ceiling vs floor
 
-        A guardrail's `default_policy` sets its posture. Same capabilities below,
-        two guardrails:
+        A boundary's `default_policy` sets its posture. Same capabilities below,
+        two boundaries:
 
         - **floor** (`default_policy: allow`) — only subtracts named tools;
           `lookup_order` / `send_email` pass through.
@@ -449,11 +453,15 @@ def _(A, D, M, link, mo):
     from hexgate.security import evaluate_tool_call
 
     _caps = [
-        M("payments", "capability", {"refund": A(["args.amount <= 1000"]), "lookup_order": A()}),
+        M(
+            "payments",
+            "capability",
+            {"refund": A(["args.amount <= 1000"]), "lookup_order": A()},
+        ),
         M("leaf", "capability", {"send_email": A()}),
     ]
-    _floor = M("g", "guardrail", {"refund": A(), "delete": D()}, default="allow")
-    _ceiling = M("g", "guardrail", {"refund": A(), "delete": D()}, default="deny")
+    _floor = M("g", "boundary", {"refund": A(), "delete": D()}, default="allow")
+    _ceiling = M("g", "boundary", {"refund": A(), "delete": D()}, default="deny")
 
     _eff_floor, _ = link([_floor], _caps)
     _eff_ceiling, _ = link([_ceiling], _caps)
@@ -465,10 +473,7 @@ def _(A, D, M, link, mo):
     _rows = "\n".join(
         f"| `{t}` | {_o(_eff_floor, t)} | {_o(_eff_ceiling, t)} |" for t in _tools
     )
-    mo.md(
-        "| tool | floor guardrail | ceiling guardrail |\n"
-        "| --- | --- | --- |\n" + _rows
-    )
+    mo.md("| tool | floor boundary | ceiling boundary |\n| --- | --- | --- |\n" + _rows)
     return
 
 
