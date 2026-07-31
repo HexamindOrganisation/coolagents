@@ -4,10 +4,8 @@ import {
   Check,
   Copy,
   Fingerprint,
-  Filter,
   KeyRound,
   Plus,
-  RefreshCcw,
   Trash2,
   Clock,
   AlertTriangle,
@@ -48,30 +46,6 @@ function formatCreated(iso: string): string {
     month: "short",
     day: "2-digit",
   });
-}
-
-function CopyButton({
-  value,
-  size = "sm",
-}: {
-  value: string;
-  size?: "sm" | "default";
-}) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      variant="ghost"
-      size={size === "sm" ? "icon" : "default"}
-      onClick={async () => {
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
-      }}
-      className={size === "sm" ? "size-7" : undefined}
-    >
-      {copied ? <Check className="text-allow" /> : <Copy />}
-    </Button>
-  );
 }
 
 function JustMintedBanner({
@@ -332,16 +306,6 @@ export function TokensPage() {
               · {tokens.data?.length ?? 0}
             </span>
           </div>
-          <div className="flex items-center gap-1 text-xs text-muted-foreground">
-            <Button variant="ghost" size="sm" className="gap-1.5 text-xs">
-              <Filter className="size-3.5" />
-              Filter
-            </Button>
-            <Button variant="ghost" size="sm" className="gap-1.5 text-xs">
-              <Clock className="size-3.5" />
-              Last used
-            </Button>
-          </div>
         </div>
 
         {tokens.isLoading ? (
@@ -421,16 +385,6 @@ export function TokensPage() {
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center justify-end gap-0.5">
-                        <CopyButton value={t.masked} />
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-7 text-muted-foreground"
-                          disabled
-                          title="Rotate (coming soon)"
-                        >
-                          <RefreshCcw className="size-3.5" />
-                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
