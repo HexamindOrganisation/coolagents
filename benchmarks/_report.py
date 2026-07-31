@@ -10,6 +10,7 @@ two runs across commits.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -50,10 +51,16 @@ class Stats:
 
 
 def _percentile(ordered: list[float], pct: int) -> float:
-    """Nearest-rank percentile over an already-sorted list."""
+    """Nearest-rank percentile over an already-sorted list.
+
+    Uses ``ceil`` (not ``round``): the nearest-rank definition takes the
+    ceil(P/100 · N)-th value, so at small N a ``round``-based index would
+    understate the tail — e.g. p95 over 30 samples must be the 29th, not
+    the banker's-rounded 28th.
+    """
     if not ordered:
         return 0.0
-    rank = max(0, min(len(ordered) - 1, round(pct / 100 * len(ordered)) - 1))
+    rank = max(0, min(len(ordered) - 1, math.ceil(pct / 100 * len(ordered)) - 1))
     return ordered[rank]
 
 

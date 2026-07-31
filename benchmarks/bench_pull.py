@@ -18,7 +18,10 @@ Segments measured:
                            Skipped when the platform served no compiled bundle.
   * ``pull_cold_200``    — full ``fetch()``: round-trip + decode + verify.
   * ``pull_warm_304``    — conditional ``fetch()`` (If-None-Match → 304): the
-                           per-turn refresh hot path.
+                           per-turn refresh hot path. Only meaningful on the
+                           WASM-bundle path — the no-bundle (pydantic-fallback)
+                           branch never returns a 304, so this row is skipped
+                           there rather than mislabeling a full 200 pull.
 """
 
 from __future__ import annotations
@@ -54,10 +57,14 @@ def _one_time_stats(agent_name: str) -> tuple[Stats, HexgateClient]:
 
 def _verify_only_stats(
     client: HexgateClient, agent_name: str, iterations: int
-) -> list[Stats]:
+) -> tuple[list[Stats], bool]:
     """Capture one real payload, then loop decode+verify locally — pure
     crypto, zero network variance. This is the honest 'what does bundle
-    verification cost' number."""
+    verification cost' number.
+
+    Returns ``(stats, has_bundle)``: ``has_bundle`` is False when the
+    platform served no compiled bundle, which the caller uses to skip the
+    304-only segments that can't happen on that branch."""
     payload, _ = client.get_agent(agent_name)
     if payload is None:
         raise HexgateError("unconditional get_agent returned no payload")
@@ -69,7 +76,7 @@ def _verify_only_stats(
             "(pydantic-fallback shape) — skipping verify_only.",
             file=sys.stderr,
         )
-        return []
+        return [], False
     return [
         measure(
             "verify_only",
@@ -77,7 +84,7 @@ def _verify_only_stats(
             iterations=iterations,
             warmup=min(iterations, 50),
         )
-    ]
+    ], True
 
 
 def _cold_pull_stats(client: HexgateClient, agent_name: str, samples: int) -> Stats:
@@ -90,14 +97,29 @@ def _cold_pull_stats(client: HexgateClient, agent_name: str, samples: int) -> St
     return measure("pull_cold_200", cold, iterations=samples, warmup=NETWORK_WARMUP)
 
 
-def _warm_refresh_stats(client: HexgateClient, agent_name: str, samples: int) -> Stats:
-    """One source, primed once, then looped — every call sends If-None-Match
-    and the platform answers 304. This is the actual per-turn cost."""
+def _warm_refresh_stats(
+    client: HexgateClient, agent_name: str, samples: int, has_bundle: bool
+) -> list[Stats]:
+    """One source, primed once, then looped. On the WASM-bundle path every
+    call sends If-None-Match and the platform answers 304 — the actual
+    per-turn cost. On the no-bundle branch the source resets its etag on
+    every fetch (see ``PlatformPolicySource.fetch``), so no 304 is possible
+    and looping would time a full 200 + YAML parse mislabeled as a 304;
+    skip the row there instead."""
+    if not has_bundle:
+        print(
+            f"note: platform served no compiled bundle for {agent_name!r} "
+            "(pydantic-fallback shape) — no 304 hot path, skipping pull_warm_304.",
+            file=sys.stderr,
+        )
+        return []
     source = PlatformPolicySource(client, agent_name)
     source.fetch()  # prime the cached etag
-    return measure(
-        "pull_warm_304", source.fetch, iterations=samples, warmup=NETWORK_WARMUP
-    )
+    return [
+        measure(
+            "pull_warm_304", source.fetch, iterations=samples, warmup=NETWORK_WARMUP
+        )
+    ]
 
 
 def main() -> int:
@@ -126,10 +148,18 @@ def main() -> int:
     try:
         one_time, client = _one_time_stats(args.agent_name)
         rows: list[Stats] = [one_time]
-        rows += _verify_only_stats(client, args.agent_name, iterations=1000)
+        verify_rows, has_bundle = _verify_only_stats(
+            client, args.agent_name, iterations=1000
+        )
+        rows += verify_rows
         rows.append(_cold_pull_stats(client, args.agent_name, args.samples))
-        rows.append(_warm_refresh_stats(client, args.agent_name, args.samples))
-    except HexgateError as exc:
+        rows += _warm_refresh_stats(client, args.agent_name, args.samples, has_bundle)
+    except (HexgateError, RuntimeError, OSError) as exc:
+        # HexgateError: API/transport errors the client already wraps.
+        # RuntimeError: decode_and_verify_platform_bundle raises this on a
+        #   served-but-invalid bundle (bad base64 / signature / sha256).
+        # OSError: a socket read-timeout during urlopen().read() escapes the
+        #   client unwrapped (TimeoutError is an OSError subclass).
         print(f"error talking to the platform: {exc}", file=sys.stderr)
         return 1
 
