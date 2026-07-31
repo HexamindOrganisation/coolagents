@@ -92,7 +92,7 @@ const workspaceLinks = [
   { to: "/audit", label: "Audit", icon: ScrollText },
   { to: "/usage", label: "Usage", icon: BarChart3 },
   { to: "/bans", label: "Bans", icon: Ban },
-  { to: "/tokens", label: "API Keys", icon: KeyRound },
+  { to: "/tokens", label: "API keys", icon: KeyRound },
   { to: "/orgs", label: "Organizations", icon: Building2 },
   { to: "/settings", label: "Settings", icon: Settings2 },
 ];
