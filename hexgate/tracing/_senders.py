@@ -146,13 +146,23 @@ class AuditSender:
             # no loop anywhere in the process (e.g. pydantic_ai's
             # run_sync()). Prefer handing back to the bound loop; only fall
             # to a plain background thread when no loop exists at all.
+            #
+            # is_running(), not is_closed(): self._loop is a singleton
+            # shared across every adapter using this api_key, and it's
+            # rebound to whichever loop last called emit() while running
+            # (_ensure_loop_state). Some adapters (e.g. the openai-agents
+            # SDK's run_sync()) deliberately keep their default loop open
+            # across calls without ever driving it again afterward — open
+            # but idle, so it passes is_closed() yet will never execute a
+            # call_soon_threadsafe callback. is_running() is the only check
+            # that actually reflects whether anyone is still pumping it.
             loop = self._loop
-            if loop is not None and not loop.is_closed():
+            if loop is not None and loop.is_running():
                 try:
                     loop.call_soon_threadsafe(self._spawn_send, event)
                     return
                 except RuntimeError:
-                    pass  # loop torn down between the is_closed() check and the call
+                    pass  # loop torn down between the is_running() check and the call
             self._spawn_sync_send(event)
             return
         self._ensure_loop_state(loop)
