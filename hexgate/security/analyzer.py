@@ -26,18 +26,19 @@ from typing import TYPE_CHECKING, Any, Literal
 from hexgate.security.constraints import iter_arg_refs, parse_constraint
 from hexgate.security.linker import link_policy_set
 from hexgate.security.modules import (
+    GRANT_MODES,
     LayerKind,
     LinkError,
     LinkResult,
     ModuleContent,
 )
+from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
 if TYPE_CHECKING:  # avoid importing the manifest package eagerly
     from hexgate.manifest.models import AgentManifest
 
 Severity = Literal["error", "warning", "info"]
-_GRANT_MODES = ("allow", "approval_required")
-_SEVERITY_RANK = {"error": 0, "warning": 1, "info": 2}
+SEVERITY_RANK: dict[Severity, int] = {"error": 0, "warning": 1, "info": 2}
 
 
 @dataclass(frozen=True)
@@ -92,33 +93,51 @@ def analyze(
     lints += _redundant_grants(capabilities)
     if manifest is not None:
         lints += _drift(boundaries, capabilities, manifest)
-    return sorted(lints, key=lambda lint: _SEVERITY_RANK[lint.severity])
+    return sorted(lints, key=lambda lint: SEVERITY_RANK[lint.severity])
 
 
 def _dead_grants(
     result: LinkResult, capabilities: list[ModuleContent]
 ) -> list[PolicyLint]:
-    """A capability grant for a tool a ceiling made ineligible never fires."""
+    """A capability grant that the effective policy doesn't allow never fires.
+
+    Keyed off the *resolved* policy, not just ``trace.shadowed``, so it catches
+    every dead grant: a ceiling that excludes the tool AND a boundary that
+    hard-denies it (the latter never enters ``shadowed`` — it takes the
+    absolute-deny path in the fold). A grant survives iff the effective tool is
+    still allow/approval.
+    """
+    effective = result.effective[DEFAULT_ROLE_NAME]
     out: list[PolicyLint] = []
-    for tool, shadowed_by in result.trace.shadowed.items():
-        for cap in capabilities:
-            tp = cap.policy.tools.get(tool)
-            if tp is not None and tp.mode in _GRANT_MODES:
-                out.append(
-                    PolicyLint(
-                        code="dead-grant",
-                        severity="warning",
-                        message=(
-                            f"{cap.name!r} grants {tool!r} but boundary "
-                            f"{shadowed_by.module!r} (a ceiling) never permits it "
-                            f"— this grant never fires"
-                        ),
-                        source=cap.source,
-                        tier="capability",
-                        tool=tool,
-                    )
+    for cap in capabilities:
+        for tool, tp in cap.policy.tools.items():
+            if tp.mode not in GRANT_MODES:
+                continue
+            eff = effective.tools.get(tool)
+            if eff is not None and eff.mode in GRANT_MODES:
+                continue  # the grant contributes to the effective allow — alive
+            out.append(
+                PolicyLint(
+                    code="dead-grant",
+                    severity="warning",
+                    message=(
+                        f"{cap.name!r} grants {tool!r} but {_dead_reason(tool, result)}"
+                        f" — this grant never fires"
+                    ),
+                    source=cap.source,
+                    tier="capability",
+                    tool=tool,
                 )
+            )
     return out
+
+
+def _dead_reason(tool: str, result: LinkResult) -> str:
+    """Why a grant is dead: a ceiling that excludes it, or a boundary deny."""
+    shadowed_by = result.trace.shadowed.get(tool)
+    if shadowed_by is not None:
+        return f"boundary {shadowed_by.module!r} (a ceiling) never permits it"
+    return "a boundary denies it"
 
 
 def _redundant_grants(capabilities: list[ModuleContent]) -> list[PolicyLint]:
@@ -127,7 +146,7 @@ def _redundant_grants(capabilities: list[ModuleContent]) -> list[PolicyLint]:
     seen: dict[tuple[str, str, tuple[str, ...]], ModuleContent] = {}
     for cap in capabilities:
         for tool, tp in cap.policy.tools.items():
-            if tp.mode not in _GRANT_MODES:
+            if tp.mode not in GRANT_MODES:
                 continue
             key = (tool, tp.mode, tuple(sorted(tp.constraints)))
             first = seen.get(key)

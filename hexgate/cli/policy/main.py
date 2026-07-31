@@ -1,10 +1,11 @@
 """`hexgate policy` subcommand — author + inspect + dry-run policy documents.
 
-Wraps the compiler library and both enforcement engines in a five-verb
-CLI: ``build``, ``validate``, ``show-rego``, ``test``, ``keygen``. Every
-verb is a thin wrapper — the heavy lifting lives in
-:mod:`hexgate.security`. That symmetry lets the platform's save flow use
-the same code without duplication.
+Wraps the compiler library and both enforcement engines in a set of thin
+verbs: ``build``, ``validate``, ``show-rego``, ``test``, ``keygen``,
+``resolve`` (compose a module bundle into one effective policy), and
+``check`` (lint that bundle). Every verb is a thin wrapper — the heavy
+lifting lives in :mod:`hexgate.security`. That symmetry lets the platform's
+save flow use the same code without duplication.
 
 ``build`` compiles the policy to a signed WASM bundle (yaml + rego +
 wasm + manifest, ``--sign-key`` to sign); ``test`` evaluates a decision
@@ -554,30 +555,34 @@ def _main_check(args: argparse.Namespace) -> int:
             print(f"manifest error: {exc}", file=sys.stderr)
             return 1
 
+    from hexgate.security.analyzer import SEVERITY_RANK
+
     lints = check_bundle(boundaries, capabilities, manifest=manifest)
 
-    if not lints:
-        print("✓ No policy lints.")
-        if manifest is None:
+    # A link error short-circuits before drift/soft lints run, so the
+    # "supply a manifest" hint only makes sense when linking succeeded.
+    linked = not (len(lints) == 1 and lints[0].code == "link-error")
+
+    def _drift_hint() -> None:
+        if manifest is None and linked:
             print(
                 "  (drift checks skipped — pass --manifest to enable them)",
                 file=sys.stderr,
             )
+
+    if not lints:
+        print("✓ No policy lints.")
+        _drift_hint()
         return 0
 
     icon = {"error": "✗", "warning": "!", "info": "·"}
-    rank = {"error": 0, "warning": 1, "info": 2}
     for lint in lints:
         where = f" ({lint.source})" if lint.source else ""
         print(f"{icon.get(lint.severity, '·')} [{lint.code}] {lint.message}{where}")
-    if manifest is None:
-        print(
-            "  (drift checks skipped — pass --manifest to enable them)",
-            file=sys.stderr,
-        )
+    _drift_hint()
 
-    threshold = rank[args.max_severity]
-    worst = min(rank[lint.severity] for lint in lints)
+    threshold = SEVERITY_RANK[args.max_severity]
+    worst = min(SEVERITY_RANK[lint.severity] for lint in lints)
     return 1 if worst <= threshold else 0
 
 

@@ -38,6 +38,7 @@ from hexgate.security.models import (
     ToolPolicy,
 )
 from hexgate.security.modules import (
+    GRANT_MODES,
     LinkError,
     LinkResult,
     ModuleContent,
@@ -45,8 +46,6 @@ from hexgate.security.modules import (
     RuleTrace,
 )
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySet
-
-_GRANT_MODES = ("allow", "approval_required")
 
 
 def link_policy_set(
@@ -187,10 +186,10 @@ def _fold_tool(
     for g in boundaries:
         tp = g.policy.tools.get(tool)
         is_ceiling = g.policy.default_policy.mode == "deny"
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             ceiling_constraints.extend(tp.constraints)  # fences intersect (AND)
             contributors.append(_prov(g))
-        elif is_ceiling and (tp is None or tp.mode not in _GRANT_MODES):
+        elif is_ceiling and (tp is None or tp.mode not in GRANT_MODES):
             # A ceiling only permits tools it explicitly allows/approves. If it
             # doesn't (unlisted, or mentioned only via a conditional deny), the
             # tool is ineligible — a capability grant can't make it eligible.
@@ -201,7 +200,7 @@ def _fold_tool(
     grants: list[tuple[ModuleContent, ToolPolicy]] = []
     for cap in capabilities:
         tp = cap.policy.tools.get(tool)
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             grants.append((cap, tp))
     if not grants:
         return None

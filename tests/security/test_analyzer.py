@@ -78,6 +78,21 @@ def test_dead_grant_when_ceiling_excludes_a_capability_grant():
     assert "org" in dead[0].message  # names the shadowing boundary
 
 
+def test_dead_grant_when_a_boundary_hard_denies_the_tool():
+    # The most clear-cut dead grant: an unconditional boundary deny beats the
+    # grant. This never enters trace.shadowed, so keying off the effective
+    # policy (not shadowed) is what catches it.
+    boundary = _mod("org", "boundary", {"wire": _deny()})  # floor, unconditional deny
+    cap = _mod("c", "capability", {"wire": _allow()})
+
+    lints = check([boundary], [cap])
+
+    dead = [lint for lint in lints if lint.code == "dead-grant"]
+    assert len(dead) == 1
+    assert dead[0].tool == "wire"
+    assert "denies" in dead[0].message
+
+
 # --- redundant-grant ---
 
 
@@ -155,9 +170,9 @@ def test_analyze_sorts_errors_first():
     result = link_policy_set([boundary], [c1, c2])
     lints = analyze(result, [boundary], [c1, c2], manifest=manifest)
 
+    from hexgate.security.analyzer import SEVERITY_RANK
+
     severities = [lint.severity for lint in lints]
-    assert severities == sorted(
-        severities, key={"error": 0, "warning": 1, "info": 2}.get
-    )
+    assert severities == sorted(severities, key=SEVERITY_RANK.get)
     assert ("unknown-tool", "ghost") in _codes(lints)  # error present
     assert ("redundant-grant", "refund") in _codes(lints)  # info present
