@@ -56,7 +56,7 @@ export function AgentsPage() {
     <div className="-mx-8 -my-6 h-[calc(100vh-56px)] flex flex-col overflow-hidden">
       <header className="flex items-center gap-3 px-6 py-3 border-b border-border bg-card">
         <Bot className="size-4 text-muted-foreground" />
-        <span className="text-sm font-medium">Agent</span>
+        <span className="text-sm font-medium">Agents</span>
         <AgentPicker
           agents={manifests.data ?? []}
           value={selectedName}

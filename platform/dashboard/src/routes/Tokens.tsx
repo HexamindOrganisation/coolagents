@@ -106,7 +106,7 @@ function JustMintedBanner({
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-2 text-sm">
           <Fingerprint className="size-4 text-primary" />
-          <span className="font-medium">Token minted</span>
+          <span className="font-medium">API key minted</span>
           <span className="text-muted-foreground">·</span>
           <span className="font-mono text-xs">{token.name}</span>
         </div>
@@ -195,15 +195,15 @@ function MintDialog({
       <DialogTrigger asChild>
         <Button className="gap-2">
           <Plus className="size-4" />
-          Mint new token
+          Mint new API key
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Mint dev token</DialogTitle>
+          <DialogTitle>Mint API key</DialogTitle>
           <DialogDescription>
-            Tokens authenticate backend services to Hexgate. Use a clear name so
-            you know where it's deployed.
+            API keys authenticate backend services to Hexgate. Use a clear name
+            so you know where it's deployed.
           </DialogDescription>
         </DialogHeader>
 
@@ -261,7 +261,7 @@ function MintDialog({
             onClick={() => mutation.mutate({ name, env })}
             disabled={name.trim().length === 0 || mutation.isPending}
           >
-            {mutation.isPending ? "Minting…" : "Mint token"}
+            {mutation.isPending ? "Minting…" : "Mint API key"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -291,8 +291,8 @@ export function TokensPage() {
   if (scope.status === "no-project") {
     return (
       <div className="max-w-[1400px] mx-auto">
-        <h1 className="text-2xl font-semibold tracking-tight">Tokens</h1>
-        <NoProjectEmptyState resource="tokens" />
+        <h1 className="text-2xl font-semibold tracking-tight">API keys</h1>
+        <NoProjectEmptyState resource="API keys" />
       </div>
     );
   }
@@ -301,14 +301,14 @@ export function TokensPage() {
     <div className="max-w-[1400px] mx-auto">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Tokens</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">API keys</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Long-lived dev tokens for backend services. Never commit to source
+            Long-lived API keys for backend services. Never commit to source
             control.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <DocsLink path={DOC_PATHS.tokens} label="Token docs" />
+          <DocsLink path={DOC_PATHS.tokens} label="API key docs" />
           {scope.projectId && (
             <MintDialog projectId={scope.projectId} onSuccess={setJustMinted} />
           )}
@@ -327,7 +327,7 @@ export function TokensPage() {
       <div className="mt-6 rounded-lg border border-border bg-card">
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <div className="text-sm">
-            Dev tokens{" "}
+            API keys{" "}
             <span className="text-muted-foreground">
               · {tokens.data?.length ?? 0}
             </span>
@@ -351,9 +351,9 @@ export function TokensPage() {
         ) : !tokens.data || tokens.data.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <KeyRound className="size-12 text-muted-foreground/50" />
-            <div className="text-sm font-medium">No tokens yet</div>
+            <div className="text-sm font-medium">No API keys yet</div>
             <div className="max-w-xs text-xs text-muted-foreground">
-              Mint your first dev token to let a backend service authenticate to
+              Mint your first API key to let a backend service authenticate to
               Hexgate.
             </div>
           </div>
@@ -362,7 +362,7 @@ export function TokensPage() {
             <thead>
               <tr className="border-b border-border text-[10px] uppercase tracking-wider text-muted-foreground">
                 <th className="px-5 py-2.5 text-left font-medium">Name</th>
-                <th className="px-5 py-2.5 text-left font-medium">Token</th>
+                <th className="px-5 py-2.5 text-left font-medium">API key</th>
                 <th className="px-5 py-2.5 text-left font-medium">Scopes</th>
                 <th className="px-5 py-2.5 text-left font-medium">Created</th>
                 <th className="px-5 py-2.5 text-left font-medium">Last used</th>
