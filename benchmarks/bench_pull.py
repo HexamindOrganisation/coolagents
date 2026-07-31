@@ -17,9 +17,10 @@ Segments measured:
                            captured bundle payload (base64 + Ed25519 + sha256).
                            Skipped when the platform served no compiled bundle.
   * ``pull_cold_200``    — full ``fetch()``: round-trip + decode + verify.
-  * ``pull_warm_304``    — conditional ``fetch()`` (If-None-Match → 304): the
-                           per-turn refresh hot path. Skipped on the no-bundle
-                           branch, which never returns a 304.
+  * ``pull_warm_304``    — conditional policy ``fetch()`` (If-None-Match → 304),
+                           in isolation. Skipped on the no-bundle branch.
+  * ``ban_warm_304``     — same conditional GET against ``/v1/bans``.
+  * ``policy+ban_b2b``   — both back to back: the real per-turn refresh cost.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from benchmarks._report import Stats, emit_json, measure, measure_once, print_ta
 from hexgate.bootstrap import bootstrap
 from hexgate.cloud.client import HexgateClient, HexgateError
 from hexgate.config.env import resolve_api_key, resolve_api_url
+from hexgate.security.bans import PlatformBanSource
 from hexgate.security.source import (
     PlatformPolicySource,
     decode_and_verify_platform_bundle,
@@ -101,24 +103,52 @@ def _cold_pull_stats(client: HexgateClient, agent_name: str, samples: int) -> St
 def _warm_refresh_stats(
     client: HexgateClient, agent_name: str, samples: int, has_bundle: bool
 ) -> list[Stats]:
-    """One source, primed once, then looped: each call sends If-None-Match
-    and gets a 304 — the per-turn cost. The no-bundle branch resets its etag
-    every fetch (never a 304), so skip the row there rather than mislabel a
-    full 200 pull as one."""
+    """Policy 304, ban 304, and both back to back — the real per-turn cost,
+    matching invoke's sequential `_refresh_policy_safely` then `_check_ban`
+    (never gathered, so additive). Sources primed once → every timed call
+    sends If-None-Match. Skipped on the no-bundle branch (never 304s)."""
     if not has_bundle:
         print(
             f"note: no compiled bundle for {agent_name!r} — no 304 hot path, "
-            "skipping pull_warm_304.",
+            "skipping warm-refresh rows.",
             file=sys.stderr,
         )
         return []
-    source = PlatformPolicySource(client, agent_name)
-    source.fetch()  # prime the cached etag
-    return [
+
+    policy = PlatformPolicySource(client, agent_name)
+    policy.fetch()  # prime etag
+    rows = [
         measure(
-            "pull_warm_304", source.fetch, iterations=samples, warmup=NETWORK_WARMUP
+            "pull_warm_304", policy.fetch, iterations=samples, warmup=NETWORK_WARMUP
         )
     ]
+
+    # PlatformBanSource is fail-soft; confirm the feed serves an etag first, or
+    # the ban rows would time a fast empty-return, not a conditional GET.
+    _, ban_etag = client.get_bans()
+    if ban_etag is None:
+        print(
+            "note: /v1/bans served no etag — skipping ban + back-to-back rows.",
+            file=sys.stderr,
+        )
+        return rows
+
+    ban = PlatformBanSource(client)
+    ban.fetch()  # prime etag
+
+    def back_to_back() -> None:
+        policy.fetch()
+        ban.fetch()
+
+    rows.append(
+        measure("ban_warm_304", ban.fetch, iterations=samples, warmup=NETWORK_WARMUP)
+    )
+    rows.append(
+        measure(
+            "policy+ban_b2b", back_to_back, iterations=samples, warmup=NETWORK_WARMUP
+        )
+    )
+    return rows
 
 
 def main() -> int:

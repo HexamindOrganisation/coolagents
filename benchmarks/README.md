@@ -51,8 +51,13 @@ Segments:
   compiled bundle (pydantic-fallback shape).
 - `pull_cold_200` — full `fetch()`: round-trip + decode + verify (fresh source
   each sample forces a 200).
-- `pull_warm_304` — conditional `fetch()` with `If-None-Match` → 304. This is
-  the actual per-chat-turn refresh cost.
+- `pull_warm_304` — conditional policy `fetch()` (`If-None-Match` → 304), in
+  isolation.
+- `ban_warm_304` — the same conditional GET against `/v1/bans`, in isolation.
+- `policy+ban_b2b` — both awaited back to back, the way every invoke entrypoint
+  runs them (`_refresh_policy_safely` then `_check_ban`, sequential). **This is
+  the actual per-chat-turn refresh cost** — the two round-trips are additive,
+  not overlapped.
 
 `pull_*` rows carry real network variance — read min vs p99, not p50 alone, as
 the SDK's fixed overhead. `verify_only` is the part that stays constant across
@@ -69,11 +74,13 @@ not a contract**; re-run on the target host:
 | `wasm_cache_hit` | < 1 µs |
 | enforcement `decide()` (per tool call) | ~200–300 µs |
 | `verify_only` (per pull, deterministic) | ~1.8 ms |
-| `pull_warm_304` (per chat turn) | ~50 ms (network-bound) |
+| `pull_warm_304` (policy, per turn) | ~50 ms (network-bound) |
+| `ban_warm_304` (bans, per turn) | ~50 ms (network-bound) |
+| `policy+ban_b2b` (real per-turn refresh) | ~100 ms (network-bound) |
 | `pull_cold_200` (on policy change) | ~76 ms (network-bound) |
 | `key_verify+jwks` (one-off, cold) | ~375 ms (network-bound) |
 
 Takeaway: the deterministic overhead hexgate adds per tool call is
-sub-millisecond (a few hundred µs of WASM eval); the recurring pull cost is a
-~50 ms conditional GET per turn, dominated by network round-trip, not by the
-SDK's crypto (~1.8 ms).
+sub-millisecond (a few hundred µs of WASM eval); the recurring pull cost is two
+sequential conditional GETs per turn (policy + bans, ~100 ms), dominated by
+network round-trip, not by the SDK's crypto (~1.8 ms).
