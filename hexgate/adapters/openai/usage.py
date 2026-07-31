@@ -28,8 +28,14 @@ class HexgateUsageHooks(RunHooks):
         response: ModelResponse,
     ) -> None:
         # agent.model is `str | Model | None` — only the str case gives a
-        # clean name; a Model implementation has no guaranteed name field.
-        model = agent.model if isinstance(agent.model, str) else ""
+        # clean name; a Model implementation has no guaranteed name field
+        # (agents.models.interface.Model exposes none). Fall back to the
+        # instance's class name rather than "" — the platform rejects an
+        # empty `model` outright (min_length=1), silently dropping the
+        # event.
+        model = (
+            agent.model if isinstance(agent.model, str) else type(agent.model).__name__
+        )
         emit_llm_usage(
             agent.name,
             model,

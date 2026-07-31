@@ -68,16 +68,17 @@ async def test_on_llm_end_emits_usage_from_response(
 
 
 @pytest.mark.asyncio
-async def test_on_llm_end_when_model_is_not_a_string_then_model_is_empty(
+async def test_on_llm_end_when_model_is_not_a_string_then_model_is_class_name(
     emitted: list[dict[str, Any]],
 ) -> None:
     """agent.model is `str | Model | None` — a Model instance (or None) has
-    no guaranteed name field, so it's reported as an empty string rather
-    than guessed at."""
+    no guaranteed name field, so it's reported as the instance's class name
+    rather than guessed at. Not "" — the platform rejects an empty `model`
+    outright (min_length=1), which would silently drop the event."""
     hooks = HexgateUsageHooks(api_key="k")
     agent = Agent(name="my-agent")  # model defaults to None
 
     await hooks.on_llm_end(context=object(), agent=agent, response=_response())
 
     [call] = emitted
-    assert call["model"] == ""
+    assert call["model"] == "NoneType"

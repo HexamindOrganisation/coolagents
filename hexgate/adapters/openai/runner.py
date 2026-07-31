@@ -8,6 +8,7 @@ enforcer, so a refresh swap reaches every clone.
 """
 
 import asyncio
+import warnings
 from contextlib import contextmanager
 
 import nest_asyncio
@@ -215,13 +216,38 @@ class HexgateRunner:
         )
         with user.sync_scope():
             with self._propagate(user, agent.name):
-                return Runner.run_sync(
+                result = Runner.run_sync(
                     wrapped_agent,
                     input,
                     run_config=run_config,
                     hooks=self._merge_hooks(hooks),
                     **kwargs,
                 )
+        self._drain_default_loop()
+        return result
+
+    def _drain_default_loop(self) -> None:
+        """``AgentRunner.run_sync`` (the ``agents`` SDK) deliberately keeps
+        its per-thread default loop open across calls rather than closing
+        it, but ``run_until_complete`` only waits for the top-level run —
+        not sibling tasks on the same loop. The last turn's fire-and-forget
+        audit-send (policy decision / LLM usage) can still be scheduled and
+        pending when ``run_sync`` returns, with nothing left to pump the
+        loop for it. Give it one last chance here; don't close the loop —
+        the SDK expects to find the same one open on the next call.
+
+        No-ops when there's no current loop at all — that just means
+        ``Runner.run_sync`` never got to the point of creating/binding one
+        (e.g. it's mocked out in a test), so there's nothing to drain."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                return
+        pending = asyncio.all_tasks(loop)
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
     def run_streamed(
         self,
