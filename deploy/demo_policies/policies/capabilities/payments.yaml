@@ -1,0 +1,4 @@
+# Payments capability pack (team-owned). Grants only.
+tools:
+  refund_order: { mode: allow, constraints: ['args.currency in ["USD", "EUR"]'] }
+  lookup_order: { mode: allow }
