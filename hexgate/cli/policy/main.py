@@ -213,6 +213,41 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_resolve.set_defaults(func=_main_resolve)
 
+    # ---- check ----
+    p_check = sub.add_parser(
+        "check",
+        help="Lint a bundle of policy modules (dead / redundant / drift).",
+        description=(
+            "Links the boundary + capability modules under <dir>/policies/ and "
+            "reports authoring problems that don't stop composition but are "
+            "almost always mistakes: a capability grant a boundary ceiling makes "
+            "dead, a duplicate grant, or (with --manifest) a rule referencing a "
+            "tool/arg the agent's code doesn't have. Exits non-zero when any lint "
+            "is at or above --max-severity, so CI can gate on it."
+        ),
+    )
+    p_check.add_argument(
+        "--dir",
+        default=".",
+        help="Repo root containing a policies/ tree (default: current dir).",
+    )
+    p_check.add_argument(
+        "--manifest",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Optional AgentManifest JSON. Enables drift checks (unknown tool / "
+            "arg); without it those are skipped."
+        ),
+    )
+    p_check.add_argument(
+        "--max-severity",
+        choices=("error", "warning", "info"),
+        default="error",
+        help="Exit non-zero if any lint is at or above this severity (default error).",
+    )
+    p_check.set_defaults(func=_main_check)
+
 
 def main(args: argparse.Namespace) -> int:
     """Entry point used by the top-level dispatcher in hexgate/cli/__init__.py."""
@@ -487,6 +522,63 @@ def _main_resolve(args: argparse.Namespace) -> int:
         for tool, by in sorted(result.trace.shadowed.items()):
             print(f"  {tool}  ← {by.module} ({by.source})", file=sys.stderr)
     return 0
+
+
+def _main_check(args: argparse.Namespace) -> int:
+    """Lint the local module bundle; exit non-zero at/above --max-severity."""
+    from hexgate.security import check as check_bundle
+    from hexgate.security import load_local_modules
+
+    try:
+        boundaries, capabilities = load_local_modules(args.dir)
+    except (ValueError, OSError) as exc:
+        print(f"load error: {exc}", file=sys.stderr)
+        return 1
+    if not boundaries and not capabilities:
+        print(
+            f"no modules found under {args.dir}/policies/"
+            " (expected policies/boundaries/ and/or policies/capabilities/)",
+            file=sys.stderr,
+        )
+        return 1
+
+    manifest = None
+    if args.manifest:
+        from hexgate.manifest.models import AgentManifest
+
+        try:
+            manifest = AgentManifest.model_validate_json(
+                Path(args.manifest).read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError, ValueError) as exc:
+            print(f"manifest error: {exc}", file=sys.stderr)
+            return 1
+
+    lints = check_bundle(boundaries, capabilities, manifest=manifest)
+
+    if not lints:
+        print("✓ No policy lints.")
+        if manifest is None:
+            print(
+                "  (drift checks skipped — pass --manifest to enable them)",
+                file=sys.stderr,
+            )
+        return 0
+
+    icon = {"error": "✗", "warning": "!", "info": "·"}
+    rank = {"error": 0, "warning": 1, "info": 2}
+    for lint in lints:
+        where = f" ({lint.source})" if lint.source else ""
+        print(f"{icon.get(lint.severity, '·')} [{lint.code}] {lint.message}{where}")
+    if manifest is None:
+        print(
+            "  (drift checks skipped — pass --manifest to enable them)",
+            file=sys.stderr,
+        )
+
+    threshold = rank[args.max_severity]
+    worst = min(rank[lint.severity] for lint in lints)
+    return 1 if worst <= threshold else 0
 
 
 def _main_test(args: argparse.Namespace) -> int:

@@ -90,6 +90,7 @@ from hexgate.security.modules import (
     RuleTrace,
 )
 from hexgate.security.linker import link, link_policy_set
+from hexgate.security.analyzer import PolicyLint, analyze, check
 from hexgate.security.module_loader import ModuleLoader, load_local_modules
 from hexgate.security.rego import compile_default_only, compile_to_rego
 from hexgate.security.rego_wasm import (
@@ -127,8 +128,11 @@ __all__ = [
     "LinkResult",
     "ModuleContent",
     "ModuleLoader",
+    "PolicyLint",
     "Provenance",
     "RuleTrace",
+    "analyze",
+    "check",
     "link",
     "link_policy_set",
     "load_local_modules",
