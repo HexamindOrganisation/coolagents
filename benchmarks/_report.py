@@ -53,10 +53,8 @@ class Stats:
 def _percentile(ordered: list[float], pct: int) -> float:
     """Nearest-rank percentile over an already-sorted list.
 
-    Uses ``ceil`` (not ``round``): the nearest-rank definition takes the
-    ceil(P/100 · N)-th value, so at small N a ``round``-based index would
-    understate the tail — e.g. p95 over 30 samples must be the 29th, not
-    the banker's-rounded 28th.
+    ``ceil``, not ``round``: at small N rounding understates the tail
+    (p95 of 30 samples is the 29th, not the banker's-rounded 28th).
     """
     if not ordered:
         return 0.0

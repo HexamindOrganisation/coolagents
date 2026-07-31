@@ -37,7 +37,7 @@ from benchmarks._report import (
 )
 from hexgate.runtime.context import User
 from hexgate.security.bundle import PolicyBundle, build_signed_bundle
-from hexgate.security.decision import DecisionOutcome
+from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.wasm_engine import WasmPolicy, _wasm_policy_cache
 
@@ -45,6 +45,12 @@ WARMUP = 500
 ITERATIONS = 10_000
 AGENT_NAME = "devops_agent"
 POLICY_PATH = Path(__file__).resolve().parent.parent / "examples" / "devops_policy.yaml"
+
+
+def _noop_observer(_decision: Decision) -> None:
+    """Wired only so ``decide()`` takes the ``copy.deepcopy(args)`` branch
+    every audited production enforcer takes; else the wrapper tax is
+    understated. Local-only, so it adds nothing beyond the copy."""
 
 
 @dataclass(frozen=True)
@@ -146,9 +152,11 @@ def _engine_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
 def _enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
     rows: list[Stats] = []
     for case in WORKLOAD:
-        # Audit sender left inert (no api_key wiring) so this measures the
-        # pure Decision-build + copy overhead, not a network emit.
-        enforcer = PolicyEnforcer(bundle, agent_name=AGENT_NAME)
+        # No audit_sender (no network emit), but a no-op observer so
+        # decide() still deep-copies args — the production wrapper tax.
+        enforcer = PolicyEnforcer(
+            bundle, agent_name=AGENT_NAME, decision_observer=_noop_observer
+        )
         user = User(user_id="bench", role=case.role)
         with user.sync_scope():
             rows.append(
