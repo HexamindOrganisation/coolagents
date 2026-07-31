@@ -23,7 +23,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Mapping
 
 from hexgate.approvals import ApprovalHandler
 from hexgate.egress.gate import Gate
@@ -102,17 +103,34 @@ async def tcp_egress_guard(
     host: str = "127.0.0.1",
     port: int = 0,
     approval_handler: ApprovalHandler | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> AsyncIterator[TcpEgressProxy]:
     """Start a :class:`TcpEgressProxy` for ``target`` and stop it on exit.
 
-    Unlike :func:`~hexgate.egress.proxy.egress_guard`, there is no env-var hook
-    to set (TCP clients don't read ``HTTP_PROXY``). The caller reads
-    ``proxy.host`` / ``proxy.port`` from the yielded proxy and points its
-    connection string there.
+    A database driver has no equivalent of ``HTTP_PROXY`` to read on its own, so
+    redirection is explicit. Two shapes, depending on who opens the connection.
+
+    Wrap an agent from the outside (the usual SDK model). Pass ``env`` to point
+    the driver's own endpoint variables at the proxy, so an agent that reads its
+    endpoint from the environment connects through the gate with no code change::
+
+        async with tcp_egress_guard(
+            enforcer, user, target=("db.internal", 5432),
+            env={"PGHOST": "{host}", "PGPORT": "{port}"},
+        ):
+            run_agent(...)  # its PGHOST/PGPORT-configured client is now gated
+
+    Each ``env`` value is a template with ``{host}`` / ``{port}`` placeholders (a
+    single ``DATABASE_URL`` works too:
+    ``env={"DATABASE_URL": "postgresql://app@{host}:{port}/db"}``). The variables
+    are set for the duration of the block and restored on exit. An agent that
+    hardcodes host and port inside a DSN cannot be redirected this way.
+
+    Build the connection yourself. Read ``proxy.host`` / ``proxy.port`` from the
+    yielded proxy and put them in your own connection string::
 
         async with tcp_egress_guard(enforcer, user, target=("db.internal", 5432)) as p:
             dsn = f"postgresql://user@{p.host}:{p.port}/app"
-            ...
     """
     proxy = TcpEgressProxy(
         enforcer,
@@ -123,7 +141,16 @@ async def tcp_egress_guard(
         approval_handler=approval_handler,
     )
     await proxy.start()
+    env = env or {}
+    saved = {name: os.environ.get(name) for name in env}
+    for name, template in env.items():
+        os.environ[name] = template.format(host=proxy.host, port=proxy.port)
     try:
         yield proxy
     finally:
+        for name, previous in saved.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
         await proxy.stop()

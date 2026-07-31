@@ -7,6 +7,7 @@ proxy runs on the test's own event loop, so every client is async.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -226,6 +227,53 @@ async def test_tcp_egress_guard_yields_running_proxy() -> None:
             assert await asyncio.wait_for(reader.readexactly(2), timeout=5) == b"yo"
             writer.close()
     finally:
+        echo.close()
+        await echo.wait_closed()
+
+
+async def test_guard_redirects_env_to_proxy_and_removes_after() -> None:
+    echo, echo_port = await _start_tcp_echo()
+    enforcer = _enforcer(constraints=['args.host == "127.0.0.1"'])
+    for var in ("PGHOST", "PGPORT"):
+        os.environ.pop(var, None)  # start from a clean slate
+    try:
+        async with tcp_egress_guard(
+            enforcer,
+            User(user_id="u", role="agent"),
+            target=("127.0.0.1", echo_port),
+            env={"PGHOST": "{host}", "PGPORT": "{port}"},
+        ) as proxy:
+            assert os.environ["PGHOST"] == proxy.host
+            assert os.environ["PGPORT"] == str(proxy.port)
+        # Not set before the guard, so removed on exit.
+        assert "PGHOST" not in os.environ
+        assert "PGPORT" not in os.environ
+    finally:
+        for var in ("PGHOST", "PGPORT"):
+            os.environ.pop(var, None)
+        echo.close()
+        await echo.wait_closed()
+
+
+async def test_guard_restores_preexisting_env() -> None:
+    echo, echo_port = await _start_tcp_echo()
+    enforcer = _enforcer(constraints=['args.host == "127.0.0.1"'])
+    os.environ["DATABASE_URL"] = "postgresql://real/db"
+    try:
+        async with tcp_egress_guard(
+            enforcer,
+            User(user_id="u", role="agent"),
+            target=("127.0.0.1", echo_port),
+            env={"DATABASE_URL": "postgresql://app@{host}:{port}/db"},
+        ) as proxy:
+            assert (
+                os.environ["DATABASE_URL"]
+                == f"postgresql://app@{proxy.host}:{proxy.port}/db"
+            )
+        # Restored to the prior value, not removed.
+        assert os.environ["DATABASE_URL"] == "postgresql://real/db"
+    finally:
+        os.environ.pop("DATABASE_URL", None)
         echo.close()
         await echo.wait_closed()
 
