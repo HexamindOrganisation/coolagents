@@ -215,15 +215,16 @@ class HexgateRunner:
         )
         with user.sync_scope():
             with self._propagate(user, agent.name):
-                result = Runner.run_sync(
-                    wrapped_agent,
-                    input,
-                    run_config=run_config,
-                    hooks=self._merge_hooks(hooks),
-                    **kwargs,
-                )
-        self._drain_default_loop()
-        return result
+                try:
+                    return Runner.run_sync(
+                        wrapped_agent,
+                        input,
+                        run_config=run_config,
+                        hooks=self._merge_hooks(hooks),
+                        **kwargs,
+                    )
+                finally:
+                    self._drain_default_loop()
 
     def _drain_default_loop(self) -> None:
         """``AgentRunner.run_sync`` (the ``agents`` SDK) deliberately keeps
