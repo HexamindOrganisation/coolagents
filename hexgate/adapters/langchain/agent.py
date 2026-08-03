@@ -9,6 +9,7 @@ from langfuse import get_client, propagate_attributes
 from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.runtime import User
 
@@ -69,12 +70,7 @@ class HexgateLangchainAgent:
             self._ban_gate.check(user)
 
     def _propagate_kwargs(self, user: User, method: str) -> dict[str, Any]:
-        return {
-            "tags": [f"langchain.agent.{method}"],
-            "user_id": user.user_id,
-            "session_id": user.session_id,
-            "metadata": {"user_role": user.role},
-        }
+        return langfuse_propagate_kwargs(user, f"langchain.agent.{method}")
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
         """Append the Hexgate callback handlers to ``config['callbacks']``."""

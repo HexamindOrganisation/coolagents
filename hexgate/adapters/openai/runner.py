@@ -27,6 +27,7 @@ from agents.lifecycle import RunHooksBase
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
+from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
@@ -147,11 +148,9 @@ class HexgateRunner:
     @contextmanager
     def _propagate(self, user: User, agent_name: str):
         """Propagate User identity into Langfuse spans for the block."""
-        kwargs: dict[str, any] = {"tags": [f"openai.runner.run.{agent_name}"]}
-        kwargs["user_id"] = user.user_id
-        kwargs["session_id"] = user.session_id
-        kwargs["metadata"] = {"user_role": user.role}
-        with propagate_attributes(**kwargs):
+        with propagate_attributes(
+            **langfuse_propagate_kwargs(user, f"openai.runner.run.{agent_name}")
+        ):
             yield
 
     def _merge_hooks(self, hooks: RunHooks | None) -> RunHooks:
@@ -245,9 +244,7 @@ class HexgateRunner:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
                 return
-        pending = asyncio.all_tasks(loop)
-        if pending:
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        drain_pending_tasks(loop)
 
     def run_streamed(
         self,

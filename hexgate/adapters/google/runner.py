@@ -16,6 +16,7 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
+from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
@@ -80,11 +81,9 @@ class HexgateRunner:
     @contextmanager
     def _propagate(self, user: User):
         """Propagate User identity into Langfuse spans for the block."""
-        kwargs: dict[str, Any] = {"tags": [f"google.runner.run.{self._agent_name}"]}
-        kwargs["user_id"] = user.user_id
-        kwargs["session_id"] = user.session_id
-        kwargs["metadata"] = {"user_role": user.role}
-        with propagate_attributes(**kwargs):
+        with propagate_attributes(
+            **langfuse_propagate_kwargs(user, f"google.runner.run.{self._agent_name}")
+        ):
             yield
 
     def run(
@@ -127,11 +126,7 @@ class HexgateRunner:
                 # background while it completes. Give it one last chance
                 # before tearing the loop down, or its event is silently
                 # dropped.
-                pending = asyncio.all_tasks(loop)
-                if pending:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
+                drain_pending_tasks(loop)
                 loop.close()
 
     async def run_async(
