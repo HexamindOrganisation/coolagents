@@ -236,9 +236,12 @@ class HexgateRunner:
         loop for it. Give it one last chance here; don't close the loop —
         the SDK expects to find the same one open on the next call.
 
-        No-ops when there's no current loop at all — that just means
-        ``Runner.run_sync`` never got to the point of creating/binding one
-        (e.g. it's mocked out in a test), so there's nothing to drain."""
+        If ``Runner.run_sync`` is mocked out and never touches asyncio,
+        ``get_event_loop`` just hands back a freshly created, empty loop —
+        so there's simply nothing pending to drain. The ``RuntimeError``
+        guard instead covers callers with no loop set on the current
+        thread at all (e.g. a background thread, or a test that has
+        explicitly called ``asyncio.set_event_loop(None)``)."""
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             try:
