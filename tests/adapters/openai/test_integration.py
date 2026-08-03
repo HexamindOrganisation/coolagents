@@ -150,7 +150,7 @@ def test_tool_call_records_policy_decision_and_llm_usage(
     `get_weather` matches the read heuristic, so this is a deterministic
     `allow`, not a guess.
     """
-    agent_name = f"{AGENT_NAME_PREFIX}{uuid.uuid4().hex[:8]}"
+    agent_name = f"{AGENT_NAME_PREFIX}openai_{uuid.uuid4().hex[:8]}"
     session_id = f"s-{uuid.uuid4().hex[:8]}"
     tool_name = "get_weather"
 

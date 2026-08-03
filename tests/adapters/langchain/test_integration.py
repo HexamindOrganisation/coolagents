@@ -108,7 +108,7 @@ async def test_agent_run_lands_policy_decision_and_llm_usage_events(
     """Register + wrap a real minimal LangGraph agent, run it through a
     prompt that deterministically triggers one tool call, then poll
     ClickHouse for the resulting policy_decision and llm_invocation rows."""
-    agent_name = f"{AGENT_NAME_PREFIX}{uuid.uuid4().hex[:8]}"
+    agent_name = f"{AGENT_NAME_PREFIX}langchain_{uuid.uuid4().hex[:8]}"
     session_id = f"s-{uuid.uuid4().hex[:8]}"
 
     tools = [_make_get_weather_tool()]

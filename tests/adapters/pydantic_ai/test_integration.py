@@ -56,7 +56,7 @@ def test_run_sync_with_no_event_loop_delivers_llm_usage_event(
     The agent carries one tool (`get_weather`) so the run also produces a
     policy_decision row — TestModel's default `call_tools='all'` calls
     every registered tool automatically, no scripted response needed."""
-    agent_name = f"{AGENT_NAME_PREFIX}{uuid.uuid4().hex[:8]}"
+    agent_name = f"{AGENT_NAME_PREFIX}pydantic_ai_{uuid.uuid4().hex[:8]}"
     session_id = f"s-{uuid.uuid4().hex[:8]}"
 
     raw_agent = Agent(

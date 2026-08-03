@@ -103,7 +103,7 @@ def test_wrapped_run_pulls_policy_and_lands_decision_and_usage_events(
     ``default`` role — every other tool bucket denies by default. That makes
     the expected outcome deterministic: 'allow', not 'either'.
     """
-    agent_name = f"{AGENT_NAME_PREFIX}{uuid.uuid4().hex[:8]}"
+    agent_name = f"{AGENT_NAME_PREFIX}google_{uuid.uuid4().hex[:8]}"
     session_id = f"s-{uuid.uuid4().hex[:8]}"
 
     raw_agent = LlmAgent(
