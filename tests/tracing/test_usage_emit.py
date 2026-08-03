@@ -66,6 +66,26 @@ async def test_emit_llm_usage_resolves_identity_from_active_user(
     assert event.session_id == "sess-1"
 
 
+def test_when_sender_emit_fails_then_emit_llm_usage_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every adapter's usage hook calls straight into this function from a
+    framework callback that either re-raises on an unhandled exception
+    (Google's PluginManager) or doesn't guard the call at all (OpenAI's
+    run loop, Pydantic AI's inline call site) — a failure here must not
+    fail the agent run whose usage it's reporting."""
+
+    class _RaisingSender:
+        def emit(self, event: Any) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: _RaisingSender()
+    )
+
+    emit_llm_usage("agent", "gpt-4o", 10, 20, api_key="k")  # must not raise
+
+
 def test_emit_llm_usage_passes_api_key_to_configure_usage_sender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

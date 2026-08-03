@@ -81,19 +81,3 @@ async def test_on_llm_end_when_model_is_not_a_string_then_model_is_empty(
 
     [call] = emitted
     assert call["model"] == ""
-
-
-@pytest.mark.asyncio
-async def test_when_emit_llm_usage_fails_then_agent_does_not_fail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raising_emit(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(usage_mod, "emit_llm_usage", raising_emit)
-    hooks = HexgateUsageHooks(api_key="k")
-    agent = Agent(name="my-agent", model="gpt-4o")
-
-    # Must not raise — the SDK's run loop doesn't guard hooks.on_llm_end,
-    # so an unhandled exception here would fail the whole agent run.
-    await hooks.on_llm_end(context=object(), agent=agent, response=_response())

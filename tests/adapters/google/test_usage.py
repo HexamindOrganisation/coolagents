@@ -109,22 +109,3 @@ async def test_after_model_callback_defaults_missing_token_counts_to_zero(
     [call] = emitted
     assert call["input_tokens"] == 0
     assert call["output_tokens"] == 0
-
-
-@pytest.mark.asyncio
-async def test_when_emit_llm_usage_fails_then_agent_does_not_fail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raising_emit(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(usage_mod, "emit_llm_usage", raising_emit)
-    plugin = HexgateUsagePlugin(api_key="k")
-
-    # Must not raise — PluginManager re-raises an unhandled plugin
-    # exception as a RuntimeError, which would fail the whole run.
-    result = await plugin.after_model_callback(
-        callback_context=_context("my-agent"), llm_response=_response()
-    )
-
-    assert result is None

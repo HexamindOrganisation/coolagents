@@ -108,23 +108,6 @@ async def test_on_llm_end_does_nothing_when_no_usage_reported(
 
 
 @pytest.mark.asyncio
-async def test_when_emit_llm_usage_fails_then_agent_does_not_fail(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def raising_emit(*args: Any, **kwargs: Any) -> None:
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr(usage_mod, "emit_llm_usage", raising_emit)
-    handler = HexgateUsageCallbackHandler(agent_name="my-agent", api_key="k")
-    response = _result(
-        usage_metadata={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
-        llm_output={"model_name": "gpt-4o"},
-    )
-
-    await handler.on_llm_end(response, run_id=uuid4())  # must not raise
-
-
-@pytest.mark.asyncio
 async def test_on_llm_end_reads_model_from_response_metadata_when_streaming(
     emitted: list[dict[str, Any]],
 ) -> None:
