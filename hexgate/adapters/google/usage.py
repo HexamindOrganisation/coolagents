@@ -9,11 +9,15 @@ named sub-agents.
 
 from __future__ import annotations
 
+import logging
+
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_response import LlmResponse
 from google.adk.plugins.base_plugin import BasePlugin
 
 from hexgate.tracing.usage import emit_llm_usage
+
+_log = logging.getLogger(__name__)
 
 
 class HexgateUsagePlugin(BasePlugin):
@@ -34,11 +38,17 @@ class HexgateUsagePlugin(BasePlugin):
         usage = llm_response.usage_metadata
         if usage is None:
             return None
-        emit_llm_usage(
-            callback_context.agent_name,
-            llm_response.model_version or "",
-            usage.prompt_token_count or 0,
-            usage.candidates_token_count or 0,
-            api_key=self._api_key,
-        )
+        try:
+            emit_llm_usage(
+                callback_context.agent_name,
+                llm_response.model_version or "",
+                usage.prompt_token_count or 0,
+                usage.candidates_token_count or 0,
+                api_key=self._api_key,
+            )
+        except Exception:
+            # PluginManager re-raises an unhandled plugin exception as a
+            # RuntimeError, which would fail the whole run — usage
+            # reporting must not be able to take down a real model call.
+            _log.exception("emit_llm_usage raised; ignoring")
         return None

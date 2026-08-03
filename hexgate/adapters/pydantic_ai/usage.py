@@ -6,12 +6,15 @@ adapters.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic_ai import Agent
 
 from hexgate.manifest.pydantic_ai import extract_model
 from hexgate.tracing.usage import emit_llm_usage
+
+_log = logging.getLogger(__name__)
 
 
 def emit_run_usage(agent_name: str, agent: Agent, result: Any, *, api_key: str) -> None:
@@ -34,10 +37,15 @@ def emit_run_usage(agent_name: str, agent: Agent, result: Any, *, api_key: str) 
     model_name = (
         getattr(response, "model_name", None) or extract_model(agent.model) or ""
     )
-    emit_llm_usage(
-        agent_name,
-        model_name,
-        usage.input_tokens,
-        usage.output_tokens,
-        api_key=api_key,
-    )
+    try:
+        emit_llm_usage(
+            agent_name,
+            model_name,
+            usage.input_tokens,
+            usage.output_tokens,
+            api_key=api_key,
+        )
+    except Exception:
+        # Called inline before returning the result to the caller — an
+        # unhandled exception here would fail an otherwise-completed run.
+        _log.exception("emit_llm_usage raised; ignoring")

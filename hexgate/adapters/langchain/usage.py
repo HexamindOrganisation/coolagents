@@ -9,12 +9,15 @@ therefore emit more than one usage event, once per LLM turn in the run.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 
 from hexgate.tracing.usage import emit_llm_usage
+
+_log = logging.getLogger(__name__)
 
 
 class HexgateUsageCallbackHandler(BaseCallbackHandler):
@@ -44,13 +47,19 @@ class HexgateUsageCallbackHandler(BaseCallbackHandler):
             return
         input_tokens, output_tokens = usage
         model = _model_name(response)
-        emit_llm_usage(
-            self._agent_name,
-            model,
-            input_tokens,
-            output_tokens,
-            api_key=self._api_key,
-        )
+        try:
+            emit_llm_usage(
+                self._agent_name,
+                model,
+                input_tokens,
+                output_tokens,
+                api_key=self._api_key,
+            )
+        except Exception:
+            # A broken sender/registry must not fail the LLM call whose
+            # usage we're reporting — the model's response is the source
+            # of truth, this is just a side observation of it.
+            _log.exception("emit_llm_usage raised; ignoring")
 
 
 def _model_name(response: LLMResult) -> str:

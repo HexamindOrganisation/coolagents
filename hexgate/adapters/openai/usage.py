@@ -7,11 +7,15 @@ loops, handoffs) can emit more than one usage event.
 
 from __future__ import annotations
 
+import logging
+
 from agents import Agent, RunContextWrapper
 from agents.items import ModelResponse
 from agents.lifecycle import RunHooks
 
 from hexgate.tracing.usage import emit_llm_usage
+
+_log = logging.getLogger(__name__)
 
 
 class HexgateUsageHooks(RunHooks):
@@ -30,10 +34,16 @@ class HexgateUsageHooks(RunHooks):
         # agent.model is `str | Model | None` — only the str case gives a
         # clean name; a Model implementation has no guaranteed name field.
         model = agent.model if isinstance(agent.model, str) else ""
-        emit_llm_usage(
-            agent.name,
-            model,
-            response.usage.input_tokens,
-            response.usage.output_tokens,
-            api_key=self._api_key,
-        )
+        try:
+            emit_llm_usage(
+                agent.name,
+                model,
+                response.usage.input_tokens,
+                response.usage.output_tokens,
+                api_key=self._api_key,
+            )
+        except Exception:
+            # The SDK doesn't guard hooks.on_llm_end itself — an unhandled
+            # exception here propagates out of Runner.run* and fails the
+            # whole agent turn, even though the model already responded.
+            _log.exception("emit_llm_usage raised; ignoring")

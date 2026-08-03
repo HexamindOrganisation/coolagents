@@ -83,6 +83,22 @@ def test_emit_run_usage_reads_model_from_response_when_available(
     }
 
 
+def test_when_emit_llm_usage_fails_then_agent_does_not_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raising_emit(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(usage_mod, "emit_llm_usage", raising_emit)
+    agent = Agent(model=TestModel())
+    response = SimpleNamespace(model_name="gpt-4o")
+    result = _FakeResult(input_tokens=10, output_tokens=20, response=response)
+
+    # Must not raise — called inline before returning the result to the
+    # caller, so an unhandled exception here would fail a completed run.
+    emit_run_usage("my-agent", agent, result, api_key="k")
+
+
 def test_emit_run_usage_falls_back_to_agent_model_when_response_has_no_model_name(
     emitted: list[dict[str, Any]],
 ) -> None:
