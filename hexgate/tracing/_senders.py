@@ -22,6 +22,12 @@ from hexgate.config.env import resolve_api_key, resolve_api_url
 
 _log = logging.getLogger(__name__)
 
+DEFAULT_DRAIN_TIMEOUT = 5.0
+"""Default bound for waiting on already-scheduled fire-and-forget sends to
+finish — at process shutdown (:meth:`AuditSender.close`) or when an
+adapter's per-call drain (``hexgate.adapters._common.drain_pending_tasks``)
+gives the last turn's send one final chance before giving up on it."""
+
 
 class _PayloadEvent(Protocol):
     """Structural type for anything ``AuditSender`` can emit — a frozen
@@ -292,7 +298,7 @@ class AuditSender:
             with self._sync_lock:
                 self._sync_threads.discard(threading.current_thread())
 
-    async def close(self, drain_timeout: float = 5.0) -> None:
+    async def close(self, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT) -> None:
         """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
         # Flip _closing and snapshot _sync_threads as one atomic step, under
         # the same lock _spawn_sync_send uses for its own closing-recheck +
@@ -480,6 +486,28 @@ def get_sender(path: str, api_key: str | None = None) -> AuditSender | None:
     if not resolved_key:
         return None
     return _senders.get((resolved_key, path))
+
+
+def pending_send_tasks(loop: asyncio.AbstractEventLoop) -> set[asyncio.Task[None]]:
+    """Every not-yet-finished fire-and-forget send task, across all senders
+    in the registry, that actually runs on ``loop``.
+
+    Scoped two ways on purpose: to hexgate's own sends (via each sender's
+    own ``_tasks`` bookkeeping, the same set ``close()`` drains) rather than
+    every task on the loop, since a caller's or another library's unrelated
+    task could otherwise get swept up and — worse — cancelled by a draining
+    caller's timeout; and to tasks actually owned by ``loop``, since the
+    registry is process-wide and a concurrent caller's sender may be
+    running on a different thread's loop entirely (e.g. the google adapter
+    builds a fresh loop per call) — awaiting or cancelling a task bound to a
+    loop that isn't the one driving it here is unsafe.
+    """
+    return {
+        task
+        for sender in _senders.values()
+        for task in sender._tasks
+        if not task.done() and task.get_loop() is loop
+    }
 
 
 async def shutdown() -> None:

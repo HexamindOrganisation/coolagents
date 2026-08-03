@@ -25,7 +25,23 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+from hexgate.tracing import _senders as senders_mod
 from hexgate.tracing import usage as tracing_usage_mod
+from hexgate.tracing._senders import AuditSender
+
+
+@contextmanager
+def _registered_sender(key: tuple[str, str] = ("test-key", "/test-path")) -> Any:
+    """Register a real AuditSender in the shared registry for the duration
+    of a test, so drain_pending_tasks' pending_send_tasks() scoping can
+    find a task tracked in it — evicted afterward since the registry is
+    process-global state shared across the whole test session."""
+    sender = AuditSender(endpoint="https://example.invalid/test-path", api_key="k")
+    senders_mod._senders[key] = sender
+    try:
+        yield sender
+    finally:
+        del senders_mod._senders[key]
 
 
 class _StaticBanSource:
@@ -285,36 +301,42 @@ def test_run_drains_pending_tasks_before_closing_loop(
 
     completed: list[bool] = []
 
-    class _RunnerWithPendingTask(_FakeRunner):
-        async def run_async(self, **kwargs: Any) -> AsyncIterator[dict[str, str]]:
-            async def _slow_background_send() -> None:
-                # Long enough that it's still pending once the two yields
-                # below are exhausted and the generator is closed — the
-                # two synchronous __anext__() calls return almost
-                # instantly, nowhere near this sleep's duration.
-                await asyncio.sleep(0.05)
-                completed.append(True)
+    with _registered_sender() as sender:
 
-            asyncio.get_running_loop().create_task(_slow_background_send())
-            async for event in super().run_async(**kwargs):
-                yield event
+        class _RunnerWithPendingTask(_FakeRunner):
+            async def run_async(self, **kwargs: Any) -> AsyncIterator[dict[str, str]]:
+                async def _slow_background_send() -> None:
+                    # Long enough that it's still pending once the two yields
+                    # below are exhausted and the generator is closed — the
+                    # two synchronous __anext__() calls return almost
+                    # instantly, nowhere near this sleep's duration.
+                    await asyncio.sleep(0.05)
+                    completed.append(True)
 
-    _FakeRunner.instances = []
-    monkeypatch.setattr("hexgate.adapters.google.runner.Runner", _RunnerWithPendingTask)
+                task = asyncio.get_running_loop().create_task(_slow_background_send())
+                sender._tasks.add(task)
+                task.add_done_callback(sender._tasks.discard)
+                async for event in super().run_async(**kwargs):
+                    yield event
 
-    runner = HexgateRunner(
-        agent=_make_agent(),
-        app_name="my_app",
-        session_service=InMemorySessionService(),
-        api_key="k",
-    )
+        _FakeRunner.instances = []
+        monkeypatch.setattr(
+            "hexgate.adapters.google.runner.Runner", _RunnerWithPendingTask
+        )
 
-    events = list(runner.run(new_message="hello", user=_user()))
+        runner = HexgateRunner(
+            agent=_make_agent(),
+            app_name="my_app",
+            session_service=InMemorySessionService(),
+            api_key="k",
+        )
 
-    assert events == [{"event": "first"}, {"event": "second"}]
-    # If run() had closed the loop without draining pending tasks first,
-    # the background send would never have gotten the chance to finish.
-    assert completed == [True]
+        events = list(runner.run(new_message="hello", user=_user()))
+
+        assert events == [{"event": "first"}, {"event": "second"}]
+        # If run() had closed the loop without draining pending tasks first,
+        # the background send would never have gotten the chance to finish.
+        assert completed == [True]
 
 
 def test_run_keeps_scope_visible_across_awaits(

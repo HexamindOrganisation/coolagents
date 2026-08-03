@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
@@ -20,8 +21,24 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.errors import AgentBannedError
+from hexgate.tracing import _senders as senders_mod
 from hexgate.tracing import usage as tracing_usage_mod
+from hexgate.tracing._senders import AuditSender
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+
+
+@contextmanager
+def _registered_sender(key: tuple[str, str] = ("test-key", "/test-path")) -> Any:
+    """Register a real AuditSender in the shared registry for the duration
+    of a test, so drain_pending_tasks' pending_send_tasks() scoping can
+    find a task tracked in it — evicted afterward since the registry is
+    process-global state shared across the whole test session."""
+    sender = AuditSender(endpoint="https://example.invalid/test-path", api_key="k")
+    senders_mod._senders[key] = sender
+    try:
+        yield sender
+    finally:
+        del senders_mod._senders[key]
 
 
 class _StaticBanSource:
@@ -244,35 +261,40 @@ def test_run_sync_drains_pending_tasks_on_the_default_loop(
     completed: list[bool] = []
     loop = asyncio.new_event_loop()
 
-    async def _slow_background_send() -> None:
-        # Long enough that it's still pending once fake_run_sync returns —
-        # nothing here pumps the loop any further for it on its own.
-        await asyncio.sleep(0.05)
-        completed.append(True)
+    with _registered_sender() as sender:
 
-    def fake_run_sync(starting_agent: Agent, input: Any, **kwargs: Any) -> str:
-        # Mirrors the real SDK: set the per-thread default loop and
-        # schedule the fire-and-forget audit-send task on it, then return
-        # immediately without pumping the loop for that task.
-        asyncio.set_event_loop(loop)
-        loop.create_task(_slow_background_send())
-        return "run-sync-result"
+        async def _slow_background_send() -> None:
+            # Long enough that it's still pending once fake_run_sync returns —
+            # nothing here pumps the loop any further for it on its own.
+            await asyncio.sleep(0.05)
+            completed.append(True)
 
-    monkeypatch.setattr(
-        "hexgate.adapters.openai.runner.Runner.run_sync", staticmethod(fake_run_sync)
-    )
+        def fake_run_sync(starting_agent: Agent, input: Any, **kwargs: Any) -> str:
+            # Mirrors the real SDK: set the per-thread default loop and
+            # schedule the fire-and-forget audit-send task on it, then return
+            # immediately without pumping the loop for that task.
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(_slow_background_send())
+            sender._tasks.add(task)
+            task.add_done_callback(sender._tasks.discard)
+            return "run-sync-result"
 
-    try:
-        runner = HexgateRunner(api_key="k")
-        result = runner.run_sync(_make_agent(), "hello", user=_user())
+        monkeypatch.setattr(
+            "hexgate.adapters.openai.runner.Runner.run_sync",
+            staticmethod(fake_run_sync),
+        )
 
-        assert result == "run-sync-result"
-        # If run_sync() had returned without draining the default loop,
-        # the background send would never have gotten the chance to finish.
-        assert completed == [True]
-    finally:
-        loop.close()
-        asyncio.set_event_loop(None)
+        try:
+            runner = HexgateRunner(api_key="k")
+            result = runner.run_sync(_make_agent(), "hello", user=_user())
+
+            assert result == "run-sync-result"
+            # If run_sync() had returned without draining the default loop,
+            # the background send would never have gotten the chance to finish.
+            assert completed == [True]
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
 
 
 @pytest.mark.asyncio
