@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 
@@ -227,6 +228,51 @@ def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
     assert captured["input"] == "hello"
     assert captured["active_user"] is user
     assert get_current_user() is None
+
+
+def test_run_sync_drains_pending_tasks_on_the_default_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last turn's fire-and-forget audit-send task can still be
+    pending on the per-thread default loop when Runner.run_sync returns —
+    the ``agents`` SDK deliberately keeps that loop open across calls, and
+    nothing else pumps it for a sibling task once the top-level run
+    settles. run_sync() must drain it via _drain_default_loop before
+    returning, or the send is silently abandoned (the exact scenario
+    _drain_default_loop's own docstring describes)."""
+    _silence_observability(monkeypatch)
+    completed: list[bool] = []
+    loop = asyncio.new_event_loop()
+
+    async def _slow_background_send() -> None:
+        # Long enough that it's still pending once fake_run_sync returns —
+        # nothing here pumps the loop any further for it on its own.
+        await asyncio.sleep(0.05)
+        completed.append(True)
+
+    def fake_run_sync(starting_agent: Agent, input: Any, **kwargs: Any) -> str:
+        # Mirrors the real SDK: set the per-thread default loop and
+        # schedule the fire-and-forget audit-send task on it, then return
+        # immediately without pumping the loop for that task.
+        asyncio.set_event_loop(loop)
+        loop.create_task(_slow_background_send())
+        return "run-sync-result"
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_sync", staticmethod(fake_run_sync)
+    )
+
+    try:
+        runner = HexgateRunner(api_key="k")
+        result = runner.run_sync(_make_agent(), "hello", user=_user())
+
+        assert result == "run-sync-result"
+        # If run_sync() had returned without draining the default loop,
+        # the background send would never have gotten the chance to finish.
+        assert completed == [True]
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 @pytest.mark.asyncio
