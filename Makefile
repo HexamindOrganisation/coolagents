@@ -214,6 +214,10 @@ platform-api-pg: postgres-up ## Run the platform API against local Postgres (sta
 platform-api-test: ## Run the platform API test suite
 	cd platform/api && uv run pytest tests/
 
+.PHONY: platform-api-test-integration
+platform-api-test-integration: clickhouse-up ## Platform API integration tests (needs ClickHouse only, see .claude/skills/integration-tests)
+	cd platform/api && uv run pytest -m integration
+
 .PHONY: seed-audit
 seed-audit: ## Seed ClickHouse with audit test data (anomaly detection)
 	cd platform/api && uv run python ../scripts/seed_audit.py
