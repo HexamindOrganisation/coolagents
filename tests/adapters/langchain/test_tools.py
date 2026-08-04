@@ -17,7 +17,7 @@ from hexgate.adapters.langchain.tools import (
     install_enforcer_on_tool,
     install_enforcer_on_tools,
 )
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
@@ -189,13 +189,13 @@ async def test_async_needs_approval_renders_structured_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Role resolution via User contextvar
+# Role resolution via HexgateContext contextvar
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_user_role_selects_matching_policy() -> None:
-    """The active User's role drives which AgentPolicy the enforcer applies."""
+    """The active HexgateContext's role drives which AgentPolicy the enforcer applies."""
     policy_set = PolicySet(
         {
             DEFAULT_ROLE_NAME: AgentPolicy.model_validate(
@@ -213,12 +213,12 @@ async def test_user_role_selects_matching_policy() -> None:
     t = _make_async_tool()
     install_enforcer_on_tool(t, enforcer=enforcer)
 
-    # No User → default role → denied.
+    # No HexgateContext → default role → denied.
     denied = await t.coroutine(text="hi")
     assert denied["error"]["type"] == "policy_denied"
 
     # support role → allowed.
-    async with User(user_id="u-1", role="support"):
+    async with HexgateContext(user_id="u-1", user_roles=["support"]):
         allowed = await t.coroutine(text="hi")
     assert allowed == "async:hi"
 

@@ -25,7 +25,7 @@ from langchain_core.tools import tool
 
 from hexgate.adapters.langchain.wrapper import wrap_langchain_agent
 from hexgate.cli.register.register import register_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from tests.adapters.conftest import HexgatePlatformEnv
 from tests.adapters.helpers import (
     AGENT_NAME_PREFIX,
@@ -57,14 +57,14 @@ def _make_get_weather_tool():
     (see `platform/api/hexgate_api/features/agents/compiler.py`'s
     `_READ_PATTERNS`), so a freshly-registered agent's starter policy puts
     it in the `read_only` mixin at `mode: allow` for every role — including
-    the `default` role that an unrecognized `User.role` falls back to.
+    the `default` role that an unrecognized `HexgateContext.primary_role` falls back to.
     That makes the expected `policy_decision` outcome deterministic
     ('allow'), not something this test needs to special-case per role.
 
     Defined as an `async def` (not a sync `def`) so LangGraph's ToolNode
     calls the installed `coroutine` directly on the running event loop
     instead of via a thread-pool executor — the enforcer's `decide()`
-    reads the active `User` off a contextvar, which a plain
+    reads the active `HexgateContext` off a contextvar, which a plain
     `run_in_executor` thread would not see.
     """
 
@@ -129,8 +129,10 @@ async def test_agent_run_lands_policy_decision_and_llm_usage_events(
         agent=raw_agent, tools=tools, api_key=hexgate_platform_env.api_key
     )
 
-    user = User(
-        user_id=f"{USER_ID_PREFIX}langchain", session_id=session_id, role="tester"
+    user = HexgateContext(
+        user_id=f"{USER_ID_PREFIX}langchain",
+        session_id=session_id,
+        user_roles=["tester"],
     )
     result = await wrapped.ainvoke(
         {"messages": [{"role": "user", "content": "What's the weather in Paris?"}]},

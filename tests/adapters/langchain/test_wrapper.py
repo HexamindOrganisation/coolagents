@@ -17,7 +17,7 @@ from langchain_core.tools import BaseTool, tool
 from hexgate.adapters.langchain import wrapper as wrapper_mod
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.adapters.langchain.wrapper import wrap_langchain_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
@@ -245,8 +245,8 @@ class _RunnableGraph:
         return {"ok": True}
 
 
-def _user() -> User:
-    return User(user_id="u-1", session_id="s-1", role="developer")
+def _user() -> HexgateContext:
+    return HexgateContext(user_id="u-1", session_id="s-1", user_roles=["developer"])
 
 
 def test_invoke_refreshes_binding_first() -> None:

@@ -30,7 +30,7 @@ from openai.types.responses import (
 
 from hexgate.adapters.openai.runner import HexgateRunner
 from hexgate.cli.register.register import register_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from tests.adapters.conftest import HexgatePlatformEnv
 from tests.adapters.helpers import (
     AGENT_NAME_PREFIX,
@@ -144,7 +144,7 @@ def test_tool_call_records_policy_decision_and_llm_usage(
 
     Outcome assertion: a just-registered agent's generated policy_yaml
     (compiler.py's `_default_policy_for_manifest`) gives the `default` role
-    (used because `User(role="tester")` matches no role and PolicySet.get
+    (used because `HexgateContext(user_roles=["tester"])` matches no role and PolicySet.get
     falls back to `default`) an inherited `read_only` mixin with
     `default_policy: mode: deny` plus an allowlist of read-shape tools.
     `get_weather` matches the read heuristic, so this is a deterministic
@@ -163,7 +163,9 @@ def test_tool_call_records_policy_decision_and_llm_usage(
     register_agent(raw_agent)
 
     runner = HexgateRunner(api_key=hexgate_platform_env.api_key)
-    user = User(user_id=f"{USER_ID_PREFIX}openai", session_id=session_id, role="tester")
+    user = HexgateContext(
+        user_id=f"{USER_ID_PREFIX}openai", session_id=session_id, user_roles=["tester"]
+    )
     result = runner.run_sync(raw_agent, "What's the weather in Paris?", user=user)
     assert result.final_output
 

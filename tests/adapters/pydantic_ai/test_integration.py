@@ -22,7 +22,7 @@ from pydantic_ai.tools import Tool
 
 from hexgate.adapters.pydantic_ai.wrapper import wrap_pydantic_agent
 from hexgate.cli.register.register import register_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from tests.adapters.conftest import HexgatePlatformEnv
 from tests.adapters.helpers import (
     AGENT_NAME_PREFIX,
@@ -38,7 +38,7 @@ def _get_weather(city: str) -> str:
     (see `platform/api/hexgate_api/features/agents/compiler.py`'s
     `_READ_PATTERNS`), so a freshly-registered agent's starter policy puts
     it in the `read_only` mixin at `mode: allow` for every role — including
-    the `default` role that an unrecognized `User.role` falls back to.
+    the `default` role that an unrecognized `HexgateContext.primary_role` falls back to.
     That makes the expected `policy_decision` outcome deterministic
     ('allow'), not something this test needs to special-case per role.
     """
@@ -67,8 +67,10 @@ def test_run_sync_with_no_event_loop_delivers_llm_usage_event(
     register_agent(raw_agent)
     wrapped = wrap_pydantic_agent(agent=raw_agent, api_key=hexgate_platform_env.api_key)
 
-    user = User(
-        user_id=f"{USER_ID_PREFIX}pydantic_ai", session_id=session_id, role="tester"
+    user = HexgateContext(
+        user_id=f"{USER_ID_PREFIX}pydantic_ai",
+        session_id=session_id,
+        user_roles=["tester"],
     )
     result = wrapped.run_sync("What's the weather in Paris?", user=user)
     assert result.output

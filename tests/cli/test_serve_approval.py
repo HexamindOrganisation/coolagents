@@ -629,7 +629,7 @@ async def test_resolve_pops_before_setting_so_unbind_cannot_flip_allowed() -> No
     await asyncio.sleep(0.05)
     decision_id = ws.sent[0]["decision_id"]
 
-    # User approves — resolve() should pop the entry atomically.
+    # HexgateContext approves — resolve() should pop the entry atomically.
     handler.resolve(decision_id, allowed=True)
     # Immediately after, a disconnect happens. unbind_socket must NOT
     # find the resolved entry (already popped) and must NOT flip it.

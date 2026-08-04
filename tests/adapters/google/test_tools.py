@@ -9,7 +9,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.function_tool import FunctionTool
 
 from hexgate.adapters.google.tools import _normalize, wrap_tool, wrap_tools
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
@@ -171,13 +171,13 @@ async def test_original_tool_is_not_mutated_by_wrap_tool() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Role resolution via User contextvar
+# Role resolution via HexgateContext contextvar
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_user_role_selects_matching_policy() -> None:
-    """The active User's role drives which AgentPolicy the enforcer applies."""
+    """The active HexgateContext's role drives which AgentPolicy the enforcer applies."""
     policy_set = PolicySet(
         {
             DEFAULT_ROLE_NAME: AgentPolicy.model_validate(
@@ -193,12 +193,12 @@ async def test_user_role_selects_matching_policy() -> None:
     )
     wrapped = wrap_tool(_make_function_tool(), PolicyEnforcer(policy_set))
 
-    # No User → default → denied.
+    # No HexgateContext → default → denied.
     denied = await wrapped.run_async(args={"text": "hi"}, tool_context=None)
     assert "policy_denied" in denied
 
     # support → allowed.
-    async with User(user_id="u-1", role="support"):
+    async with HexgateContext(user_id="u-1", user_roles=["support"]):
         allowed = await wrapped.run_async(args={"text": "hi"}, tool_context=None)
     assert allowed == "echo:hi"
 

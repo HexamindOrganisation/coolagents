@@ -14,7 +14,7 @@ import pytest
 from agents import Agent, FunctionTool
 
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
@@ -116,7 +116,7 @@ async def test_wrap_openai_agent_gates_tools_with_the_given_enforcer() -> None:
     wrapped = wrap_openai_agent(_make_agent(), enforcer=_deny_all_enforcer())
 
     [echo_tool, _] = wrapped.tools
-    async with User(user_id="u-1"):
+    async with HexgateContext(user_id="u-1"):
         result = await echo_tool.on_invoke_tool(None, '{"text": "hi"}')
     assert isinstance(result, str)
     assert "policy_denied" in result
@@ -130,7 +130,7 @@ async def test_refresh_swap_reaches_every_clone() -> None:
     first_clone = wrap_openai_agent(_make_agent(), enforcer=enforcer)
     second_clone = wrap_openai_agent(_make_agent(), enforcer=enforcer)
 
-    async with User(user_id="u-1"):
+    async with HexgateContext(user_id="u-1"):
         denied = await first_clone.tools[0].on_invoke_tool(None, '{"text": "x"}')
         assert "policy_denied" in denied
 

@@ -15,7 +15,7 @@ from agents.usage import Usage
 from hexgate.adapters.openai import runner as runner_mod
 from hexgate.adapters.openai.runner import HexgateRunner
 from hexgate.adapters.openai.usage import HexgateUsageHooks
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.runtime.context import get_current_user
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.bans import BanEntry, BanGate, BanSet
@@ -92,9 +92,9 @@ def _stub_resolve(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return resolved_names
 
 
-def _user() -> User:
-    """Build a minimal User for runner tests."""
-    return User(user_id="u-1", session_id="s-1", role="developer")
+def _user() -> HexgateContext:
+    """Build a minimal HexgateContext for runner tests."""
+    return HexgateContext(user_id="u-1", session_id="s-1", user_roles=["developer"])
 
 
 def _make_tool(name: str = "echo") -> FunctionTool:
@@ -181,7 +181,7 @@ def test_constructor_raises_when_no_api_key_available(
 async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run() wraps the agent, opens the User scope, and forwards to Runner.run."""
+    """run() wraps the agent, opens the HexgateContext scope, and forwards to Runner.run."""
     setup_counts = _silence_observability(monkeypatch)
     captured: dict[str, Any] = {}
 
@@ -209,7 +209,7 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     assert captured["input"] == "hello"
     assert captured["kwargs"]["run_config"] is None
     assert isinstance(captured["kwargs"]["hooks"], HexgateUsageHooks)
-    # User scope was live for the duration of Runner.run.
+    # HexgateContext scope was live for the duration of Runner.run.
     assert captured["active_user"] is user
     # Scope unwound on exit — no leak.
     assert get_current_user() is None
@@ -218,7 +218,7 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
 def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run_sync() opens the User scope via sync_scope and forwards to Runner.run_sync."""
+    """run_sync() opens the HexgateContext scope via sync_scope and forwards to Runner.run_sync."""
     setup_counts = _silence_observability(monkeypatch)
     captured: dict[str, Any] = {}
 
@@ -301,7 +301,7 @@ def test_run_sync_drains_pending_tasks_on_the_default_loop(
 async def test_run_streamed_wraps_stream_events_to_re_enter_scope_and_propagation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run_streamed swaps stream_events for a wrapper that re-enters User + propagation."""
+    """run_streamed swaps stream_events for a wrapper that re-enters HexgateContext + propagation."""
     _silence_observability(monkeypatch)
 
     fake_result = _FakeStreamingResult()
@@ -357,7 +357,7 @@ async def test_run_streamed_wraps_stream_events_to_re_enter_scope_and_propagatio
 async def test_run_streamed_opens_user_scope_around_run_streamed_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The User must be active when Runner.run_streamed spawns its loop task —
+    """The HexgateContext must be active when Runner.run_streamed spawns its loop task —
     that task snapshots contextvars at creation, where tools later resolve it."""
     _silence_observability(monkeypatch)
 
@@ -659,7 +659,7 @@ def test_run_streamed_refreshes_before_setup(
 
 
 # ---------------------------------------------------------------------------
-# Usage hooks: merge behavior + User contextvar survives into on_llm_end
+# Usage hooks: merge behavior + HexgateContext contextvar survives into on_llm_end
 # ---------------------------------------------------------------------------
 
 
@@ -747,7 +747,7 @@ async def test_usage_hook_context_propagates_through_run(
 ) -> None:
     """get_current_user() must still resolve inside on_llm_end, fired from
     wherever the real Runner invokes it within the run() call tree — the
-    User scope opened around Runner.run must still be live there."""
+    HexgateContext scope opened around Runner.run must still be live there."""
     _silence_observability(monkeypatch)
     fake_sender = _FakeSender()
     monkeypatch.setattr(

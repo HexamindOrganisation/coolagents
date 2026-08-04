@@ -12,16 +12,16 @@ from langchain_core.outputs import ChatGeneration, LLMResult
 
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.runtime.context import get_current_user
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
 from hexgate.tracing import usage as usage_mod
 
 
-def _user() -> User:
-    """Build a minimal User for invocation tests."""
-    return User(user_id="u-1", session_id="s-1", role="developer")
+def _user() -> HexgateContext:
+    """Build a minimal HexgateContext for invocation tests."""
+    return HexgateContext(user_id="u-1", session_id="s-1", user_roles=["developer"])
 
 
 class _StaticBanSource:
@@ -49,7 +49,7 @@ def _agent_ban_gate(agent_name: str, banned: str | None = None) -> BanGate:
 
 
 class _RecordingGraph:
-    """Capture the active User and config seen by each invocation method."""
+    """Capture the active HexgateContext and config seen by each invocation method."""
 
     name = "recording-graph"
 
@@ -61,7 +61,7 @@ class _RecordingGraph:
         self.astream_events_calls: list[dict[str, Any]] = []
 
     def _snapshot(self, payload: dict[str, Any], config: Any) -> dict[str, Any]:
-        """Capture the active User plus call arguments."""
+        """Capture the active HexgateContext plus call arguments."""
         return {
             "user": get_current_user(),
             "input": payload,
@@ -85,7 +85,7 @@ class _RecordingGraph:
     def stream(
         self, payload: dict[str, Any], config: Any, **_kwargs: Any
     ) -> Iterator[dict[str, Any]]:
-        """Yield two chunks while exposing the active User via capture."""
+        """Yield two chunks while exposing the active HexgateContext via capture."""
         self.stream_calls.append(self._snapshot(payload, config))
         yield {"chunk": 1}
         yield {"chunk": 2}
@@ -159,12 +159,12 @@ def test_with_callbacks_does_not_double_register_handlers() -> None:
 
 
 # ---------------------------------------------------------------------------
-# User scope binding per invocation method
+# HexgateContext scope binding per invocation method
 # ---------------------------------------------------------------------------
 
 
 def test_invoke_opens_user_scope_and_delegates() -> None:
-    """The active User contextvar is live during the wrapped invoke."""
+    """The active HexgateContext contextvar is live during the wrapped invoke."""
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
     user = _user()
@@ -341,7 +341,7 @@ def test_proxy_delegates_unknown_attributes_to_wrapped_agent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Usage handler: User contextvar survives into on_llm_end
+# Usage handler: HexgateContext contextvar survives into on_llm_end
 # ---------------------------------------------------------------------------
 
 
@@ -397,7 +397,7 @@ async def test_usage_handler_context_propagates_through_ainvoke(
 ) -> None:
     """get_current_user() must still resolve inside on_llm_end, called from
     wherever LangGraph actually invokes it within the ainvoke call tree —
-    the User scope opened around _agent.ainvoke must still be live there."""
+    the HexgateContext scope opened around _agent.ainvoke must still be live there."""
     fake_sender = _FakeSender()
     monkeypatch.setattr(
         usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender

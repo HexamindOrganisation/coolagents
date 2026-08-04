@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from tests.framework_compat import _probe
 
 PROBE_DIR = Path(__file__).parent
@@ -67,6 +67,8 @@ def _reset_executions():
 
 
 @pytest.fixture
-def probe_user() -> User:
+def probe_user() -> HexgateContext:
     """A representative caller; role ``member`` falls back to the default role."""
-    return User(user_id="probe-user", role="member", session_id="probe-session")
+    return HexgateContext(
+        user_id="probe-user", user_roles=["member"], session_id="probe-session"
+    )

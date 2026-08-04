@@ -1,5 +1,5 @@
 """emit_llm_usage() — the single entry point every adapter's usage hook
-calls into. Covers identity resolution from the User contextvar and the
+calls into. Covers identity resolution from the HexgateContext contextvar and the
 no-op path when no sender is configured; the sender itself is faked so no
 real registry/network is touched (mirrors tests/tracing/test_tracing.py's
 fake-double style)."""
@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.tracing import usage as usage_mod
 from hexgate.tracing.usage import emit_llm_usage
 
@@ -58,7 +58,7 @@ async def test_emit_llm_usage_resolves_identity_from_active_user(
         usage_mod, "configure_usage_sender", lambda api_key=None: fake_sender
     )
 
-    async with User(user_id="alice", session_id="sess-1", role="dev"):
+    async with HexgateContext(user_id="alice", session_id="sess-1", user_roles=["dev"]):
         emit_llm_usage("my-agent", "gpt-4o", 10, 20, api_key="k")
 
     [event] = fake_sender.events

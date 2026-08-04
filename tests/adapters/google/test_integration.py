@@ -30,7 +30,7 @@ from pydantic import PrivateAttr
 
 from hexgate.adapters.google.runner import HexgateRunner
 from hexgate.cli.register.register import register_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from tests.adapters.conftest import HexgatePlatformEnv
 from tests.adapters.helpers import (
     AGENT_NAME_PREFIX,
@@ -120,7 +120,9 @@ def test_wrapped_run_pulls_policy_and_lands_decision_and_usage_events(
         api_key=hexgate_platform_env.api_key,
         auto_create_session=True,
     )
-    user = User(user_id=f"{USER_ID_PREFIX}google", session_id=session_id, role="tester")
+    user = HexgateContext(
+        user_id=f"{USER_ID_PREFIX}google", session_id=session_id, user_roles=["tester"]
+    )
     new_message = types.Content(
         role="user", parts=[types.Part(text="What's the weather in Paris?")]
     )

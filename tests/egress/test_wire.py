@@ -30,13 +30,13 @@ def test_strip_proxy_headers_removes_proxy_scoped() -> None:
         b"Host: example.com\r\n"
         b"Proxy-Connection: keep-alive\r\n"
         b"Proxy-Authorization: Basic abc\r\n"
-        b"User-Agent: demo\r\n"
+        b"HexgateContext-Agent: demo\r\n"
         b"\r\n"
     )
     result = strip_proxy_headers(block)
     assert b"proxy-" not in result.lower()
     assert b"Host: example.com" in result
-    assert b"User-Agent: demo" in result
+    assert b"HexgateContext-Agent: demo" in result
     assert result.endswith(b"\r\n\r\n")  # terminating blank line preserved
 
 

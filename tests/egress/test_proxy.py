@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from hexgate.egress.proxy import EgressProxy, egress_guard
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.enforcer import build_enforcer
 from hexgate.security.policy_set import load_policy_set_from_dict
 
@@ -38,7 +38,9 @@ def _enforcer(allowed_host: str):
 
 
 def _proxy(allowed_host: str) -> EgressProxy:
-    return EgressProxy(_enforcer(allowed_host), User(user_id="u", role="agent"))
+    return EgressProxy(
+        _enforcer(allowed_host), HexgateContext(user_id="u", user_roles=["agent"])
+    )
 
 
 async def _start_http_upstream() -> tuple[asyncio.AbstractServer, int]:
@@ -135,7 +137,7 @@ async def test_http_forward_preserves_query() -> None:
 
 async def test_egress_guard_reentrancy_raises() -> None:
     enforcer = _enforcer("127.0.0.1")
-    user = User(user_id="u", role="agent")
+    user = HexgateContext(user_id="u", user_roles=["agent"])
     async with egress_guard(enforcer, user):
         with pytest.raises(RuntimeError, match="already active"):
             async with egress_guard(enforcer, user):

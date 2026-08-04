@@ -9,7 +9,7 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
 
 from hexgate.adapters.pydantic_ai.tools import wrap_tool, wrap_tools
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
@@ -141,13 +141,13 @@ async def test_async_tool_denied_raises_model_retry() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Role resolution via User contextvar
+# Role resolution via HexgateContext contextvar
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_user_role_selects_matching_policy() -> None:
-    """The active User's role drives which AgentPolicy the enforcer applies."""
+    """The active HexgateContext's role drives which AgentPolicy the enforcer applies."""
     policy_set = PolicySet(
         {
             DEFAULT_ROLE_NAME: AgentPolicy.model_validate(
@@ -163,12 +163,12 @@ async def test_user_role_selects_matching_policy() -> None:
     )
     wrapped = wrap_tool(_make_sync_tool(), PolicyEnforcer(policy_set))
 
-    # No User → default → deny.
+    # No HexgateContext → default → deny.
     with pytest.raises(ModelRetry, match="policy_denied"):
         await wrapped.function_schema.call({"text": "hi"}, None)
 
     # support → allow.
-    async with User(user_id="u-1", role="support"):
+    async with HexgateContext(user_id="u-1", user_roles=["support"]):
         result = await wrapped.function_schema.call({"text": "hi"}, None)
     assert result == "echo:hi"
 
