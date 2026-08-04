@@ -219,8 +219,8 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
     """
     from hexgate.runtime.context import get_current_context
 
-    ctx = get_current_context()
-    if ctx is None:
+    context = get_current_context()
+    if context is None:
         return None
     client = agent.hexgate_client
     if client is None:
@@ -255,9 +255,9 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
         child_envelope = attenuate_for_user(
             client.config.api_key,
             pub,
-            user=ctx.user_id,
-            role=ctx.primary_role,
-            ttl_seconds=ctx.ttl_seconds,
+            user=context.user_id,
+            role=context.primary_role,
+            ttl_seconds=context.ttl_seconds,
         )
         _, _, biscuit_b64 = parse_envelope(child_envelope)
         return extract_facts(biscuit_b64, pub)

@@ -69,8 +69,8 @@ class PolicyEnforcer:
         injected ``decision_observer`` (if any) with the same Decision.
         Both are no-ops when not injected; both are isolated so a
         broken observer never breaks enforcement."""
-        ctx = get_current_context()
-        role = ctx.primary_role if ctx is not None else None
+        context = get_current_context()
+        role = context.primary_role if context is not None else None
         # Deep-copy when audit OR observer is wired: emission/observation
         # may inspect args after ``decide()`` returns, so a shallow copy
         # would let the caller mutate nested args first and make the
@@ -94,9 +94,11 @@ class PolicyEnforcer:
             self._audit_sender.emit(
                 AuditEvent(
                     decision=decision,
-                    user_id=ctx.user_id if ctx is not None and ctx.user_id else "",
-                    session_id=ctx.session_id
-                    if (ctx is not None and ctx.session_id)
+                    user_id=context.user_id
+                    if context is not None and context.user_id
+                    else "",
+                    session_id=context.session_id
+                    if (context is not None and context.session_id)
                     else "",
                 )
             )

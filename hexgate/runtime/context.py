@@ -99,10 +99,28 @@ class HexgateContext(BaseModel):
     """
 
     user_id: str | None = None
+    # The access-control discriminator: the first role (``primary_role``)
+    # selects the policy bucket today; remaining roles are carried for future
+    # multi-role selection. Empty falls back to the ``default`` policy.
+    user_roles: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Roles held by the caller. The first (primary_role) selects the "
+            "policy bucket; empty falls back to the 'default' policy."
+        ),
+    )
     session_id: str | None = None
-    user_roles: list[str] = Field(default_factory=list)
     ttl_seconds: int | None = None
-    attributes: dict[str, AttrValue] = Field(default_factory=dict)
+    # Advisory caller attributes for ABAC policy filtering (the ``ctx.*`` DSL
+    # namespace). Inert until the engine wiring lands; unsigned attributes
+    # must never gate a deny.
+    attributes: dict[str, AttrValue] = Field(
+        default_factory=dict,
+        description=(
+            "Advisory caller attributes for ABAC policy filtering. Inert until "
+            "engine wiring lands; unsigned attributes must never gate a deny."
+        ),
+    )
 
     # Stack of shadowed values (supports nested scopes). We save/restore via
     # set() rather than reset(token): async-generator finalizers run __aexit__

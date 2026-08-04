@@ -298,12 +298,12 @@ def _context_from_payload(attenuation: Any) -> HexgateContext | None:
 
 
 @asynccontextmanager
-async def _maybe_user_scope(ctx: HexgateContext | None):
-    """No-op async context manager when ``ctx`` is ``None``."""
-    if ctx is None:
+async def _maybe_user_scope(context: HexgateContext | None):
+    """No-op async context manager when ``context`` is ``None``."""
+    if context is None:
         yield
     else:
-        async with ctx:
+        async with context:
             yield
 
 
