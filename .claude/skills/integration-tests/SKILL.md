@@ -1,3 +1,8 @@
+---
+name: integration-tests
+description: Run the opt-in integration test suites (pytest -m integration) for the SDK and/or the platform API — the ones that hit a live ClickHouse (and, for the SDK, a live platform-api server). Use when asked to run, verify, or debug integration tests, as opposed to the default unit test suite.
+---
+
 # Run Integration Tests
 
 ## SDK integration tests (repo root — `tests/adapters/*/test_integration.py`, `tests/audit/test_integration.py`)
@@ -24,6 +29,5 @@ unset HEXGATE_API_KEY HEXGATE_API_URL LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LA
 ## Platform API integration tests (`platform/api/tests/...`)
 Call the service layer directly against ClickHouse, in-process — no live platform server, no `HEXGATE_API_KEY`, just ClickHouse running.
 ```bash
-make clickhouse-up   # only prerequisite (creates schema on first run)
-cd platform/api && uv run pytest -m integration
+make platform-api-test-integration   # starts ClickHouse (idempotent), then runs pytest -m integration
 ```
