@@ -27,9 +27,18 @@ class HexgateUsageHooks(RunHooks):
         agent: Agent,
         response: ModelResponse,
     ) -> None:
-        # agent.model is `str | Model | None` — only the str case gives a
-        # clean name; a Model implementation has no guaranteed name field.
-        model = agent.model if isinstance(agent.model, str) else ""
+        # agent.model is `str | Model | None`. None means the agent didn't
+        # set one and the runner/SDK default applies -- that default is
+        # resolved deep in the SDK's run loop and never reaches this hook,
+        # so "default" is an honest placeholder rather than a guess.
+        if isinstance(agent.model, str):
+            model = agent.model
+        elif agent.model is None:
+            model = "default"
+        else:
+            # Standard Model impls expose the real id in .model; class name is a
+            # last resort for an exotic Model that doesn't.
+            model = getattr(agent.model, "model", None) or type(agent.model).__name__
         emit_llm_usage(
             agent.name,
             model,

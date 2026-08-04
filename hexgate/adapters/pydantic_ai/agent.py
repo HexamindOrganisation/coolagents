@@ -10,6 +10,7 @@ from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRun, AgentRunResult
 from pydantic_ai.result import StreamedRunResult
 
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.pydantic_ai.usage import emit_run_usage
 from hexgate.runtime import User
 
@@ -70,12 +71,7 @@ class HexgatePydanticAgent:
         Agent.instrument_all()
 
     def _propagate_kwargs(self, user: User, method: str) -> dict[str, Any]:
-        return {
-            "tags": [f"pydantic_ai.agent.{method}"],
-            "user_id": user.user_id,
-            "session_id": user.session_id,
-            "metadata": {"user_role": user.role},
-        }
+        return langfuse_propagate_kwargs(user, f"pydantic_ai.agent.{method}")
 
     @asynccontextmanager
     async def _abind(self, user: User, method: str) -> AsyncIterator[None]:
