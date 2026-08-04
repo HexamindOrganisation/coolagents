@@ -1,6 +1,6 @@
-"""``Runner`` wrapper: opens a :class:`User` scope around each ``Runner.run*``
+"""``Runner`` wrapper: opens a :class:`HexgateContext` scope around each ``Runner.run*``
 call so the wrapped tools' enforcers can resolve the active role.
-Langfuse propagation mirrors the User identity into trace metadata.
+Langfuse propagation mirrors the HexgateContext identity into trace metadata.
 
 One policy binding is cached per agent name (first run resolves, later
 runs are ETag/304 refreshes); the per-call rewrap closes over the cached
@@ -33,7 +33,7 @@ from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -146,8 +146,8 @@ class HexgateRunner:
         OpenAIAgentsInstrumentor().instrument()
 
     @contextmanager
-    def _propagate(self, user: User, agent_name: str):
-        """Propagate User identity into Langfuse spans for the block."""
+    def _propagate(self, user: HexgateContext, agent_name: str):
+        """Propagate HexgateContext identity into Langfuse spans for the block."""
         with propagate_attributes(
             **langfuse_propagate_kwargs(user, f"openai.runner.run.{agent_name}")
         ):
@@ -165,12 +165,12 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: User,
+        user: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResult:
-        """Run the OpenAI agent asynchronously inside a User scope."""
+        """Run the OpenAI agent asynchronously inside a HexgateContext scope."""
         self._setup_observability()
         binding = self._binding_for(agent)
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
@@ -196,12 +196,12 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: User,
+        user: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResult:
-        """Run the OpenAI agent synchronously inside a User scope."""
+        """Run the OpenAI agent synchronously inside a HexgateContext scope."""
         self._setup_observability()
         binding = self._binding_for(agent)
         binding.refresh()  # per-run policy pull; 304 when unchanged
@@ -254,16 +254,16 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: User,
+        user: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
     ) -> RunResultStreaming:
-        """Stream the OpenAI agent inside a User scope.
+        """Stream the OpenAI agent inside a HexgateContext scope.
 
         ``Runner.run_streamed`` returns sync but spawns the agent loop as a
         background task that snapshots the current contextvars at creation;
-        tools fire there, not in ``stream_events``. So the User scope must be
+        tools fire there, not in ``stream_events``. So the HexgateContext scope must be
         active around the ``run_streamed`` call for the task to inherit it —
         the wrapped iterator re-opens it for exit/audit semantics.
         """

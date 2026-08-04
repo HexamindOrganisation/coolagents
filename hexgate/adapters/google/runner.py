@@ -1,6 +1,6 @@
-"""Google ADK ``Runner`` wrapper: opens a :class:`User` scope around each
+"""Google ADK ``Runner`` wrapper: opens a :class:`HexgateContext` scope around each
 ``Runner.run*`` call so the wrapped tools' enforcers can resolve the
-active role. Langfuse propagation mirrors User identity into spans.
+active role. Langfuse propagation mirrors HexgateContext identity into spans.
 """
 
 import asyncio
@@ -22,7 +22,7 @@ from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security.bans import resolve_ban_gate
 
 
@@ -79,8 +79,8 @@ class HexgateRunner:
         GoogleADKInstrumentor().instrument()
 
     @contextmanager
-    def _propagate(self, user: User):
-        """Propagate User identity into Langfuse spans for the block."""
+    def _propagate(self, user: HexgateContext):
+        """Propagate HexgateContext identity into Langfuse spans for the block."""
         with propagate_attributes(
             **langfuse_propagate_kwargs(user, f"google.runner.run.{self._agent_name}")
         ):
@@ -90,13 +90,13 @@ class HexgateRunner:
         self,
         *,
         new_message: types.Content,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> Generator[Any, None, None]:
         """Run the Google ADK agent synchronously, yielding events.
 
         ADK's ``Runner.run`` drives the agent loop in a worker thread whose
-        context cannot see our :class:`User` scope, so the tools' enforcers
+        context cannot see our :class:`HexgateContext` scope, so the tools' enforcers
         lose the active role. We drive ``run_async`` inline on a per-call loop
         instead, keeping execution in this scoped thread.
         """
@@ -133,7 +133,7 @@ class HexgateRunner:
         self,
         *,
         new_message: types.Content | None = None,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
         """Run the Google ADK agent asynchronously, yielding events."""

@@ -420,7 +420,7 @@ def load_hexgate_agent(
 
     The returned agent carries a ``hexgate_client`` attribute referencing the
     :class:`~hexgate.cloud.HexgateClient` used to fetch it; the runtime reads
-    this attribute when an :class:`~hexgate.runtime.User` scope is active to
+    this attribute when an :class:`~hexgate.runtime.HexgateContext` scope is active to
     mint per-request attenuated tokens lazily.
     """
     if not name:
@@ -481,7 +481,7 @@ def load_hexgate_agent(
         decision_observer=decision_observer,
     )
     # Attach the client so the runtime can do lazy attenuation inside an
-    # active User scope without the caller having to thread it through.
+    # active HexgateContext scope without the caller having to thread it through.
     enforced.hexgate_client = client
     # Kill-switch gate — reuses the same client (one biscuit verify / feed).
     # Self-gates to None under HEXGATE_LOCAL_MODE / HEXGATE_LOCAL_POLICY.
@@ -523,7 +523,7 @@ def load_agent(
     """
     if not local_only and resolve_api_key():
         # load_hexgate_agent dropped its reserved ``user_id`` placeholder
-        # in phase 3.5 — per-request user identity comes from a User scope
+        # in phase 3.5 — per-request user identity comes from a HexgateContext scope
         # at invocation time, not from the loader.
         return load_hexgate_agent(
             name,

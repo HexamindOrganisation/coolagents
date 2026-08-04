@@ -7,7 +7,7 @@ caller). A ``policies/`` directory is the new shape:
     ├── agent.yaml
     ├── system.md
     └── policies/
-        ├── default.yaml      # fallback when no User.role is active
+        ├── default.yaml      # fallback when no primary role is active
         ├── read_only.yaml    # mixin — is_mixin: true
         ├── support.yaml      # inherits: [read_only]
         └── billing.yaml      # inherits: [read_only, support]
@@ -23,7 +23,7 @@ maps (child entries override parent entries by tool name) and replaces
 scalar fields (``default_policy``) with the child's value when set.
 
 Mixin policies (``is_mixin: true``) can only be referenced via ``inherits``
-— they're never picked as the effective policy for any User scope.
+— they're never picked as the effective policy for any context scope.
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ class PolicySet:
     ``policies`` keys are role names; values are fully-resolved
     :class:`AgentPolicy` instances (inheritance flattened, mixins inlined).
     The ``default`` key is always present — it's what the runtime falls
-    back to when ``User.role`` is ``None`` or doesn't match any defined
-    role.
+    back to when the active ``primary_role`` is ``None`` or doesn't match any
+    defined role.
     """
 
     def __init__(self, policies: dict[str, AgentPolicy]) -> None:

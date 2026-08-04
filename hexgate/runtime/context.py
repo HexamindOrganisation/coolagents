@@ -1,6 +1,7 @@
-"""Execution-time context — :class:`User` (per-invocation scope, read via
-:func:`get_current_user` by all SDK adapters) and :class:`ToolUseContext`
-(per-tool meta-argument carrying Biscuit-extracted facts).
+"""Execution-time context — :class:`HexgateContext` (per-invocation scope,
+read via :func:`get_current_context` by all SDK adapters) and
+:class:`ToolUseContext` (per-tool meta-argument carrying Biscuit-extracted
+facts).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr
 
 from hexgate.runtime.workspace import Workspace
 
@@ -55,21 +56,30 @@ def reset_current_tool_use_context(token: Token[ToolUseContext | None]) -> None:
     _CURRENT_TOOL_USE_CONTEXT.reset(token)
 
 
-class User(BaseModel):
-    """End-user scope for an agent invocation — async context manager.
+AttrValue = str | int | bool | list[str]
 
-    Use within a request handler to bind the agent to one user for the
-    duration of a block. The agent runtime checks for an active User on
-    each invocation, lazily mints a per-request Biscuit (signed by the
-    platform-bound :class:`~hexgate.cloud.HexgateClient`), and selects the
-    role's policy from the agent's loaded set. The policy's per-tool
-    ``constraints`` then evaluate against each call's arguments.
+
+class HexgateContext(BaseModel):
+    """Request-scoped invocation context — async context manager.
+
+    Binds an agent invocation to a caller for the duration of a block. The
+    runtime checks for an active context on each invocation, lazily mints a
+    per-request Biscuit (signed by the platform-bound
+    :class:`~hexgate.cloud.HexgateClient`), and selects a policy from
+    ``primary_role``. The policy's per-tool ``constraints`` then evaluate
+    against each call's arguments. Four distinct jobs live here, deliberately
+    named:
+
+    * identity / audit    -> ``user_id`` / ``session_id``
+    * policy selection     -> ``user_roles`` (only ``primary_role`` used today)
+    * token lifetime       -> ``ttl_seconds`` (feeds attenuation, never policy)
+    * ABAC filter surface  -> ``attributes`` (INERT until wired; advisory-only)
 
     Two invocation styles, same machinery underneath:
 
     * Ambient (FastAPI-friendly)::
 
-          async with User(user_id="alice", role="billing"):
+          async with HexgateContext(user_id="alice", user_roles=["billing"]):
               async for event in stream_agent(agent, handler, input):
                   ...
 
@@ -88,45 +98,55 @@ class User(BaseModel):
     can still wrap with ``asyncio.run(...)``.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    user_id: str
-    role: str | None = None
+    user_id: str | None = None
     session_id: str | None = None
+    user_roles: list[str] = Field(default_factory=list)
     ttl_seconds: int | None = None
+    attributes: dict[str, AttrValue] = Field(default_factory=dict)
 
     # Stack of shadowed values (supports nested scopes). We save/restore via
     # set() rather than reset(token): async-generator finalizers run __aexit__
     # in a different Context, where a token reset would raise — set() doesn't.
-    _saved: list["User | None"] = PrivateAttr(default_factory=list)
+    _saved: list["HexgateContext | None"] = PrivateAttr(default_factory=list)
 
-    async def __aenter__(self) -> "User":
-        self._saved.append(_CURRENT_USER.get())
-        _CURRENT_USER.set(self)
+    @property
+    def primary_role(self) -> str | None:
+        """Single role used for policy selection today. Multi-role widens the
+        *selector* later; callers read this, never ``user_roles[0]`` directly."""
+        return self.user_roles[0] if self.user_roles else None
+
+    async def __aenter__(self) -> "HexgateContext":
+        self._saved.append(_CURRENT_CONTEXT.get())
+        _CURRENT_CONTEXT.set(self)
         return self
 
     async def __aexit__(self, *_: object) -> None:
         if self._saved:
-            _CURRENT_USER.set(self._saved.pop())
+            _CURRENT_CONTEXT.set(self._saved.pop())
 
     @contextmanager
-    def sync_scope(self) -> Iterator["User"]:
+    def sync_scope(self) -> Iterator["HexgateContext"]:
         """Sync mirror of ``async with self`` for sync entry points."""
-        self._saved.append(_CURRENT_USER.get())
-        _CURRENT_USER.set(self)
+        self._saved.append(_CURRENT_CONTEXT.get())
+        _CURRENT_CONTEXT.set(self)
         try:
             yield self
         finally:
             if self._saved:
-                _CURRENT_USER.set(self._saved.pop())
+                _CURRENT_CONTEXT.set(self._saved.pop())
 
 
-_CURRENT_USER: ContextVar[User | None] = ContextVar(
-    "hexgate_current_user",
+_CURRENT_CONTEXT: ContextVar[HexgateContext | None] = ContextVar(
+    "hexgate_current_context",
     default=None,
 )
 
 
-def get_current_user() -> User | None:
-    """Return the active :class:`User` for this execution flow, if any."""
-    return _CURRENT_USER.get()
+def get_current_context() -> HexgateContext | None:
+    """Return the active :class:`HexgateContext` for this flow, if any."""
+    return _CURRENT_CONTEXT.get()
+
+
+# Deprecated alias — removed in the naming-cleanup phase. New code uses
+# get_current_context().
+get_current_user = get_current_context

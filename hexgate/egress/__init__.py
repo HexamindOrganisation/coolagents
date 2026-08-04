@@ -15,9 +15,9 @@ enforcer). No agent framework is imported. See the network-egress concept doc
 (``docs/concepts/egress.mdx``).
 
     from hexgate.egress import egress_guard
-    from hexgate.runtime.context import User
+    from hexgate.runtime.context import HexgateContext
 
-    async with egress_guard(enforcer, User(user_id="u", role="agent")):
+    async with egress_guard(enforcer, HexgateContext(user_id="u", user_roles=["agent"])):
         ...  # this process's HTTP(S) egress is now policy-gated
 """
 

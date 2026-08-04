@@ -29,7 +29,7 @@ from hexgate.tracing._senders import (
 
 if TYPE_CHECKING:
     from hexgate.cloud.client import HexgateClient
-    from hexgate.runtime.context import User
+    from hexgate.runtime.context import HexgateContext
 
 logger = logging.getLogger("hexgate.security.bans")
 
@@ -253,7 +253,7 @@ class BanGate:
         # that avoids enforcement depending on which gate polled first.
         return EMPTY_BAN_SET if self._source is None else self._source.fetch()
 
-    def _decide(self, bans: BanSet, user: User | None) -> None:
+    def _decide(self, bans: BanSet, user: HexgateContext | None) -> None:
         # Agent ban checked first so a coincident agent+user ban emits a
         # deterministic ban_type/ban_id.
         hit = bans.agent_ban(self._agent_name)
@@ -272,11 +272,11 @@ class BanGate:
             reason=hit.reason,
         )
 
-    def check(self, user: User | None) -> None:
+    def check(self, user: HexgateContext | None) -> None:
         """Raise :class:`AgentBannedError` if this agent or user is banned."""
         self._decide(self._current(), user)
 
-    async def check_async(self, user: User | None) -> None:
+    async def check_async(self, user: HexgateContext | None) -> None:
         """Async check: fetch off-loop, decide + emit + raise on the loop.
 
         The emit must stay on the loop — the fire-and-forget ``AuditSender``
@@ -286,7 +286,7 @@ class BanGate:
         bans = await asyncio.to_thread(self._current)
         self._decide(bans, user)
 
-    def _emit(self, hit: BanEntry, user: User | None) -> None:
+    def _emit(self, hit: BanEntry, user: HexgateContext | None) -> None:
         # Best-effort: on sync entrypoints with no running loop, a sink built
         # off-loop drops the event (shared AuditSender limitation, not
         # ban-specific). The refusal itself is unaffected.

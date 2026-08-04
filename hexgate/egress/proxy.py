@@ -28,7 +28,7 @@ from hexgate.egress.model import split_authority
 from hexgate.egress.server import ProxyServer
 from hexgate.egress.transport import Transport, TunnelTransport
 from hexgate.egress.wire import close_writer, parse_request_line, read_headers, refuse
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.enforcer import PolicyEnforcer
 
 _log = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class EgressProxy(ProxyServer):
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: User,
+        user: HexgateContext,
         *,
         host: str = "127.0.0.1",
         port: int = 0,
@@ -106,7 +106,7 @@ class EgressProxy(ProxyServer):
 @contextlib.asynccontextmanager
 async def egress_guard(
     enforcer: PolicyEnforcer,
-    user: User,
+    user: HexgateContext,
     *,
     host: str = "127.0.0.1",
     port: int = 0,
