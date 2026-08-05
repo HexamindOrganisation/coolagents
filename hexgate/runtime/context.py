@@ -98,10 +98,10 @@ class HexgateContext(BaseModel):
     can still wrap with ``asyncio.run(...)``.
     """
 
-    user_id: str | None = None
+    user_id: str
     user_roles: list[str] = Field(
         default_factory=list,
-        description="All roles held by the caller.",
+        description="The roles of the end user invoking the agent.",
     )
     session_id: str | None = None
     ttl_seconds: int | None = None
@@ -151,8 +151,3 @@ _CURRENT_CONTEXT: ContextVar[HexgateContext | None] = ContextVar(
 def get_current_context() -> HexgateContext | None:
     """Return the active :class:`HexgateContext` for this flow, if any."""
     return _CURRENT_CONTEXT.get()
-
-
-# Deprecated alias — removed in the naming-cleanup phase. New code uses
-# get_current_context().
-get_current_user = get_current_context

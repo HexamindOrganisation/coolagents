@@ -20,7 +20,7 @@ from hexgate.adapters.google import wrapper as wrapper_mod
 from hexgate.adapters.google.runner import HexgateRunner
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.runtime import HexgateContext
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
@@ -143,14 +143,14 @@ class _FakeRunner:
     def run(self, **kwargs: Any) -> Any:
         """Yield two synthetic events while capturing the call kwargs."""
         self.run_calls.append(kwargs)
-        self.active_users.append(get_current_user())
+        self.active_users.append(get_current_context())
         yield {"event": "first"}
         yield {"event": "second"}
 
     async def run_async(self, **kwargs: Any) -> AsyncIterator[dict[str, str]]:
         """Async-yield two synthetic events while capturing the call kwargs."""
         self.run_async_calls.append(kwargs)
-        self.active_users.append(get_current_user())
+        self.active_users.append(get_current_context())
         yield {"event": "first"}
         yield {"event": "second"}
 
@@ -286,7 +286,7 @@ def test_run_drives_run_async_inline_under_user_scope(
     [active] = fake_runner.active_users
     assert active is user
     # Scope unwound after the call.
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_drains_pending_tasks_before_closing_loop(
@@ -360,7 +360,7 @@ def test_run_keeps_scope_visible_across_awaits(
 
     async def run_async(**_kwargs: Any) -> Any:
         await asyncio.sleep(0)
-        seen.append(get_current_user())  # post-await: a tool-call point
+        seen.append(get_current_context())  # post-await: a tool-call point
         yield {"event": "only"}
 
     runner._runner.run_async = run_async  # type: ignore[attr-defined]
@@ -369,7 +369,7 @@ def test_run_keeps_scope_visible_across_awaits(
 
     assert events == [{"event": "only"}]
     assert seen == [user]
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -401,7 +401,7 @@ async def test_run_async_opens_user_scope_and_yields_events(
     }
     [active] = fake_runner.active_users
     assert active is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +533,7 @@ def test_run_refused_before_events_when_banned(
     assert exc.value.code == "agent_banned"
     [fake_runner] = _FakeRunner.instances
     assert fake_runner.run_async_calls == []  # underlying runner never driven
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -723,7 +723,7 @@ def test_constructor_preserves_caller_supplied_plugins(
 async def test_usage_plugin_context_propagates_through_run_async(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_current_user() must still resolve inside after_model_callback,
+    """get_current_context() must still resolve inside after_model_callback,
     fired from wherever ADK invokes it within the run_async call tree — the
     HexgateContext scope opened around run_async must still be live there."""
     _silence_observability(monkeypatch)

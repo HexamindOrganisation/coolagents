@@ -17,7 +17,7 @@ from rich.console import Console
 from hexgate.cli import serve
 from hexgate.cli.serve import ServeContext, _context_from_payload
 from hexgate.cli.state import ChatState
-from hexgate.runtime import HexgateContext, get_current_user
+from hexgate.runtime import HexgateContext, get_current_context
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ async def test_handle_message_chat_with_attenuation_enters_user_scope(
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 
@@ -162,7 +162,7 @@ async def test_handle_message_chat_with_attenuation_enters_user_scope(
     assert captured_user.primary_role == "billing"
 
     # After the handler returns the scope must be cleanly popped.
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -175,7 +175,7 @@ async def test_handle_message_chat_without_attenuation_runs_with_no_user(
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 
@@ -202,7 +202,7 @@ async def test_handle_message_malformed_attenuation_runs_without_scope(
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 

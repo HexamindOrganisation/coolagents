@@ -15,7 +15,6 @@ from hexgate.runtime.context import (
     ToolUseContext,
     get_current_context,
     get_current_tool_use_context,
-    get_current_user,
     reset_current_tool_use_context,
     set_current_tool_use_context,
 )
@@ -48,7 +47,6 @@ __all__ = [
     "find_srt",
     "get_current_context",
     "get_current_tool_use_context",
-    "get_current_user",
     "reset_current_tool_use_context",
     "set_current_tool_use_context",
     "srt_version",

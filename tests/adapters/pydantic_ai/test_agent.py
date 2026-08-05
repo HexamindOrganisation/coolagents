@@ -10,7 +10,7 @@ from pydantic_ai.usage import RunUsage
 
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
 from hexgate.runtime import HexgateContext
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
 from hexgate.tracing import usage as tracing_usage_mod
@@ -82,7 +82,7 @@ class _RecordingAgent:
     ) -> dict[str, Any]:
         """Capture the active HexgateContext plus call arguments."""
         return {
-            "user": get_current_user(),
+            "user": get_current_context(),
             "args": args,
             "kwargs": kwargs,
         }
@@ -177,7 +177,7 @@ async def test_run_opens_user_scope_and_delegates(
     )
     user = _user()
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
     result = await proxy.run("hello", user=user)
 
@@ -185,7 +185,7 @@ async def test_run_opens_user_scope_and_delegates(
     [call] = inner.run_calls
     assert call["user"] is user
     assert call["args"] == ("hello",)
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_sync_opens_user_scope_and_delegates(
@@ -208,7 +208,7 @@ def test_run_sync_opens_user_scope_and_delegates(
     assert result.value == "run-sync-ok"
     [call] = inner.run_sync_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -230,11 +230,11 @@ async def test_run_stream_opens_user_scope_and_yields_result(
     async with proxy.run_stream("hello", user=user) as result:
         assert result.value == "stream-result"
         # Scope is live during the body.
-        assert get_current_user() is user
+        assert get_current_context() is user
 
     [call] = inner.run_stream_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -255,11 +255,11 @@ async def test_iter_opens_user_scope_and_yields_run(
 
     async with proxy.iter("hello", user=user) as run:
         assert run.value == "iter-result"
-        assert get_current_user() is user
+        assert get_current_context() is user
 
     [call] = inner.iter_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_user_scope_is_unwound_when_run_sync_raises(
@@ -283,7 +283,7 @@ def test_user_scope_is_unwound_when_run_sync_raises(
     with pytest.raises(RuntimeError, match="boom"):
         proxy.run_sync("hi", user=_user())
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ async def test_run_refused_before_agent_runs_when_banned(
 
     assert exc.value.code == "agent_banned"
     assert inner.run_calls == []
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -470,7 +470,7 @@ class _FakeSender:
 async def test_usage_emit_context_propagates_through_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_current_user() must still resolve when emit_run_usage fires —
+    """get_current_context() must still resolve when emit_run_usage fires —
     it's called from inside the HexgateContext scope opened around run(), before
     that scope unwinds."""
     monkeypatch.setattr(

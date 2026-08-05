@@ -16,7 +16,7 @@ from hexgate.adapters.openai import runner as runner_mod
 from hexgate.adapters.openai.runner import HexgateRunner
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.runtime import HexgateContext
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPolicy
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
@@ -189,7 +189,7 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
         captured["agent"] = starting_agent
         captured["input"] = input
         captured["kwargs"] = kwargs
-        captured["active_user"] = get_current_user()
+        captured["active_user"] = get_current_context()
         return "run-result"
 
     monkeypatch.setattr(
@@ -212,7 +212,7 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     # HexgateContext scope was live for the duration of Runner.run.
     assert captured["active_user"] is user
     # Scope unwound on exit — no leak.
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
@@ -226,7 +226,7 @@ def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
         captured["agent"] = starting_agent
         captured["input"] = input
         captured["kwargs"] = kwargs
-        captured["active_user"] = get_current_user()
+        captured["active_user"] = get_current_context()
         return "run-sync-result"
 
     monkeypatch.setattr(
@@ -244,7 +244,7 @@ def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
     assert captured["agent"] is not agent
     assert captured["input"] == "hello"
     assert captured["active_user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_sync_drains_pending_tasks_on_the_default_loop(
@@ -364,7 +364,7 @@ async def test_run_streamed_opens_user_scope_around_run_streamed_call(
     captured: dict[str, Any] = {}
 
     def fake_run_streamed(*_args: Any, **_kwargs: Any) -> _FakeStreamingResult:
-        captured["active_user"] = get_current_user()
+        captured["active_user"] = get_current_context()
         return _FakeStreamingResult()
 
     monkeypatch.setattr(
@@ -378,7 +378,7 @@ async def test_run_streamed_opens_user_scope_around_run_streamed_call(
     runner.run_streamed(_make_agent(), "hello", user=user)
 
     assert captured["active_user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -448,7 +448,7 @@ async def test_run_refused_before_runner_run_when_banned(
 
     assert exc.value.code == "agent_banned"
     assert called == []  # Runner.run never reached
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_streamed_refused_before_task_spawns_when_banned(
@@ -745,7 +745,7 @@ async def test_run_composes_caller_supplied_hooks_instead_of_clobbering(
 async def test_usage_hook_context_propagates_through_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_current_user() must still resolve inside on_llm_end, fired from
+    """get_current_context() must still resolve inside on_llm_end, fired from
     wherever the real Runner invokes it within the run() call tree — the
     HexgateContext scope opened around Runner.run must still be live there."""
     _silence_observability(monkeypatch)

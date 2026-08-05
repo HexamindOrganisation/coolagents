@@ -13,7 +13,7 @@ from langchain_core.outputs import ChatGeneration, LLMResult
 from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.runtime import HexgateContext
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
 from hexgate.tracing import usage as usage_mod
@@ -63,7 +63,7 @@ class _RecordingGraph:
     def _snapshot(self, payload: dict[str, Any], config: Any) -> dict[str, Any]:
         """Capture the active HexgateContext plus call arguments."""
         return {
-            "user": get_current_user(),
+            "user": get_current_context(),
             "input": payload,
             "config": config,
         }
@@ -169,7 +169,7 @@ def test_invoke_opens_user_scope_and_delegates() -> None:
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
     user = _user()
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
     result = proxy.invoke({"input": "hi"}, user=user)
 
@@ -179,7 +179,7 @@ def test_invoke_opens_user_scope_and_delegates() -> None:
     assert call["input"] == {"input": "hi"}
     assert proxy._callback_handler in call["config"]["callbacks"]
     # Scope unwound after the call.
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -194,7 +194,7 @@ async def test_ainvoke_opens_user_scope_and_delegates() -> None:
     [call] = graph.ainvoke_calls
     assert call["user"] is user
     assert proxy._callback_handler in call["config"]["callbacks"]
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_stream_opens_user_scope_and_yields_chunks() -> None:
@@ -208,7 +208,7 @@ def test_stream_opens_user_scope_and_yields_chunks() -> None:
     [call] = graph.stream_calls
     assert call["user"] is user
     assert proxy._callback_handler in call["config"]["callbacks"]
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -222,7 +222,7 @@ async def test_astream_opens_user_scope_and_yields_chunks() -> None:
     assert chunks == [{"chunk": 1}, {"chunk": 2}]
     [call] = graph.astream_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -241,7 +241,7 @@ async def test_astream_events_forwards_version_and_opens_scope() -> None:
     assert call["version"] == "v2"
     assert call["config"] is not None  # version did not leak into the config slot
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ def test_user_scope_is_unwound_when_invoke_raises() -> None:
     with pytest.raises(RuntimeError, match="boom"):
         proxy.invoke({"input": "hi"}, user=_user())
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +292,7 @@ def test_invoke_refused_before_graph_runs_when_banned() -> None:
 
     assert exc.value.code == "agent_banned"
     assert graph.invoke_calls == []  # graph never ran
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -395,7 +395,7 @@ class _CallbackFiringGraph:
 async def test_usage_handler_context_propagates_through_ainvoke(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_current_user() must still resolve inside on_llm_end, called from
+    """get_current_context() must still resolve inside on_llm_end, called from
     wherever LangGraph actually invokes it within the ainvoke call tree —
     the HexgateContext scope opened around _agent.ainvoke must still be live there."""
     fake_sender = _FakeSender()

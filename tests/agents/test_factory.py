@@ -15,7 +15,7 @@ from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.agents import factory
 from hexgate.agents.factory import HexgateAgent
 from hexgate.runtime import HexgateContext
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.tracing import usage as tracing_usage_mod
 
 
@@ -555,4 +555,4 @@ async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
     [event] = fake_sender.events
     assert event.user_id == "u-1"
     assert event.session_id == "s-1"
-    assert get_current_user() is None
+    assert get_current_context() is None
