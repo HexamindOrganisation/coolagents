@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -9,6 +10,8 @@ from hexgate.runtime.context import get_current_user
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
 from hexgate.tracing._senders import shutdown as _shutdown_all
+
+_log = logging.getLogger(__name__)
 
 _LLM_USAGE_PATH = "/v1/audit/llm-invocations"
 
@@ -57,30 +60,38 @@ def emit_llm_usage(
     """Resolve identity from the active User scope and emit one
     :class:`LlmUsageEvent` through the shared sender registry.
 
-    The single entry point every adapter's usage hook calls into. No-op
-    when no sender is configured for ``api_key`` (no key resolvable, or
-    ``HEXGATE_LOCAL_MODE`` is on) — mirrors ``PolicyEnforcer.decide()``'s
+    The single entry point every adapter's usage hook calls into — never
+    raises. Every adapter (LangChain, OpenAI Agents, Google ADK, Pydantic
+    AI) calls this from a framework hook that either re-raises on an
+    unhandled exception (Google's ``PluginManager``) or doesn't guard the
+    call at all (OpenAI's run loop, Pydantic AI's inline call site); a
+    failure here must not fail the agent run whose usage it's reporting.
+    No-op when no sender is configured for ``api_key`` (no key resolvable,
+    or ``HEXGATE_LOCAL_MODE`` is on) — mirrors ``PolicyEnforcer.decide()``'s
     audit emission, which is likewise silent when its sender is ``None``.
     """
-    sender = configure_usage_sender(api_key)
-    if sender is None:
-        return
-    user = get_current_user()
-    sender.emit(
-        LlmUsageEvent(
-            agent_name=agent_name,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            latency_ms=latency_ms,
-            status=status,
-            session_id=user.session_id
-            if (user is not None and user.session_id)
-            else "",
-            user_id=user.user_id if user is not None else "",
-            error_code=error_code,
+    try:
+        sender = configure_usage_sender(api_key)
+        if sender is None:
+            return
+        user = get_current_user()
+        sender.emit(
+            LlmUsageEvent(
+                agent_name=agent_name,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                status=status,
+                session_id=user.session_id
+                if (user is not None and user.session_id)
+                else "",
+                user_id=user.user_id if user is not None else "",
+                error_code=error_code,
+            )
         )
-    )
+    except Exception:
+        _log.exception("emit_llm_usage raised; ignoring")
 
 
 def configure_usage_sender(
