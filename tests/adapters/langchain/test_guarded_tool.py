@@ -15,7 +15,7 @@ import pytest
 from langchain_core.tools import BaseTool, tool
 
 from hexgate.adapters.langchain.tools import GuardedTool
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
@@ -301,13 +301,13 @@ def test_run_with_async_approval_handler_raises_runtime_error() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Role resolution via User contextvar
+# Role resolution via HexgateContext contextvar
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_user_role_selects_matching_role_policy() -> None:
-    """The active User's role drives which AgentPolicy the enforcer applies."""
+    """The active HexgateContext's role drives which AgentPolicy the enforcer applies."""
     # Two roles: 'support' allows the tool, default denies.
     policy_set = PolicySet(
         {
@@ -325,12 +325,12 @@ async def test_user_role_selects_matching_role_policy() -> None:
     enforcer = PolicyEnforcer(policy_set)
     guarded = GuardedTool.wrap(_make_async_tool(), enforcer=enforcer)
 
-    # No User scope → default role → denied.
+    # No HexgateContext scope → default role → denied.
     denied = await guarded._arun(text="hi")
     assert denied["error"]["type"] == "policy_denied"
 
     # support role → allowed.
-    async with User(user_id="u-1", role="support"):
+    async with HexgateContext(user_id="u-1", user_roles=["support"]):
         allowed = await guarded._arun(text="hi")
     assert allowed == "echo-async:hi"
 
@@ -345,7 +345,7 @@ async def test_error_payload_carries_role_when_user_scope_is_active() -> None:
     """The rendered error includes the role the decision was made against."""
     guarded = GuardedTool.wrap(_make_async_tool(), enforcer=_deny_enforcer())
 
-    async with User(user_id="u-1", role="billing"):
+    async with HexgateContext(user_id="u-1", user_roles=["billing"]):
         result = await guarded._arun(text="hi")
 
     assert result["error"]["role"] == "billing"

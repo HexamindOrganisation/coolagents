@@ -535,8 +535,8 @@ async def test_guarded_tool_constraints_gate_argument(
 async def test_guarded_tool_role_policy_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A PolicySet binds different policies per role; the active User picks."""
-    from hexgate.runtime import User
+    """A PolicySet binds different policies per role; the active HexgateContext picks."""
+    from hexgate.runtime import HexgateContext
     from hexgate.security import PolicySet
 
     @tool
@@ -576,7 +576,7 @@ async def test_guarded_tool_role_policy_selection(
     guarded = secured.tools[0]
 
     # support: 50 is the cap → 30 allowed, 200 denied
-    async with User(user_id="alice", role="support"):
+    async with HexgateContext(user_id="alice", user_roles=["support"]):
         ok = await guarded.ainvoke({"amount": 30})
         assert "refunded 30" in str(ok)
         nope = await guarded.ainvoke({"amount": 200})
@@ -584,11 +584,11 @@ async def test_guarded_tool_role_policy_selection(
         assert "args.amount <= 50" in nope["error"]["message"]
 
     # billing: cap is 500 → 200 allowed
-    async with User(user_id="alice", role="billing"):
+    async with HexgateContext(user_id="alice", user_roles=["billing"]):
         ok = await guarded.ainvoke({"amount": 200})
         assert "refunded 200" in str(ok)
 
-    # No active User → falls back to default (deny)
+    # No active HexgateContext → falls back to default (deny)
     fallback = await guarded.ainvoke({"amount": 1})
     assert fallback.get("ok") is False
     assert fallback["error"]["type"] == "policy_denied"

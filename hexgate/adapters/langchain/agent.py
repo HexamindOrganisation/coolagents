@@ -11,7 +11,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -19,11 +19,11 @@ if TYPE_CHECKING:
 
 
 class HexgateLangchainAgent:
-    """Proxy around a ``CompiledStateGraph`` that opens a User scope per call.
+    """Proxy around a ``CompiledStateGraph`` that opens a HexgateContext scope per call.
 
     Tools are already enforcer-installed at construction (by
     :func:`wrap_langchain_agent`). This proxy pushes the active
-    :class:`User` onto the contextvar and propagates identity into
+    :class:`HexgateContext` onto the contextvar and propagates identity into
     Langfuse spans. ``user`` is per-call, so one proxy serves many
     users concurrently. When a policy binding is attached, every run
     method refreshes it first (fail-soft; 304 when unchanged).
@@ -60,16 +60,16 @@ class HexgateLangchainAgent:
         if self._binding is not None:
             self._binding.refresh()
 
-    async def _check_ban_async(self, user: User) -> None:
+    async def _check_ban_async(self, user: HexgateContext) -> None:
         """Refuse a banned agent/user before running, if a gate is attached."""
         if self._ban_gate is not None:
             await self._ban_gate.check_async(user)
 
-    def _check_ban(self, user: User) -> None:
+    def _check_ban(self, user: HexgateContext) -> None:
         if self._ban_gate is not None:
             self._ban_gate.check(user)
 
-    def _propagate_kwargs(self, user: User, method: str) -> dict[str, Any]:
+    def _propagate_kwargs(self, user: HexgateContext, method: str) -> dict[str, Any]:
         return langfuse_propagate_kwargs(user, f"langchain.agent.{method}")
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
@@ -86,11 +86,11 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: User,
+        user: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Invoke the agent asynchronously inside a User scope."""
+        """Invoke the agent asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
         await self._check_ban_async(user)
         async with user:
@@ -103,11 +103,11 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: User,
+        user: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Invoke the agent synchronously inside a User scope."""
+        """Invoke the agent synchronously inside a HexgateContext scope."""
         self._refresh()
         self._check_ban(user)
         with user.sync_scope():
@@ -118,11 +118,11 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: User,
+        user: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream the agent asynchronously inside a User scope."""
+        """Stream the agent asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
         await self._check_ban_async(user)
         async with user:
@@ -136,11 +136,11 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: User,
+        user: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> Iterator[dict[str, Any]]:
-        """Stream the agent synchronously inside a User scope."""
+        """Stream the agent synchronously inside a HexgateContext scope."""
         self._refresh()
         self._check_ban(user)
         with user.sync_scope():
@@ -153,12 +153,12 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: User,
+        user: HexgateContext,
         config: RunnableConfig | None = None,
         version: Literal["v1", "v2"] = "v2",
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Stream the agent events asynchronously inside a User scope."""
+        """Stream the agent events asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
         await self._check_ban_async(user)
         async with user:
@@ -175,7 +175,7 @@ class HexgateLangchainAgent:
         """Delegate unknown attributes to the wrapped agent.
 
         Only the wrapped run methods (invoke/ainvoke/stream/astream/
-        astream_events) enforce the ban gate + User scope; methods reached
+        astream_events) enforce the ban gate + HexgateContext scope; methods reached
         here (batch, abatch, astream_log, …) bypass them.
         """
         return getattr(self._agent, name)

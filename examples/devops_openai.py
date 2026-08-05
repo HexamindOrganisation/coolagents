@@ -4,7 +4,7 @@ from agents import Agent, function_tool
 from dotenv import load_dotenv
 
 from hexgate.adapters.openai import HexgateRunner
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 
 INSTRUCTION = (
     "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
@@ -46,7 +46,9 @@ async def main() -> None:
     result = await runner.run(
         agent,
         "Scale the checkout service to 5 replicas in staging.",
-        user=User(user_id="engineer_1", session_id="session_1", role="operator"),
+        user=HexgateContext(
+            user_id="engineer_1", session_id="session_1", user_roles=["operator"]
+        ),
     )
     print(result.final_output)
 

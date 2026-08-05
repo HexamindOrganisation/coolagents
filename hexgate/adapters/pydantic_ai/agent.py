@@ -12,7 +12,7 @@ from pydantic_ai.result import StreamedRunResult
 
 from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.pydantic_ai.usage import emit_run_usage
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 
 
 class HexgatePydanticAgent:
-    """Proxy around a pydantic_ai ``Agent`` that opens a User scope per call.
+    """Proxy around a pydantic_ai ``Agent`` that opens a HexgateContext scope per call.
 
     Tools are already enforcer-installed at construction (by
     :func:`wrap_pydantic_agent`). This proxy pushes the active
-    :class:`User` onto the contextvar and propagates identity into
+    :class:`HexgateContext` onto the contextvar and propagates identity into
     Langfuse spans. ``user`` is per-call, so one proxy serves many
     users concurrently. When a policy binding is attached, every run
     method refreshes it first (fail-soft; 304 when unchanged).
@@ -57,12 +57,12 @@ class HexgatePydanticAgent:
         if self._binding is not None:
             self._binding.refresh()
 
-    async def _check_ban_async(self, user: User) -> None:
+    async def _check_ban_async(self, user: HexgateContext) -> None:
         """Refuse a banned agent/user before running, if a gate is attached."""
         if self._ban_gate is not None:
             await self._ban_gate.check_async(user)
 
-    def _check_ban(self, user: User) -> None:
+    def _check_ban(self, user: HexgateContext) -> None:
         if self._ban_gate is not None:
             self._ban_gate.check(user)
 
@@ -70,19 +70,19 @@ class HexgatePydanticAgent:
         """Globally instrument all pydantic_ai Agents (idempotent)."""
         Agent.instrument_all()
 
-    def _propagate_kwargs(self, user: User, method: str) -> dict[str, Any]:
+    def _propagate_kwargs(self, user: HexgateContext, method: str) -> dict[str, Any]:
         return langfuse_propagate_kwargs(user, f"pydantic_ai.agent.{method}")
 
     @asynccontextmanager
-    async def _abind(self, user: User, method: str) -> AsyncIterator[None]:
-        """Async User scope + Langfuse propagation."""
+    async def _abind(self, user: HexgateContext, method: str) -> AsyncIterator[None]:
+        """Async HexgateContext scope + Langfuse propagation."""
         async with user:
             with propagate_attributes(**self._propagate_kwargs(user, method)):
                 yield
 
     @contextmanager
-    def _bind(self, user: User, method: str) -> Iterator[None]:
-        """Sync User scope + Langfuse propagation."""
+    def _bind(self, user: HexgateContext, method: str) -> Iterator[None]:
+        """Sync HexgateContext scope + Langfuse propagation."""
         with user.sync_scope():
             with propagate_attributes(**self._propagate_kwargs(user, method)):
                 yield
@@ -90,10 +90,10 @@ class HexgatePydanticAgent:
     async def run(
         self,
         *args: Any,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
-        """Run the agent asynchronously inside a User scope."""
+        """Run the agent asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
         await self._check_ban_async(user)
         async with self._abind(user, "run"):
@@ -104,10 +104,10 @@ class HexgatePydanticAgent:
     def run_sync(
         self,
         *args: Any,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> AgentRunResult[Any]:
-        """Run the agent synchronously inside a User scope."""
+        """Run the agent synchronously inside a HexgateContext scope."""
         self._refresh()
         self._check_ban(user)
         with self._bind(user, "run_sync"):
@@ -119,10 +119,10 @@ class HexgatePydanticAgent:
     async def run_stream(
         self,
         *args: Any,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> AsyncIterator[StreamedRunResult[Any, Any]]:
-        """Stream the agent response asynchronously inside a User scope."""
+        """Stream the agent response asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
         await self._check_ban_async(user)
         async with self._abind(user, "run_stream"):
@@ -142,7 +142,7 @@ class HexgatePydanticAgent:
     async def iter(
         self,
         *args: Any,
-        user: User,
+        user: HexgateContext,
         **kwargs: Any,
     ) -> AsyncIterator[AgentRun[Any, Any]]:
         """Iterate over the agent execution graph asynchronously."""
@@ -160,7 +160,7 @@ class HexgatePydanticAgent:
         """Delegate unknown attributes to the wrapped agent.
 
         Only the wrapped run methods (run/run_sync/run_stream/iter) enforce the
-        ban gate + User scope; methods reached here (to_a2a, to_ag_ui, …) bypass
+        ban gate + HexgateContext scope; methods reached here (to_a2a, to_ag_ui, …) bypass
         them.
         """
         return getattr(self._agent, name)

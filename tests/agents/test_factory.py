@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
 from hexgate.agents import factory
 from hexgate.agents.factory import HexgateAgent
-from hexgate.runtime import User
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime import HexgateContext
+from hexgate.runtime.context import get_current_context
 from hexgate.tracing import usage as tracing_usage_mod
 
 
@@ -357,13 +357,13 @@ def _agent_with_gate(graph: FakeAgent, gate) -> factory.HexgateAgent:
 
 @pytest.mark.asyncio
 async def test_hexgate_agent_ainvoke_refused_before_graph_when_banned() -> None:
-    from hexgate.runtime import User
+    from hexgate.runtime import HexgateContext
     from hexgate.security.errors import AgentBannedError
 
     graph = FakeAgent()
     agent = _agent_with_gate(graph, _ban_gate("bot"))
 
-    async with User(user_id="u1"):
+    async with HexgateContext(user_id="u1"):
         with pytest.raises(AgentBannedError) as exc:
             await agent.ainvoke({}, {})
 
@@ -373,13 +373,13 @@ async def test_hexgate_agent_ainvoke_refused_before_graph_when_banned() -> None:
 
 @pytest.mark.asyncio
 async def test_hexgate_agent_astream_raises_before_first_event_when_banned() -> None:
-    from hexgate.runtime import User
+    from hexgate.runtime import HexgateContext
     from hexgate.security.errors import AgentBannedError
 
     graph = FakeAgent()
     agent = _agent_with_gate(graph, _ban_gate("bot"))
 
-    async with User(user_id="u1"):
+    async with HexgateContext(user_id="u1"):
         with pytest.raises(AgentBannedError):
             async for _ in agent.astream_events({}, {}, version="v2"):
                 pass
@@ -389,12 +389,12 @@ async def test_hexgate_agent_astream_raises_before_first_event_when_banned() -> 
 
 @pytest.mark.asyncio
 async def test_hexgate_agent_not_banned_passes_through() -> None:
-    from hexgate.runtime import User
+    from hexgate.runtime import HexgateContext
 
     graph = FakeAgent()
     agent = _agent_with_gate(graph, _ban_gate("bot", banned="someone-else"))
 
-    async with User(user_id="u1"):
+    async with HexgateContext(user_id="u1"):
         result = await agent.ainvoke({}, {})
 
     assert result == {"messages": ["ok"]}
@@ -537,7 +537,7 @@ async def test_usage_handler_emits_with_agent_name(
 async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HexgateAgent itself doesn't open a User scope (serve.py does, only
+    """HexgateAgent itself doesn't open a HexgateContext scope (serve.py does, only
     when the chat payload carries user_attenuation) — but when a caller
     does have one active around the call, identity must still resolve
     inside on_llm_end."""
@@ -547,10 +547,12 @@ async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
     )
     agent, _ = _make_hexgate_agent(name="my-agent", graph=_CallbackFiringGraph())
 
-    async with User(user_id="u-1", session_id="s-1", role="developer"):
+    async with HexgateContext(
+        user_id="u-1", session_id="s-1", user_roles=["developer"]
+    ):
         await agent.ainvoke({"messages": []}, config={})
 
     [event] = fake_sender.events
     assert event.user_id == "u-1"
     assert event.session_id == "s-1"
-    assert get_current_user() is None
+    assert get_current_context() is None

@@ -10,7 +10,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.google import HexgateRunner
 
 
@@ -36,10 +36,10 @@ async def main():
         tools=[get_current_time, get_weather],
     )
 
-    user = User(
+    user = HexgateContext(
         user_id="google_user_1",
         session_id="google_session_1",
-        role="user",
+        user_roles=["user"],
     )
 
     session_service = InMemorySessionService()

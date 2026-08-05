@@ -1,7 +1,7 @@
 """Google ADK adapter: resolve the platform policy, construct one
 :class:`PolicyEnforcer`, and return a clone of the agent whose tools
-are policy-gated. User-agnostic at wrap time — role resolution happens
-inside the enforcer via the :class:`User` contextvar.
+are policy-gated. HexgateContext-agnostic at wrap time — role resolution happens
+inside the enforcer via the :class:`HexgateContext` contextvar.
 
 Policy is resolved from the platform at wrap time (fail-loud on a 404 —
 register the agent first with ``hexgate register``); the returned binding
@@ -32,7 +32,7 @@ def wrap_google_agent(
 ) -> tuple[BaseAgent, PolicyBinding]:
     """Return a policy-gated clone of ``agent`` plus its refresh binding.
 
-    Caller must open a :class:`User` scope around the run.
+    Caller must open a :class:`HexgateContext` scope around the run.
     ``NEEDS_APPROVAL`` outcomes fire ``approval_handler`` (async
     ``fn(decision) -> bool`` or ``bool`` shorthand); a truthy return
     runs the tool, falsy or missing handler surfaces the

@@ -2,8 +2,8 @@
 
 :class:`PolicyEnforcer` returns a :class:`Decision` for a proposed tool
 call and stops — adapters translate it for their host. Stateless across
-calls: each :meth:`decide` re-reads the active :class:`User` from the
-contextvar.
+calls: each :meth:`decide` re-reads the active :class:`HexgateContext`
+from the contextvar.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from hexgate.audit import AuditEvent, configure
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.security.decision import Decision, PolicyEngine
 from hexgate.tracing._senders import AuditSender
 
@@ -69,8 +69,8 @@ class PolicyEnforcer:
         injected ``decision_observer`` (if any) with the same Decision.
         Both are no-ops when not injected; both are isolated so a
         broken observer never breaks enforcement."""
-        user = get_current_user()
-        role = user.role if user is not None else None
+        context = get_current_context()
+        role = context.primary_role if context is not None else None
         # Deep-copy when audit OR observer is wired: emission/observation
         # may inspect args after ``decide()`` returns, so a shallow copy
         # would let the caller mutate nested args first and make the
@@ -94,9 +94,11 @@ class PolicyEnforcer:
             self._audit_sender.emit(
                 AuditEvent(
                     decision=decision,
-                    user_id=user.user_id if user is not None else "",
-                    session_id=user.session_id
-                    if (user is not None and user.session_id)
+                    user_id=context.user_id
+                    if context is not None and context.user_id
+                    else "",
+                    session_id=context.session_id
+                    if (context is not None and context.session_id)
                     else "",
                 )
             )

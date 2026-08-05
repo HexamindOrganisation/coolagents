@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security.bans import (
     EMPTY_BAN_SET,
     BanContentError,
@@ -46,8 +46,8 @@ def _isolate_ban_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     _senders._logged_local_mode_suppressed.clear()
 
 
-def _user(user_id: str = "u-1") -> User:
-    return User(user_id=user_id, session_id="s-1", role="developer")
+def _user(user_id: str = "u-1") -> HexgateContext:
+    return HexgateContext(user_id=user_id, session_id="s-1", user_roles=["developer"])
 
 
 def _agent_entry(agent_name: str = "bot", ban_id: str = "b-agent") -> dict[str, Any]:

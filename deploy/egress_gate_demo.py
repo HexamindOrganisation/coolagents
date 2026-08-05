@@ -23,7 +23,7 @@ def _():
     import httpx
     import marimo as mo
 
-    from hexgate import PolicyBuilder, User
+    from hexgate import HexgateContext, PolicyBuilder
     from hexgate.egress import NET_TOOL, egress_guard, tcp_egress_guard
     from hexgate.security.enforcer import build_enforcer
     from hexgate.security.policy_set import load_policy_set
@@ -31,7 +31,7 @@ def _():
     return (
         NET_TOOL,
         PolicyBuilder,
-        User,
+        HexgateContext,
         asyncio,
         build_enforcer,
         egress_guard,
@@ -170,7 +170,9 @@ def _(mo):
 
 
 @app.cell
-def _(User, build_enforcer, build_policy, egress_guard, httpx, load_policy_set):
+def _(
+    HexgateContext, build_enforcer, build_policy, egress_guard, httpx, load_policy_set
+):
     async def probe(url):
         # A fresh enforcer per probe, with an observer that captures decisions.
         decisions = []
@@ -180,7 +182,9 @@ def _(User, build_enforcer, build_policy, egress_guard, httpx, load_policy_set):
             decision_observer=decisions.append,
         )
         outcome = {}
-        async with egress_guard(enforcer, User(user_id="notebook", role="agent")):
+        async with egress_guard(
+            enforcer, HexgateContext(user_id="notebook", user_roles=["agent"])
+        ):
             async with httpx.AsyncClient(timeout=10) as client:
                 try:
                     response = await client.get(url)
@@ -263,7 +267,7 @@ def _(mo):
 @app.cell
 async def _(
     PolicyBuilder,
-    User,
+    HexgateContext,
     asyncio,
     build_enforcer,
     load_policy_set,
@@ -288,7 +292,9 @@ async def _(
             decision_observer=decisions.append,
         )
         async with tcp_egress_guard(
-            enforcer, User(user_id="notebook", role="agent"), target=target
+            enforcer,
+            HexgateContext(user_id="notebook", user_roles=["agent"]),
+            target=target,
         ) as proxy:
             try:
                 reader, writer = await asyncio.open_connection(proxy.host, proxy.port)

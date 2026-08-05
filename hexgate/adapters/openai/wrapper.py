@@ -1,6 +1,6 @@
 """OpenAI Agents adapter: resolve the platform policy and return a clone
-of the agent whose tools are policy-gated. User-agnostic at wrap time —
-role resolution happens inside the enforcer via the :class:`User`
+of the agent whose tools are policy-gated. HexgateContext-agnostic at wrap time —
+role resolution happens inside the enforcer via the :class:`HexgateContext`
 contextvar.
 
 Policy is resolved from the platform (register-on-404); the lifecycle —
@@ -28,7 +28,7 @@ def wrap_openai_agent(
     """Return a clone of ``agent`` whose tools are gated by ``enforcer``.
 
     Mechanics only — resolution/refresh live with the caller. Caller
-    must open a :class:`User` scope around the run. ``approval_handler``
+    must open a :class:`HexgateContext` scope around the run. ``approval_handler``
     (async ``fn(decision) -> bool`` or ``bool`` shorthand) fires when a
     tool call carries a ``NEEDS_APPROVAL`` outcome; a truthy return runs
     the tool, falsy surfaces the ``[approval_required]`` marker.

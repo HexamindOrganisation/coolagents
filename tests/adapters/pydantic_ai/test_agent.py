@@ -9,16 +9,16 @@ import pytest
 from pydantic_ai.usage import RunUsage
 
 from hexgate.adapters.pydantic_ai.agent import HexgatePydanticAgent
-from hexgate.runtime import User
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime import HexgateContext
+from hexgate.runtime.context import get_current_context
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.errors import AgentBannedError
 from hexgate.tracing import usage as tracing_usage_mod
 
 
-def _user() -> User:
-    """Build a minimal User for invocation tests."""
-    return User(user_id="u-1", session_id="s-1", role="developer")
+def _user() -> HexgateContext:
+    """Build a minimal HexgateContext for invocation tests."""
+    return HexgateContext(user_id="u-1", session_id="s-1", user_roles=["developer"])
 
 
 class _StaticBanSource:
@@ -66,7 +66,7 @@ class _FakeResult:
 
 
 class _RecordingAgent:
-    """Capture the active User and call args seen by each Agent method."""
+    """Capture the active HexgateContext and call args seen by each Agent method."""
 
     name = "recording-agent"
     model = "test-model"
@@ -80,9 +80,9 @@ class _RecordingAgent:
     def _snapshot(
         self, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        """Capture the active User plus call arguments."""
+        """Capture the active HexgateContext plus call arguments."""
         return {
-            "user": get_current_user(),
+            "user": get_current_context(),
             "args": args,
             "kwargs": kwargs,
         }
@@ -99,7 +99,7 @@ class _RecordingAgent:
 
     @asynccontextmanager
     async def run_stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[_FakeResult]:
-        """Async-context yield while capturing the active User."""
+        """Async-context yield while capturing the active HexgateContext."""
         self.run_stream_calls.append(self._snapshot(args, kwargs))
         yield _FakeResult("stream-result")
 
@@ -157,7 +157,7 @@ def test_constructor_stores_inputs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# User scope binding per invocation method
+# HexgateContext scope binding per invocation method
 # ---------------------------------------------------------------------------
 
 
@@ -177,7 +177,7 @@ async def test_run_opens_user_scope_and_delegates(
     )
     user = _user()
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
     result = await proxy.run("hello", user=user)
 
@@ -185,7 +185,7 @@ async def test_run_opens_user_scope_and_delegates(
     [call] = inner.run_calls
     assert call["user"] is user
     assert call["args"] == ("hello",)
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_run_sync_opens_user_scope_and_delegates(
@@ -208,7 +208,7 @@ def test_run_sync_opens_user_scope_and_delegates(
     assert result.value == "run-sync-ok"
     [call] = inner.run_sync_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -230,11 +230,11 @@ async def test_run_stream_opens_user_scope_and_yields_result(
     async with proxy.run_stream("hello", user=user) as result:
         assert result.value == "stream-result"
         # Scope is live during the body.
-        assert get_current_user() is user
+        assert get_current_context() is user
 
     [call] = inner.run_stream_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -255,11 +255,11 @@ async def test_iter_opens_user_scope_and_yields_run(
 
     async with proxy.iter("hello", user=user) as run:
         assert run.value == "iter-result"
-        assert get_current_user() is user
+        assert get_current_context() is user
 
     [call] = inner.iter_calls
     assert call["user"] is user
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 def test_user_scope_is_unwound_when_run_sync_raises(
@@ -283,7 +283,7 @@ def test_user_scope_is_unwound_when_run_sync_raises(
     with pytest.raises(RuntimeError, match="boom"):
         proxy.run_sync("hi", user=_user())
 
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +317,7 @@ async def test_run_refused_before_agent_runs_when_banned(
 
     assert exc.value.code == "agent_banned"
     assert inner.run_calls == []
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
@@ -452,7 +452,7 @@ def test_proxy_without_binding_runs_fine() -> None:
 
 
 # ---------------------------------------------------------------------------
-# emit_run_usage: User contextvar survives to the emit call site
+# emit_run_usage: HexgateContext contextvar survives to the emit call site
 # ---------------------------------------------------------------------------
 
 
@@ -470,8 +470,8 @@ class _FakeSender:
 async def test_usage_emit_context_propagates_through_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """get_current_user() must still resolve when emit_run_usage fires —
-    it's called from inside the User scope opened around run(), before
+    """get_current_context() must still resolve when emit_run_usage fires —
+    it's called from inside the HexgateContext scope opened around run(), before
     that scope unwinds."""
     monkeypatch.setattr(
         "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
@@ -503,7 +503,7 @@ async def test_usage_emit_context_propagates_through_run_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Same guarantee for run_stream, where the emit fires after the
-    caller's block resumes control, right before the User scope exits."""
+    caller's block resumes control, right before the HexgateContext scope exits."""
     monkeypatch.setattr(
         "hexgate.adapters.pydantic_ai.agent.Agent.instrument_all", lambda: None
     )

@@ -29,7 +29,7 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.egress.gate import Gate
 from hexgate.egress.server import ProxyServer
 from hexgate.egress.wire import close_writer, open_upstream, pipe
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.network import NET_TCP_CONNECT
 
@@ -49,7 +49,7 @@ class TcpEgressProxy(ProxyServer):
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: User,
+        user: HexgateContext,
         *,
         target: tuple[str, int],
         host: str = "127.0.0.1",
@@ -96,7 +96,7 @@ class TcpEgressProxy(ProxyServer):
 @contextlib.asynccontextmanager
 async def tcp_egress_guard(
     enforcer: PolicyEnforcer,
-    user: User,
+    user: HexgateContext,
     *,
     target: tuple[str, int],
     host: str = "127.0.0.1",

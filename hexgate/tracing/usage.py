@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from hexgate.runtime.context import get_current_user
+from hexgate.runtime.context import get_current_context
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
 from hexgate.tracing._senders import shutdown as _shutdown_all
@@ -57,7 +57,7 @@ def emit_llm_usage(
     error_code: str | None = None,
     api_key: str | None = None,
 ) -> None:
-    """Resolve identity from the active User scope and emit one
+    """Resolve identity from the active HexgateContext scope and emit one
     :class:`LlmUsageEvent` through the shared sender registry.
 
     The single entry point every adapter's usage hook calls into — never
@@ -74,7 +74,7 @@ def emit_llm_usage(
         sender = configure_usage_sender(api_key)
         if sender is None:
             return
-        user = get_current_user()
+        user = get_current_context()
         sender.emit(
             LlmUsageEvent(
                 agent_name=agent_name,

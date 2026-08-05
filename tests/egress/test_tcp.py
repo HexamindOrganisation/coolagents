@@ -11,7 +11,7 @@ import asyncio
 import pytest
 
 from hexgate.egress.tcp import TcpEgressProxy, tcp_egress_guard
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import Decision
 from hexgate.security.enforcer import build_enforcer
 from hexgate.security.policy_set import load_policy_set_from_dict
@@ -55,7 +55,7 @@ async def _start_tcp_echo() -> tuple[asyncio.AbstractServer, int]:
 
 def _proxy(enforcer, target, **kw) -> TcpEgressProxy:
     return TcpEgressProxy(
-        enforcer, User(user_id="u", role="agent"), target=target, **kw
+        enforcer, HexgateContext(user_id="u", user_roles=["agent"]), target=target, **kw
     )
 
 
@@ -218,7 +218,9 @@ async def test_tcp_egress_guard_yields_running_proxy() -> None:
     enforcer = _enforcer(constraints=['args.host == "127.0.0.1"'])
     try:
         async with tcp_egress_guard(
-            enforcer, User(user_id="u", role="agent"), target=("127.0.0.1", echo_port)
+            enforcer,
+            HexgateContext(user_id="u", user_roles=["agent"]),
+            target=("127.0.0.1", echo_port),
         ) as proxy:
             reader, writer = await asyncio.open_connection(proxy.host, proxy.port)
             writer.write(b"yo")

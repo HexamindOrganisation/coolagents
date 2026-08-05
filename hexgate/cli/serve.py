@@ -16,7 +16,7 @@ doesn't permanently break the connection.
 
 When a payload includes ``user_attenuation`` metadata (the Playground's
 "Act as alice" affordance), the turn is wrapped in an ``async with
-User(...)`` scope. The runtime then lazily attenuates the agent's
+HexgateContext(...)`` scope. The runtime then lazily attenuates the agent's
 bound HexgateClient token inside ``stream_agent`` — same code path a
 production dev's backend uses when serving a real user.
 """
@@ -49,7 +49,7 @@ from hexgate.cli._common import (
 )
 from hexgate.cli.state import ChatState
 from hexgate.cloud.client import HexgateConfig, HexgateError
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security.decision import Decision
 
 logger = logging.getLogger(__name__)
@@ -270,19 +270,25 @@ async def _safe_send(context: "ServeContext", ws: Any, message: str) -> None:
         await ws.send(message)
 
 
-def _user_from_payload(attenuation: Any) -> User | None:
-    """Build a :class:`User` from a chat payload's ``user_attenuation`` dict.
+def _context_from_payload(attenuation: Any) -> HexgateContext | None:
+    """Build a :class:`HexgateContext` from a chat payload's
+    ``user_attenuation`` dict.
 
-    Returns ``None`` (and logs a warning) when the payload is missing or
-    malformed — the turn proceeds without an active User scope and the
-    agent runs as if no attenuation was requested.
+    Accepts a ``roles`` list or the legacy singular ``role`` wire key (mapped
+    to a one-element list). Returns ``None`` (and logs a warning) when the
+    payload is missing or malformed — the turn proceeds without an active
+    context scope and the agent runs as if no attenuation was requested.
     """
     if not isinstance(attenuation, dict) or not attenuation.get("user"):
         return None
     try:
-        return User(
+        roles = attenuation.get("roles")
+        if roles is None:
+            single = attenuation.get("role")
+            roles = [single] if single else []
+        return HexgateContext(
             user_id=str(attenuation["user"]),
-            role=attenuation.get("role"),
+            user_roles=roles,
             session_id=attenuation.get("session_id"),
             ttl_seconds=attenuation.get("ttl_seconds"),
         )
@@ -292,12 +298,12 @@ def _user_from_payload(attenuation: Any) -> User | None:
 
 
 @asynccontextmanager
-async def _maybe_user_scope(user: User | None):
-    """No-op async context manager when ``user`` is ``None``."""
-    if user is None:
+async def _maybe_user_scope(context: HexgateContext | None):
+    """No-op async context manager when ``context`` is ``None``."""
+    if context is None:
         yield
     else:
-        async with user:
+        async with context:
             yield
 
 
@@ -316,7 +322,7 @@ async def _run_chat_turn(
     # the attached PolicySource sends If-None-Match and reuses the
     # cached bundle on 304. No need for serve to rebuild the runtime.
     context.state.start_turn(text)
-    user = _user_from_payload(payload.get("user_attenuation"))
+    user = _context_from_payload(payload.get("user_attenuation"))
     async with _maybe_user_scope(user):
         async for event in stream_agent(
             context.runtime.agent,

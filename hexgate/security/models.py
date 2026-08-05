@@ -61,7 +61,7 @@ class AgentPolicy(BaseModel):
     policies like ``read_only`` that several roles share.
 
     ``is_mixin = True`` marks the policy as a building block — the SDK
-    won't pick it as the effective policy for any User scope; it can only
+    won't pick it as the effective policy for any HexgateContext scope; it can only
     be referenced via ``inherits``.
 
     ``consts`` names reusable values referenced from constraints as

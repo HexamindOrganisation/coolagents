@@ -2,7 +2,7 @@ import asyncio
 from dotenv import load_dotenv
 from pydantic_ai import Agent
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
 
 
@@ -25,9 +25,9 @@ async def main():
 
     result = await agent.run(
         "What is the weather in Tokyo?",
-        user=User(
+        user=HexgateContext(
             user_id="pydantic_ai_user_1",
-            role="member",
+            user_roles=["member"],
             session_id="pydantic_ai_session_1",
         ),
     )

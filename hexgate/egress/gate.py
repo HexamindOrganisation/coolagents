@@ -2,7 +2,7 @@
 
 :class:`Gate` is the one place egress talks to
 :class:`~hexgate.security.enforcer.PolicyEnforcer`. A transport hands it the
-enforcer args for a request; it resolves the caller's :class:`User`, asks the
+enforcer args for a request; it resolves the caller's :class:`HexgateContext`, asks the
 enforcer for a :class:`~hexgate.security.decision.Decision` (which emits the
 audit event and fires the decision observer as a side effect), and reduces it
 to an allow/deny result — awaiting the approval handler on ``NEEDS_APPROVAL``.
@@ -23,7 +23,7 @@ from typing import Any
 
 from hexgate.approvals import ApprovalHandler
 from hexgate.egress.model import NET_TOOL
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 
@@ -50,7 +50,7 @@ class Gate:
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: User,
+        user: HexgateContext,
         *,
         tool: str = NET_TOOL,
         approval_handler: ApprovalHandler | None = None,
@@ -65,7 +65,7 @@ class Gate:
 
         The caller identity lives in a contextvar the enforcer reads on
         ``decide()``. Connection handlers run in their own asyncio task, which
-        does not inherit the agent's ``async with User(...)`` scope, so we
+        does not inherit the agent's ``async with HexgateContext(...)`` scope, so we
         re-bind the run's user in *this* task via ``sync_scope()`` for the
         duration of the synchronous decide call.
         """

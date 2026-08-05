@@ -15,7 +15,7 @@ from google.adk.tools.function_tool import FunctionTool
 
 from hexgate.adapters.google import wrapper as wrapper_mod
 from hexgate.adapters.google.wrapper import wrap_google_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.security import (
     AgentPolicy,
     BaseToolPolicy,
@@ -166,7 +166,7 @@ async def test_wrap_enforces_the_resolved_policy_not_allow_all(
 async def test_wrap_google_agent_resolves_role_at_call_time(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A role-aware PolicySet routes per-call via the active User's role."""
+    """A role-aware PolicySet routes per-call via the active HexgateContext's role."""
     role_aware = PolicySet(
         {
             DEFAULT_ROLE_NAME: AgentPolicy.model_validate(
@@ -188,12 +188,12 @@ async def test_wrap_google_agent_resolves_role_at_call_time(
     wrapped, _ = wrap_google_agent(_make_agent(), api_key="k")
     [echo_tool, _shout] = wrapped.tools
 
-    # No User → deny.
+    # No HexgateContext → deny.
     denied = await echo_tool.run_async(args={"text": "hi"}, tool_context=None)
     assert "policy_denied" in denied
 
     # support → allow.
-    async with User(user_id="u-1", role="support"):
+    async with HexgateContext(user_id="u-1", user_roles=["support"]):
         allowed = await echo_tool.run_async(args={"text": "hi"}, tool_context=None)
     assert allowed == "echo:hi"
 

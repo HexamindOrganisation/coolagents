@@ -84,7 +84,7 @@ def _truncate_args(arguments: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True, slots=True)
 class AuditEvent:
-    """Decision plus caller identity from the active User scope.
+    """Decision plus caller identity from the active HexgateContext scope.
 
     ``event_id`` / ``occurred_at`` are stamped here, not on ``Decision`` —
     they exist only for audit emission, and the no-audit path never

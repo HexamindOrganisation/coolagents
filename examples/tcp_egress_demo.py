@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from hexgate import PolicyBuilder, User
+from hexgate import HexgateContext, PolicyBuilder
 from hexgate.egress import tcp_egress_guard
 from hexgate.security.decision import Decision
 from hexgate.security.enforcer import build_enforcer
@@ -52,7 +52,7 @@ async def _probe(policy, target: tuple[str, int]) -> None:
         agent_name="tcp-demo",
         decision_observer=_print_decision,
     )
-    user = User(user_id="demo", role="agent")
+    user = HexgateContext(user_id="demo", user_roles=["agent"])
     async with tcp_egress_guard(enforcer, user, target=target) as proxy:
         try:
             reader, writer = await asyncio.open_connection(proxy.host, proxy.port)

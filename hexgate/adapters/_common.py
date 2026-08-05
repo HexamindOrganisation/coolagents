@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 
 
@@ -47,12 +47,12 @@ def drain_pending_tasks(
         pass
 
 
-def langfuse_propagate_kwargs(user: User, tag: str) -> dict[str, Any]:
+def langfuse_propagate_kwargs(user: HexgateContext, tag: str) -> dict[str, Any]:
     """Build the ``propagate_attributes(**kwargs)`` mapping for a Langfuse
-    span tagged ``tag``, carrying the active User's identity."""
+    span tagged ``tag``, carrying the active context's identity."""
     return {
         "tags": [tag],
         "user_id": user.user_id,
         "session_id": user.session_id,
-        "metadata": {"user_role": user.role},
+        "metadata": {"user_role": user.primary_role},
     }

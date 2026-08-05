@@ -9,7 +9,7 @@ import pytest
 
 from hexgate.audit import AuditEvent
 from hexgate.tracing import _senders
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import DecisionOutcome, Verdict
 from hexgate.security.enforcer import PolicyEnforcer
 
@@ -57,10 +57,12 @@ def test_sender_no_user_emits_with_empty_envelope() -> None:
 async def test_sender_with_user_populates_envelope_from_user() -> None:
     sender = _CapturingSender()
     enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
-    async with User(user_id="alice", role="analyst", session_id="sess_42"):
+    async with HexgateContext(
+        user_id="alice", user_roles=["analyst"], session_id="sess_42"
+    ):
         decision = enforcer.decide("read_file", {})
     ev = sender.events[0]
-    assert decision.role == "analyst"  # role propagates from User to Decision
+    assert decision.role == "analyst"  # role propagates from HexgateContext to Decision
     assert ev.user_id == "alice"
     assert ev.session_id == "sess_42"
     assert ev.decision is decision  # same Decision instance wrapped
@@ -82,7 +84,9 @@ def test_caller_mutation_after_decide_does_not_alter_audit_snapshot() -> None:
 async def test_user_session_id_none_normalizes_to_empty_string() -> None:
     sender = _CapturingSender()
     enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
-    async with User(user_id="bob", role="reader"):  # session_id defaults to None
+    async with HexgateContext(
+        user_id="bob", user_roles=["reader"]
+    ):  # session_id defaults to None
         enforcer.decide("read_file", {})
     ev = sender.events[0]
     assert ev.user_id == "bob"

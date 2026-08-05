@@ -1,8 +1,8 @@
-"""Tests for the serve-mode → User scope handoff.
+"""Tests for the serve-mode → HexgateContext scope handoff.
 
 After Phase 3.5, serve.py owns only the WebSocket plumbing: it parses
-``user_attenuation`` metadata into a :class:`hexgate.runtime.User`, wraps
-the agent invocation in ``async with User(...)``, and lets the runtime
+``user_attenuation`` metadata into a :class:`hexgate.runtime.HexgateContext`, wraps
+the agent invocation in ``async with HexgateContext(...)``, and lets the runtime
 attenuate lazily. These tests cover the parsing helper and the
 end-to-end handler shape (with stream_agent monkeypatched out).
 """
@@ -15,19 +15,19 @@ import pytest
 from rich.console import Console
 
 from hexgate.cli import serve
-from hexgate.cli.serve import ServeContext, _user_from_payload
+from hexgate.cli.serve import ServeContext, _context_from_payload
 from hexgate.cli.state import ChatState
-from hexgate.runtime import User, get_current_user
+from hexgate.runtime import HexgateContext, get_current_context
 
 
 # ---------------------------------------------------------------------------
-# _user_from_payload — happy / malformed
+# _context_from_payload — happy / malformed
 # ---------------------------------------------------------------------------
 
 
-def test_user_from_payload_returns_user_with_all_fields() -> None:
-    """A complete payload yields a fully-populated User."""
-    user = _user_from_payload(
+def test_context_from_payload_returns_user_with_all_fields() -> None:
+    """A complete payload yields a fully-populated HexgateContext."""
+    user = _context_from_payload(
         {
             "user": "alice",
             "role": "billing",
@@ -37,43 +37,68 @@ def test_user_from_payload_returns_user_with_all_fields() -> None:
     )
     assert user is not None
     assert user.user_id == "alice"
-    assert user.role == "billing"
+    assert user.primary_role == "billing"
+    assert user.user_roles == ["billing"]
     assert user.session_id == "sess_abc"
     assert user.ttl_seconds == 300
 
 
-def test_user_from_payload_returns_user_with_just_user_id() -> None:
+def test_context_from_payload_maps_roles_list() -> None:
+    """A ``roles`` list is carried verbatim; ``primary_role`` is the first."""
+    user = _context_from_payload({"user": "alice", "roles": ["billing", "support"]})
+    assert user is not None
+    assert user.user_roles == ["billing", "support"]
+    assert user.primary_role == "billing"
+
+
+def test_context_from_payload_maps_legacy_single_role() -> None:
+    """The legacy singular ``role`` wire key maps to a one-element list."""
+    user = _context_from_payload({"user": "alice", "role": "billing"})
+    assert user is not None
+    assert user.user_roles == ["billing"]
+
+
+def test_context_from_payload_no_role_yields_empty_roles() -> None:
+    """Neither ``roles`` nor ``role`` present → empty list (falls back to default)."""
+    user = _context_from_payload({"user": "bob"})
+    assert user is not None
+    assert user.user_roles == []
+
+
+def test_context_from_payload_returns_user_with_just_user_id() -> None:
     """Minimal ``{"user": ...}`` is enough."""
-    user = _user_from_payload({"user": "bob"})
+    user = _context_from_payload({"user": "bob"})
     assert user is not None
     assert user.user_id == "bob"
-    assert user.role is None
+    assert user.primary_role is None
 
 
-def test_user_from_payload_returns_none_for_empty_dict() -> None:
+def test_context_from_payload_returns_none_for_empty_dict() -> None:
     """An empty dict means no user requested → no scope."""
-    assert _user_from_payload({}) is None
+    assert _context_from_payload({}) is None
 
 
-def test_user_from_payload_returns_none_for_missing_user_key() -> None:
+def test_context_from_payload_returns_none_for_missing_user_key() -> None:
     """Without a ``user`` key the payload doesn't drive a scope."""
-    assert _user_from_payload({"scope": ["read"]}) is None
+    assert _context_from_payload({"scope": ["read"]}) is None
 
 
-def test_user_from_payload_returns_none_for_non_dict() -> None:
-    """Lists / strings / Nones all yield no User."""
-    assert _user_from_payload(None) is None
-    assert _user_from_payload("alice") is None
-    assert _user_from_payload(["alice"]) is None
+def test_context_from_payload_returns_none_for_non_dict() -> None:
+    """Lists / strings / Nones all yield no HexgateContext."""
+    assert _context_from_payload(None) is None
+    assert _context_from_payload("alice") is None
+    assert _context_from_payload(["alice"]) is None
 
 
-def test_user_from_payload_returns_none_on_invalid_shape() -> None:
+def test_context_from_payload_returns_none_on_invalid_shape() -> None:
     """A payload with the wrong type for ttl trips Pydantic validation."""
-    assert _user_from_payload({"user": "alice", "ttl_seconds": "not-a-number"}) is None
+    assert (
+        _context_from_payload({"user": "alice", "ttl_seconds": "not-a-number"}) is None
+    )
 
 
 # ---------------------------------------------------------------------------
-# _handle_message wraps the agent invocation in the User scope
+# _handle_message wraps the agent invocation in the HexgateContext scope
 # ---------------------------------------------------------------------------
 
 
@@ -100,13 +125,13 @@ class _FakeRuntime:
 async def test_handle_message_chat_with_attenuation_enters_user_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A chat payload with ``user_attenuation`` enters a User scope around stream_agent."""
+    """A chat payload with ``user_attenuation`` enters a HexgateContext scope around stream_agent."""
     captured: dict[str, Any] = {"user_during_stream": None}
 
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 
@@ -131,26 +156,26 @@ async def test_handle_message_chat_with_attenuation_enters_user_scope(
         },
     )
 
-    captured_user: User | None = captured["user_during_stream"]
+    captured_user: HexgateContext | None = captured["user_during_stream"]
     assert captured_user is not None
     assert captured_user.user_id == "alice"
-    assert captured_user.role == "billing"
+    assert captured_user.primary_role == "billing"
 
     # After the handler returns the scope must be cleanly popped.
-    assert get_current_user() is None
+    assert get_current_context() is None
 
 
 @pytest.mark.asyncio
 async def test_handle_message_chat_without_attenuation_runs_with_no_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Backward-compat: messages without ``user_attenuation`` see no User scope."""
+    """Backward-compat: messages without ``user_attenuation`` see no HexgateContext scope."""
     captured: dict[str, Any] = {"user_during_stream": "sentinel"}
 
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 
@@ -177,7 +202,7 @@ async def test_handle_message_malformed_attenuation_runs_without_scope(
     async def fake_stream_agent(
         agent: object, handler: object, input: object, **kw: Any
     ):
-        captured["user_during_stream"] = get_current_user()
+        captured["user_during_stream"] = get_current_context()
         if False:
             yield None  # pragma: no cover
 

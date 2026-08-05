@@ -584,9 +584,9 @@ def test_fuzzer_found_divergences(tool: str, args: dict, expect: str) -> None:
 
 # ---------------------------------------------------------------------------
 # Enforcement-seam parity — PolicyEnforcer.decide() (what adapters call) over
-# BOTH engines, with a User role scope and complex constraints. The other
+# BOTH engines, with a HexgateContext role scope and complex constraints. The other
 # tests hit the engines directly; this exercises decide() + role resolution
-# from the User contextvar + Decision lifting.
+# from the HexgateContext contextvar + Decision lifting.
 # ---------------------------------------------------------------------------
 
 _ENFORCE_POLICY = {
@@ -654,7 +654,7 @@ class _WasmEngine:
     ],
 )
 def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) -> None:
-    from hexgate.runtime import User
+    from hexgate.runtime import HexgateContext
     from hexgate.security.enforcer import PolicyEnforcer
 
     ps = load_policy_set_from_dict(_ENFORCE_POLICY)
@@ -663,7 +663,7 @@ def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) 
     py_enforcer = PolicyEnforcer(ps, agent_name="a")
     wasm_enforcer = PolicyEnforcer(wasm, agent_name="a")
 
-    with User(user_id="u", role=role).sync_scope():
+    with HexgateContext(user_id="u", user_roles=[role]).sync_scope():
         py = py_enforcer.decide(tool, args).outcome.value
         wf = wasm_enforcer.decide(tool, args).outcome.value
 

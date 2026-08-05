@@ -35,7 +35,7 @@ from benchmarks._report import (
     measure_once,
     print_table,
 )
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.bundle import PolicyBundle, build_signed_bundle
 from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
@@ -157,7 +157,7 @@ def _enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
         enforcer = PolicyEnforcer(
             bundle, agent_name=AGENT_NAME, decision_observer=_noop_observer
         )
-        user = User(user_id="bench", role=case.role)
+        user = HexgateContext(user_id="bench", user_roles=[case.role])
         with user.sync_scope():
             rows.append(
                 measure(

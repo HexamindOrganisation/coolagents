@@ -95,7 +95,7 @@ Full documentation lives at **[docs.hexgate.ai](https://docs.hexgate.ai)**.
 | [Build an agent](https://docs.hexgate.ai/guides/build-an-agent) | Define tools directly with `create_agent`, or wrap an existing framework agent. |
 | [Framework adapters](https://docs.hexgate.ai/adapters/openai) | OpenAI Agents, LangChain/LangGraph, Google ADK, Pydantic AI. |
 | [Policy](https://docs.hexgate.ai/policy/yaml-shape) | YAML shape, constraints, WASM bundles, signing, local override. |
-| [User scope + roles](https://docs.hexgate.ai/concepts/user-scope) | Per-request identity, role resolution, biscuit attenuation. |
+| [Caller context + roles](https://docs.hexgate.ai/concepts/user-scope) | Per-request identity, role resolution, biscuit attenuation via `HexgateContext`. |
 | [CLI](https://docs.hexgate.ai/cli/chat) | `chat`, `serve`, `register`, `policy`. |
 | [MCP servers](https://docs.hexgate.ai/concepts/mcp) | Wrap any Model Context Protocol server as policy-enforced tools. |
 | [Hexgate Cloud (hosted)](https://docs.hexgate.ai/platform/hosted) | Remote policy enforcement + audit with zero infra — get a key, set one env var. |

@@ -202,7 +202,7 @@ def extract_input_text(input: AgentInput) -> str:
     return _extract_query_from_messages(input)
 
 
-# One-shot dedupe for the "local agent with active User scope" warning
+# One-shot dedupe for the "local agent with active context scope" warning
 # inside `_resolve_user_facts`. The dashboard playground hits this once
 # per turn (and the platform-served sessions never hit it at all), so
 # without a flag the warning floods the log on every chat message.
@@ -210,22 +210,22 @@ _warned_local_agent_user_scope: bool = False
 
 
 def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | None:
-    """Lazily attenuate when a :class:`User` scope is active.
+    """Lazily attenuate when a :class:`HexgateContext` scope is active.
 
-    Returns the extracted facts dict for the active user, or ``None`` if
-    no User scope is in play, the agent isn't cloud-bound, or attenuation
+    Returns the extracted facts dict for the active context, or ``None`` if
+    no context scope is in play, the agent isn't cloud-bound, or attenuation
     fails (logged as a warning — the agent runs without facts and any
     predicate requiring them will fail-closed).
     """
-    from hexgate.runtime.context import get_current_user
+    from hexgate.runtime.context import get_current_context
 
-    user = get_current_user()
-    if user is None:
+    context = get_current_context()
+    if context is None:
         return None
     client = agent.hexgate_client
     if client is None:
-        # Local agent or test stub — User scope is set but there's nothing to
-        # attenuate against. Surface a *single* warning so devs see why their
+        # Local agent or test stub — a context scope is set but there's nothing
+        # to attenuate against. Surface a *single* warning so devs see why their
         # `requires_user` predicate isn't firing on a local-loaded agent, then
         # stay quiet: every subsequent turn would re-fire the same message
         # otherwise (3-5x per chat session in the dashboard playground was
@@ -235,7 +235,7 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
             import logging
 
             logging.getLogger(__name__).warning(
-                "User scope active but agent has no hexgate_client; "
+                "HexgateContext scope active but agent has no hexgate_client; "
                 "biscuit_facts will be empty (use load_hexgate_agent for "
                 "attenuation). Subsequent occurrences in this process are "
                 "suppressed."
@@ -255,9 +255,9 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
         child_envelope = attenuate_for_user(
             client.config.api_key,
             pub,
-            user=user.user_id,
-            role=user.role,
-            ttl_seconds=user.ttl_seconds,
+            user=context.user_id,
+            role=context.primary_role,
+            ttl_seconds=context.ttl_seconds,
         )
         _, _, biscuit_b64 = parse_envelope(child_envelope)
         return extract_facts(biscuit_b64, pub)
@@ -281,12 +281,13 @@ def _resolve_tool_use_context(
     2. ``agent.workspace`` — wired in at ``create_agent(...)``-time.
     3. ``LocalWorkspace(Path.cwd())`` — last-resort default.
 
-    When ``tool_use_context`` is None and an :class:`~hexgate.runtime.User`
-    scope is active, this also runs lazy biscuit attenuation against the
-    agent's bound ``hexgate_client`` and folds the resulting facts into the
-    fresh context. An explicit ``tool_use_context`` argument always wins —
-    that's how callers pass their own facts in (e.g. tests, or production
-    code that wants to bypass the User scope for a specific call).
+    When ``tool_use_context`` is None and a
+    :class:`~hexgate.runtime.HexgateContext` scope is active, this also runs
+    lazy biscuit attenuation against the agent's bound ``hexgate_client`` and
+    folds the resulting facts into the fresh context. An explicit
+    ``tool_use_context`` argument always wins — that's how callers pass their
+    own facts in (e.g. tests, or production code that wants to bypass the
+    context scope for a specific call).
     """
     agent_name = getattr(agent, "name", None)
     agent_workspace = getattr(agent, "workspace", None)
@@ -417,13 +418,14 @@ class HexgateAgent:
 
     async def _check_ban(self) -> None:
         """Refuse a banned agent/user before the graph runs, if a gate is
-        attached. User comes from the active :class:`User` scope (this path is
-        ambient, unlike the framework adapters which pass it explicitly)."""
+        attached. Context comes from the active :class:`HexgateContext` scope
+        (this path is ambient, unlike the framework adapters which pass it
+        explicitly)."""
         if self._ban_gate is None:
             return
-        from hexgate.runtime.context import get_current_user
+        from hexgate.runtime.context import get_current_context
 
-        await self._ban_gate.check_async(get_current_user())
+        await self._ban_gate.check_async(get_current_context())
 
     def with_tools(self, tools: Sequence[ToolSpec]) -> Self:
         """Rebuild the runtime with a new tool list."""
@@ -481,7 +483,7 @@ class HexgateAgent:
         :class:`AgentPolicy`, :class:`PolicySet`, a
         :class:`~hexgate.security.PolicyBundle` (the WASM enforcement
         path), or ``None`` (no-op). Role resolves at call time from the
-        active :class:`User`. ``approval_handler`` (callable or ``bool``)
+        active :class:`HexgateContext`. ``approval_handler`` (callable or ``bool``)
         resolves NEEDS_APPROVAL inline; ``None`` renders structured errors.
 
         ``source`` is the refresh source the returned agent's binding

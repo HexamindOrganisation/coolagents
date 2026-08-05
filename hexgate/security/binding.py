@@ -111,7 +111,7 @@ def resolve_policy(
 class PolicyBinding:
     """An enforcer plus the optional source that keeps it current.
 
-    Role still resolves per tool call from the :class:`~hexgate.runtime.User`
+    Role still resolves per tool call from the :class:`~hexgate.runtime.HexgateContext`
     contextvar, so one binding serves many concurrent users.
     """
 

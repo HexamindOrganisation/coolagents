@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from hexgate.egress.gate import Gate
 from hexgate.egress.model import connect_to_args
-from hexgate.runtime.context import User
+from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import Decision
 from hexgate.security.enforcer import build_enforcer
 from hexgate.security.policy_set import load_policy_set_from_dict
@@ -34,8 +34,8 @@ def _enforcer(mode: str, constraints: list[str] | None = None, observer=None):
     return build_enforcer(policy, agent_name="test-egress", decision_observer=observer)
 
 
-def _agent() -> User:
-    return User(user_id="u", role="agent")
+def _agent() -> HexgateContext:
+    return HexgateContext(user_id="u", user_roles=["agent"])
 
 
 async def test_allows_matching_host() -> None:
