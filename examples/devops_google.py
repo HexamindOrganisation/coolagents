@@ -7,7 +7,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from hexgate.adapters.google import HexgateRunner
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 
 INSTRUCTION = (
     "You are a DevOps assistant for a Kubernetes platform. Help engineers read "
@@ -44,7 +44,9 @@ async def main() -> None:
         tools=[read_logs, restart_service, scale_deployment],
     )
 
-    user = User(user_id="engineer_1", session_id="session_1", role="operator")
+    user = HexgateContext(
+        user_id="engineer_1", session_id="session_1", user_roles=["operator"]
+    )
 
     session_service = InMemorySessionService()
     await session_service.create_session(

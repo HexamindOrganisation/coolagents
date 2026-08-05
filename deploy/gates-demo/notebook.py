@@ -37,7 +37,7 @@ def _():
 
     from hexgate.adapters.langchain.tools import GuardedTool
     from hexgate.mcp import MCPServerConfig, MCPToolset
-    from hexgate.runtime import User
+    from hexgate.runtime import HexgateContext
     from hexgate.security.enforcer import build_enforcer
     from hexgate.security.policy_set import load_policy_set
 
@@ -48,7 +48,7 @@ def _():
         POLICY_PATH,
         Path,
         SERVER_PATH,
-        User,
+        HexgateContext,
         build_enforcer,
         load_policy_set,
         mo,
@@ -200,7 +200,7 @@ def _(
     MCPServerConfig,
     MCPToolset,
     SERVER_PATH,
-    User,
+    HexgateContext,
     build_enforcer,
     sys,
 ):
@@ -214,7 +214,7 @@ def _(
     async def run_batch(engine, cases):
         """Open ONE connection, enumerate tools, run each (role, tool, args) case.
 
-        The caller's role is set via the `User` scope for each call — exactly how
+        The caller's role is set via the `HexgateContext` scope for each call — exactly how
         the platform resolves it from the signed-in user at runtime. Returns
         (catalog, results); allowed calls carry the value the server returned.
         """
@@ -242,7 +242,7 @@ def _(
                         {"role": role, "tool": tool, "args": args, "outcome": "unknown"}
                     )
                     continue
-                async with User(user_id="demo", role=role):
+                async with HexgateContext(user_id="demo", user_roles=[role]):
                     env = await wrapped[tool].ainvoke(args)
                 outcome, detail = _classify(env)
                 results.append(

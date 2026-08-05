@@ -5,7 +5,7 @@ from deepagents import create_deep_agent
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.langchain import wrap_langchain_agent
 
 
@@ -46,9 +46,9 @@ async def main():
 
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "What is the weather in Tokyo?"}]},
-        user=User(
+        user=HexgateContext(
             user_id="deepagent_user_1",
-            role="member",
+            user_roles=["member"],
             session_id="deepagent_session_1",
         ),
     )

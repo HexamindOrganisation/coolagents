@@ -2,7 +2,7 @@ import asyncio
 from agents import Agent, function_tool
 from dotenv import load_dotenv
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.openai import HexgateRunner
 
 
@@ -25,10 +25,10 @@ async def main():
     result = await runner.run(
         agent=agent,
         input="What's the weather in Cherbourg?",
-        user=User(
+        user=HexgateContext(
             user_id="openai_user_1",
             session_id="openai_session_1",
-            role="member",
+            user_roles=["member"],
         ),
     )
     print(result)

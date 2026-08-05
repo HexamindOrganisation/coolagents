@@ -19,7 +19,7 @@ import asyncio
 
 import httpx
 
-from hexgate import PolicyBuilder, User
+from hexgate import HexgateContext, PolicyBuilder
 from hexgate.egress import egress_guard
 from hexgate.security.decision import Decision
 from hexgate.security.enforcer import build_enforcer
@@ -44,7 +44,7 @@ async def main() -> None:
         agent_name="egress-demo",
         decision_observer=_print_decision,
     )
-    user = User(user_id="demo", role="agent")
+    user = HexgateContext(user_id="demo", user_roles=["agent"])
 
     # no_proxy would include the Hexgate control-plane host if audit were on,
     # so audit POSTs bypass the proxy. This demo runs without an API key.
