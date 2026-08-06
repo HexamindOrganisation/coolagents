@@ -51,6 +51,39 @@ services:
       timeout: 3s
       retries: 10
 
+  kafka:
+    image: apache/kafka:3.9.0
+    container_name: hexgate-kafka
+    ports:
+      # Not offset like postgres/clickhouse above — nothing commonly binds
+      # 9092 locally, and advertised.listeners below must match this port
+      # exactly or clients get redirected to the wrong port on reconnect.
+      - "127.0.0.1:9092:9092"
+    environment:
+      # Single-node KRaft mode (broker + controller combined) — no
+      # ZooKeeper. LOCAL DEV ONLY: PLAINTEXT, no auth, fixed cluster id
+      # (not a secret, just an identity for this dev cluster's storage —
+      # same "committed dev creds" pattern as postgres/clickhouse above).
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: Y53xctxPRGixoc3BnBGhkQ
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   clickhouse-data:
   postgres-data:
+  kafka-data:

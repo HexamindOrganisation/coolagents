@@ -192,6 +192,36 @@ postgres-reset: ## Wipe ONLY the Postgres data volume and restart
 	-docker volume rm platform_postgres-data
 	$(COMPOSE) up -d --wait postgres
 
+# -------- Platform infra (Kafka — OTLP ingestion buffer) --------
+#
+# Single-node KRaft dev broker (no ZooKeeper). Topics aren't auto-created
+# on first boot (Kafka has no docker-entrypoint-initdb.d equivalent) — run
+# `make kafka-topics` once after `make kafka-up`.
+
+.PHONY: kafka-up
+kafka-up: ## Start local Kafka and wait until healthy
+	$(COMPOSE) up -d --wait kafka
+
+.PHONY: kafka-stop
+kafka-stop: ## Stop Kafka (keeps the data volume)
+	$(COMPOSE) stop kafka
+
+.PHONY: kafka-topics
+kafka-topics: kafka-up ## Create the hexgate.otlp.raw / hexgate.otlp.dlq topics (idempotent)
+	docker exec hexgate-kafka /opt/kafka/bin/kafka-topics.sh --version >/dev/null
+	docker cp platform/kafka/init/create-topics.sh hexgate-kafka:/tmp/create-topics.sh
+	docker exec hexgate-kafka bash /tmp/create-topics.sh
+
+.PHONY: kafka-list-topics
+kafka-list-topics: ## List topics on the local Kafka broker
+	docker exec hexgate-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+
+.PHONY: kafka-reset
+kafka-reset: ## Wipe ONLY the Kafka data volume and restart
+	$(COMPOSE) rm -sf kafka
+	-docker volume rm platform_kafka-data
+	$(COMPOSE) up -d --wait kafka
+
 # -------- Platform API (FastAPI control plane) --------
 #
 # The platform API is a separate uv project under platform/api/ with its
