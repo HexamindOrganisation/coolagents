@@ -8,6 +8,7 @@ from biscuit_auth import Algorithm, BiscuitBuilder, BlockBuilder, KeyPair, Priva
 from hexgate.cloud.biscuit import (
     TokenError,
     TokenSignatureError,
+    extract_attr_facts,
     extract_facts,
     parse_envelope,
     verify_biscuit,
@@ -283,3 +284,67 @@ def test_extract_facts_preserves_underscores_in_predicate_names(
         "refund_limit": [50],
         "max_token_count": [1000],
     }
+
+
+# ---------------------------------------------------------------------------
+# extract_attr_facts — signed trusted-attribute (ABAC) tier
+# ---------------------------------------------------------------------------
+
+
+def test_extract_attr_facts_types_are_preserved(keys: tuple[bytes, bytes]) -> None:
+    """str / int / bool ``attr`` values read back with their original type."""
+    priv, pub = keys
+    token = _mint_biscuit(
+        priv,
+        'attr("region", "EU"); attr("clearance_level", 3); '
+        'attr("eu_resident", true); attr("suspended", false);',
+    )
+    assert extract_attr_facts(token, pub) == {
+        "region": "EU",
+        "clearance_level": 3,
+        "eu_resident": True,
+        "suspended": False,
+    }
+
+
+def test_extract_attr_facts_ignores_single_arity_facts(
+    keys: tuple[bytes, bytes],
+) -> None:
+    """Identity/limit facts (``extract_facts`` shape) are not attr facts."""
+    priv, pub = keys
+    token = _mint_biscuit(priv, 'user("alice"); role("billing"); refund_limit(50);')
+    assert extract_attr_facts(token, pub) == {}
+
+
+def test_extract_attr_facts_last_writer_wins_across_blocks(
+    keys: tuple[bytes, bytes],
+) -> None:
+    """A later attenuation block's attr value overrides an earlier one."""
+    priv, pub = keys
+    token = _mint_attenuated(
+        priv,
+        'attr("clearance_level", 5);',  # authority
+        'attr("clearance_level", 2);',  # attenuation narrows it
+    )
+    assert extract_attr_facts(token, pub) == {"clearance_level": 2}
+
+
+def test_extract_attr_facts_reverifies_signature(keys: tuple[bytes, bytes]) -> None:
+    """A token that doesn't chain to the given key is rejected, not read."""
+    priv, _ = keys
+    other_pub = KeyPair().public_key.to_bytes()
+    token = _mint_biscuit(priv, 'attr("region", "EU");')
+    with pytest.raises(TokenSignatureError):
+        extract_attr_facts(token, other_pub)
+
+
+def test_extract_attr_facts_and_extract_facts_do_not_interfere(
+    keys: tuple[bytes, bytes],
+) -> None:
+    """One token, both shapes: identity via extract_facts, attrs via attr."""
+    priv, pub = keys
+    token = _mint_biscuit(priv, 'user("alice"); attr("region", "EU");')
+    assert extract_facts(token, pub).get("region") is None
+    assert "user" not in extract_attr_facts(token, pub)
+    assert extract_facts(token, pub)["user"] == ["alice"]
+    assert extract_attr_facts(token, pub) == {"region": "EU"}

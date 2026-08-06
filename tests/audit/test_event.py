@@ -109,3 +109,30 @@ def test_event_id_and_occurred_at_unique_per_event() -> None:
     w2 = AuditEvent(decision=_decision()).as_payload()
     assert w1["event_id"] != w2["event_id"]
     assert "+00:00" in w1["occurred_at"]
+
+
+# ---------------------------------------------------------------------------
+# Attribute snapshot (signed trusted-attribute tier)
+# ---------------------------------------------------------------------------
+
+
+def test_as_payload_omits_attributes_when_none() -> None:
+    ev = AuditEvent(decision=_decision())
+    assert ev.as_payload()["attributes"] is None
+
+
+def test_as_payload_flags_trusted_vs_advisory_attributes() -> None:
+    d = _decision(attributes={"clearance_level": 5, "department": "finance"})
+    ev = AuditEvent(decision=d, trusted_attributes=frozenset({"clearance_level"}))
+    assert ev.as_payload()["attributes"] == {
+        "clearance_level": {"value": 5, "trusted": True},
+        "department": {"value": "finance", "trusted": False},
+    }
+
+
+def test_as_payload_redacts_sensitive_attribute_keys() -> None:
+    d = _decision(attributes={"api_key": "sk-secret", "region": "EU"})
+    ev = AuditEvent(decision=d)
+    snapshot = ev.as_payload()["attributes"]
+    assert snapshot["api_key"]["value"] == "[REDACTED]"
+    assert snapshot["region"]["value"] == "EU"

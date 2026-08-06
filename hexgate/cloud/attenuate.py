@@ -15,6 +15,7 @@ the agent. Same code path, same chain, different trigger.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 from hexgate.cloud.biscuit import (
@@ -22,6 +23,12 @@ from hexgate.cloud.biscuit import (
     TokenSignatureError,
     parse_envelope,
 )
+
+# Scalar shapes a trusted attribute may carry into a signed ``attr`` fact.
+# Mirrors ``hexgate.runtime.context.AttrValue`` minus ``list[str]`` — list-valued
+# trusted attributes are rejected in v1 (kept advisory-only). Inlined rather than
+# imported to avoid coupling the token layer to the runtime context module.
+TrustedAttrValue = str | int | bool
 
 
 def _escape_datalog_string(value: str) -> str:
@@ -35,6 +42,31 @@ def _escape_datalog_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _render_attr_value(key: str, value: object) -> str:
+    """Render a trusted attribute value as a typed Biscuit Datalog literal.
+
+    ``bool`` is checked before ``int`` (``bool`` is an ``int`` subclass) so
+    ``True`` renders as the Datalog boolean ``true``, not ``1``. Strings are
+    escaped for injection safety; the type is preserved on the wire so
+    ``extract_attr_facts`` reads back an ``int``/``bool``/``str``, and a
+    numeric ``ctx.*`` comparison stays int-to-int on both engines.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return f'"{_escape_datalog_string(value)}"'
+    if isinstance(value, list):
+        raise TokenError(
+            f"list-valued trusted attribute {key!r} is not supported yet; "
+            "keep it advisory or use a scalar (str/int/bool)"
+        )
+    raise TokenError(
+        f"trusted attribute {key!r} must be str/int/bool, got {type(value).__name__}"
+    )
+
+
 def attenuate_for_user(
     parent_envelope: str,
     public_key_bytes: bytes,
@@ -42,6 +74,7 @@ def attenuate_for_user(
     user: str,
     role: str | None = None,
     ttl_seconds: int | None = None,
+    attributes: Mapping[str, TrustedAttrValue] | None = None,
 ) -> str:
     """Return a new envelope with a user-attribution block appended.
 
@@ -51,6 +84,13 @@ def attenuate_for_user(
     * ``user("...")`` — the authenticated user id.
     * ``role("...")`` — the user's role (when supplied), used by the agent
       runtime to pick the matching role policy file.
+    * ``attr("<key>", <value>)`` for each entry in ``attributes`` — the
+      *trusted* subset of the caller's ABAC bag, signed so the SDK can
+      verify it rather than trust the spoofable contextvar value. The caller
+      is responsible for passing only keys declared trusted by the policy;
+      this function just signs what it's given. Values are typed literals
+      (str/int/bool); list-valued attributes raise (see
+      :func:`_render_attr_value`).
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
 
@@ -63,8 +103,9 @@ def attenuate_for_user(
     policies carry rules.
 
     Raises:
-        TokenError: malformed envelope, malformed role string, or non-positive
-            ``ttl_seconds``.
+        TokenError: malformed envelope, malformed role string, non-positive
+            ``ttl_seconds``, or a trusted attribute with an unsupported
+            (list / non-scalar) value.
         TokenSignatureError: malformed public key, or parent biscuit fails
             to verify (tampered / wrong key / corrupt payload).
     """
@@ -92,6 +133,13 @@ def attenuate_for_user(
         if not isinstance(role, str) or not role:
             raise TokenError(f"role must be a non-empty string, got {role!r}")
         source_lines.append(f'role("{_escape_datalog_string(role)}");')
+    for key, value in (attributes or {}).items():
+        if not isinstance(key, str) or not key:
+            raise TokenError(
+                f"trusted attribute key must be a non-empty string, got {key!r}"
+            )
+        rendered = _render_attr_value(key, value)
+        source_lines.append(f'attr("{_escape_datalog_string(key)}", {rendered});')
     if ttl_seconds is not None:
         if not isinstance(ttl_seconds, int) or ttl_seconds <= 0:
             raise TokenError(f"ttl_seconds must be a positive int, got {ttl_seconds!r}")

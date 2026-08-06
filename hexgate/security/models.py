@@ -67,6 +67,14 @@ class AgentPolicy(BaseModel):
     ``consts`` names reusable values referenced from constraints as
     ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
+
+    ``trusted_attributes`` names the ``ctx.<key>`` attributes that must be
+    cryptographically verified (signed into the request Biscuit) rather than
+    read from the spoofable :class:`~hexgate.runtime.HexgateContext.attributes`
+    bag. For a trusted key the enforcer ignores the advisory contextvar value
+    and uses only the token-verified one; a trusted key absent from the token
+    fails closed. Advisory (unlisted) attributes are unchanged. Merged through
+    ``inherits`` like ``consts``.
     """
 
     version: int = 1
@@ -75,3 +83,4 @@ class AgentPolicy(BaseModel):
     default_policy: BaseToolPolicy = Field(default_factory=BaseToolPolicy)
     tools: dict[str, ToolPolicy] = Field(default_factory=dict)
     consts: dict[str, Any] = Field(default_factory=dict)
+    trusted_attributes: list[str] = Field(default_factory=list)

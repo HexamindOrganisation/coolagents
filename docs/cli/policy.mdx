@@ -51,3 +51,40 @@ lists each violated constraint string verbatim:
   violations:
     • args.amount <= 500
 ```
+
+## Attributes (`ctx.*`) and the trusted tier
+
+Constraints can filter on the caller's ABAC attributes through the `ctx.*`
+namespace, alongside `role`, `tool`, and `args.*`:
+
+```yaml
+tools:
+  refund_order:
+    mode: allow
+    constraints:
+      - "ctx.department == \"finance\""
+      - "ctx.clearance_level >= 3"
+```
+
+Attributes come from the request scope (`HexgateContext(attributes={...})`). By
+default they are **advisory** — read from the process contextvar, so they are
+spoofable and are meant for dev/local filtering, never a production `deny` gate.
+
+To let an attribute gate a real decision, declare it **trusted**:
+
+```yaml
+trusted_attributes:
+  - clearance_level
+```
+
+A trusted key is signed into the per-request Biscuit and verified SDK-side. The
+enforcer then ignores any contextvar value for that key and uses only the
+token-verified one; a trusted key absent from the token **fails closed** (any
+constraint on it denies). Trust is deployment-wide — a key trusted in one role
+is trusted everywhere. Values must be scalar (`str` / `int` / `bool`);
+list-valued trusted attributes are not supported yet.
+
+`hexgate policy test --attributes '{...}'` evaluates the raw engine below the
+enforcement trust boundary, so it treats every `ctx.*` key as present — it shows
+the **advisory** semantics. The trusted/verified distinction only applies at
+enforcement time, with a real signed token.

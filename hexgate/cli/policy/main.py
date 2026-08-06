@@ -184,7 +184,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Caller ABAC attributes as a JSON object, exposed to ctx.* "
             'constraints (e.g. \'{"department": "finance", "clearance_level": 3}\'). '
             "JSON (not key=value) so numbers/bools keep their type and match "
-            "production. Defaults to {}."
+            "production. Evaluated with advisory semantics — every key is "
+            "treated as present, below the enforcement trust boundary (a real "
+            "signed token verifies trusted_attributes at runtime). Defaults to {}."
         ),
     )
     p_test.add_argument(

@@ -14,7 +14,10 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from hexgate.audit import AuditEvent, configure
-from hexgate.runtime.context import get_current_context
+from hexgate.runtime.context import (
+    get_current_context,
+    get_current_tool_use_context,
+)
 from hexgate.security.decision import Decision, PolicyEngine
 from hexgate.tracing._senders import AuditSender
 
@@ -71,13 +74,13 @@ class PolicyEnforcer:
         broken observer never breaks enforcement."""
         context = get_current_context()
         role = context.primary_role if context is not None else None
-        # ABAC bag read off the contextvar, feeding the ``ctx.*`` constraint
-        # namespace. Untrusted/spoofable at the same trust tier as ``role``
-        # above (both contextvar-sourced, not token-verified) — so a ``ctx.*``
-        # rule is exactly as trustworthy as a ``role`` rule today. The signed
-        # tier will let declared keys be verified from ``biscuit_facts``; until
-        # then, don't rely on ``ctx.*`` for security-critical decisions.
-        attributes = context.attributes if context is not None else None
+        # Resolve the ABAC bag under the two-tier trust model: advisory keys
+        # pass through from the contextvar, but any key the policy declared
+        # *trusted* is taken only from the cryptographically-verified token —
+        # a spoofed contextvar value for a trusted key is dropped, and a
+        # trusted key absent from the token is omitted entirely (so a ``ctx.*``
+        # constraint on it fails closed).
+        attributes = self._resolve_attributes(context)
         # Deep-copy when audit OR observer is wired: emission/observation
         # may inspect args after ``decide()`` returns, so a shallow copy
         # would let the caller mutate nested args first and make the
@@ -110,6 +113,7 @@ class PolicyEnforcer:
                     session_id=context.session_id
                     if (context is not None and context.session_id)
                     else "",
+                    trusted_attributes=self._trusted_attributes(),
                 )
             )
 
@@ -123,6 +127,45 @@ class PolicyEnforcer:
                 _log.exception("decision_observer raised; ignoring")
 
         return decision
+
+    def _trusted_attributes(self) -> frozenset[str]:
+        """Policy-declared trusted ``ctx.*`` keys, read defensively.
+
+        Reads the engine's ``trusted_attributes`` if present; an engine that
+        predates the signed tier (or a lightweight test double) has none, so it
+        resolves to empty — every attribute stays advisory, i.e. the pre-signed
+        behavior. Never raises."""
+        return frozenset(getattr(self.policy, "trusted_attributes", frozenset()))
+
+    def _resolve_attributes(self, context: object) -> dict[str, Any] | None:
+        """Merge the advisory contextvar bag with token-verified trusted attrs.
+
+        Returns the single ``ctx.*`` mapping both engines evaluate against:
+
+        * advisory (non-trusted) keys pass through from
+          ``HexgateContext.attributes`` unchanged;
+        * trusted keys are dropped from the advisory bag (a spoofed contextvar
+          value must never influence a trusted decision) and re-added *only*
+          from the verified token — so a trusted key the token doesn't carry
+          is simply absent, and any constraint on it fails closed.
+
+        Trust resolution lives here (host layer), not in either engine, so the
+        two engines keep receiving one identical bag — the zero-drift invariant
+        holds with no engine change. ``None`` when no context scope is active.
+        """
+        if context is None:
+            return None
+        advisory = dict(getattr(context, "attributes", {}) or {})
+        trusted = self._trusted_attributes()
+        if not trusted:
+            return advisory
+        tool_ctx = get_current_tool_use_context()
+        verified = (
+            tool_ctx.verified_attributes if tool_ctx is not None else None
+        ) or {}
+        resolved = {key: val for key, val in advisory.items() if key not in trusted}
+        resolved.update({key: verified[key] for key in trusted if key in verified})
+        return resolved
 
 
 def build_enforcer(

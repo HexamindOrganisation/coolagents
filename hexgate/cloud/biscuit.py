@@ -61,6 +61,28 @@ _FACT_LINE_RE = re.compile(
 )
 
 
+# Matches a two-arity Datalog fact `attr("key", value);` where value is a
+# double-quoted string, a bare integer, or a Datalog boolean. This is the
+# reserved shape the SDK's signed-attribute (ABAC trusted tier) convention
+# uses — deliberately distinct from the single-arity `_FACT_LINE_RE` so the
+# identity/limit extractor and the attribute extractor never fight over the
+# same lines.
+_ATTR_LINE_RE = re.compile(
+    r"""
+    ^\s*attr\s*\(\s*
+    "(?P<key>(?:[^"\\]|\\.)*)"       # attribute key (quoted string)
+    \s*,\s*
+    (?:
+        "(?P<str>(?:[^"\\]|\\.)*)"   # string value (with \" / \\ escapes)
+      | (?P<bool>true|false)         # datalog boolean
+      | (?P<int>-?\d+)               # bare integer
+    )
+    \s*\)\s*;\s*$
+    """,
+    re.VERBOSE,
+)
+
+
 def parse_envelope(envelope: str) -> tuple[str, str, str]:
     """Parse ``fty_<env>_<project>_<biscuit_b64>`` into ``(env, project, biscuit_b64)``.
 
@@ -170,3 +192,65 @@ def extract_facts(
                 value = int(match.group("int"))
             facts.setdefault(name, []).append(value)
     return facts
+
+
+def _unescape_datalog_string(raw: str) -> str:
+    """Reverse ``_escape_datalog_string`` — collapse ``\\"`` / ``\\\\`` only."""
+    return re.sub(r'\\(["\\])', r"\1", raw)
+
+
+def extract_attr_facts(
+    token_b64: str, public_key_bytes: bytes
+) -> dict[str, str | int | bool]:
+    """Verify ``token_b64`` and return its signed ``attr("key", value)`` facts.
+
+    Returns ``{key: value}`` for every two-arity ``attr`` fact across all
+    blocks, with the value typed back to ``str`` / ``int`` / ``bool`` from its
+    Datalog literal. This is the SDK read-side of the signed trusted-attribute
+    (ABAC) tier — the enforcer prefers these *verified* values over the
+    spoofable ``HexgateContext.attributes`` bag for declared trusted keys.
+
+    Duplicate keys across attenuation blocks resolve **last-writer-wins** (a
+    later block may only narrow, never elide, so the most-attenuated value is
+    the effective one). Single-arity facts, checks, rules, and non-``attr``
+    predicates are ignored — :func:`extract_facts` owns the identity/limit
+    shape.
+
+    Raises :class:`TokenSignatureError` for the same reasons as
+    :func:`verify_biscuit` — the token is re-verified here so callers never
+    read attributes off an untrusted token by mistake.
+    """
+    from biscuit_auth import (
+        Algorithm,
+        Biscuit,
+        BiscuitValidationError,
+        PublicKey,
+    )
+
+    try:
+        pub = PublicKey.from_bytes(public_key_bytes, Algorithm.Ed25519)
+    except (ValueError, TypeError) as exc:
+        raise TokenSignatureError(f"malformed public key: {exc}") from exc
+    try:
+        biscuit = Biscuit.from_base64(token_b64, pub)
+    except BiscuitValidationError as exc:
+        raise TokenSignatureError(str(exc)) from exc
+
+    attrs: dict[str, str | int | bool] = {}
+    for idx in range(biscuit.block_count()):
+        source = biscuit.block_source(idx)
+        if source is None:
+            continue
+        for line in source.splitlines():
+            match = _ATTR_LINE_RE.match(line)
+            if match is None:
+                continue
+            key = _unescape_datalog_string(match.group("key"))
+            if match.group("str") is not None:
+                value: str | int | bool = _unescape_datalog_string(match.group("str"))
+            elif match.group("bool") is not None:
+                value = match.group("bool") == "true"
+            else:
+                value = int(match.group("int"))
+            attrs[key] = value
+    return attrs

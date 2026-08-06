@@ -93,6 +93,10 @@ class AuditEvent:
     decision: Decision
     user_id: str = ""
     session_id: str = ""
+    # ``ctx.*`` keys resolved from the verified token (vs the advisory bag) for
+    # this decision — used only to flag each attribute's trust tier in the audit
+    # snapshot, so the record shows which values were cryptographically backed.
+    trusted_attributes: frozenset[str] = field(default_factory=frozenset)
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -117,8 +121,26 @@ class AuditEvent:
             "violations": list(d.violations),
             "hint": d.hint,
             "arguments": arguments,
+            "attributes": self._attribute_snapshot(),
             "user_id": self.user_id,
             "session_id": self.session_id,
+        }
+
+    def _attribute_snapshot(self) -> dict[str, Any] | None:
+        """Render the ABAC bag that drove the decision, redacted + trust-flagged.
+
+        Each entry is ``{"value": <redacted>, "trusted": bool}`` so the audit
+        trail records both the value used and whether it was verified from the
+        token (``trusted``) or read from the spoofable contextvar (advisory).
+        Values pass through the same sensitive-key redaction as ``arguments``.
+        ``None`` when the decision carried no attributes."""
+        attrs = self.decision.attributes
+        if not attrs:
+            return None
+        redacted = _redact(attrs)
+        return {
+            key: {"value": redacted[key], "trusted": key in self.trusted_attributes}
+            for key in attrs
         }
 
 

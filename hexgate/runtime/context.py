@@ -26,11 +26,18 @@ class ToolUseContext:
     to thread facts down to each tool by hand. ``None`` means *no token
     facts present* (local-only flows); ``{}`` means *facts checked but
     nothing extracted*.
+
+    ``verified_attributes`` carries the two-arity ``attr("key", value)`` facts
+    from the same verified envelope, typed back to str/int/bool. These are the
+    signed *trusted* ABAC attributes the enforcer prefers over the spoofable
+    :class:`HexgateContext.attributes` bag for policy-declared trusted keys.
+    ``None`` / ``{}`` follow the same convention as ``biscuit_facts``.
     """
 
     workspace: Workspace | None = None
     agent_name: str | None = None
     biscuit_facts: dict[str, list[str | int]] | None = None
+    verified_attributes: dict[str, str | int | bool] | None = None
 
 
 _CURRENT_TOOL_USE_CONTEXT: ContextVar[ToolUseContext | None] = ContextVar(

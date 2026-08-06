@@ -55,6 +55,12 @@ class PolicyEngine(Protocol):
     it depends on this protocol, not on either concrete type.
     """
 
+    @property
+    def trusted_attributes(self) -> frozenset[str]:
+        """``ctx.*`` keys the enforcer must resolve from a verified token
+        rather than the spoofable contextvar bag (empty by default)."""
+        ...
+
     def evaluate(
         self,
         *,

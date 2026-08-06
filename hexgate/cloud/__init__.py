@@ -9,6 +9,7 @@ from hexgate.cloud.attenuate import attenuate_for_user
 from hexgate.cloud.biscuit import (
     TokenError,
     TokenSignatureError,
+    extract_attr_facts,
     extract_facts,
     parse_envelope,
     verify_biscuit,
@@ -26,6 +27,7 @@ __all__ = [
     "TokenError",
     "TokenSignatureError",
     "attenuate_for_user",
+    "extract_attr_facts",
     "extract_facts",
     "parse_envelope",
     "verify_biscuit",
