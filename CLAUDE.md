@@ -1,7 +1,7 @@
 # Hexgate — Claude Code Instructions
 
 ## Tech Stack
-- Python ≥ 3.13 (`uv`), FastAPI (`platform/api/`), ClickHouse (Docker)
+- Python ≥ 3.13 (`uv`), FastAPI (`platform/api/`), ClickHouse (Docker), Kafka (Docker, dev-infra only for now — see `platform/docker-compose.yml`)
 - React, Vite, pnpm (`platform/dashboard/`)
 - Ruff (Python). WASM via `wasmtime`.
 
