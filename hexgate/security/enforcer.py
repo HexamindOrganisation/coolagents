@@ -71,9 +71,12 @@ class PolicyEnforcer:
         broken observer never breaks enforcement."""
         context = get_current_context()
         role = context.primary_role if context is not None else None
-        # Advisory ABAC bag read straight off the contextvar — untrusted in this
-        # tier (never token-verified), so it must not gate a production ``deny``
-        # until the signed tier lands.
+        # ABAC bag read off the contextvar, feeding the ``ctx.*`` constraint
+        # namespace. Untrusted/spoofable at the same trust tier as ``role``
+        # above (both contextvar-sourced, not token-verified) — so a ``ctx.*``
+        # rule is exactly as trustworthy as a ``role`` rule today. The signed
+        # tier will let declared keys be verified from ``biscuit_facts``; until
+        # then, don't rely on ``ctx.*`` for security-critical decisions.
         attributes = context.attributes if context is not None else None
         # Deep-copy when audit OR observer is wired: emission/observation
         # may inspect args after ``decide()`` returns, so a shallow copy
@@ -94,6 +97,7 @@ class PolicyEnforcer:
             tool_name=tool_name,
             role=role,
             arguments=args_snapshot,
+            attributes=dict(attributes) if attributes is not None else None,
         )
 
         if self._audit_sender is not None:

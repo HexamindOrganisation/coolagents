@@ -157,3 +157,28 @@ def test_as_error_payload_does_not_leak_arguments_to_the_llm() -> None:
     payload = _approval_decision().as_error_payload()
 
     assert "arguments" not in payload
+
+
+def test_from_verdict_carries_attribute_snapshot() -> None:
+    """The attribute bag the decision was evaluated against is stamped on the
+    Decision so in-process observers can see what drove a ctx.*-gated outcome."""
+    from hexgate.security.decision import Verdict
+
+    decision = Decision.from_verdict(
+        Verdict(outcome=DecisionOutcome.ALLOW),
+        agent_name="a",
+        tool_name="refund",
+        attributes={"department": "finance"},
+    )
+    assert decision.attributes == {"department": "finance"}
+
+
+def test_as_error_payload_does_not_leak_attributes_to_the_llm() -> None:
+    """``attributes`` is host-side context, never surfaced to the model."""
+    decision = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="a",
+        tool_name="refund",
+        attributes={"department": "finance", "clearance_level": 3},
+    )
+    assert "attributes" not in decision.as_error_payload()

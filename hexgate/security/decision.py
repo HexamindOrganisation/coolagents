@@ -86,6 +86,12 @@ class Decision:
     hint: dict[str, Any] | None = None
     violations: tuple[str, ...] = ()
     arguments: dict[str, Any] | None = None
+    # The ABAC attribute snapshot the decision was evaluated against, so an
+    # in-process observer sees the ``ctx.*`` values that drove the outcome.
+    # Deliberately NOT rendered into ``as_error_payload`` (LLM-facing) nor
+    # persisted by the audit sender yet — durable audit + PII/retention policy
+    # lands with the signed tier.
+    attributes: dict[str, Any] | None = None
 
     @classmethod
     def from_verdict(
@@ -96,13 +102,15 @@ class Decision:
         tool_name: str,
         role: str | None = None,
         arguments: dict[str, Any] | None = None,
+        attributes: dict[str, Any] | None = None,
     ) -> "Decision":
         """Lift an engine :class:`Verdict` into a host-facing decision.
 
         The verdict carries the outcome and any structured detail the
         engine produced (reason, file-scope hint); this stamps on the
-        host context the engine doesn't know — agent name, role, and the
-        argument snapshot — and derives the ``error_type`` tag.
+        host context the engine doesn't know — agent name, role, the
+        argument snapshot, and the ABAC attribute snapshot — and derives
+        the ``error_type`` tag.
         """
         return cls(
             outcome=verdict.outcome,
@@ -114,6 +122,7 @@ class Decision:
             hint=verdict.hint,
             violations=verdict.violations,
             arguments=arguments,
+            attributes=attributes,
         )
 
     @property

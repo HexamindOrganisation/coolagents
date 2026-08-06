@@ -80,7 +80,7 @@ def test_enforcer_forwards_context_attributes_to_engine() -> None:
         user_roles=["billing"],
         attributes={"department": "finance", "clearance_level": 3},
     ).sync_scope():
-        enforcer.decide("refund", {"amount": 10})
+        decision = enforcer.decide("refund", {"amount": 10})
 
     assert engine.calls == [
         {
@@ -90,6 +90,8 @@ def test_enforcer_forwards_context_attributes_to_engine() -> None:
             "attributes": {"department": "finance", "clearance_level": 3},
         }
     ]
+    # The bag is also stamped onto the Decision for in-process observers.
+    assert decision.attributes == {"department": "finance", "clearance_level": 3}
 
 
 def test_enforcer_lifts_deny_verdict_with_structured_detail() -> None:
