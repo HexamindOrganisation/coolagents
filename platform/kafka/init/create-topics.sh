@@ -20,10 +20,13 @@ TOPICS_SH=/opt/kafka/bin/kafka-topics.sh
   --partitions 3 --replication-factor 1 \
   --config retention.ms=259200000 # 3 days
 
-# Permanently-rejected events (unfixable validation, unresolvable
-# agent_version_id) reaching the enrichment job. Auth rejections never
-# land here — the ingestion Collector rejects those directly back to the
-# SDK, before anything reaches Kafka.
+# Intended for permanently-rejected events (unfixable validation,
+# unresolvable agent_version_id) reaching the enrichment job — once that
+# job and the ingestion Collector exist. Neither does yet, and this
+# broker has no auth in front of it at all (PLAINTEXT, no ACLs): today,
+# anything that can reach it can write here directly. Nothing currently
+# enforces "auth rejections never reach this topic" as an actual
+# guarantee — that's a property the Collector work still has to build.
 "$TOPICS_SH" --bootstrap-server "$BOOTSTRAP" \
   --create --if-not-exists --topic hexgate.otlp.dlq \
   --partitions 3 --replication-factor 1 \

@@ -56,22 +56,39 @@ services:
     container_name: hexgate-kafka
     ports:
       # Not offset like postgres/clickhouse above — nothing commonly binds
-      # 9092 locally, and advertised.listeners below must match this port
-      # exactly or clients get redirected to the wrong port on reconnect.
+      # 9092 locally, and the PLAINTEXT advertised listener below must
+      # match this port exactly or host-side clients get redirected to
+      # the wrong port on reconnect.
       - "127.0.0.1:9092:9092"
     environment:
       # Single-node KRaft mode (broker + controller combined) — no
-      # ZooKeeper. LOCAL DEV ONLY: PLAINTEXT, no auth, fixed cluster id
-      # (not a secret, just an identity for this dev cluster's storage —
-      # same "committed dev creds" pattern as postgres/clickhouse above).
+      # ZooKeeper. LOCAL DEV ONLY: no auth, fixed cluster id (not a
+      # secret, just an identity for this dev cluster's storage — same
+      # "committed dev creds" pattern as postgres/clickhouse above).
+      #
+      # Two client-facing listeners, both PLAINTEXT, for two different
+      # audiences — same reason docker-compose.deploy.yml points
+      # HEXGATE_CLICKHOUSE_HOST at the service name "clickhouse" rather
+      # than localhost: a hostname only means "this container" from
+      # inside that same container.
+      #   - PLAINTEXT (9092, published above): for host-machine clients
+      #     (this repo's own CLI tools, a dev running the future
+      #     Collector natively). Advertised as localhost:9092.
+      #   - DOCKER (29092, NOT published): for other containers on this
+      #     compose network. Advertised as kafka:29092 — the compose
+      #     service name, resolvable from any sibling container.
+      # A client that bootstraps via one and gets advertised the other
+      # would try to reconnect to an address that doesn't reach the
+      # broker from where it's sitting, so both must stay in sync with
+      # how each audience actually connects.
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://:9092,DOCKER://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,DOCKER://kafka:29092
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,DOCKER:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       CLUSTER_ID: Y53xctxPRGixoc3BnBGhkQ
@@ -79,9 +96,12 @@ services:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      # Widened past the ~6s cold-start (fresh volume, KRaft storage
+      # format included) observed on a fast dev machine — headroom for
+      # a slower one or a busy CI runner.
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
 volumes:
   clickhouse-data:

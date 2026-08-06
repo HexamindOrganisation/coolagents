@@ -208,7 +208,6 @@ kafka-stop: ## Stop Kafka (keeps the data volume)
 
 .PHONY: kafka-topics
 kafka-topics: kafka-up ## Create the hexgate.otlp.raw / hexgate.otlp.dlq topics (idempotent)
-	docker exec hexgate-kafka /opt/kafka/bin/kafka-topics.sh --version >/dev/null
 	docker cp platform/kafka/init/create-topics.sh hexgate-kafka:/tmp/create-topics.sh
 	docker exec hexgate-kafka bash /tmp/create-topics.sh
 

@@ -21,5 +21,5 @@ tests/                # hexgate package tests (agents, cli, security, tracing, s
 
 ## Rules & Constants
 - **Branches:** `{initials}/{type}/{short_description}` (e.g., `vl/feat/web_search`)
-- **Commits:** `type(scope): description` (lowercase, imperative, no period). Scopes: `platform-api`, `dashboard`, `sdk`, `cli`, `clickhouse`. Types: `feat`, `fix`, `docs`, `build`, `refactor`, `test`.
+- **Commits:** `type(scope): description` (lowercase, imperative, no period). Scopes: `platform-api`, `dashboard`, `sdk`, `cli`, `clickhouse`, `kafka`. Types: `feat`, `fix`, `docs`, `build`, `refactor`, `test`.
 - **Envs:** All prefixed with `HEXGATE_`. Never commit private keys.
