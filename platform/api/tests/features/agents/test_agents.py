@@ -481,11 +481,11 @@ def _mint_token_for_test(session_factory) -> str:
     """
     import asyncio
 
-    from hexgate_api.features.tokens.service import mint_dev_token
+    from hexgate_api.features.tokens.service import mint_api_key
 
     async def _mint():
         async with session_factory() as session:
-            _row, full = await mint_dev_token(
+            _row, full = await mint_api_key(
                 session,
                 DEFAULT_PROJECT_ID,
                 name="phase6-test",

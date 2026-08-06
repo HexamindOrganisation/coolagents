@@ -223,7 +223,7 @@ class Project(SQLModel, table=True):
     )
 
 
-class DevToken(SQLModel, table=True):
+class ApiKey(SQLModel, table=True):
     id: str = Field(primary_key=True)
     project_id: str = Field(foreign_key="project.id", index=True)
     name: str
