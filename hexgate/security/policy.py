@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +46,7 @@ def evaluate_tool_call(
     arguments: dict[str, Any] | None = None,
     *,
     role: str | None = None,
+    attributes: Mapping[str, Any] | None = None,
 ) -> Verdict:
     """Return a :class:`Verdict` for a proposed tool call (pydantic engine).
 
@@ -74,6 +76,7 @@ def evaluate_tool_call(
             tool_name,
             role=role,
             consts=policy.consts,
+            attributes=attributes,
         )
     except PolicyDeniedError as exc:
         return Verdict(outcome=DecisionOutcome.DENY, reason=str(exc))
@@ -114,6 +117,7 @@ def authorize_tool_call(
     arguments: dict[str, Any] | None = None,
     *,
     role: str | None = None,
+    attributes: Mapping[str, Any] | None = None,
 ) -> None:
     """Raise when a tool call is denied or requires approval.
 
@@ -121,9 +125,14 @@ def authorize_tool_call(
     callers (the CLI, direct API users) that prefer the exception contract.
     ``role`` is forwarded so ``role``-scoped constraints see the caller's
     role — omitting it here would diverge from the WASM engine, which always
-    receives ``input.role``.
+    receives ``input.role``. ``attributes`` are forwarded for the same reason:
+    ``ctx.*`` constraints must see the caller's ABAC bag.
     """
-    _raise_for_verdict(evaluate_tool_call(policy, tool_name, arguments, role=role))
+    _raise_for_verdict(
+        evaluate_tool_call(
+            policy, tool_name, arguments, role=role, attributes=attributes
+        )
+    )
 
 
 def evaluate_tool_call_wasm(
@@ -131,6 +140,8 @@ def evaluate_tool_call_wasm(
     role: str,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    attributes: Mapping[str, Any] | None = None,
 ) -> Verdict:
     """WASM-backed counterpart of :func:`evaluate_tool_call`.
 
@@ -144,7 +155,9 @@ def evaluate_tool_call_wasm(
     (deny-by-absence rather than deny-by-constraint), the reason surfaces
     a "no allow rule matched" hint so the message isn't silently empty.
     """
-    decision = bundle.policy().decide(role=role, tool=tool_name, args=arguments or {})
+    decision = bundle.policy().decide(
+        role=role, tool=tool_name, args=arguments or {}, ctx=dict(attributes or {})
+    )
     return verdict_from_rego(decision, tool_name=tool_name, role=role)
 
 
@@ -186,10 +199,16 @@ def authorize_tool_call_wasm(
     role: str,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
+    *,
+    attributes: Mapping[str, Any] | None = None,
 ) -> None:
     """Raise-on-deny wrapper over :func:`evaluate_tool_call_wasm`.
 
     Raises the same exception shape as :func:`authorize_tool_call` so call
     sites don't care which engine produced the decision.
     """
-    _raise_for_verdict(evaluate_tool_call_wasm(bundle, role, tool_name, arguments))
+    _raise_for_verdict(
+        evaluate_tool_call_wasm(
+            bundle, role, tool_name, arguments, attributes=attributes
+        )
+    )

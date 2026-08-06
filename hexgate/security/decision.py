@@ -56,7 +56,12 @@ class PolicyEngine(Protocol):
     """
 
     def evaluate(
-        self, *, role: str | None, tool: str, args: Mapping[str, Any]
+        self,
+        *,
+        role: str | None,
+        tool: str,
+        args: Mapping[str, Any],
+        attributes: Mapping[str, Any] | None = None,
     ) -> Verdict: ...
 
 

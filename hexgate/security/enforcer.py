@@ -71,6 +71,10 @@ class PolicyEnforcer:
         broken observer never breaks enforcement."""
         context = get_current_context()
         role = context.primary_role if context is not None else None
+        # Advisory ABAC bag read straight off the contextvar — untrusted in this
+        # tier (never token-verified), so it must not gate a production ``deny``
+        # until the signed tier lands.
+        attributes = context.attributes if context is not None else None
         # Deep-copy when audit OR observer is wired: emission/observation
         # may inspect args after ``decide()`` returns, so a shallow copy
         # would let the caller mutate nested args first and make the
@@ -81,7 +85,9 @@ class PolicyEnforcer:
             else dict(arguments)
         )
 
-        verdict = self.policy.evaluate(role=role, tool=tool_name, args=args_snapshot)
+        verdict = self.policy.evaluate(
+            role=role, tool=tool_name, args=args_snapshot, attributes=attributes
+        )
         decision = Decision.from_verdict(
             verdict,
             agent_name=self.agent_name,

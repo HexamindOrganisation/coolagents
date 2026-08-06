@@ -254,6 +254,42 @@ def test_not_in_constraint_wraps_with_not() -> None:
     assert 'not input.args.priority in ["urgent"]' in rego
 
 
+def _ctx_rego(constraint: str) -> str:
+    """Compile a single default-role tool carrying one ctx.* constraint."""
+    return compile_to_rego(
+        {
+            "version": 1,
+            "roles": {
+                "default": {
+                    "tools": {
+                        "t": {"mode": "allow", "constraints": [constraint]},
+                    }
+                }
+            },
+        }
+    )
+
+
+def test_ctx_attribute_prefixes_input() -> None:
+    """``ctx.department`` renders as ``input.ctx.department`` — same machinery
+    as ``args.*``, no compiler special-case."""
+    assert 'input.ctx.department == "finance"' in _ctx_rego(
+        'ctx.department == "finance"'
+    )
+
+
+def test_ctx_in_list_constraint() -> None:
+    assert 'input.ctx.region in ["EU", "UK"]' in _ctx_rego('ctx.region in ["EU", "UK"]')
+
+
+def test_ctx_ordered_constraint_emits_type_guard() -> None:
+    """An ordered ctx.* comparison carries the cross-type guard, exactly like
+    ``args.*`` — so a wrong-typed attribute fails closed on WASM too."""
+    rego = _ctx_rego("ctx.clearance_level >= 3")
+    assert "is_number(input.ctx.clearance_level)" in rego
+    assert "input.ctx.clearance_level >= 3" in rego
+
+
 def test_compile_rejects_unparseable_constraint() -> None:
     """An invalid constraint surfaces at load (model grammar validator),
     which compile_to_rego triggers before ever reaching WASM eval."""
@@ -793,6 +829,9 @@ _GOLDEN_PAYLOAD = {
                         'args.priority not in ["urgent"]',
                         "args.confirmed == true",
                         "args.payment.amount <= 100",
+                        'ctx.department == "finance"',
+                        "ctx.clearance_level >= 3",
+                        'ctx.region in ["EU", "UK"]',
                     ],
                 },
                 "delete_user": {"mode": "deny"},

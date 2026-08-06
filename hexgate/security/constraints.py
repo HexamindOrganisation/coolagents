@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -835,6 +836,7 @@ def check_constraints(
     *,
     role: str | None = None,
     consts: dict[str, Any] | None = None,
+    attributes: Mapping[str, Any] | None = None,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
@@ -845,6 +847,9 @@ def check_constraints(
     ``role`` and the tool name are exposed to constraints as top-level
     ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
     ``consts`` supplies the policy's named constants for ``consts.<name>``.
+    ``attributes`` are the caller's ABAC bag, exposed under the ``ctx.<key>``
+    namespace and mirroring Rego's ``input.ctx``. A missing ``ctx.<key>``
+    resolves to ``_MISSING`` and fails closed, exactly like any other ref.
     """
     if not constraints:
         return
@@ -852,6 +857,7 @@ def check_constraints(
         "args": dict(arguments or {}),
         "role": role,
         "tool": tool_name,
+        "ctx": dict(attributes or {}),
         _CONSTS_KEY: consts or {},
     }
     for entry in constraints:
