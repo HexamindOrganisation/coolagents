@@ -92,7 +92,7 @@ def _signup_with_project(client: TestClient, email: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_mint_token_succeeds_for_member(client: TestClient) -> None:
+def test_mint_token_happy_path(client: TestClient) -> None:
     pid = _signup_with_project(client, "minter@example.com")
 
     r = client.post(f"/v1/projects/{pid}/tokens", json={"name": "ci-deploy"})
@@ -105,7 +105,9 @@ def test_mint_token_succeeds_for_member(client: TestClient) -> None:
     assert body["scopes"] == ["mint_user_token", "read_audit"]  # schema default
 
 
-def test_mint_token_403_for_non_member(client: TestClient) -> None:
+def test_mint_token_when_caller_is_not_an_org_member_then_status_is_403(
+    client: TestClient,
+) -> None:
     pid = _signup_with_project(client, "ownerG@example.com")
     client.cookies.clear()
     _signup_and_login(client, "strangerG@example.com", "correcthorsebattery")
@@ -119,7 +121,7 @@ def test_mint_token_403_for_non_member(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_tokens_returns_masked_project_tokens(client: TestClient) -> None:
+def test_list_tokens_happy_path(client: TestClient) -> None:
     pid = _signup_with_project(client, "lister2@example.com")
     client.post(f"/v1/projects/{pid}/tokens", json={"name": "key-a"})
     client.post(f"/v1/projects/{pid}/tokens", json={"name": "key-b"})
@@ -134,7 +136,9 @@ def test_list_tokens_returns_masked_project_tokens(client: TestClient) -> None:
         assert item["masked"]
 
 
-def test_list_tokens_403_for_non_member(client: TestClient) -> None:
+def test_list_tokens_when_caller_is_not_an_org_member_then_status_is_403(
+    client: TestClient,
+) -> None:
     pid = _signup_with_project(client, "ownerH@example.com")
     client.cookies.clear()
     _signup_and_login(client, "strangerH@example.com", "correcthorsebattery")
@@ -148,7 +152,7 @@ def test_list_tokens_403_for_non_member(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_revoke_token_removes_it_from_the_list(client: TestClient) -> None:
+def test_revoke_token_happy_path(client: TestClient) -> None:
     pid = _signup_with_project(client, "revoker@example.com")
     token_id = client.post(
         f"/v1/projects/{pid}/tokens", json={"name": "throwaway"}
@@ -161,7 +165,9 @@ def test_revoke_token_removes_it_from_the_list(client: TestClient) -> None:
     assert r.json() == []
 
 
-def test_revoke_token_404_when_already_gone(client: TestClient) -> None:
+def test_revoke_token_when_token_already_deleted_then_status_is_404(
+    client: TestClient,
+) -> None:
     pid = _signup_with_project(client, "doublerevoke@example.com")
     token_id = client.post(f"/v1/projects/{pid}/tokens", json={"name": "once"}).json()[
         "id"
