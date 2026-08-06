@@ -192,6 +192,29 @@ postgres-reset: ## Wipe ONLY the Postgres data volume and restart
 	-docker volume rm platform_postgres-data
 	$(COMPOSE) up -d --wait postgres
 
+# -------- OTLP ingestion Collector (Go) --------
+#
+# platform/collector/builder-config.yaml is an ocb (OpenTelemetry
+# Collector Builder) manifest — collector-generate regenerates the Go
+# source + go.mod/go.sum from it (and compiles by default; ocb doesn't
+# separate those two steps). Runs natively on the host for local dev,
+# same convention as `make platform-api` — see platform/collector/config.yaml
+# for why it points at localhost, not the kafka:29092 container listener.
+
+COLLECTOR_BUILDER_VERSION := v0.158.0
+
+.PHONY: collector-install-builder
+collector-install-builder: ## One-time: install the ocb builder tool ($GOBIN)
+	go install go.opentelemetry.io/collector/cmd/builder@$(COLLECTOR_BUILDER_VERSION)
+
+.PHONY: collector-generate
+collector-generate: ## Regenerate + compile the collector from builder-config.yaml
+	cd platform/collector && builder --config=builder-config.yaml
+
+.PHONY: collector-run
+collector-run: ## Run the collector binary against config.yaml (needs `make kafka-up` first)
+	cd platform/collector && ./hexgate-collector --config=config.yaml
+
 # -------- Platform API (FastAPI control plane) --------
 #
 # The platform API is a separate uv project under platform/api/ with its

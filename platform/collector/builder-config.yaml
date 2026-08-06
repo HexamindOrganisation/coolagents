@@ -1,0 +1,37 @@
+# OpenTelemetry Collector Builder (ocb) manifest. Generates the Go source
+# under this directory — `make collector-generate` runs it. All
+# components pinned to the same release train (v0.158.0 / v1.64.0 for the
+# confmap providers, which version separately) so their internal
+# interfaces are guaranteed compatible with each other.
+dist:
+  name: hexgate-collector
+  module: hexgate.dev/collector
+  description: OTLP ingestion Collector — receives spans from the SDK, authenticates them, forwards to Kafka.
+  version: 0.1.0
+  output_path: .
+
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.158.0
+
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.158.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.158.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/attributesprocessor v0.158.0
+
+exporters:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/kafkaexporter v0.158.0
+
+extensions:
+  # Placeholder auth for this scaffold PR — proves the auth-extension
+  # wiring point works before the real hexgatebiscuitauth extension
+  # (separate PR) replaces it.
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.158.0
+
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.64.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.64.0
+
+telemetry:
+  gomod: go.opentelemetry.io/collector/service v0.158.0
+  import: go.opentelemetry.io/collector/service/telemetry/otelconftelemetry
