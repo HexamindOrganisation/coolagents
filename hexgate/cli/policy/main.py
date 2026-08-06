@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
+from hexgate.runtime.context import AttrValue
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -48,6 +49,13 @@ from hexgate.security import (
     verdict_from_rego,
 )
 from hexgate.security.constraints import ConstraintParseError, parse_constraint
+
+# Same schema ``HexgateContext.attributes`` enforces at runtime, so a bag the
+# simulator accepts is a bag production can actually produce — including the
+# lax coercions (3.0 -> 3), not just the rejections.
+_ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, AttrValue]] = TypeAdapter(
+    dict[str, AttrValue]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -517,12 +525,23 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        attributes: dict[str, Any] = json.loads(getattr(args, "attributes", "{}"))
+        attributes_raw: Any = json.loads(getattr(args, "attributes", "{}"))
     except json.JSONDecodeError as exc:
         print(f"--attributes is not valid JSON: {exc}", file=sys.stderr)
         return 1
-    if not isinstance(attributes, dict):
+    if not isinstance(attributes_raw, dict):
         print("--attributes must be a JSON object (dict).", file=sys.stderr)
+        return 1
+    try:
+        attributes: dict[str, AttrValue] = _ATTRIBUTES_ADAPTER.validate_python(
+            attributes_raw
+        )
+    except ValidationError as exc:
+        print(
+            "--attributes values must be str | int | bool | list[str] "
+            f"(the HexgateContext.attributes schema):\n{exc}",
+            file=sys.stderr,
+        )
         return 1
 
     try:

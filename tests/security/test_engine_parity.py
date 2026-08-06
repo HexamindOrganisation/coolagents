@@ -476,6 +476,11 @@ _ATTR_POLICY = {
         # negated membership
         ("not_in_list", {"region": "EU"}, "allow"),
         ("not_in_list", {"region": "US"}, "deny"),
+        # missing → pydantic resolves _MISSING to False; Rego's inline
+        # `not <undefined> in [...]` is undefined, so `allow` never fires.
+        # Both deny — the case a change to negated-membership rendering
+        # would silently break.
+        ("not_in_list", {}, "deny"),
         # ordered comparison + cross-type guard
         ("ordered", {"clearance_level": 3}, "allow"),
         ("ordered", {"clearance_level": 2}, "deny"),

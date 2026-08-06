@@ -29,6 +29,16 @@ _log = logging.getLogger(__name__)
 DecisionObserver = Callable[[Decision], None]
 
 
+def _snapshot(values: Mapping[str, Any], *, deep: bool) -> dict[str, Any]:
+    """Copy a mapping for retention on a :class:`Decision`.
+
+    Deep when an audit sender or observer may inspect it after ``decide()``
+    returns: a shallow copy would let the caller mutate a nested value first
+    and make the captured record lie about what was decided.
+    """
+    return copy.deepcopy(dict(values)) if deep else dict(values)
+
+
 class PolicyEnforcer:
     """Evaluate proposed tool calls against a policy engine.
 
@@ -78,18 +88,18 @@ class PolicyEnforcer:
         # tier will let declared keys be verified from ``biscuit_facts``; until
         # then, don't rely on ``ctx.*`` for security-critical decisions.
         attributes = context.attributes if context is not None else None
-        # Deep-copy when audit OR observer is wired: emission/observation
-        # may inspect args after ``decide()`` returns, so a shallow copy
-        # would let the caller mutate nested args first and make the
-        # captured record lie about what was decided.
-        args_snapshot = (
-            copy.deepcopy(dict(arguments))
-            if (self._audit_sender is not None or self._decision_observer is not None)
-            else dict(arguments)
+        # Both snapshots deep-copy on the same condition: ``attributes`` can
+        # hold a ``list[str]`` and lives on a contextvar that outlives the
+        # call, so a shallow copy would alias a mutable value into a retained
+        # Decision exactly like a shallow ``args`` copy would.
+        retained = self._audit_sender is not None or self._decision_observer is not None
+        args_snapshot = _snapshot(arguments, deep=retained)
+        attrs_snapshot = (
+            _snapshot(attributes, deep=retained) if attributes is not None else None
         )
 
         verdict = self.policy.evaluate(
-            role=role, tool=tool_name, args=args_snapshot, attributes=attributes
+            role=role, tool=tool_name, args=args_snapshot, attributes=attrs_snapshot
         )
         decision = Decision.from_verdict(
             verdict,
@@ -97,7 +107,7 @@ class PolicyEnforcer:
             tool_name=tool_name,
             role=role,
             arguments=args_snapshot,
-            attributes=dict(attributes) if attributes is not None else None,
+            attributes=attrs_snapshot,
         )
 
         if self._audit_sender is not None:
