@@ -199,7 +199,7 @@ postgres-reset: ## Wipe ONLY the Postgres data volume and restart
 # source + go.mod/go.sum from it (and compiles by default; ocb doesn't
 # separate those two steps). Runs natively on the host for local dev,
 # same convention as `make platform-api` — see platform/collector/config.yaml
-# for why it points at localhost, not the kafka:29092 container listener.
+# for why it points at localhost, not the redpanda:29092 container listener.
 
 COLLECTOR_BUILDER_VERSION := v0.158.0
 
@@ -212,7 +212,7 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 	cd platform/collector && builder --config=builder-config.yaml
 
 .PHONY: collector-run
-collector-run: ## Run the collector binary against config.yaml (needs `make kafka-up` first)
+collector-run: ## Run the collector binary against config.yaml (needs `make redpanda-up` first)
 	cd platform/collector && ./hexgate-collector --config=config.yaml
 
 # -------- Platform API (FastAPI control plane) --------

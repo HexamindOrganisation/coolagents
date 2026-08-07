@@ -46,7 +46,7 @@ processors:
 
 exporters:
   kafka:
-    # localhost, not the kafka:29092 container-network listener — this
+    # localhost, not the redpanda:29092 container-network listener — this
     # binary is meant to run natively on the host for local dev, same
     # convention as `make platform-api`. See platform/docker-compose.yml.
     brokers: [localhost:9092]
@@ -68,7 +68,7 @@ extensions:
   bearertokenauth:
     # Placeholder auth for this scaffold — accepts one fixed token,
     # nothing like real Biscuit verification. LOCAL DEV ONLY, same
-    # "committed dev creds" pattern as the Kafka/Postgres/ClickHouse
+    # "committed dev creds" pattern as the Redpanda/Postgres/ClickHouse
     # services in platform/docker-compose.yml.
     token: hexgate-scaffold-stub-token
 
