@@ -79,10 +79,12 @@ class HexgateRunner:
         GoogleADKInstrumentor().instrument()
 
     @contextmanager
-    def _propagate(self, user: HexgateContext):
+    def _propagate(self, context: HexgateContext):
         """Propagate HexgateContext identity into Langfuse spans for the block."""
         with propagate_attributes(
-            **langfuse_propagate_kwargs(user, f"google.runner.run.{self._agent_name}")
+            **langfuse_propagate_kwargs(
+                context, f"google.runner.run.{self._agent_name}"
+            )
         ):
             yield
 
@@ -90,7 +92,7 @@ class HexgateRunner:
         self,
         *,
         new_message: types.Content,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         **kwargs: Any,
     ) -> Generator[Any, None, None]:
         """Run the Google ADK agent synchronously, yielding events.
@@ -103,11 +105,11 @@ class HexgateRunner:
         self._setup_observability()
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
-            self._ban_gate.check(user)
-        with user.sync_scope(), self._propagate(user):
+            self._ban_gate.check(hexgate_context)
+        with hexgate_context.sync_scope(), self._propagate(hexgate_context):
             agen = self._runner.run_async(
-                user_id=user.user_id,
-                session_id=user.session_id,
+                user_id=hexgate_context.user_id,
+                session_id=hexgate_context.session_id,
                 new_message=new_message,
                 **kwargs,
             )
@@ -133,19 +135,19 @@ class HexgateRunner:
         self,
         *,
         new_message: types.Content | None = None,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
         """Run the Google ADK agent asynchronously, yielding events."""
         self._setup_observability()
         await self._binding.refresh_async()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
-            await self._ban_gate.check_async(user)
-        async with user:
-            with self._propagate(user):
+            await self._ban_gate.check_async(hexgate_context)
+        async with hexgate_context:
+            with self._propagate(hexgate_context):
                 async for event in self._runner.run_async(
-                    user_id=user.user_id,
-                    session_id=user.session_id,
+                    user_id=hexgate_context.user_id,
+                    session_id=hexgate_context.session_id,
                     new_message=new_message,
                     **kwargs,
                 ):

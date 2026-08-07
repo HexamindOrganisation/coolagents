@@ -322,8 +322,8 @@ async def _run_chat_turn(
     # the attached PolicySource sends If-None-Match and reuses the
     # cached bundle on 304. No need for serve to rebuild the runtime.
     context.state.start_turn(text)
-    user = _context_from_payload(payload.get("user_attenuation"))
-    async with _maybe_user_scope(user):
+    hexgate_context = _context_from_payload(payload.get("user_attenuation"))
+    async with _maybe_user_scope(hexgate_context):
         async for event in stream_agent(
             context.runtime.agent,
             context.runtime.handler,

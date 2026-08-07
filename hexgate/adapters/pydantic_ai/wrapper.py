@@ -57,7 +57,7 @@ def wrap_pydantic_agent(
 
     Returns a :class:`HexgatePydanticAgent` backed by a clone of the
     caller's ``agent``; the original is not mutated. The proxy takes
-    ``user`` per call; role resolves at call time from the active
+    ``hexgate_context`` per call; role resolves at call time from the active
     :class:`HexgateContext`. ``NEEDS_APPROVAL`` fires ``approval_handler`` (async
     ``fn(decision) -> bool`` or ``bool`` shorthand); a truthy return
     runs the tool, falsy or missing handler raises :class:`ModelRetry`

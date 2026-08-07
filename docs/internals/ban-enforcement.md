@@ -20,7 +20,7 @@ There are exactly **two ban types**:
 | Type | Blocks | Scope | Matched against |
 |------|--------|-------|-----------------|
 | **`agent`** | one agent, for **all** users | project | the agent's `agent_name` |
-| **`user`**  | one `user_id`, across **all** agents | project | `user.user_id` from the runtime `User` scope |
+| **`user`**  | one `user_id`, across **all** agents | project | `user.user_id` from the runtime `HexgateContext` scope |
 
 Key properties:
 
@@ -293,14 +293,14 @@ staging vs prod get distinct sources.
 The gate is `BanGate` (`bans.py:227`). It is per-agent but points at the shared source, and decides:
 
 ```python
-def _decide(self, bans, user):
+def _decide(self, bans, context):
     # Agent ban checked FIRST so a coincident agent+user ban emits a deterministic ban_type/ban_id.
     hit = bans.agent_ban(self._agent_name)
-    if hit is None and user is not None:
-        hit = bans.user_ban(user.user_id)
+    if hit is None and context is not None:
+        hit = bans.user_ban(context.user_id)
     if hit is None:
         return
-    self._emit(hit, user)                       # fire-and-forget telemetry (§4.5)
+    self._emit(hit, context)                    # fire-and-forget telemetry (§4.5)
     target = hit.target_agent_name if hit.ban_type == "agent" else hit.target_user_id
     raise AgentBannedError(
         ban_type=hit.ban_type, target=target or "",
@@ -310,12 +310,12 @@ def _decide(self, bans, user):
 
 Two entry points:
 
-- `check(user)` — sync: fetch (fail-soft) → decide.
-- `check_async(user)` — fetches off-loop via `asyncio.to_thread`, then decides + emits + raises
+- `check(context)` — sync: fetch (fail-soft) → decide.
+- `check_async(context)` — fetches off-loop via `asyncio.to_thread`, then decides + emits + raises
   **on the loop** (the fire-and-forget `AuditSender` only adopts a running loop on its on-loop path,
   so emitting from the worker thread would drop the event).
 
-**Precedence.** Agent ban wins over a coincident user ban. When `user is None`, only the agent
+**Precedence.** Agent ban wins over a coincident user ban. When `context is None`, only the agent
 dimension is evaluated. Tool-level bans don't exist on the SDK side.
 
 **The exception.** `AgentBannedError` (`hexgate/security/errors.py:14`) is a `RuntimeError` enriched
@@ -341,7 +341,7 @@ nothing (no partial output, no fake terminal message).
 
 | Integration | Gate resolution | Fired in (after policy refresh, before the LLM) |
 |-------------|-----------------|--------------------------------------------------|
-| **Native factory** (`agents/factory.py`) | threaded through `with_tools` rebuilds; user is **ambient** via `get_current_user()` | `ainvoke`, `astream_events` (via `_check_ban()`) |
+| **Native factory** (`agents/factory.py`) | threaded through `with_tools` rebuilds; user is **ambient** via `get_current_context()` | `ainvoke`, `astream_events` (via `_check_ban()`) |
 | **OpenAI** (`adapters/openai/runner.py`) | lazy per-agent cache `_ban_gate_for` | `run` (async), `run_sync`, `run_streamed` (before the background task spawns) |
 | **Google ADK** (`adapters/google/runner.py`) | single gate at construction | `run` (sync generator), `run_async` |
 | **LangChain** (`adapters/langchain/agent.py`) | injected via wrapper | `invoke`, `ainvoke`, `stream`, `astream`, `astream_events` |
@@ -498,7 +498,7 @@ All ban routes live in `features/bans/router.py`; the enforcement telemetry rout
 - **Concurrent creates racing** → the "one active ban per target" check is service-level, not a DB
   constraint, so two simultaneous creates can produce duplicate active bans. This is fail-safe
   (over-blocks, never under-blocks); a partial unique index would back it at the DB level (see §9).
-- **`user_id` trust** → the `user_id` is read from the integrator-supplied runtime `User` scope. It
+- **`user_id` trust** → the `user_id` is read from the integrator-supplied runtime `HexgateContext` scope. It
   is bypassable by the integrator's own process, not by their end-users — which matches the threat
   model (a trusted integrator stopping a misbehaving agent or abusive end-user). Binding `user_id`
   into the attenuated biscuit is a known gap (see §9).

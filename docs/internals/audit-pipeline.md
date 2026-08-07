@@ -104,7 +104,7 @@ NEEDS_APPROVAL    "needs_approval"  "approval_required"
 ### 2.3 Wire payload — `AuditEvent.as_payload()`
 
 `hexgate/audit.py` — `AuditEvent` wraps a `Decision` plus the caller identity
-read from the active `User` scope (`user_id`, `session_id`). `as_payload()`
+read from the active `HexgateContext` scope (`user_id`, `session_id`). `as_payload()`
 produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
 
 ```json
@@ -120,7 +120,7 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "violations":  ["v1", "v2"],     // tuple → list
   "hint":        {"glob": "/x/**"},// or null
   "arguments":   {"path": "/etc/passwd"},  // or null; may be truncated upstream
-  "user_id":     "alice",          // "" when no User scope
+  "user_id":     "alice",          // "" when no request context
   "session_id":  "sess_1"          // "" when unset
 }
 ```
@@ -136,7 +136,7 @@ Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
 
 `PolicyEnforcer.decide()` (`hexgate/security/enforcer.py`):
 
-1. Resolve `role` from the active `User` contextvar.
+1. Resolve `role` from the active `HexgateContext` contextvar.
 2. Ask the policy engine for a `Verdict`; lift it into a `Decision`.
 3. If an `AuditSender` was injected into this enforcer, `emit()` an `AuditEvent`.
 4. Return the `Decision` to the adapter (synchronous, unaffected by step 3).

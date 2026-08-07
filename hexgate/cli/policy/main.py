@@ -26,7 +26,7 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
-from hexgate.runtime.context import AttrValue
+from hexgate.runtime.context import ContextAttributeValue
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -54,8 +54,8 @@ from hexgate.security.constraints import ConstraintParseError, parse_constraint
 # Same schema ``HexgateContext.attributes`` enforces at runtime, so a bag the
 # simulator accepts is a bag production can actually produce — including the
 # lax coercions (3.0 -> 3), not just the rejections.
-_ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, AttrValue]] = TypeAdapter(
-    dict[str, AttrValue]
+_ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, ContextAttributeValue]] = TypeAdapter(
+    dict[str, ContextAttributeValue]
 )
 
 
@@ -630,8 +630,8 @@ def _main_test(args: argparse.Namespace) -> int:
         print("--attributes must be a JSON object (dict).", file=sys.stderr)
         return 1
     try:
-        attributes: dict[str, AttrValue] = _ATTRIBUTES_ADAPTER.validate_python(
-            attributes_raw
+        attributes: dict[str, ContextAttributeValue] = (
+            _ATTRIBUTES_ADAPTER.validate_python(attributes_raw)
         )
     except ValidationError as exc:
         print(

@@ -387,7 +387,7 @@ run boundary:
 
 | method | refresh call |
 |---|---|
-| `ainvoke`, `astream`, `astream_events` | `await self._binding.refresh_async()` (first line, before entering the User scope) |
+| `ainvoke`, `astream`, `astream_events` | `await self._binding.refresh_async()` (first line, before entering the request context) |
 | `invoke`, `stream` | `self._binding.refresh()` (first line) |
 
 The graph and its in-place-mutated tools are never touched again — only
@@ -424,7 +424,7 @@ def _binding_for(self, agent: Agent) -> PolicyBinding:
   object, so refresh reaches every copy.
 - Run methods:
   - `run` (async): `binding = self._binding_for(agent)` →
-    `await binding.refresh_async()` → wrap → run inside the User scope.
+    `await binding.refresh_async()` → wrap → run inside the request context.
   - `run_sync`: same with `binding.refresh()`.
   - `run_streamed`: **refresh synchronously in the setup body, before
     `Runner.run_streamed` is called.** Tools execute later, during
@@ -449,7 +449,7 @@ ADK `Runner`. Spec:
   built once, as today. Construction becomes the loud-failure point (network,
   signature, 404-without-register all raise here).
 - `run` (sync generator): `self._binding.refresh()` first line, before
-  `user.sync_scope()`.
+  `hexgate_context.sync_scope()`.
 - `run_async` (async generator): `await self._binding.refresh_async()` first
   line.
 
@@ -507,7 +507,7 @@ The governing rule, inherited from the loader and made universal:
    caches bundles that passed signature + integrity; the 304 path can only
    return previously verified objects.
 5. **Role resolution stays call-time.** `PolicyEnforcer.decide` re-reads the
-   `User` contextvar per tool call (`enforcer.py:42-44`); binding/refresh is
+   `HexgateContext` contextvar per tool call (`enforcer.py:42-44`); binding/refresh is
    user-agnostic. One binding safely serves many concurrent users.
 6. **Refresh can deny freshness, never grant access.** The worst a
    compromised refresh channel can do is keep an old (verified) policy in

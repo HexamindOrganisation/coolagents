@@ -146,10 +146,10 @@ class HexgateRunner:
         OpenAIAgentsInstrumentor().instrument()
 
     @contextmanager
-    def _propagate(self, user: HexgateContext, agent_name: str):
+    def _propagate(self, context: HexgateContext, agent_name: str):
         """Propagate HexgateContext identity into Langfuse spans for the block."""
         with propagate_attributes(
-            **langfuse_propagate_kwargs(user, f"openai.runner.run.{agent_name}")
+            **langfuse_propagate_kwargs(context, f"openai.runner.run.{agent_name}")
         ):
             yield
 
@@ -165,7 +165,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -176,14 +176,14 @@ class HexgateRunner:
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
-            await ban_gate.check_async(user)
+            await ban_gate.check_async(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
         )
-        async with user:
-            with self._propagate(user, agent.name):
+        async with hexgate_context:
+            with self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
                     input,
@@ -196,7 +196,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -207,14 +207,14 @@ class HexgateRunner:
         binding.refresh()  # per-run policy pull; 304 when unchanged
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
-            ban_gate.check(user)
+            ban_gate.check(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
         )
-        with user.sync_scope():
-            with self._propagate(user, agent.name):
+        with hexgate_context.sync_scope():
+            with self._propagate(hexgate_context, agent.name):
                 try:
                     return Runner.run_sync(
                         wrapped_agent,
@@ -254,7 +254,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -273,15 +273,15 @@ class HexgateRunner:
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
             # Before run_streamed spawns its task, so a banned run yields nothing.
-            ban_gate.check(user)
+            ban_gate.check(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
         )
 
-        with user.sync_scope():
-            with self._propagate(user, agent.name):
+        with hexgate_context.sync_scope():
+            with self._propagate(hexgate_context, agent.name):
                 result = Runner.run_streamed(
                     wrapped_agent,
                     input,
@@ -293,8 +293,8 @@ class HexgateRunner:
         original_stream_events = result.stream_events
 
         async def _stream_events_with_scope():
-            async with user:
-                with self._propagate(user, agent.name):
+            async with hexgate_context:
+                with self._propagate(hexgate_context, agent.name):
                     async for event in original_stream_events():
                         yield event
 

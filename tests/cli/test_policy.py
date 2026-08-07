@@ -592,7 +592,7 @@ def test_test_rejects_non_json_attributes(
 @pytest.mark.parametrize(
     "attributes",
     [
-        '{"clearance_level": 3.5}',  # float — no AttrValue arm accepts it
+        '{"clearance_level": 3.5}',  # float — no ContextAttributeValue arm accepts it
         '{"scope": {"nested": 1}}',  # nested object
         '{"tags": [1, 2]}',  # list of non-strings
         '{"department": null}',  # null

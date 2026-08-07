@@ -11,6 +11,7 @@ from hexgate.runtime.command_policy import (
     check_command,
 )
 from hexgate.runtime.context import (
+    ContextAttributeValue,
     HexgateContext,
     ToolUseContext,
     get_current_context,
@@ -37,6 +38,7 @@ __all__ = [
     "MINIMAL_COMMANDS",
     "Rejected",
     "SHELL_BUILTINS",
+    "ContextAttributeValue",
     "HexgateContext",
     "SrtUnavailableError",
     "ToolUseContext",

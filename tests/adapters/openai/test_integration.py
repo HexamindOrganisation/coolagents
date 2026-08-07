@@ -163,10 +163,12 @@ def test_tool_call_records_policy_decision_and_llm_usage(
     register_agent(raw_agent)
 
     runner = HexgateRunner(api_key=hexgate_platform_env.api_key)
-    user = HexgateContext(
+    context = HexgateContext(
         user_id=f"{USER_ID_PREFIX}openai", session_id=session_id, user_roles=["tester"]
     )
-    result = runner.run_sync(raw_agent, "What's the weather in Paris?", user=user)
+    result = runner.run_sync(
+        raw_agent, "What's the weather in Paris?", hexgate_context=context
+    )
     assert result.final_output
 
     assert_policy_and_usage_events_landed(

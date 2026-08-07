@@ -85,23 +85,23 @@ def test_contract():
     assert isinstance(graph, CompiledStateGraph)
 
 
-def test_deny_path_blocks_and_does_not_execute(probe_user):
+def test_deny_path_blocks_and_does_not_execute(probe_context):
     """Tier 1 — the denied tool's guarded func returns the structured error."""
     tools = _build_tools()
     _build_wrapped(tools)  # installs enforcer on `tools` in place
     denied = next(t for t in tools if t.name == DENIED_TOOL)
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         result = denied.func(user_id="u1")
     assert isinstance(result, dict) and result.get("ok") is False
     assert DENY_MARKER in str(result.get("error"))
     assert not _probe.was_executed(DENIED_TOOL)
 
 
-def test_allow_decision(probe_user):
+def test_allow_decision(probe_context):
     """Tier 1 — the resolved policy allows the allowed tool."""
     tools = _build_tools()
     wrapped = _build_wrapped(tools)
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         decision = wrapped._binding.enforcer.decide(ALLOWED_TOOL, {"city": "Paris"})
     assert decision.allowed
 
@@ -109,12 +109,12 @@ def test_allow_decision(probe_user):
 @pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"), reason="Tier 2 e2e needs OPENAI_API_KEY"
 )
-async def test_e2e_allow_executes(probe_user):
+async def test_e2e_allow_executes(probe_context):
     """Tier 2 — a full deep-agent run drives the seam and runs the allowed tool."""
     tools = _build_tools()
     wrapped = _build_wrapped(tools)
     await wrapped.ainvoke(
         {"messages": [{"role": "user", "content": "Weather in Tokyo?"}]},
-        user=probe_user,
+        hexgate_context=probe_context,
     )
     assert _probe.was_executed(ALLOWED_TOOL)

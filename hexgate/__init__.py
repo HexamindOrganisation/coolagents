@@ -21,7 +21,13 @@ from hexgate.agents.loader import (
 )
 from hexgate.cloud import HexgateClient, HexgateConfig
 from hexgate.manifest import AgentManifest, create_manifest
-from hexgate.runtime import HexgateContext, LocalWorkspace, ToolUseContext, Workspace
+from hexgate.runtime import (
+    ContextAttributeValue,
+    HexgateContext,
+    LocalWorkspace,
+    ToolUseContext,
+    Workspace,
+)
 from hexgate.security import (
     AgentPolicy,
     C,
@@ -50,6 +56,7 @@ __all__ = [
     "assert_allows",
     "assert_denies",
     "assert_needs_approval",
+    "ContextAttributeValue",
     "HexgateClient",
     "HexgateConfig",
     "HexgateContext",

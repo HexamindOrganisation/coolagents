@@ -56,7 +56,7 @@ def reset_current_tool_use_context(token: Token[ToolUseContext | None]) -> None:
     _CURRENT_TOOL_USE_CONTEXT.reset(token)
 
 
-AttrValue = str | int | bool | list[str]
+ContextAttributeValue = str | int | bool | list[str]
 
 
 class HexgateContext(BaseModel):
@@ -108,7 +108,7 @@ class HexgateContext(BaseModel):
     )
     session_id: str | None = None
     ttl_seconds: int | None = None
-    attributes: dict[str, AttrValue] = Field(
+    attributes: dict[str, ContextAttributeValue] = Field(
         default_factory=dict,
         description=(
             "Caller attributes for ABAC ctx.* filtering. Untrusted (spoofable, "

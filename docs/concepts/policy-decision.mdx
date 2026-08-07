@@ -14,8 +14,8 @@ Deny-by-default; the [policy file](/policy/yaml-shape) lists what's allowed.
 
 The decision is built from the tool name and its arguments against the active
 policy bundle. The caller's role is a third input, but it isn't passed at the
-call site — `decide` resolves it internally from the active [`User`
-scope](/concepts/user-scope) via a contextvar.
+call site — `decide` resolves it internally from the active [request
+context](/concepts/user-scope) via a contextvar.
 
 ## Where enforcement happens
 
@@ -25,7 +25,7 @@ is replaced with a guarded version that runs the enforcer before the real tool:
 1. The model emits a tool call; the framework dispatches it.
 2. The guarded tool asks the enforcer to decide, passing the tool name and its
    arguments. The caller's role isn't a parameter — it's resolved from the active
-   [`User` scope](/concepts/user-scope) (a contextvar), so the call site only
+   [request context](/concepts/user-scope) (a contextvar), so the call site only
    supplies the tool name and arguments.
 3. The enforcer evaluates the call against the active policy. Two engines back
    this — an in-process pydantic engine (the default) and a WASM engine (what

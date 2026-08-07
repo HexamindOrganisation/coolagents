@@ -47,12 +47,14 @@ def drain_pending_tasks(
         pass
 
 
-def langfuse_propagate_kwargs(user: HexgateContext, tag: str) -> dict[str, Any]:
+def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, Any]:
     """Build the ``propagate_attributes(**kwargs)`` mapping for a Langfuse
     span tagged ``tag``, carrying the active context's identity."""
     return {
         "tags": [tag],
-        "user_id": user.user_id,
-        "session_id": user.session_id,
-        "metadata": {"user_role": user.primary_role},
+        "user_id": context.user_id,
+        "session_id": context.session_id,
+        # Langfuse drops non-string metadata values, so stamp the full role
+        # list as a readable comma-joined string (not the lossy single role).
+        "metadata": {"user_roles": ", ".join(context.user_roles)},
     }

@@ -23,7 +23,7 @@ Usage::
             tools=[*wrap_mcp_toolset(mcp), *native_tools],
         )
         wrapped = wrap_openai_agent(agent, enforcer=enforcer)
-        await HexgateRunner(api_key).run(wrapped, "…", user=user)
+        await HexgateRunner(api_key).run(wrapped, "…", hexgate_context=context)
 """
 
 from __future__ import annotations

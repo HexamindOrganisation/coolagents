@@ -167,15 +167,15 @@ def test_invoke_opens_user_scope_and_delegates() -> None:
     """The active HexgateContext contextvar is live during the wrapped invoke."""
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
-    user = _user()
+    context = _user()
 
     assert get_current_context() is None
 
-    result = proxy.invoke({"input": "hi"}, user=user)
+    result = proxy.invoke({"input": "hi"}, hexgate_context=context)
 
     assert result == {"messages": ["sync-ok"]}
     [call] = graph.invoke_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert call["input"] == {"input": "hi"}
     assert proxy._callback_handler in call["config"]["callbacks"]
     # Scope unwound after the call.
@@ -186,13 +186,13 @@ def test_invoke_opens_user_scope_and_delegates() -> None:
 async def test_ainvoke_opens_user_scope_and_delegates() -> None:
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
-    user = _user()
+    context = _user()
 
-    result = await proxy.ainvoke({"input": "hi"}, user=user)
+    result = await proxy.ainvoke({"input": "hi"}, hexgate_context=context)
 
     assert result == {"messages": ["async-ok"]}
     [call] = graph.ainvoke_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert proxy._callback_handler in call["config"]["callbacks"]
     assert get_current_context() is None
 
@@ -200,13 +200,13 @@ async def test_ainvoke_opens_user_scope_and_delegates() -> None:
 def test_stream_opens_user_scope_and_yields_chunks() -> None:
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
-    user = _user()
+    context = _user()
 
-    chunks = list(proxy.stream({"input": "hi"}, user=user))
+    chunks = list(proxy.stream({"input": "hi"}, hexgate_context=context))
 
     assert chunks == [{"chunk": 1}, {"chunk": 2}]
     [call] = graph.stream_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert proxy._callback_handler in call["config"]["callbacks"]
     assert get_current_context() is None
 
@@ -215,13 +215,15 @@ def test_stream_opens_user_scope_and_yields_chunks() -> None:
 async def test_astream_opens_user_scope_and_yields_chunks() -> None:
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
-    user = _user()
+    context = _user()
 
-    chunks = [chunk async for chunk in proxy.astream({"input": "hi"}, user=user)]
+    chunks = [
+        chunk async for chunk in proxy.astream({"input": "hi"}, hexgate_context=context)
+    ]
 
     assert chunks == [{"chunk": 1}, {"chunk": 2}]
     [call] = graph.astream_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert get_current_context() is None
 
 
@@ -229,18 +231,20 @@ async def test_astream_opens_user_scope_and_yields_chunks() -> None:
 async def test_astream_events_forwards_version_and_opens_scope() -> None:
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
-    user = _user()
+    context = _user()
 
     events = [
         evt
-        async for evt in proxy.astream_events({"input": "hi"}, version="v2", user=user)
+        async for evt in proxy.astream_events(
+            {"input": "hi"}, version="v2", hexgate_context=context
+        )
     ]
 
     assert events == [{"event": "start"}, {"event": "end"}]
     [call] = graph.astream_events_calls
     assert call["version"] == "v2"
     assert call["config"] is not None  # version did not leak into the config slot
-    assert call["user"] is user
+    assert call["user"] is context
     assert get_current_context() is None
 
 
@@ -250,7 +254,10 @@ async def test_astream_events_defaults_version_to_v2() -> None:
     graph = _RecordingGraph()
     proxy = HexgateLangchainAgent(agent=graph, api_key="k", tool_names=["echo"])
 
-    _ = [evt async for evt in proxy.astream_events({"input": "hi"}, user=_user())]
+    _ = [
+        evt
+        async for evt in proxy.astream_events({"input": "hi"}, hexgate_context=_user())
+    ]
 
     [call] = graph.astream_events_calls
     assert call["version"] == "v2"
@@ -268,7 +275,7 @@ def test_user_scope_is_unwound_when_invoke_raises() -> None:
     proxy = HexgateLangchainAgent(agent=BoomGraph(), api_key="k", tool_names=[])
 
     with pytest.raises(RuntimeError, match="boom"):
-        proxy.invoke({"input": "hi"}, user=_user())
+        proxy.invoke({"input": "hi"}, hexgate_context=_user())
 
     assert get_current_context() is None
 
@@ -288,7 +295,7 @@ def test_invoke_refused_before_graph_runs_when_banned() -> None:
     )
 
     with pytest.raises(AgentBannedError) as exc:
-        proxy.invoke({"input": "hi"}, user=_user())
+        proxy.invoke({"input": "hi"}, hexgate_context=_user())
 
     assert exc.value.code == "agent_banned"
     assert graph.invoke_calls == []  # graph never ran
@@ -305,7 +312,7 @@ async def test_astream_raises_before_first_chunk_when_banned() -> None:
         ban_gate=_agent_ban_gate(graph.name),
     )
 
-    agen = proxy.astream({"input": "hi"}, user=_user())
+    agen = proxy.astream({"input": "hi"}, hexgate_context=_user())
     with pytest.raises(AgentBannedError):
         await agen.__anext__()
     assert graph.astream_calls == []  # no chunk yielded
@@ -321,7 +328,7 @@ def test_not_banned_passes_through() -> None:
         ban_gate=_agent_ban_gate(graph.name, banned="some-other-agent"),
     )
 
-    result = proxy.invoke({"input": "hi"}, user=_user())
+    result = proxy.invoke({"input": "hi"}, hexgate_context=_user())
 
     assert result == {"messages": ["sync-ok"]}
     assert len(graph.invoke_calls) == 1
@@ -405,9 +412,9 @@ async def test_usage_handler_context_propagates_through_ainvoke(
     proxy = HexgateLangchainAgent(
         agent=_CallbackFiringGraph(), api_key="k", agent_name="my-agent", tool_names=[]
     )
-    user = _user()
+    context = _user()
 
-    await proxy.ainvoke({"input": "hi"}, user=user)
+    await proxy.ainvoke({"input": "hi"}, hexgate_context=context)
 
     [event] = fake_sender.events
     assert event.agent_name == "my-agent"
@@ -429,7 +436,7 @@ def test_usage_handler_context_propagates_through_sync_invoke(
         agent=_CallbackFiringGraph(), api_key="k", agent_name="my-agent", tool_names=[]
     )
 
-    proxy.invoke({"input": "hi"}, user=_user())
+    proxy.invoke({"input": "hi"}, hexgate_context=_user())
 
     [event] = fake_sender.events
     assert event.user_id == "u-1"
