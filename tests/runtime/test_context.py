@@ -332,7 +332,7 @@ class _RoleRecordingEngine:
         self.seen_role: str | None = "<unset>"
         self._verdict = Verdict(outcome=DecisionOutcome.ALLOW)
 
-    def evaluate(self, *, role, tool, args):  # type: ignore[no-untyped-def]
+    def evaluate(self, *, role, tool, args, attributes=None):  # type: ignore[no-untyped-def]
         self.seen_role = role
         return self._verdict
 

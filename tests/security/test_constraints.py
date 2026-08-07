@@ -754,6 +754,58 @@ def test_check_role_none_denies_role_constraint() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ctx.* — advisory ABAC attributes, mirroring Rego's input.ctx
+# ---------------------------------------------------------------------------
+
+
+def test_check_exposes_attributes_under_ctx_namespace() -> None:
+    """ctx.<key> resolves against the attributes bag, like role/tool facts."""
+    attrs = {"department": "finance", "clearance_level": 3}
+    check_constraints(
+        ['ctx.department == "finance"', "ctx.clearance_level >= 3"],
+        {},
+        "refund",
+        attributes=attrs,
+    )
+    with pytest.raises(PolicyDeniedError, match="ctx.department"):
+        check_constraints(
+            ['ctx.department == "finance"'],
+            {},
+            "refund",
+            attributes={"department": "sales"},
+        )
+
+
+def test_check_missing_ctx_attribute_fails_closed() -> None:
+    """A ctx.* ref with no matching attribute denies, same as any missing ref."""
+    with pytest.raises(PolicyDeniedError, match="ctx.department"):
+        check_constraints(['ctx.department == "finance"'], {}, "refund", attributes={})
+
+
+def test_check_no_attributes_bag_denies_ctx_constraint() -> None:
+    """No attributes at all (None) → ctx.* fails closed."""
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(['ctx.region in ["EU"]'], {}, "t", attributes=None)
+
+
+def test_check_ctx_cross_type_ordered_fails_closed() -> None:
+    """A string attribute against a numeric gate fails closed (no coercion)."""
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(
+            ["ctx.clearance_level >= 3"],
+            {},
+            "t",
+            attributes={"clearance_level": "3"},
+        )
+
+
+def test_bare_ctx_identifier_is_rejected_at_parse() -> None:
+    """``ctx`` alone is not a fact — only the dotted ``ctx.<key>`` form is valid."""
+    with pytest.raises(ConstraintParseError):
+        parse_constraint('ctx == "x"')
+
+
+# ---------------------------------------------------------------------------
 # Named constants (2f) — consts.<name>
 # ---------------------------------------------------------------------------
 

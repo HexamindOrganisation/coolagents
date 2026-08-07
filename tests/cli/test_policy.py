@@ -521,6 +521,148 @@ def test_test_pydantic_role_denies_non_admin(
     assert "DENY" in capsys.readouterr().out
 
 
+_CTX_GATED_POLICY = """\
+version: 1
+roles:
+  default:
+    default_policy:
+      mode: deny
+    tools:
+      refund:
+        mode: allow
+        constraints:
+          - ctx.department == "finance"
+          - ctx.clearance_level >= 3
+"""
+
+
+def test_test_pydantic_forwards_attributes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`policy test --attributes` threads the ABAC bag so ctx.* decides the
+    same as production — without it the simulator would spuriously DENY."""
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes='{"department": "finance", "clearance_level": 3}',
+            engine="pydantic",
+        )
+    )
+    assert rc == 0
+    assert "ALLOW" in capsys.readouterr().out
+
+
+def test_test_missing_attributes_denies_ctx_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No --attributes → ctx.* refs miss and fail closed (exit 1)."""
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(source=str(p), role="default", tool="refund", args="{}", engine="pydantic")
+    )
+    assert rc == 1
+    assert "DENY" in capsys.readouterr().out
+
+
+def test_test_rejects_non_json_attributes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes="not json",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--attributes is not valid JSON" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        '{"clearance_level": 3.5}',  # float — no AttrValue arm accepts it
+        '{"scope": {"nested": 1}}',  # nested object
+        '{"tags": [1, 2]}',  # list of non-strings
+        '{"department": null}',  # null
+    ],
+)
+def test_test_rejects_attributes_outside_attrvalue_schema(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], attributes: str
+) -> None:
+    """Shapes ``HexgateContext.attributes`` can never hold must not reach the
+    engines — the simulator would otherwise decide on a bag production can't
+    produce, defeating the point of the flag."""
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes=attributes,
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--attributes values must be str | int | bool | list[str]" in (
+        capsys.readouterr().err
+    )
+
+
+def test_test_rejects_non_object_attributes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes="[1, 2]",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--attributes must be a JSON object (dict)" in capsys.readouterr().err
+
+
+def test_test_accepts_attributes_hexgate_context_would_coerce(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Validation must not over-reject: HexgateContext coerces a whole float
+    (``3.0`` -> ``3``) rather than raising, so the simulator has to accept it
+    too — only shapes production can't hold are rejected."""
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    rc = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes='{"department": "finance", "clearance_level": 3.0}',
+            engine="pydantic",
+        )
+    )
+    assert rc == 0
+    assert "ALLOW" in capsys.readouterr().out
+
+
 def test_test_denies_when_constraint_fails(
     policy_file: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -640,6 +782,34 @@ def test_test_rejects_non_object_args(
 
 
 # --- engine=wasm path -------------------------------------------------------
+
+
+@needs_opa
+def test_test_engine_wasm_forwards_attributes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The wasm path threads --attributes into input.ctx, so a ctx.* policy
+    decides identically to the pydantic path (no simulator/runtime drift)."""
+    p = tmp_path / "ctx.yaml"
+    p.write_text(_CTX_GATED_POLICY, encoding="utf-8")
+    allow = _main_test(
+        _ns(
+            source=str(p),
+            role="default",
+            tool="refund",
+            args="{}",
+            attributes='{"department": "finance", "clearance_level": 3}',
+            engine="wasm",
+        )
+    )
+    assert allow == 0
+    assert "ALLOW" in capsys.readouterr().out
+    # Missing bag → fail closed on wasm too.
+    deny = _main_test(
+        _ns(source=str(p), role="default", tool="refund", args="{}", engine="wasm")
+    )
+    assert deny == 1
+    assert "DENY" in capsys.readouterr().out
 
 
 @needs_opa

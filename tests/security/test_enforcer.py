@@ -32,9 +32,21 @@ class _RecordingEngine:
         self.calls: list[dict[str, Any]] = []
 
     def evaluate(
-        self, *, role: str | None, tool: str, args: Mapping[str, Any]
+        self,
+        *,
+        role: str | None,
+        tool: str,
+        args: Mapping[str, Any],
+        attributes: Mapping[str, Any] | None = None,
     ) -> Verdict:
-        self.calls.append({"role": role, "tool": tool, "args": dict(args)})
+        self.calls.append(
+            {
+                "role": role,
+                "tool": tool,
+                "args": dict(args),
+                "attributes": dict(attributes) if attributes is not None else None,
+            }
+        )
         return self.verdict
 
 
@@ -45,10 +57,41 @@ def test_enforcer_forwards_role_tool_and_args_to_engine() -> None:
     decision = enforcer.decide("read_file", {"file_path": "docs/a.md"})
 
     assert engine.calls == [
-        {"role": None, "tool": "read_file", "args": {"file_path": "docs/a.md"}}
+        {
+            "role": None,
+            "tool": "read_file",
+            "args": {"file_path": "docs/a.md"},
+            "attributes": None,  # no active context → no attributes bag
+        }
     ]
     assert decision.allowed
     assert decision.agent_name == "support"
+
+
+def test_enforcer_forwards_context_attributes_to_engine() -> None:
+    """An active HexgateContext's attributes reach the engine's evaluate()."""
+    from hexgate.runtime.context import HexgateContext
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
+    enforcer = PolicyEnforcer(engine, agent_name="support")
+
+    with HexgateContext(
+        user_id="u",
+        user_roles=["billing"],
+        attributes={"department": "finance", "clearance_level": 3},
+    ).sync_scope():
+        decision = enforcer.decide("refund", {"amount": 10})
+
+    assert engine.calls == [
+        {
+            "role": "billing",  # primary_role
+            "tool": "refund",
+            "args": {"amount": 10},
+            "attributes": {"department": "finance", "clearance_level": 3},
+        }
+    ]
+    # The bag is also stamped onto the Decision for in-process observers.
+    assert decision.attributes == {"department": "finance", "clearance_level": 3}
 
 
 def test_enforcer_lifts_deny_verdict_with_structured_detail() -> None:
@@ -117,6 +160,33 @@ def test_policy_set_evaluate_matches_evaluate_tool_call() -> None:
     assert policy_set.evaluate(
         role="anything", tool="fetch", args={}
     ) == evaluate_tool_call(policy, "fetch", {})
+
+
+def test_enforcer_attributes_gate_real_pydantic_engine() -> None:
+    """End-to-end: a ctx.* constraint decides off the context's attributes."""
+    from hexgate.runtime.context import HexgateContext
+
+    policy = AgentPolicy.model_validate(
+        {
+            "default_policy": {"mode": "deny"},
+            "tools": {
+                "refund": {
+                    "mode": "allow",
+                    "constraints": ['ctx.department == "finance"'],
+                }
+            },
+        }
+    )
+    enforcer = PolicyEnforcer(PolicySet({"default": policy}), agent_name="a")
+
+    with HexgateContext(user_id="u", attributes={"department": "finance"}).sync_scope():
+        assert enforcer.decide("refund", {}).allowed
+
+    with HexgateContext(user_id="u", attributes={"department": "sales"}).sync_scope():
+        assert not enforcer.decide("refund", {}).allowed
+
+    # No active context → ctx.* ref misses → fail closed.
+    assert not enforcer.decide("refund", {}).allowed
 
 
 # ---------------------------------------------------------------------------

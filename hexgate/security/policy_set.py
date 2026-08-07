@@ -71,14 +71,23 @@ class PolicySet:
         return self._policies.get(role, self._policies[DEFAULT_ROLE_NAME])
 
     def evaluate(
-        self, *, role: str | None, tool: str, args: Mapping[str, Any]
+        self,
+        *,
+        role: str | None,
+        tool: str,
+        args: Mapping[str, Any],
+        attributes: Mapping[str, Any] | None = None,
     ) -> Verdict:
         """:class:`~hexgate.security.decision.PolicyEngine` entry point.
 
-        Resolves the role's policy and runs the pydantic engine."""
+        Resolves the role's policy and runs the pydantic engine. ``attributes``
+        feed the ``ctx.*`` constraint namespace; the role still selects the
+        policy bucket (``policy_for``) on its own."""
         from hexgate.security.policy import evaluate_tool_call
 
-        return evaluate_tool_call(self.policy_for(role), tool, dict(args), role=role)
+        return evaluate_tool_call(
+            self.policy_for(role), tool, dict(args), role=role, attributes=attributes
+        )
 
     @property
     def roles(self) -> list[str]:

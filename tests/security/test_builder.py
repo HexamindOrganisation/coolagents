@@ -165,6 +165,33 @@ def test_assert_helpers_forward_role_on_agent_policy() -> None:
     assert_denies(policy, "deploy")  # no role → fact is None → deny
 
 
+def test_assert_helpers_forward_attributes() -> None:
+    # A ctx.*-scoped constraint: the assert helpers must thread `attributes=`
+    # through, else the ctx.* ref misses and the ABAC allow path is untestable.
+    policy = (
+        PolicyBuilder().allow("refund", when=['ctx.department == "finance"']).build()
+    )
+    assert_allows(policy, "refund", attributes={"department": "finance"})
+    assert_denies(policy, "refund", attributes={"department": "sales"})
+    assert_denies(policy, "refund")  # no attributes → ctx.* misses → deny
+
+
+def test_assert_helpers_forward_attributes_on_policy_set() -> None:
+    ps = (
+        RolePolicyBuilder()
+        .role("default", PolicyBuilder().deny("refund"))
+        .role(
+            "billing",
+            PolicyBuilder().allow("refund", when=["ctx.clearance_level >= 3"]),
+        )
+        .build()
+    )
+    assert_allows(ps, "refund", role="billing", attributes={"clearance_level": 3})
+    assert_denies(ps, "refund", role="billing", attributes={"clearance_level": 2})
+    # str vs numeric gate → cross-type fails closed, same as production.
+    assert_denies(ps, "refund", role="billing", attributes={"clearance_level": "3"})
+
+
 def test_authorize_tool_call_forwards_role() -> None:
     from hexgate.security import PolicyDeniedError, authorize_tool_call
 

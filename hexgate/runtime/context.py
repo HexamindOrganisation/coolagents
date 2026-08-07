@@ -73,7 +73,10 @@ class HexgateContext(BaseModel):
     * identity / audit    -> ``user_id`` / ``session_id``
     * policy selection     -> ``user_roles`` (only ``primary_role`` used today)
     * token lifetime       -> ``ttl_seconds`` (feeds attenuation, never policy)
-    * ABAC filter surface  -> ``attributes`` (INERT until wired; advisory-only)
+    * ABAC filter surface  -> ``attributes`` (feeds the ``ctx.*`` constraint
+      namespace; untrusted/spoofable — same trust tier as ``user_roles``, since
+      both are read from this contextvar rather than a verified token. A future
+      signed tier will let declared keys be token-verified.)
 
     Two invocation styles, same machinery underneath:
 
@@ -107,7 +110,10 @@ class HexgateContext(BaseModel):
     ttl_seconds: int | None = None
     attributes: dict[str, AttrValue] = Field(
         default_factory=dict,
-        description="Advisory caller attributes for ABAC policy filtering.",
+        description=(
+            "Caller attributes for ABAC ctx.* filtering. Untrusted (spoofable, "
+            "same tier as user_roles) until the signed tier verifies them."
+        ),
     )
 
     # Stack of shadowed values (supports nested scopes). We save/restore via

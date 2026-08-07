@@ -22,9 +22,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
+from hexgate.runtime.context import AttrValue
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -48,6 +49,13 @@ from hexgate.security import (
     verdict_from_rego,
 )
 from hexgate.security.constraints import ConstraintParseError, parse_constraint
+
+# Same schema ``HexgateContext.attributes`` enforces at runtime, so a bag the
+# simulator accepts is a bag production can actually produce — including the
+# lax coercions (3.0 -> 3), not just the rejections.
+_ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, AttrValue]] = TypeAdapter(
+    dict[str, AttrValue]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +184,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--args",
         default="{}",
         help='Tool arguments as a JSON object (e.g. \'{"amount": 30, "currency": "USD"}\'). Defaults to {}.',
+    )
+    p_test.add_argument(
+        "--attributes",
+        default="{}",
+        help=(
+            "Caller ABAC attributes as a JSON object, exposed to ctx.* "
+            'constraints (e.g. \'{"department": "finance", "clearance_level": 3}\'). '
+            "JSON (not key=value) so numbers/bools keep their type and match "
+            "production. Defaults to {}."
+        ),
     )
     p_test.add_argument(
         "--engine",
@@ -507,6 +525,26 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        attributes_raw: Any = json.loads(getattr(args, "attributes", "{}"))
+    except json.JSONDecodeError as exc:
+        print(f"--attributes is not valid JSON: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(attributes_raw, dict):
+        print("--attributes must be a JSON object (dict).", file=sys.stderr)
+        return 1
+    try:
+        attributes: dict[str, AttrValue] = _ATTRIBUTES_ADAPTER.validate_python(
+            attributes_raw
+        )
+    except ValidationError as exc:
+        print(
+            "--attributes values must be str | int | bool | list[str] "
+            f"(the HexgateContext.attributes schema):\n{exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
         policy_set = load_policy_set_from_dict(payload)
     except (PolicySetError, ValidationError) as exc:
         print(f"policy schema: {exc}", file=sys.stderr)
@@ -523,8 +561,12 @@ def _main_test(args: argparse.Namespace) -> int:
     engine = getattr(args, "engine", "pydantic")
 
     if engine == "wasm":
-        return _test_via_wasm(payload, args.role, args.tool, tool_args, label)
-    return _test_via_pydantic(policy_set, args.role, args.tool, tool_args, label)
+        return _test_via_wasm(
+            payload, args.role, args.tool, tool_args, attributes, label
+        )
+    return _test_via_pydantic(
+        policy_set, args.role, args.tool, tool_args, attributes, label
+    )
 
 
 def _render_verdict(verdict: Verdict, label: str) -> int:
@@ -551,20 +593,31 @@ def _render_verdict(verdict: Verdict, label: str) -> int:
 
 
 def _test_via_pydantic(
-    policy_set: Any, role: str, tool: str, tool_args: dict, label: str
+    policy_set: Any,
+    role: str,
+    tool: str,
+    tool_args: dict,
+    attributes: dict,
+    label: str,
 ) -> int:
     """Run the decision through the in-process constraint evaluator."""
     policy: AgentPolicy = policy_set.policy_for(role)
-    # Forward role so role-scoped constraints (role == "admin") decide the same
-    # as the wasm path and production — omitting it here made `policy test
-    # --engine pydantic` diverge from --engine wasm on exactly those rules.
+    # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
+    # constraints decide the same as the wasm path and production — omitting
+    # either here made `policy test` fail closed on rules production allows.
     return _render_verdict(
-        evaluate_tool_call(policy, tool, tool_args, role=role), label
+        evaluate_tool_call(policy, tool, tool_args, role=role, attributes=attributes),
+        label,
     )
 
 
 def _test_via_wasm(
-    payload: dict, role: str, tool: str, tool_args: dict, label: str
+    payload: dict,
+    role: str,
+    tool: str,
+    tool_args: dict,
+    attributes: dict,
+    label: str,
 ) -> int:
     """Compile to wasm on the fly + evaluate — matches production semantics."""
     try:
@@ -579,7 +632,9 @@ def _test_via_wasm(
         return 1
     try:
         wasm_policy = WasmPolicy.from_bytes(artifact.wasm)
-        decision = wasm_policy.decide(role=role, tool=tool, args=tool_args)
+        decision = wasm_policy.decide(
+            role=role, tool=tool, args=tool_args, ctx=attributes
+        )
     except WasmEvalError as exc:
         print(f"wasm eval error: {exc}", file=sys.stderr)
         return 1
