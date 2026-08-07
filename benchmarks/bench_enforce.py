@@ -157,8 +157,8 @@ def _enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
         enforcer = PolicyEnforcer(
             bundle, agent_name=AGENT_NAME, decision_observer=_noop_observer
         )
-        user = HexgateContext(user_id="bench", user_roles=[case.role])
-        with user.sync_scope():
+        context = HexgateContext(user_id="bench", user_roles=[case.role])
+        with context.sync_scope():
             rows.append(
                 measure(
                     f"enforcer:{case.label}",
