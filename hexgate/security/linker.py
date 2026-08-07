@@ -38,6 +38,7 @@ from hexgate.security.models import (
     ToolPolicy,
 )
 from hexgate.security.modules import (
+    GRANT_MODES,
     LinkError,
     LinkResult,
     ModuleContent,
@@ -45,8 +46,6 @@ from hexgate.security.modules import (
     RuleTrace,
 )
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySet
-
-_GRANT_MODES = ("allow", "approval_required")
 
 
 def link_policy_set(
@@ -75,7 +74,9 @@ def link(
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
     _reject_file_scope(boundaries, capabilities)
+    _reject_default_policy_constraints(boundaries, capabilities)
     consts = _merge_consts(boundaries, capabilities)
+    trusted_attributes = _merge_trusted_attributes(boundaries, capabilities)
 
     trace = RuleTrace()
     tools: dict[str, ToolPolicy] = {}
@@ -86,9 +87,33 @@ def link(
 
     # Effective default is fail-closed: a tool no layer grants is denied.
     effective = AgentPolicy(
-        default_policy=BaseToolPolicy(mode="deny"), tools=tools, consts=consts
+        default_policy=BaseToolPolicy(mode="deny"),
+        tools=tools,
+        consts=consts,
+        trusted_attributes=trusted_attributes,
     )
     return effective, trace
+
+
+def _merge_trusted_attributes(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> list[str]:
+    """Union the trusted ``ctx.*`` keys declared by every layer.
+
+    Unlike ``consts``, a collision can't loosen anything: declaring a key
+    trusted only moves it from the spoofable contextvar bag to token-verified
+    (fail-closed when the token omits it), so the union is the safe superset —
+    the same rule :attr:`PolicySet.trusted_attributes` applies across roles.
+    Dropping it here would silently demote every module-declared trusted key
+    back to advisory in the resolved policy.
+    """
+    return sorted(
+        {
+            key
+            for module in (*boundaries, *capabilities)
+            for key in module.policy.trusted_attributes
+        }
+    )
 
 
 def _merge_consts(
@@ -131,6 +156,28 @@ def _merge_consts(
     for module in capabilities:
         _put(module, is_boundary=False)
     return merged
+
+
+def _reject_default_policy_constraints(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject ``default_policy.constraints`` in a module.
+
+    The fold reads a boundary's ``default_policy.mode`` (to tell a ceiling from a
+    floor) but the effective default is always fail-closed ``deny``, so any
+    constraints on a module's ``default_policy`` would be silently dropped. The
+    pydantic engine does enforce them in a single-file policy, so dropping them
+    on a migration would quietly lose a fence. Fail loud instead; put the rule on
+    a named tool.
+    """
+    for module in (*boundaries, *capabilities):
+        if module.policy.default_policy.constraints:
+            raise LinkError(
+                f"module {module.name!r} sets default_policy constraints, which "
+                f"module composition does not support (the effective default is "
+                f"fail-closed deny); move the rule onto a named tool "
+                f"({module.source})"
+            )
 
 
 def _reject_file_scope(
@@ -187,10 +234,10 @@ def _fold_tool(
     for g in boundaries:
         tp = g.policy.tools.get(tool)
         is_ceiling = g.policy.default_policy.mode == "deny"
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             ceiling_constraints.extend(tp.constraints)  # fences intersect (AND)
             contributors.append(_prov(g))
-        elif is_ceiling and (tp is None or tp.mode not in _GRANT_MODES):
+        elif is_ceiling and (tp is None or tp.mode not in GRANT_MODES):
             # A ceiling only permits tools it explicitly allows/approves. If it
             # doesn't (unlisted, or mentioned only via a conditional deny), the
             # tool is ineligible — a capability grant can't make it eligible.
@@ -201,7 +248,7 @@ def _fold_tool(
     grants: list[tuple[ModuleContent, ToolPolicy]] = []
     for cap in capabilities:
         tp = cap.policy.tools.get(tool)
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             grants.append((cap, tp))
     if not grants:
         return None

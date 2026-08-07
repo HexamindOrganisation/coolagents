@@ -93,6 +93,23 @@ async def test_observer_sees_role_and_args_from_user_scope() -> None:
     assert captured[0].arguments == {"path": "/etc/passwd"}
 
 
+async def test_observer_attribute_snapshot_survives_later_bag_mutation() -> None:
+    """``attributes`` is deep-copied on the same condition as ``args``: a
+    ``list[str]`` value lives on a contextvar that outlives the call, so
+    mutating it afterwards must not rewrite what a retained Decision says
+    was decided."""
+    captured: list[Decision] = []
+    engine = _StubEngine(Verdict(outcome=DecisionOutcome.DENY))
+    enforcer = PolicyEnforcer(engine, agent_name="r", decision_observer=captured.append)
+    async with HexgateContext(user_id="alice", attributes={"tags": ["eu"]}) as ctx:
+        enforcer.decide("read_file", {})
+        tags = ctx.attributes["tags"]
+        assert isinstance(tags, list)  # narrow AttrValue for the mutation below
+        tags.append("us")
+
+    assert captured[0].attributes == {"tags": ["eu"]}
+
+
 # ---------------------------------------------------------------------------
 # Isolation — a broken observer must not break enforcement
 # ---------------------------------------------------------------------------

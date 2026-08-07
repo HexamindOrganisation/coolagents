@@ -1,10 +1,11 @@
 """`hexgate policy` subcommand — author + inspect + dry-run policy documents.
 
-Wraps the compiler library and both enforcement engines in a five-verb
-CLI: ``build``, ``validate``, ``show-rego``, ``test``, ``keygen``. Every
-verb is a thin wrapper — the heavy lifting lives in
-:mod:`hexgate.security`. That symmetry lets the platform's save flow use
-the same code without duplication.
+Wraps the compiler library and both enforcement engines in a set of thin
+verbs: ``build``, ``validate``, ``show-rego``, ``test``, ``keygen``,
+``resolve`` (compose a module bundle into one effective policy), and
+``check`` (lint that bundle). Every verb is a thin wrapper — the heavy
+lifting lives in :mod:`hexgate.security`. That symmetry lets the platform's
+save flow use the same code without duplication.
 
 ``build`` compiles the policy to a signed WASM bundle (yaml + rego +
 wasm + manifest, ``--sign-key`` to sign); ``test`` evaluates a decision
@@ -22,9 +23,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
+from hexgate.runtime.context import AttrValue
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -48,6 +50,13 @@ from hexgate.security import (
     verdict_from_rego,
 )
 from hexgate.security.constraints import ConstraintParseError, parse_constraint
+
+# Same schema ``HexgateContext.attributes`` enforces at runtime, so a bag the
+# simulator accepts is a bag production can actually produce — including the
+# lax coercions (3.0 -> 3), not just the rejections.
+_ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, AttrValue]] = TypeAdapter(
+    dict[str, AttrValue]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +233,41 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Write the effective policy YAML here (default: stdout).",
     )
     p_resolve.set_defaults(func=_main_resolve)
+
+    # ---- check ----
+    p_check = sub.add_parser(
+        "check",
+        help="Lint a bundle of policy modules (dead / redundant / drift).",
+        description=(
+            "Links the boundary + capability modules under <dir>/policies/ and "
+            "reports authoring problems that don't stop composition but are "
+            "almost always mistakes: a capability grant a boundary ceiling makes "
+            "dead, a duplicate grant, or (with --manifest) a rule referencing a "
+            "tool/arg the agent's code doesn't have. Exits non-zero when any lint "
+            "is at or above --max-severity, so CI can gate on it."
+        ),
+    )
+    p_check.add_argument(
+        "--dir",
+        default=".",
+        help="Repo root containing a policies/ tree (default: current dir).",
+    )
+    p_check.add_argument(
+        "--manifest",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Optional AgentManifest JSON. Enables drift checks (unknown tool / "
+            "arg); without it those are skipped."
+        ),
+    )
+    p_check.add_argument(
+        "--max-severity",
+        choices=("error", "warning", "info"),
+        default="error",
+        help="Exit non-zero if any lint is at or above this severity (default error).",
+    )
+    p_check.set_defaults(func=_main_check)
 
 
 def main(args: argparse.Namespace) -> int:
@@ -501,6 +545,67 @@ def _main_resolve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _main_check(args: argparse.Namespace) -> int:
+    """Lint the local module bundle; exit non-zero at/above --max-severity."""
+    from hexgate.security import check as check_bundle
+    from hexgate.security import load_local_modules
+
+    try:
+        boundaries, capabilities = load_local_modules(args.dir)
+    except (ValueError, OSError) as exc:
+        print(f"load error: {exc}", file=sys.stderr)
+        return 1
+    if not boundaries and not capabilities:
+        print(
+            f"no modules found under {args.dir}/policies/"
+            " (expected policies/boundaries/ and/or policies/capabilities/)",
+            file=sys.stderr,
+        )
+        return 1
+
+    manifest = None
+    if args.manifest:
+        from hexgate.manifest.models import AgentManifest
+
+        try:
+            manifest = AgentManifest.model_validate_json(
+                Path(args.manifest).read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError, ValueError) as exc:
+            print(f"manifest error: {exc}", file=sys.stderr)
+            return 1
+
+    from hexgate.security.analyzer import SEVERITY_RANK
+
+    lints = check_bundle(boundaries, capabilities, manifest=manifest)
+
+    # A link error short-circuits before drift/soft lints run, so the
+    # "supply a manifest" hint only makes sense when linking succeeded.
+    linked = not (len(lints) == 1 and lints[0].code == "link-error")
+
+    def _drift_hint() -> None:
+        if manifest is None and linked:
+            print(
+                "  (drift checks skipped — pass --manifest to enable them)",
+                file=sys.stderr,
+            )
+
+    if not lints:
+        print("✓ No policy lints.")
+        _drift_hint()
+        return 0
+
+    icon = {"error": "✗", "warning": "!", "info": "·"}
+    for lint in lints:
+        where = f" ({lint.source})" if lint.source else ""
+        print(f"{icon.get(lint.severity, '·')} [{lint.code}] {lint.message}{where}")
+    _drift_hint()
+
+    threshold = SEVERITY_RANK[args.max_severity]
+    worst = min(SEVERITY_RANK[lint.severity] for lint in lints)
+    return 1 if worst <= threshold else 0
+
+
 def _main_test(args: argparse.Namespace) -> int:
     """Dry-run a single (role, tool, args) decision through the chosen engine."""
     source_path = Path(args.source)
@@ -519,12 +624,23 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        attributes: dict[str, Any] = json.loads(getattr(args, "attributes", "{}"))
+        attributes_raw: Any = json.loads(getattr(args, "attributes", "{}"))
     except json.JSONDecodeError as exc:
         print(f"--attributes is not valid JSON: {exc}", file=sys.stderr)
         return 1
-    if not isinstance(attributes, dict):
+    if not isinstance(attributes_raw, dict):
         print("--attributes must be a JSON object (dict).", file=sys.stderr)
+        return 1
+    try:
+        attributes: dict[str, AttrValue] = _ATTRIBUTES_ADAPTER.validate_python(
+            attributes_raw
+        )
+    except ValidationError as exc:
+        print(
+            "--attributes values must be str | int | bool | list[str] "
+            f"(the HexgateContext.attributes schema):\n{exc}",
+            file=sys.stderr,
+        )
         return 1
 
     try:

@@ -31,7 +31,9 @@ _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(not _OPA_AVAILABLE, reason="opa not on PATH")
 
 
-def _mod(name, kind, tools, *, default_mode="allow", consts=None):
+def _mod(
+    name, kind, tools, *, default_mode="allow", consts=None, trusted_attributes=None
+):
     return ModuleContent(
         name=name,
         kind=kind,
@@ -39,6 +41,7 @@ def _mod(name, kind, tools, *, default_mode="allow", consts=None):
             default_policy=BaseToolPolicy(mode=default_mode),
             tools=tools,
             consts=consts or {},
+            trusted_attributes=trusted_attributes or [],
         ),
         source=f"{name}.yaml",
         content_hash=f"hash-{name}",
@@ -271,6 +274,37 @@ def test_matching_const_across_tiers_is_allowed():
     cap = _mod("c", "capability", {"refund": _allow()}, consts={"cap": 1000})
     effective, _ = link([guard], [cap])
     assert effective.consts["cap"] == 1000
+
+
+def test_trusted_attributes_union_across_layers():
+    """Every layer's trusted keys survive the fold, unioned.
+
+    Dropping them would demote a module-declared trusted key back to the
+    spoofable advisory bag — a silent downgrade the enforcer can't detect.
+    """
+    guard = _mod(
+        "g",
+        "boundary",
+        {"refund": _allow(['ctx.department == "finance"'])},
+        trusted_attributes=["department"],
+    )
+    cap = _mod(
+        "c",
+        "capability",
+        {"refund": _allow(["ctx.clearance_level >= 3"])},
+        trusted_attributes=["clearance_level", "department"],
+    )
+    effective, _ = link([guard], [cap])
+    assert effective.trusted_attributes == ["clearance_level", "department"]
+
+
+def test_link_policy_set_exposes_trusted_attributes():
+    """The linked PolicySet reports the union, so the enforcer's trust tier
+    behaves identically for a module bundle and a single-file policy."""
+    guard = _mod("g", "boundary", {"refund": _allow()}, trusted_attributes=["dept"])
+    cap = _mod("c", "capability", {"refund": _allow()})
+    result = link_policy_set([guard], [cap])
+    assert result.policy_set.trusted_attributes == frozenset({"dept"})
 
 
 def test_file_scope_in_module_raises():

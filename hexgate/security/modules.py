@@ -23,6 +23,10 @@ if TYPE_CHECKING:  # avoid an import cycle — policy_set imports models, not th
 
 LayerKind = Literal["boundary", "capability"]
 
+# The modes that grant a tool (as opposed to deny). Shared by the linker's fold
+# and the analyzer's lints so they can't drift out of lockstep.
+GRANT_MODES: tuple[str, ...] = ("allow", "approval_required")
+
 
 class LinkError(ValueError):
     """Raised when a bundle of modules can't be composed.
