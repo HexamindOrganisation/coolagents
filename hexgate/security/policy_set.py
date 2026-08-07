@@ -96,13 +96,8 @@ class PolicySet:
 
     @property
     def trusted_attributes(self) -> frozenset[str]:
-        """Union of every role's declared trusted ``ctx.*`` keys.
-
-        A key trust-gated in *any* role is treated as trusted everywhere — the
-        safe superset: it can only make more attributes require verification
-        (fail-closed), never fewer. The enforcer reads this uniformly, without
-        depending on which role a given call selected.
-        """
+        """Union of every role's trusted ``ctx.*`` keys — the safe superset, so
+        trust is role-independent and can only add fail-closed, never remove it."""
         return frozenset(
             key
             for policy in self._policies.values()
@@ -306,9 +301,7 @@ def _resolve_inheritance(
     # parent would be fail-open.
     merged_tools.update(own.tools)
     merged_consts.update(own.consts)
-    # Trust is a union: a parent's trusted key stays trusted in the child (it
-    # can only add fail-closed, never relax it).
-    merged_trusted.update(own.trusted_attributes)
+    merged_trusted.update(own.trusted_attributes)  # union — trust never relaxes
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy
 

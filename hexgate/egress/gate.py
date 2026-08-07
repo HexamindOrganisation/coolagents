@@ -68,6 +68,10 @@ class Gate:
         does not inherit the agent's ``async with HexgateContext(...)`` scope, so we
         re-bind the run's user in *this* task via ``sync_scope()`` for the
         duration of the synchronous decide call.
+
+        No ``ToolUseContext`` is installed here, so *trusted* ``ctx.*`` attrs
+        are unavailable and fail closed — egress supports advisory ``ctx.*``
+        only until attenuation is wired into this path.
         """
         with self._user.sync_scope():
             decision = self._enforcer.decide(self._tool, args)

@@ -273,29 +273,43 @@ def test_attenuate_rejects_list_valued_attribute(keys: tuple[bytes, bytes]) -> N
         attenuate_for_user(parent, pub, user="alice", attributes={"groups": ["a", "b"]})
 
 
-def test_attenuate_escapes_injection_in_attribute_value(
+def test_attenuate_rejects_quote_in_attribute_value(
     keys: tuple[bytes, bytes],
 ) -> None:
-    """A crafted attribute value can't forge a *second* trusted ``attr`` fact.
-
-    ``_escape_datalog_string`` keeps the payload inside one string literal, so
-    biscuit stores a single ``attr("region", ...)`` fact — never a distinct
-    ``attr("clearance_level", ...)``. On the read side the forged key must not
-    be extractable; a value carrying a quote fails closed (dropped), which is
-    strictly safe — the attacker gains no trusted fact."""
-    from hexgate.cloud.biscuit import extract_attr_facts
-
+    """A quote can't be read back from ``block_source``, so signing rejects it
+    loudly instead of silently dropping it — also blocks the injection attempt."""
     priv, pub = keys
     parent = _parent_envelope(priv)
-    child = attenuate_for_user(
-        parent,
-        pub,
-        user="alice",
-        attributes={"region": 'EU"); attr("clearance_level", "9'},
-    )
-    attrs = extract_attr_facts(_biscuit_b64(child), pub)
-    # The forged high-clearance fact must never be extractable.
-    assert "clearance_level" not in attrs
+    with pytest.raises(TokenError, match="quote or newline"):
+        attenuate_for_user(
+            parent,
+            pub,
+            user="alice",
+            attributes={"region": 'EU"); attr("clearance_level", "9'},
+        )
+
+
+def test_attenuate_rejects_newline_in_attribute_value(
+    keys: tuple[bytes, bytes],
+) -> None:
+    """A newline breaks line-based extraction — rejected at sign time."""
+    priv, pub = keys
+    parent = _parent_envelope(priv)
+    with pytest.raises(TokenError, match="quote or newline"):
+        attenuate_for_user(
+            parent, pub, user="alice", attributes={"note": "hello\nworld"}
+        )
+
+
+def test_attenuate_rejects_out_of_range_int_attribute(
+    keys: tuple[bytes, bytes],
+) -> None:
+    """An int outside signed-64-bit range fails closed as TokenError, not an
+    uncaught biscuit DataLogError that would abort the run."""
+    priv, pub = keys
+    parent = _parent_envelope(priv)
+    with pytest.raises(TokenError, match="out of signed-64-bit range"):
+        attenuate_for_user(parent, pub, user="alice", attributes={"lvl": 2**63})
 
 
 def test_attenuate_rejects_non_scalar_attribute(keys: tuple[bytes, bytes]) -> None:

@@ -61,12 +61,9 @@ _FACT_LINE_RE = re.compile(
 )
 
 
-# Matches a two-arity Datalog fact `attr("key", value);` where value is a
-# double-quoted string, a bare integer, or a Datalog boolean. This is the
-# reserved shape the SDK's signed-attribute (ABAC trusted tier) convention
-# uses — deliberately distinct from the single-arity `_FACT_LINE_RE` so the
-# identity/limit extractor and the attribute extractor never fight over the
-# same lines.
+# The signed trusted-attribute shape: a two-arity `attr("key", value);` where
+# value is a quoted string, bare int, or datalog bool. Kept distinct from the
+# single-arity `_FACT_LINE_RE` so the two extractors never share a line.
 _ATTR_LINE_RE = re.compile(
     r"""
     ^\s*attr\s*\(\s*
@@ -202,23 +199,17 @@ def _unescape_datalog_string(raw: str) -> str:
 def extract_attr_facts(
     token_b64: str, public_key_bytes: bytes
 ) -> dict[str, str | int | bool]:
-    """Verify ``token_b64`` and return its signed ``attr("key", value)`` facts.
+    """Verify ``token_b64`` and return its signed ``attr("key", value)`` facts,
+    typed back to ``str`` / ``int`` / ``bool``.
 
-    Returns ``{key: value}`` for every two-arity ``attr`` fact across all
-    blocks, with the value typed back to ``str`` / ``int`` / ``bool`` from its
-    Datalog literal. This is the SDK read-side of the signed trusted-attribute
-    (ABAC) tier — the enforcer prefers these *verified* values over the
-    spoofable ``HexgateContext.attributes`` bag for declared trusted keys.
+    The read-side of the trusted-attribute tier; the enforcer prefers these
+    verified values over the spoofable contextvar bag for declared trusted keys.
 
-    Duplicate keys across attenuation blocks resolve **last-writer-wins** (a
-    later block may only narrow, never elide, so the most-attenuated value is
-    the effective one). Single-arity facts, checks, rules, and non-``attr``
-    predicates are ignored — :func:`extract_facts` owns the identity/limit
-    shape.
-
-    Raises :class:`TokenSignatureError` for the same reasons as
-    :func:`verify_biscuit` — the token is re-verified here so callers never
-    read attributes off an untrusted token by mistake.
+    Duplicate keys resolve **first-writer-wins**: biscuit append is
+    unauthenticated, so a later block must not override an earlier value —
+    preserving the "append only narrows" property (like :func:`extract_facts`'
+    union). Re-verifies the signature so attributes are never read off an
+    untrusted token.
     """
     from biscuit_auth import (
         Algorithm,
@@ -252,5 +243,5 @@ def extract_attr_facts(
                 value = match.group("bool") == "true"
             else:
                 value = int(match.group("int"))
-            attrs[key] = value
+            attrs.setdefault(key, value)  # first-writer-wins (see docstring)
     return attrs

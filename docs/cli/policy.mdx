@@ -82,7 +82,14 @@ enforcer then ignores any contextvar value for that key and uses only the
 token-verified one; a trusted key absent from the token **fails closed** (any
 constraint on it denies). Trust is deployment-wide — a key trusted in one role
 is trusted everywhere. Values must be scalar (`str` / `int` / `bool`);
-list-valued trusted attributes are not supported yet.
+list-valued trusted attributes are not supported yet (a list value is dropped
+and its constraint fails closed).
+
+Trusted attributes resolve only on the **agent-invoke** path today. The egress
+gate and the framework adapters bind the request scope but not the verified
+token, so a trusted `ctx.*` key is absent there and fails closed — advisory
+`ctx.*` keys still work on every path. Declare a key trusted only when the tools
+it gates run on the agent-invoke path.
 
 `hexgate policy test --attributes '{...}'` evaluates the raw engine below the
 enforcement trust boundary, so it treats every `ctx.*` key as present — it shows

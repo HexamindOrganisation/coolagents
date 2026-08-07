@@ -27,11 +27,10 @@ class ToolUseContext:
     facts present* (local-only flows); ``{}`` means *facts checked but
     nothing extracted*.
 
-    ``verified_attributes`` carries the two-arity ``attr("key", value)`` facts
-    from the same verified envelope, typed back to str/int/bool. These are the
-    signed *trusted* ABAC attributes the enforcer prefers over the spoofable
-    :class:`HexgateContext.attributes` bag for policy-declared trusted keys.
-    ``None`` / ``{}`` follow the same convention as ``biscuit_facts``.
+    ``verified_attributes`` carries the signed ``attr("key", value)`` facts from
+    the same envelope (trusted ABAC tier) — the enforcer prefers these over the
+    spoofable :class:`HexgateContext.attributes` bag for trusted keys. Same
+    ``None`` / ``{}`` convention as ``biscuit_facts``.
     """
 
     workspace: Workspace | None = None

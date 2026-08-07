@@ -316,15 +316,16 @@ def test_extract_attr_facts_ignores_single_arity_facts(
     assert extract_attr_facts(token, pub) == {}
 
 
-def test_extract_attr_facts_last_writer_wins_across_blocks(
+def test_extract_attr_facts_first_writer_wins_across_blocks(
     keys: tuple[bytes, bytes],
 ) -> None:
-    """A later attenuation block's attr value overrides an earlier one."""
+    """An appended block can't override an earlier attr value — first-writer-wins
+    stops an unauthenticated append from escalating a trusted value."""
     priv, pub = keys
     token = _mint_attenuated(
         priv,
-        'attr("clearance_level", 5);',  # authority
-        'attr("clearance_level", 2);',  # attenuation narrows it
+        'attr("clearance_level", 2);',  # authority — authoritative
+        'attr("clearance_level", 9);',  # appended escalation attempt — ignored
     )
     assert extract_attr_facts(token, pub) == {"clearance_level": 2}
 

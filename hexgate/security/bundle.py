@@ -317,12 +317,10 @@ class PolicyBundle:
 
     @property
     def trusted_attributes(self) -> frozenset[str]:
-        """Trusted ``ctx.*`` keys carried in the manifest (empty if absent).
+        """Trusted ``ctx.*`` keys from the manifest (empty if absent).
 
-        Pure metadata — it does not affect the compiled Rego / WASM (the
-        engine just reads ``input.ctx``); the *enforcer* uses it to decide
-        which keys to resolve from the verified token. Older bundles without
-        the field read as an empty set, so they stay all-advisory."""
+        Pure metadata (the compiled module just reads ``input.ctx``); the
+        enforcer uses it to pick which keys come from the verified token."""
         return frozenset(self.manifest.get("trusted_attributes") or [])
 
 
@@ -393,10 +391,8 @@ def build_signed_bundle(
         wasm_bytes = compile_to_wasm(rego_text, opa_bin=opa_bin).wasm
         wasm_hash = hashlib.sha256(wasm_bytes).hexdigest()
 
-    # Carry the trusted-attribute declaration as manifest metadata so the
-    # enforcer knows which ``ctx.*`` keys to resolve from the verified token
-    # on the WASM path. Does not affect the compiled module — the engine only
-    # ever reads ``input.ctx``; trust resolution is a host-layer concern.
+    # Trusted-attribute declaration as manifest metadata for the enforcer's
+    # WASM path — doesn't affect the compiled module (host-layer trust).
     from hexgate.security.policy_set import load_policy_set_from_dict
 
     trusted_attributes = sorted(load_policy_set_from_dict(payload).trusted_attributes)

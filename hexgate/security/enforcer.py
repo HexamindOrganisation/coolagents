@@ -84,17 +84,11 @@ class PolicyEnforcer:
         broken observer never breaks enforcement."""
         context = get_current_context()
         role = context.primary_role if context is not None else None
-        # Resolve the ABAC bag under the two-tier trust model: advisory keys
-        # pass through from the contextvar, but any key the policy declared
-        # *trusted* is taken only from the cryptographically-verified token —
-        # a spoofed contextvar value for a trusted key is dropped, and a
-        # trusted key absent from the token is omitted entirely (so a ``ctx.*``
-        # constraint on it fails closed).
+        # Advisory + token-verified trusted attrs merged under the trust model
+        # (see _resolve_attributes).
         attributes = self._resolve_attributes(context)
-        # Both snapshots deep-copy on the same condition: ``attributes`` can
-        # hold a ``list[str]`` and lives on a contextvar that outlives the
-        # call, so a shallow copy would alias a mutable value into a retained
-        # Decision exactly like a shallow ``args`` copy would.
+        # Deep-copy when a snapshot is retained (audit/observer): both args and
+        # attributes can hold mutable values on a contextvar outliving the call.
         retained = self._audit_sender is not None or self._decision_observer is not None
         args_snapshot = _snapshot(arguments, deep=retained)
         attrs_snapshot = (
@@ -139,29 +133,23 @@ class PolicyEnforcer:
         return decision
 
     def _trusted_attributes(self) -> frozenset[str]:
-        """Policy-declared trusted ``ctx.*`` keys, read defensively.
-
-        Reads the engine's ``trusted_attributes`` if present; an engine that
-        predates the signed tier (or a lightweight test double) has none, so it
-        resolves to empty — every attribute stays advisory, i.e. the pre-signed
-        behavior. Never raises."""
+        """Policy-declared trusted ``ctx.*`` keys, read defensively — an engine
+        without the attribute (pre-signed-tier, or a test double) is all-advisory."""
         return frozenset(getattr(self.policy, "trusted_attributes", frozenset()))
 
     def _resolve_attributes(self, context: object) -> dict[str, Any] | None:
-        """Merge the advisory contextvar bag with token-verified trusted attrs.
+        """Merge advisory contextvar attrs with token-verified trusted ones into
+        the single ``ctx.*`` bag both engines evaluate (host-layer, so no engine
+        change and zero-drift holds). ``None`` when no context scope is active.
 
-        Returns the single ``ctx.*`` mapping both engines evaluate against:
+        Advisory keys pass through; a trusted key is dropped from the advisory
+        bag and taken only from the verified token — so a spoofed value is
+        ignored and a trusted key absent from the token fails closed.
 
-        * advisory (non-trusted) keys pass through from
-          ``HexgateContext.attributes`` unchanged;
-        * trusted keys are dropped from the advisory bag (a spoofed contextvar
-          value must never influence a trusted decision) and re-added *only*
-          from the verified token — so a trusted key the token doesn't carry
-          is simply absent, and any constraint on it fails closed.
-
-        Trust resolution lives here (host layer), not in either engine, so the
-        two engines keep receiving one identical bag — the zero-drift invariant
-        holds with no engine change. ``None`` when no context scope is active.
+        Caveat: verified attrs come from ``ToolUseContext``, populated only on
+        the agent-invoke path. Egress and the framework adapters install none,
+        so trusted keys are absent (fail closed) there while advisory keys still
+        work — declare a key trusted only for tools on the agent-invoke path.
         """
         if context is None:
             return None

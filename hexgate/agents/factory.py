@@ -210,12 +210,8 @@ _warned_local_agent_user_scope: bool = False
 
 
 def _trusted_attribute_keys(agent: HexgateAgent) -> frozenset[str]:
-    """The policy-declared trusted ``ctx.*`` keys for the agent's bound engine.
-
-    Read defensively off the binding chain — an unbound agent (or any path
-    that hasn't attached a policy engine) yields an empty set, so nothing is
-    signed as trusted and every declared trusted key fails closed at
-    enforcement. Safe by default."""
+    """Trusted ``ctx.*`` keys off the agent's bound engine, read defensively —
+    an unbound agent yields empty, so nothing is signed as trusted."""
     binding = getattr(agent, "_binding", None)
     engine = getattr(getattr(binding, "enforcer", None), "policy", None)
     keys = getattr(engine, "trusted_attributes", frozenset())
@@ -225,18 +221,13 @@ def _trusted_attribute_keys(agent: HexgateAgent) -> frozenset[str]:
 def _resolve_user_facts(
     agent: HexgateAgent,
 ) -> tuple[dict[str, list[str | int]] | None, dict[str, str | int | bool] | None]:
-    """Lazily attenuate when a :class:`HexgateContext` scope is active.
+    """Lazily attenuate the active :class:`HexgateContext` into
+    ``(biscuit_facts, verified_attributes)`` — identity/limit facts and signed
+    trusted ABAC attributes.
 
-    Returns ``(biscuit_facts, verified_attributes)`` for the active context —
-    the single-arity identity/limit facts and the two-arity signed trusted
-    ABAC attributes. Both are ``None`` when no context scope is in play, the
-    agent isn't cloud-bound, or attenuation fails (logged as a warning — the
-    agent runs without facts and any predicate/trusted attribute requiring
-    them fails closed).
-
-    Only the *trusted* subset of ``context.attributes`` is signed into the
-    token (the keys the bound policy declared); advisory attributes stay on
-    the contextvar and never reach the signed block.
+    Both ``None`` when no context is active, the agent isn't cloud-bound, or
+    attenuation fails (warned; fail closed). Only the policy-declared *trusted*
+    subset of ``context.attributes`` is signed; advisory keys never reach it.
     """
     from hexgate.runtime.context import get_current_context
 
@@ -278,6 +269,21 @@ def _resolve_user_facts(
         for key, value in context.attributes.items()
         if key in trusted_keys and not isinstance(value, list)
     }
+    # A list-valued trusted key can't be signed (v1) or fall back to advisory,
+    # so it's dropped and fails closed — warn rather than drop silently.
+    dropped_lists = [
+        key
+        for key, value in context.attributes.items()
+        if key in trusted_keys and isinstance(value, list)
+    ]
+    if dropped_lists:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "trusted attribute(s) %s have list values, which are unsupported; "
+            "they are dropped and any ctx.* constraint on them will fail closed",
+            dropped_lists,
+        )
     try:
         pub = client.public_key_bytes()
         child_envelope = attenuate_for_user(
@@ -295,6 +301,17 @@ def _resolve_user_facts(
 
         logging.getLogger(__name__).warning(
             "user-scope attenuation failed: %s; agent runs without facts", exc
+        )
+        return None, None
+    except Exception as exc:  # noqa: BLE001 — attenuation must fail closed, never crash the run
+        # Backstop for non-TokenError encoding failures (e.g. a biscuit Datalog
+        # build error) so they degrade to "run without facts", never abort the run.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "unexpected error during user-scope attenuation: %s; agent runs "
+            "without facts",
+            exc,
         )
         return None, None
 

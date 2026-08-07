@@ -92,11 +92,10 @@ class Decision:
     hint: dict[str, Any] | None = None
     violations: tuple[str, ...] = ()
     arguments: dict[str, Any] | None = None
-    # The ABAC attribute snapshot the decision was evaluated against, so an
-    # in-process observer sees the ``ctx.*`` values that drove the outcome.
-    # Deliberately NOT rendered into ``as_error_payload`` (LLM-facing) nor
-    # persisted by the audit sender yet — durable audit + PII/retention policy
-    # lands with the signed tier.
+    # The ``ctx.*`` snapshot the decision ran against (for in-process observers).
+    # Not rendered into ``as_error_payload`` (LLM-facing). Audit emits a redacted
+    # copy, but the platform schema has no ``attributes`` field yet — durable
+    # persistence + PII/retention are a cross-repo follow-up.
     attributes: dict[str, Any] | None = None
 
     @classmethod

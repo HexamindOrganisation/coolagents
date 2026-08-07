@@ -24,10 +24,8 @@ from hexgate.cloud.biscuit import (
     parse_envelope,
 )
 
-# Scalar shapes a trusted attribute may carry into a signed ``attr`` fact.
-# Mirrors ``hexgate.runtime.context.AttrValue`` minus ``list[str]`` — list-valued
-# trusted attributes are rejected in v1 (kept advisory-only). Inlined rather than
-# imported to avoid coupling the token layer to the runtime context module.
+# Scalar shapes a trusted attribute may sign into an ``attr`` fact (lists
+# rejected in v1). Inlined to avoid coupling the token layer to runtime.context.
 TrustedAttrValue = str | int | bool
 
 
@@ -42,25 +40,43 @@ def _escape_datalog_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _render_attr_value(key: str, value: object) -> str:
-    """Render a trusted attribute value as a typed Biscuit Datalog literal.
+# Biscuit ints are signed 64-bit. Validate up front so overflow raises a caught
+# TokenError (fail-closed), not an uncaught DataLogError that aborts the run.
+_I64_MIN = -(2**63)
+_I64_MAX = 2**63 - 1
 
-    ``bool`` is checked before ``int`` (``bool`` is an ``int`` subclass) so
-    ``True`` renders as the Datalog boolean ``true``, not ``1``. Strings are
-    escaped for injection safety; the type is preserved on the wire so
-    ``extract_attr_facts`` reads back an ``int``/``bool``/``str``, and a
-    numeric ``ctx.*`` comparison stays int-to-int on both engines.
+# Chars that don't survive a biscuit ``block_source()`` round-trip (a quote ends
+# the literal; CR/LF break ``extract_attr_facts``' line scan). Rejected at sign
+# time so they fail loud instead of silently dropping to a fail-closed deny.
+_UNENCODABLE_ATTR_CHARS = ('"', "\n", "\r")
+
+
+def _render_attr_value(key: str, value: object) -> str:
+    """Render a trusted attribute as a typed Datalog literal (``bool`` before
+    ``int`` — ``bool`` is an ``int`` subclass — so type survives the round-trip).
+
+    Raises :class:`TokenError` (caught upstream → fail-closed) for values that
+    can't be read back: out-of-range int, quote/newline string, list, non-scalar.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
+        if not (_I64_MIN <= value <= _I64_MAX):
+            raise TokenError(
+                f"trusted attribute {key!r} int {value} out of signed-64-bit range"
+            )
         return str(value)
     if isinstance(value, str):
+        if any(ch in value for ch in _UNENCODABLE_ATTR_CHARS):
+            raise TokenError(
+                f"trusted attribute {key!r} value has a quote or newline, which "
+                "can't be read back from the signed token"
+            )
         return f'"{_escape_datalog_string(value)}"'
     if isinstance(value, list):
         raise TokenError(
-            f"list-valued trusted attribute {key!r} is not supported yet; "
-            "keep it advisory or use a scalar (str/int/bool)"
+            f"list-valued trusted attribute {key!r} is unsupported; it can't fall "
+            "back to advisory and would fail closed — use a scalar (str/int/bool)"
         )
     raise TokenError(
         f"trusted attribute {key!r} must be str/int/bool, got {type(value).__name__}"
@@ -85,12 +101,9 @@ def attenuate_for_user(
     * ``role("...")`` — the user's role (when supplied), used by the agent
       runtime to pick the matching role policy file.
     * ``attr("<key>", <value>)`` for each entry in ``attributes`` — the
-      *trusted* subset of the caller's ABAC bag, signed so the SDK can
-      verify it rather than trust the spoofable contextvar value. The caller
-      is responsible for passing only keys declared trusted by the policy;
-      this function just signs what it's given. Values are typed literals
-      (str/int/bool); list-valued attributes raise (see
-      :func:`_render_attr_value`).
+      trusted ABAC subset, signed so the SDK can verify it instead of trusting
+      the spoofable contextvar. The caller passes only policy-declared trusted
+      keys; this just signs them (typed literals; see :func:`_render_attr_value`).
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
 

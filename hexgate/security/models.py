@@ -68,12 +68,9 @@ class AgentPolicy(BaseModel):
     ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
 
-    ``trusted_attributes`` names the ``ctx.<key>`` attributes that must be
-    cryptographically verified (signed into the request Biscuit) rather than
-    read from the spoofable :class:`~hexgate.runtime.HexgateContext.attributes`
-    bag. For a trusted key the enforcer ignores the advisory contextvar value
-    and uses only the token-verified one; a trusted key absent from the token
-    fails closed. Advisory (unlisted) attributes are unchanged. Merged through
+    ``trusted_attributes`` names the ``ctx.<key>`` attributes taken only from
+    the verified Biscuit, not the spoofable contextvar bag: a trusted key absent
+    from the token fails closed. Unlisted keys stay advisory. Merged through
     ``inherits`` like ``consts``.
     """
 
