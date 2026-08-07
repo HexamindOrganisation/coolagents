@@ -23,7 +23,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
-from hexgate.security.constraints import iter_arg_refs, parse_constraint
+from hexgate.security.constraints import (
+    ConstraintParseError,
+    iter_arg_refs,
+    parse_constraint,
+)
 from hexgate.security.linker import link_policy_set
 from hexgate.security.modules import (
     GRANT_MODES,
@@ -32,7 +36,7 @@ from hexgate.security.modules import (
     LinkResult,
     ModuleContent,
 )
-from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySetError
 
 if TYPE_CHECKING:  # avoid importing the manifest package eagerly
     from hexgate.manifest.models import AgentManifest
@@ -66,12 +70,16 @@ def check(
 ) -> list[PolicyLint]:
     """Link + analyze in one call.
 
-    A :class:`LinkError` (the hard cases) becomes a single ``error`` lint so a
-    caller reports hard failures and soft lints through one uniform list.
+    A hard failure (the linker rejecting the bundle, or an invalid resolved
+    policy) becomes a single ``error`` lint so a caller reports hard failures
+    and soft lints through one uniform list. The except tuple matches what
+    ``link_policy_set`` can raise: ``LinkError`` from the fold, and
+    ``PolicySetError`` / ``ConstraintParseError`` from validating the resolved
+    policy (e.g. an undefined ``consts`` reference).
     """
     try:
         result = link_policy_set(boundaries, capabilities)
-    except LinkError as exc:
+    except (LinkError, PolicySetError, ConstraintParseError) as exc:
         return [PolicyLint("link-error", "error", str(exc))]
     return analyze(result, boundaries, capabilities, manifest=manifest)
 
@@ -91,6 +99,7 @@ def analyze(
     lints: list[PolicyLint] = []
     lints += _dead_grants(result, capabilities)
     lints += _redundant_grants(capabilities)
+    lints += _constraint_erased(capabilities)
     if manifest is not None:
         lints += _drift(boundaries, capabilities, manifest)
     return sorted(lints, key=lambda lint: SEVERITY_RANK[lint.severity])
@@ -169,6 +178,44 @@ def _redundant_grants(capabilities: list[ModuleContent]) -> list[PolicyLint]:
     return out
 
 
+def _constraint_erased(capabilities: list[ModuleContent]) -> list[PolicyLint]:
+    """A constrained grant nullified by an unconditional sibling grant.
+
+    Capability grants for one tool union, so an unconditional grant (no
+    constraints) widens the tool to everything and drops every sibling's
+    condition. That is intended union semantics, but it is the security-relevant
+    direction (a tight rule silently erased), so it warrants a warning.
+    """
+    grants: dict[str, list[tuple[ModuleContent, Any]]] = {}
+    for cap in capabilities:
+        for tool, tp in cap.policy.tools.items():
+            if tp.mode in GRANT_MODES:
+                grants.setdefault(tool, []).append((cap, tp))
+
+    out: list[PolicyLint] = []
+    for tool, entries in grants.items():
+        unconditional = [cap for cap, tp in entries if not tp.constraints]
+        if not unconditional:
+            continue
+        for cap, tp in entries:
+            if tp.constraints:
+                out.append(
+                    PolicyLint(
+                        code="constraint-erased",
+                        severity="warning",
+                        message=(
+                            f"{cap.name!r} constrains {tool!r}, but "
+                            f"{unconditional[0].name!r} grants it unconditionally, "
+                            f"so the constraint is dropped from the effective policy"
+                        ),
+                        source=cap.source,
+                        tier="capability",
+                        tool=tool,
+                    )
+                )
+    return out
+
+
 def _drift(
     boundaries: list[ModuleContent],
     capabilities: list[ModuleContent],
@@ -176,8 +223,14 @@ def _drift(
 ) -> list[PolicyLint]:
     """Rules referencing tools / args the agent's code doesn't have.
 
-    Boundary drift is fail-open (a stale deny protects nothing) → error;
-    capability drift is fail-safe (a dead grant) → warning.
+    Severity follows the failure direction, not just the tier:
+      * boundary allow/approval (a ceiling) naming a missing tool leaves the real
+        tool uncapped -> fail-open -> error.
+      * boundary deny naming a missing tool protects nothing and breaks nothing
+        -> info.
+      * capability drift is a dead grant -> warning.
+      * a boundary deny's arg typo inverts (``not(<missing> ...)`` folds to allow)
+        -> fail-open -> error; other arg drift -> warning.
     """
     tool_props: dict[str, set[str]] = {
         t.name: set(t.input_schema.properties) for t in manifest.tools
@@ -190,14 +243,13 @@ def _drift(
         (capabilities, "capability"),
     ]
     for modules, tier in tiers:
-        severity: Severity = "error" if tier == "boundary" else "warning"
         for module in modules:
             for tool, tp in module.policy.tools.items():
                 if tool not in known_tools:
                     out.append(
                         PolicyLint(
                             code="unknown-tool",
-                            severity=severity,
+                            severity=_unknown_tool_severity(tier, tp.mode),
                             message=(
                                 f"{module.name!r} references tool {tool!r}, which "
                                 f"the agent's manifest doesn't declare"
@@ -208,8 +260,21 @@ def _drift(
                         )
                     )
                     continue
-                out += _unknown_args(module, tier, tool, tp, tool_props[tool])
+                arg_severity: Severity = (
+                    "error" if (tier == "boundary" and tp.mode == "deny") else "warning"
+                )
+                out += _unknown_args(
+                    module, tier, tool, tp, tool_props[tool], arg_severity
+                )
     return out
+
+
+def _unknown_tool_severity(tier: LayerKind, mode: str) -> Severity:
+    """A boundary deny on a missing tool is harmless; a boundary ceiling that
+    names a missing tool leaves the real tool uncapped (fail-open)."""
+    if tier == "capability":
+        return "warning"
+    return "info" if mode == "deny" else "error"
 
 
 def _unknown_args(
@@ -218,6 +283,7 @@ def _unknown_args(
     tool: str,
     tool_policy: Any,
     valid_args: set[str],
+    severity: Severity,
 ) -> list[PolicyLint]:
     """Constraint ``args.<x>`` paths where ``<x>`` isn't a parameter of the tool."""
     out: list[PolicyLint] = []
@@ -232,7 +298,7 @@ def _unknown_args(
                 out.append(
                     PolicyLint(
                         code="unknown-arg",
-                        severity="warning",
+                        severity=severity,
                         message=(
                             f"{module.name!r} constrains {tool!r} on args.{arg}, "
                             f"which the tool doesn't accept"

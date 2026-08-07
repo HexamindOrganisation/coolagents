@@ -123,17 +123,24 @@ def test_link_error_becomes_an_error_lint():
 # --- drift (needs a manifest) ---
 
 
-def test_unknown_tool_boundary_is_error_capability_is_warning():
-    boundary = _mod("b", "boundary", {"delete_db": _deny()})
+def test_unknown_tool_severity_follows_failure_direction():
+    # boundary ceiling naming a missing tool = fail-open (real tool uncapped) = error;
+    # boundary deny on a missing tool = harmless = info;
+    # capability drift = dead grant = warning.
+    boundary = _mod(
+        "b",
+        "boundary",
+        {"ghost_cap": _allow(), "ghost_deny": _deny()},
+    )
     cap = _mod("c", "capability", {"ghost_tool": _allow()})
-    manifest = _manifest(("refund", ["amount"]))  # neither tool is declared
+    manifest = _manifest(("refund", ["amount"]))  # none of these tools declared
 
     lints = check([boundary], [cap], manifest=manifest)
-    by = {(lint.tool): lint for lint in lints if lint.code == "unknown-tool"}
+    by = {lint.tool: lint for lint in lints if lint.code == "unknown-tool"}
 
-    assert by["delete_db"].severity == "error"
-    assert by["delete_db"].tier == "boundary"
-    assert by["ghost_tool"].severity == "warning"
+    assert by["ghost_cap"].severity == "error"  # boundary ceiling allow
+    assert by["ghost_deny"].severity == "info"  # boundary deny, harmless
+    assert by["ghost_tool"].severity == "warning"  # capability grant
     assert by["ghost_tool"].tier == "capability"
 
 
@@ -162,7 +169,7 @@ def test_unknown_arg_flags_a_constraint_on_a_missing_parameter():
 
 
 def test_analyze_sorts_errors_first():
-    boundary = _mod("b", "boundary", {"ghost": _deny()})
+    boundary = _mod("b", "boundary", {"ghost": _allow()})  # ceiling drift = error
     c1 = _mod("c1", "capability", {"refund": _allow(["args.amount <= 1"])})
     c2 = _mod("c2", "capability", {"refund": _allow(["args.amount <= 1"])})
     manifest = _manifest(("refund", ["amount"]))
@@ -176,3 +183,56 @@ def test_analyze_sorts_errors_first():
     assert severities == sorted(severities, key=SEVERITY_RANK.get)
     assert ("unknown-tool", "ghost") in _codes(lints)  # error present
     assert ("redundant-grant", "refund") in _codes(lints)  # info present
+
+
+def test_undefined_const_becomes_link_error_lint_not_traceback():
+    # link_policy_set raises PolicySetError (undefined const) — check() must fold
+    # it into a lint, not let it escape as a traceback.
+    cap = _mod(
+        "c", "capability", {"refund": _allow(["args.amount <= consts.max_refund"])}
+    )
+    lints = check([], [cap])
+    assert [lint.code for lint in lints] == ["link-error"]
+    assert lints[0].severity == "error"
+
+
+def test_boundary_deny_arg_typo_is_error():
+    # A boundary conditional deny with a typo'd arg inverts to an allow
+    # (fail-open), so its arg drift must be an error, not a warning.
+    boundary = _mod("org", "boundary", {"refund": _deny(["args.amoun > 1000"])})
+    cap = _mod("c", "capability", {"refund": _allow()})
+    manifest = _manifest(("refund", ["amount"]))
+
+    lints = check([boundary], [cap], manifest=manifest)
+    arg = [lint for lint in lints if lint.code == "unknown-arg"]
+    assert len(arg) == 1
+    assert arg[0].severity == "error"
+    assert arg[0].tier == "boundary"
+
+
+def test_constraint_erased_when_a_sibling_grant_is_unconditional():
+    tight = _mod("tight", "capability", {"refund": _allow(["args.amount <= 100"])})
+    loose = _mod("loose", "capability", {"refund": _allow()})  # unconditional
+    lints = check([], [tight, loose])
+    erased = [lint for lint in lints if lint.code == "constraint-erased"]
+    assert len(erased) == 1
+    assert erased[0].tool == "refund"
+    assert erased[0].source == "tight.yaml"  # the constrained one is flagged
+    assert "loose" in erased[0].message
+
+
+def test_default_policy_constraints_rejected_as_link_error():
+    from hexgate.security import AgentPolicy, BaseToolPolicy
+
+    module = ModuleContent(
+        name="b",
+        kind="boundary",
+        policy=AgentPolicy(
+            default_policy=BaseToolPolicy(mode="allow", constraints=["args.x <= 1"])
+        ),
+        source="b.yaml",
+        content_hash="h",
+    )
+    lints = check([module], [])
+    assert [lint.code for lint in lints] == ["link-error"]
+    assert "default_policy constraints" in lints[0].message

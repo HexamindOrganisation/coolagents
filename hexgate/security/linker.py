@@ -74,6 +74,7 @@ def link(
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
     _reject_file_scope(boundaries, capabilities)
+    _reject_default_policy_constraints(boundaries, capabilities)
     consts = _merge_consts(boundaries, capabilities)
 
     trace = RuleTrace()
@@ -130,6 +131,28 @@ def _merge_consts(
     for module in capabilities:
         _put(module, is_boundary=False)
     return merged
+
+
+def _reject_default_policy_constraints(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject ``default_policy.constraints`` in a module.
+
+    The fold reads a boundary's ``default_policy.mode`` (to tell a ceiling from a
+    floor) but the effective default is always fail-closed ``deny``, so any
+    constraints on a module's ``default_policy`` would be silently dropped. The
+    pydantic engine does enforce them in a single-file policy, so dropping them
+    on a migration would quietly lose a fence. Fail loud instead; put the rule on
+    a named tool.
+    """
+    for module in (*boundaries, *capabilities):
+        if module.policy.default_policy.constraints:
+            raise LinkError(
+                f"module {module.name!r} sets default_policy constraints, which "
+                f"module composition does not support (the effective default is "
+                f"fail-closed deny); move the rule onto a named tool "
+                f"({module.source})"
+            )
 
 
 def _reject_file_scope(
