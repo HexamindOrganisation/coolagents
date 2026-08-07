@@ -104,7 +104,9 @@ async def test_observer_attribute_snapshot_survives_later_bag_mutation() -> None
     async with HexgateContext(user_id="alice", attributes={"tags": ["eu"]}) as ctx:
         enforcer.decide("read_file", {})
         tags = ctx.attributes["tags"]
-        assert isinstance(tags, list)  # narrow AttrValue for the mutation below
+        assert isinstance(
+            tags, list
+        )  # narrow ContextAttributeValue for the mutation below
         tags.append("us")
 
     assert captured[0].attributes == {"tags": ["eu"]}
