@@ -165,10 +165,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-<<<<<<< HEAD
         *,
-=======
->>>>>>> 38ae2327044067c3956d3748d22806d5a9c9cb41
         hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
@@ -200,10 +197,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-<<<<<<< HEAD
         *,
-=======
->>>>>>> 38ae2327044067c3956d3748d22806d5a9c9cb41
         hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
@@ -262,10 +256,7 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-<<<<<<< HEAD
         *,
-=======
->>>>>>> 38ae2327044067c3956d3748d22806d5a9c9cb41
         hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
