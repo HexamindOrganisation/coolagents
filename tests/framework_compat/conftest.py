@@ -67,7 +67,7 @@ def _reset_executions():
 
 
 @pytest.fixture
-def probe_user() -> HexgateContext:
+def probe_context() -> HexgateContext:
     """A representative caller; role ``member`` falls back to the default role."""
     return HexgateContext(
         user_id="probe-user", user_roles=["member"], session_id="probe-session"

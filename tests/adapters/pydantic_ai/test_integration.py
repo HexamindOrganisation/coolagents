@@ -67,12 +67,12 @@ def test_run_sync_with_no_event_loop_delivers_llm_usage_event(
     register_agent(raw_agent)
     wrapped = wrap_pydantic_agent(agent=raw_agent, api_key=hexgate_platform_env.api_key)
 
-    user = HexgateContext(
+    context = HexgateContext(
         user_id=f"{USER_ID_PREFIX}pydantic_ai",
         session_id=session_id,
         user_roles=["tester"],
     )
-    result = wrapped.run_sync("What's the weather in Paris?", user=user)
+    result = wrapped.run_sync("What's the weather in Paris?", hexgate_context=context)
     assert result.output
 
     assert_policy_and_usage_events_landed(

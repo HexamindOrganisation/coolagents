@@ -36,7 +36,7 @@ async def main():
         tools=[get_current_time, get_weather],
     )
 
-    user = HexgateContext(
+    hexgate_context = HexgateContext(
         user_id="google_user_1",
         session_id="google_session_1",
         user_roles=["user"],
@@ -45,8 +45,8 @@ async def main():
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name="google_runner_example",
-        user_id=user.user_id,
-        session_id=user.session_id,
+        user_id=hexgate_context.user_id,
+        session_id=hexgate_context.session_id,
     )
 
     runner = HexgateRunner(
@@ -59,7 +59,9 @@ async def main():
         role="user", parts=[types.Part(text="what is the weather in New Delhi?")]
     )
 
-    async for event in runner.run_async(new_message=user_msg, user=user):
+    async for event in runner.run_async(
+        new_message=user_msg, hexgate_context=hexgate_context
+    ):
         if event.is_final_response():
             print(event.content.parts[0].text)
 

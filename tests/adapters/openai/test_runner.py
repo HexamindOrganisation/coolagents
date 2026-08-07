@@ -198,9 +198,9 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
 
     runner = HexgateRunner(api_key="k")
     agent = _make_agent()
-    user = _user()
+    context = _user()
 
-    result = await runner.run(agent, "hello", user=user)
+    result = await runner.run(agent, "hello", hexgate_context=context)
 
     assert result == "run-result"
     assert setup_counts["setup"] == 1
@@ -210,7 +210,7 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     assert captured["kwargs"]["run_config"] is None
     assert isinstance(captured["kwargs"]["hooks"], HexgateUsageHooks)
     # HexgateContext scope was live for the duration of Runner.run.
-    assert captured["active_user"] is user
+    assert captured["active_user"] is context
     # Scope unwound on exit — no leak.
     assert get_current_context() is None
 
@@ -235,15 +235,15 @@ def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
 
     runner = HexgateRunner(api_key="k")
     agent = _make_agent()
-    user = _user()
+    context = _user()
 
-    result = runner.run_sync(agent, "hello", user=user)
+    result = runner.run_sync(agent, "hello", hexgate_context=context)
 
     assert result == "run-sync-result"
     assert setup_counts["setup"] == 1
     assert captured["agent"] is not agent
     assert captured["input"] == "hello"
-    assert captured["active_user"] is user
+    assert captured["active_user"] is context
     assert get_current_context() is None
 
 
@@ -286,7 +286,7 @@ def test_run_sync_drains_pending_tasks_on_the_default_loop(
 
         try:
             runner = HexgateRunner(api_key="k")
-            result = runner.run_sync(_make_agent(), "hello", user=_user())
+            result = runner.run_sync(_make_agent(), "hello", hexgate_context=_user())
 
             assert result == "run-sync-result"
             # If run_sync() had returned without draining the default loop,
@@ -336,16 +336,16 @@ async def test_run_streamed_wraps_stream_events_to_re_enter_scope_and_propagatio
 
     runner = HexgateRunner(api_key="k")
     agent = _make_agent()
-    user = _user()
+    context = _user()
 
-    result = runner.run_streamed(agent, "hello", user=user)
+    result = runner.run_streamed(agent, "hello", hexgate_context=context)
 
     assert result is fake_result
     assert captured["agent"].name == agent.name
     assert len(propagate_calls) == 1
     assert propagate_calls[0]["user_id"] == "u-1"
     assert propagate_calls[0]["session_id"] == "s-1"
-    assert propagate_calls[0]["metadata"] == {"user_role": "developer"}
+    assert propagate_calls[0]["metadata"] == {"user_roles": "developer"}
     assert propagate_calls[0]["tags"] == ["openai.runner.run.my-agent"]
 
     events = [event async for event in result.stream_events()]
@@ -373,11 +373,11 @@ async def test_run_streamed_opens_user_scope_around_run_streamed_call(
     )
 
     runner = HexgateRunner(api_key="k")
-    user = _user()
+    context = _user()
 
-    runner.run_streamed(_make_agent(), "hello", user=user)
+    runner.run_streamed(_make_agent(), "hello", hexgate_context=context)
 
-    assert captured["active_user"] is user
+    assert captured["active_user"] is context
     assert get_current_context() is None
 
 
@@ -411,13 +411,13 @@ async def test_run_propagates_user_identity_to_langfuse(
 
     runner = HexgateRunner(api_key="k")
 
-    await runner.run(_make_agent("custom-name"), "hi", user=_user())
+    await runner.run(_make_agent("custom-name"), "hi", hexgate_context=_user())
 
     [call] = propagate_calls
     assert call["tags"] == ["openai.runner.run.custom-name"]
     assert call["user_id"] == "u-1"
     assert call["session_id"] == "s-1"
-    assert call["metadata"] == {"user_role": "developer"}
+    assert call["metadata"] == {"user_roles": "developer"}
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +444,7 @@ async def test_run_refused_before_runner_run_when_banned(
     runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
 
     with pytest.raises(AgentBannedError) as exc:
-        await runner.run(_make_agent("my-agent"), "hi", user=_user())
+        await runner.run(_make_agent("my-agent"), "hi", hexgate_context=_user())
 
     assert exc.value.code == "agent_banned"
     assert called == []  # Runner.run never reached
@@ -472,7 +472,7 @@ def test_run_streamed_refused_before_task_spawns_when_banned(
     runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
 
     with pytest.raises(AgentBannedError):
-        runner.run_streamed(_make_agent("my-agent"), "hi", user=_user())
+        runner.run_streamed(_make_agent("my-agent"), "hi", hexgate_context=_user())
 
     assert called == []  # background task never spawned
 
@@ -495,7 +495,7 @@ async def test_not_banned_passes_through(
         "my-agent", banned="some-other-agent"
     )
 
-    result = await runner.run(_make_agent("my-agent"), "hi", user=_user())
+    result = await runner.run(_make_agent("my-agent"), "hi", hexgate_context=_user())
 
     assert result == "ok"
 
@@ -547,8 +547,8 @@ async def test_binding_is_cached_per_agent_name(
     runner = HexgateRunner(api_key="k")
     agent = _make_agent("my-agent")
 
-    await runner.run(agent, "one", user=_user())
-    await runner.run(agent, "two", user=_user())
+    await runner.run(agent, "one", hexgate_context=_user())
+    await runner.run(agent, "two", hexgate_context=_user())
 
     assert _stub_resolve == ["my-agent"]
 
@@ -562,8 +562,8 @@ async def test_distinct_agent_names_get_distinct_bindings(
 
     runner = HexgateRunner(api_key="k")
 
-    await runner.run(_make_agent("agent-a"), "x", user=_user())
-    await runner.run(_make_agent("agent-b"), "x", user=_user())
+    await runner.run(_make_agent("agent-a"), "x", hexgate_context=_user())
+    await runner.run(_make_agent("agent-b"), "x", hexgate_context=_user())
 
     assert _stub_resolve == ["agent-a", "agent-b"]
     assert set(runner._bindings) == {"agent-a", "agent-b"}
@@ -597,8 +597,8 @@ async def test_run_refreshes_cached_binding_per_call(
     binding = _CountingBinding()
     runner._bindings["my-agent"] = binding  # type: ignore[assignment]
 
-    await runner.run(_make_agent("my-agent"), "one", user=_user())
-    await runner.run(_make_agent("my-agent"), "two", user=_user())
+    await runner.run(_make_agent("my-agent"), "one", hexgate_context=_user())
+    await runner.run(_make_agent("my-agent"), "two", hexgate_context=_user())
 
     assert binding.refreshes == 2
 
@@ -620,7 +620,7 @@ def test_run_sync_refreshes_cached_binding_per_call(
     binding = _CountingBinding()
     runner._bindings["my-agent"] = binding  # type: ignore[assignment]
 
-    runner.run_sync(_make_agent("my-agent"), "one", user=_user())
+    runner.run_sync(_make_agent("my-agent"), "one", hexgate_context=_user())
 
     assert binding.refreshes == 1
 
@@ -653,7 +653,7 @@ def test_run_streamed_refreshes_before_setup(
     binding = _OrderedBinding()
     runner._bindings["my-agent"] = binding  # type: ignore[assignment]
 
-    runner.run_streamed(_make_agent("my-agent"), "hello", user=_user())
+    runner.run_streamed(_make_agent("my-agent"), "hello", hexgate_context=_user())
 
     assert order == ["refresh", "run_streamed"]
 
@@ -709,7 +709,7 @@ async def test_run_passes_a_usage_hooks_instance_when_caller_passes_none(
     )
 
     runner = HexgateRunner(api_key="k")
-    await runner.run(_make_agent(), "hi", user=_user())
+    await runner.run(_make_agent(), "hi", hexgate_context=_user())
 
     assert isinstance(captured["hooks"], HexgateUsageHooks)
 
@@ -735,7 +735,7 @@ async def test_run_composes_caller_supplied_hooks_instead_of_clobbering(
     caller_hooks = _RecordingHooks()
     runner = HexgateRunner(api_key="k")
 
-    await runner.run(_make_agent(), "hi", user=_user(), hooks=caller_hooks)
+    await runner.run(_make_agent(), "hi", hexgate_context=_user(), hooks=caller_hooks)
 
     assert captured["hooks"] is not caller_hooks  # composed, not passed through raw
     assert caller_hooks.llm_end_calls == 1  # still fired
@@ -765,9 +765,9 @@ async def test_usage_hook_context_propagates_through_run(
     )
 
     runner = HexgateRunner(api_key="k")
-    user = _user()
+    context = _user()
 
-    await runner.run(_make_agent("my-agent"), "hi", user=user)
+    await runner.run(_make_agent("my-agent"), "hi", hexgate_context=context)
 
     [event] = fake_sender.events
     assert event.agent_name == "my-agent"

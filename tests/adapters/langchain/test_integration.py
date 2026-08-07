@@ -129,14 +129,14 @@ async def test_agent_run_lands_policy_decision_and_llm_usage_events(
         agent=raw_agent, tools=tools, api_key=hexgate_platform_env.api_key
     )
 
-    user = HexgateContext(
+    context = HexgateContext(
         user_id=f"{USER_ID_PREFIX}langchain",
         session_id=session_id,
         user_roles=["tester"],
     )
     result = await wrapped.ainvoke(
         {"messages": [{"role": "user", "content": "What's the weather in Paris?"}]},
-        user=user,
+        hexgate_context=context,
     )
     assert result["messages"][-1].content
 

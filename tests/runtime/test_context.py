@@ -80,22 +80,22 @@ async def test_user_scope_sets_and_resets_contextvar() -> None:
     """A vanilla ``async with`` pushes + pops the HexgateContext on the contextvar."""
     assert get_current_context() is None
     async with HexgateContext(user_id="alice", user_roles=["billing"]):
-        user = get_current_context()
-        assert user is not None
-        assert user.user_id == "alice"
-        assert user.primary_role == "billing"
+        context = get_current_context()
+        assert context is not None
+        assert context.user_id == "alice"
+        assert context.primary_role == "billing"
     assert get_current_context() is None
 
 
 @pytest.mark.asyncio
 async def test_user_scope_nests_same_instance() -> None:
     """Same HexgateContext entered twice still resets cleanly to None on full exit."""
-    user = HexgateContext(user_id="bob")
-    async with user:
-        async with user:
-            assert get_current_context() is user
-        # Inner exit restores the outer set (still the same user).
-        assert get_current_context() is user
+    context = HexgateContext(user_id="bob")
+    async with context:
+        async with context:
+            assert get_current_context() is context
+        # Inner exit restores the outer set (still the same context).
+        assert get_current_context() is context
     assert get_current_context() is None
 
 
@@ -131,8 +131,8 @@ def test_sync_scope_exit_survives_foreign_context() -> None:
     Enter and exit each run in their own copied Context so neither touches the
     test's real context (and the distinct contexts are what reproduce the bug).
     """
-    user = HexgateContext(user_id="alice")
-    cm = user.sync_scope()
+    context = HexgateContext(user_id="alice")
+    cm = context.sync_scope()
     contextvars.copy_context().run(cm.__enter__)  # set in context A
     contextvars.copy_context().run(cm.__exit__, None, None, None)  # exit in B: no raise
     assert get_current_context() is None  # test's own context never polluted
@@ -143,7 +143,7 @@ async def test_async_scope_exit_survives_foreign_context() -> None:
     """async __aexit__ in a foreign Context must not raise (astream_events
     aclose() runs in the event loop's finalizer task). __aexit__ does no real
     awaiting, so a single send() drives it to completion."""
-    user = HexgateContext(user_id="alice")
+    context = HexgateContext(user_id="alice")
 
     def _drive(coro: object) -> None:
         try:
@@ -151,9 +151,9 @@ async def test_async_scope_exit_survives_foreign_context() -> None:
         except StopIteration:
             pass
 
-    contextvars.copy_context().run(_drive, user.__aenter__())  # enter in context A
+    contextvars.copy_context().run(_drive, context.__aenter__())  # enter in context A
     contextvars.copy_context().run(
-        _drive, user.__aexit__(None, None, None)
+        _drive, context.__aexit__(None, None, None)
     )  # B: no raise
     assert get_current_context() is None
 

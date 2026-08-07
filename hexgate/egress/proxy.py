@@ -51,8 +51,8 @@ _guard_active = False
 class EgressProxy(ProxyServer):
     """An asyncio forward proxy that authorizes each request via ``Gate``.
 
-    One proxy serves one agent run: the ``user`` fixes the identity every
-    egress decision is attributed to. Start it, point the process's HTTP
+    One proxy serves one agent run: the ``hexgate_context`` fixes the identity
+    every egress decision is attributed to. Start it, point the process's HTTP
     clients at ``http://{host}:{port}``, and every request is gated. Socket
     lifecycle (bind / accept / teardown) is inherited from :class:`ProxyServer`.
     """
@@ -60,7 +60,7 @@ class EgressProxy(ProxyServer):
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         *,
         host: str = "127.0.0.1",
         port: int = 0,
@@ -68,7 +68,7 @@ class EgressProxy(ProxyServer):
         transport: Transport | None = None,
     ) -> None:
         super().__init__(host=host, port=port)
-        self._gate = Gate(enforcer, user, approval_handler=approval_handler)
+        self._gate = Gate(enforcer, hexgate_context, approval_handler=approval_handler)
         self._transport: Transport = (
             transport if transport is not None else TunnelTransport()
         )
@@ -106,7 +106,7 @@ class EgressProxy(ProxyServer):
 @contextlib.asynccontextmanager
 async def egress_guard(
     enforcer: PolicyEnforcer,
-    user: HexgateContext,
+    hexgate_context: HexgateContext,
     *,
     host: str = "127.0.0.1",
     port: int = 0,
@@ -138,7 +138,11 @@ async def egress_guard(
         )
     _guard_active = True
     proxy = EgressProxy(
-        enforcer, user, host=host, port=port, approval_handler=approval_handler
+        enforcer,
+        hexgate_context,
+        host=host,
+        port=port,
+        approval_handler=approval_handler,
     )
     saved = {name: os.environ.get(name) for name in _PROXY_ENV_VARS}
     try:

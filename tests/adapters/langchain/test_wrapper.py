@@ -258,8 +258,8 @@ def test_invoke_refreshes_binding_first() -> None:
         binding=binding,  # type: ignore[arg-type]
     )
 
-    proxy.invoke({"messages": []}, user=_user())
-    proxy.invoke({"messages": []}, user=_user())
+    proxy.invoke({"messages": []}, hexgate_context=_user())
+    proxy.invoke({"messages": []}, hexgate_context=_user())
 
     assert binding.refreshes == 2
 
@@ -274,7 +274,7 @@ async def test_ainvoke_refreshes_binding_first() -> None:
         binding=binding,  # type: ignore[arg-type]
     )
 
-    await proxy.ainvoke({"messages": []}, user=_user())
+    await proxy.ainvoke({"messages": []}, hexgate_context=_user())
 
     assert binding.refreshes == 1
 
@@ -283,4 +283,4 @@ def test_proxy_without_binding_runs_fine() -> None:
     """Back-compat: a binding-less proxy (direct construction) still works."""
     proxy = HexgateLangchainAgent(agent=_RunnableGraph(), api_key="k", tool_names=[])
 
-    assert proxy.invoke({"messages": []}, user=_user()) == {"ok": True}
+    assert proxy.invoke({"messages": []}, hexgate_context=_user()) == {"ok": True}

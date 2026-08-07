@@ -46,7 +46,7 @@ async def main() -> None:
     result = await runner.run(
         agent,
         "Scale the checkout service to 5 replicas in staging.",
-        user=HexgateContext(
+        hexgate_context=HexgateContext(
             user_id="engineer_1", session_id="session_1", user_roles=["operator"]
         ),
     )

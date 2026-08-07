@@ -32,7 +32,7 @@ def wrap_langchain_agent(
     """Wrap a pre-built LangGraph agent with Hexgate policy enforcement.
 
     Mutates ``tools`` in place so the graph keeps its references.
-    The returned proxy takes ``user`` per invocation; role resolves at
+    The returned proxy takes ``hexgate_context`` per invocation; role resolves at
     call time from the active :class:`HexgateContext`. ``api_key`` falls back to
     ``HEXGATE_API_KEY``. ``NEEDS_APPROVAL`` outcomes render as structured
     errors — wire any host-side approval flow outside the SDK. The

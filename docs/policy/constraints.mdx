@@ -70,6 +70,29 @@ Besides `args.*`, constraints can reference two **call-scope facts**: `role`
 `role == "admin"` or `tool == "refund_order"`. These mirror Rego's
 `input.role` / `input.tool`.
 
+## Caller attributes (`ctx.*`)
+
+Constraints can also filter on the caller's **attributes** — an open bag set on
+the request scope (`HexgateContext(attributes={...})`) — through the `ctx.<key>`
+namespace, alongside `args.*` / `role` / `tool`:
+
+```yaml
+tools:
+  refund_order:
+    mode: allow
+    constraints:
+      - 'ctx.department == "finance"'
+      - "ctx.clearance_level >= 3"
+      - 'ctx.region in ["EU", "UK"]'
+```
+
+A missing `ctx.<key>` fails closed (deny), like any absent reference.
+
+`ctx.*` may gate `allow`/`deny` decisions — but it carries the **same trust
+contract as `role`**: populate `HexgateContext.attributes` from trusted
+server-side data (your auth/session/IdP), never from raw client input. An
+attribute is exactly as trustworthy as the code that set it.
+
 ## Named constants
 
 Define reusable values once in a `consts:` block and reference them as
@@ -107,8 +130,8 @@ constraint *lines* are still AND-ed, so `and` is only needed to combine with an
 
 ## End to end
 
-With this `billing` role policy and `async with User(user_id="alice",
-role="billing")`:
+With this `billing` role policy and `async with HexgateContext(user_id="alice",
+user_roles=["billing"])`:
 
 ```yaml
 tools:
@@ -128,7 +151,7 @@ tools:
 - `refund_order(amount=200, currency="EUR")` → ❌ denied — constraint `args.currency == "USD"`
 - `wire_transfer(amount=50000)` → ✋ requires approval (mode = `approval_required`)
 
-Switch to `role="default"` and `refund_order` is missing from that policy — it
+Switch to `user_roles=["default"]` and `refund_order` is missing from that policy — it
 falls through to `default_policy.mode` (deny).
 
 Constraints are Rego-compatible by design: the WASM engine compiles them to OPA

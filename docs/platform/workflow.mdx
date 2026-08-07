@@ -85,11 +85,11 @@ resolves the agent's policy from the platform and enforces it on every tool call
 no policy files shipped in your image, no `enforce_policy(...)` call to remember:
 
 ```python
-from hexgate import load_hexgate_agent, stream_agent, User
+from hexgate import load_hexgate_agent, stream_agent, HexgateContext
 
 agent, handler = load_hexgate_agent("my_agent")   # pulls the signed bundle
 
-async with User(user_id=request.user_id, role=request.role):
+async with HexgateContext(user_id=request.user_id, user_roles=[request.role]):
     async for event in stream_agent(agent, handler, message):
         ...
 ```

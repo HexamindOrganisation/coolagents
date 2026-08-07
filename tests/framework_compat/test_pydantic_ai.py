@@ -58,13 +58,13 @@ def test_contract():
     assert hasattr(toolset, "tools")
 
 
-async def test_deny_path_blocks_and_does_not_execute(probe_user):
+async def test_deny_path_blocks_and_does_not_execute(probe_context):
     """Tier 1 — the denied tool's guarded call raises before running."""
     from pydantic_ai.exceptions import ModelRetry
 
     wrapped = _build_wrapped()
     tool = wrapped._agent._function_toolset.tools[DENIED_TOOL]
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         with pytest.raises(ModelRetry) as excinfo:
             # context is unused on the deny short-circuit
             await tool.function_schema.call({"user_id": "u1"}, None)
@@ -72,10 +72,10 @@ async def test_deny_path_blocks_and_does_not_execute(probe_user):
     assert not _probe.was_executed(DENIED_TOOL)
 
 
-def test_allow_decision(probe_user):
+def test_allow_decision(probe_context):
     """Tier 1 — the resolved policy allows the allowed tool."""
     wrapped = _build_wrapped()
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         decision = wrapped._binding.enforcer.decide(ALLOWED_TOOL, {"city": "Paris"})
     assert decision.allowed
 
@@ -83,8 +83,8 @@ def test_allow_decision(probe_user):
 @pytest.mark.skipif(
     not os.environ.get("OPENAI_API_KEY"), reason="Tier 2 e2e needs OPENAI_API_KEY"
 )
-async def test_e2e_allow_executes(probe_user):
+async def test_e2e_allow_executes(probe_context):
     """Tier 2 — a full model run drives the seam and runs the allowed tool."""
     wrapped = _build_wrapped(model=MODEL)
-    await wrapped.run("What is the weather in Tokyo?", user=probe_user)
+    await wrapped.run("What is the weather in Tokyo?", hexgate_context=probe_context)
     assert _probe.was_executed(ALLOWED_TOOL)

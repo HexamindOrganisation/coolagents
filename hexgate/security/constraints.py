@@ -38,9 +38,12 @@ as a ref to an absent field. ``matches`` is an RE2 regex and is
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
 
-Besides ``args.*``, two call-scope facts are in scope: ``role`` (the caller's
-role) and ``tool`` (the tool being invoked) — mirroring Rego's ``input.role``
-/ ``input.tool``. E.g. ``role == "admin"`` or ``tool == "refund_order"``.
+Besides ``args.*``, three caller-scope fact families are in scope: ``role``
+(the caller's role) and ``tool`` (the tool being invoked) — mirroring Rego's
+``input.role`` / ``input.tool`` — and ``ctx.<key>``, the caller's ABAC
+attributes (``input.ctx`` in Rego). E.g. ``role == "admin"``,
+``tool == "refund_order"``, or ``ctx.department == "finance"``. A missing
+``ctx.<key>`` fails closed like any absent ref.
 
 Concrete examples (all of these parse and evaluate today):
 

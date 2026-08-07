@@ -51,3 +51,18 @@ lists each violated constraint string verbatim:
   violations:
     • args.amount <= 500
 ```
+
+## Testing `ctx.*` attribute rules
+
+Constraints can filter on caller attributes via `ctx.*` (see
+[constraints](/policy/constraints)). Pass them to `test` with `--attributes`, a
+JSON object so numbers and booleans keep their type:
+
+```bash
+hexgate policy test policy.yaml --role billing --tool refund_order \
+    --args '{"amount": 30}' \
+    --attributes '{"department": "finance", "clearance_level": 3}'
+```
+
+A `ctx.*` key you don't pass is treated as missing and fails closed, exactly as
+at runtime when the request scope omits it.

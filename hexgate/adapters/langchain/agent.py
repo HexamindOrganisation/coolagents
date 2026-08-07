@@ -24,7 +24,7 @@ class HexgateLangchainAgent:
     Tools are already enforcer-installed at construction (by
     :func:`wrap_langchain_agent`). This proxy pushes the active
     :class:`HexgateContext` onto the contextvar and propagates identity into
-    Langfuse spans. ``user`` is per-call, so one proxy serves many
+    Langfuse spans. ``hexgate_context`` is per-call, so one proxy serves many
     users concurrently. When a policy binding is attached, every run
     method refreshes it first (fail-soft; 304 when unchanged).
     """
@@ -60,17 +60,17 @@ class HexgateLangchainAgent:
         if self._binding is not None:
             self._binding.refresh()
 
-    async def _check_ban_async(self, user: HexgateContext) -> None:
+    async def _check_ban_async(self, context: HexgateContext) -> None:
         """Refuse a banned agent/user before running, if a gate is attached."""
         if self._ban_gate is not None:
-            await self._ban_gate.check_async(user)
+            await self._ban_gate.check_async(context)
 
-    def _check_ban(self, user: HexgateContext) -> None:
+    def _check_ban(self, context: HexgateContext) -> None:
         if self._ban_gate is not None:
-            self._ban_gate.check(user)
+            self._ban_gate.check(context)
 
-    def _propagate_kwargs(self, user: HexgateContext, method: str) -> dict[str, Any]:
-        return langfuse_propagate_kwargs(user, f"langchain.agent.{method}")
+    def _propagate_kwargs(self, context: HexgateContext, method: str) -> dict[str, Any]:
+        return langfuse_propagate_kwargs(context, f"langchain.agent.{method}")
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
         """Append the Hexgate callback handlers to ``config['callbacks']``."""
@@ -86,15 +86,17 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Invoke the agent asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
-        await self._check_ban_async(user)
-        async with user:
-            with propagate_attributes(**self._propagate_kwargs(user, "ainvoke")):
+        await self._check_ban_async(hexgate_context)
+        async with hexgate_context:
+            with propagate_attributes(
+                **self._propagate_kwargs(hexgate_context, "ainvoke")
+            ):
                 return await self._agent.ainvoke(
                     input, self._with_callbacks(config), **kwargs
                 )
@@ -103,30 +105,34 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Invoke the agent synchronously inside a HexgateContext scope."""
         self._refresh()
-        self._check_ban(user)
-        with user.sync_scope():
-            with propagate_attributes(**self._propagate_kwargs(user, "invoke")):
+        self._check_ban(hexgate_context)
+        with hexgate_context.sync_scope():
+            with propagate_attributes(
+                **self._propagate_kwargs(hexgate_context, "invoke")
+            ):
                 return self._agent.invoke(input, self._with_callbacks(config), **kwargs)
 
     async def astream(
         self,
         input: dict[str, Any],
         *,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream the agent asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
-        await self._check_ban_async(user)
-        async with user:
-            with propagate_attributes(**self._propagate_kwargs(user, "astream")):
+        await self._check_ban_async(hexgate_context)
+        async with hexgate_context:
+            with propagate_attributes(
+                **self._propagate_kwargs(hexgate_context, "astream")
+            ):
                 async for chunk in self._agent.astream(
                     input, self._with_callbacks(config), **kwargs
                 ):
@@ -136,15 +142,17 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> Iterator[dict[str, Any]]:
         """Stream the agent synchronously inside a HexgateContext scope."""
         self._refresh()
-        self._check_ban(user)
-        with user.sync_scope():
-            with propagate_attributes(**self._propagate_kwargs(user, "stream")):
+        self._check_ban(hexgate_context)
+        with hexgate_context.sync_scope():
+            with propagate_attributes(
+                **self._propagate_kwargs(hexgate_context, "stream")
+            ):
                 yield from self._agent.stream(
                     input, self._with_callbacks(config), **kwargs
                 )
@@ -153,16 +161,18 @@ class HexgateLangchainAgent:
         self,
         input: dict[str, Any],
         *,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         config: RunnableConfig | None = None,
         version: Literal["v1", "v2"] = "v2",
         **kwargs: Any,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream the agent events asynchronously inside a HexgateContext scope."""
         await self._refresh_async()
-        await self._check_ban_async(user)
-        async with user:
-            with propagate_attributes(**self._propagate_kwargs(user, "astream_events")):
+        await self._check_ban_async(hexgate_context)
+        async with hexgate_context:
+            with propagate_attributes(
+                **self._propagate_kwargs(hexgate_context, "astream_events")
+            ):
                 async for event in self._agent.astream_events(
                     input,
                     config=self._with_callbacks(config),

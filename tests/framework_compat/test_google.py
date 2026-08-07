@@ -63,21 +63,21 @@ def test_contract():
     assert hasattr(BaseTool, "run_async")
 
 
-async def test_deny_path_blocks_and_does_not_execute(probe_user):
+async def test_deny_path_blocks_and_does_not_execute(probe_context):
     """Tier 1 — the denied tool's run_async returns the deny marker."""
     wrapped, _binding = _build_wrapped()
     tool = next(t for t in wrapped.tools if t.name == DENIED_TOOL)
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         # tool_context is unused on the deny short-circuit
         result = await tool.run_async(args={"user_id": "u1"}, tool_context=None)
     assert DENY_MARKER in str(result)
     assert not _probe.was_executed(DENIED_TOOL)
 
 
-def test_allow_decision(probe_user):
+def test_allow_decision(probe_context):
     """Tier 1 — the resolved policy allows the allowed tool."""
     _wrapped, binding = _build_wrapped()
-    with probe_user.sync_scope():
+    with probe_context.sync_scope():
         decision = binding.enforcer.decide(ALLOWED_TOOL, {"city": "Paris"})
     assert decision.allowed
 
@@ -86,7 +86,7 @@ def test_allow_decision(probe_user):
     not os.environ.get("OPENAI_API_KEY"),
     reason="Tier 2 e2e needs OPENAI_API_KEY (LiteLLM → OpenAI)",
 )
-async def test_e2e_allow_executes(probe_user):
+async def test_e2e_allow_executes(probe_context):
     """Tier 2 — a full runner drives the seam and runs the allowed tool."""
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -96,8 +96,8 @@ async def test_e2e_allow_executes(probe_user):
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name="version_probe",
-        user_id=probe_user.user_id,
-        session_id=probe_user.session_id,
+        user_id=probe_context.user_id,
+        session_id=probe_context.session_id,
     )
     runner = HexgateRunner(
         agent=_build_agent(),
@@ -106,6 +106,8 @@ async def test_e2e_allow_executes(probe_user):
         api_key="local-probe-key",
     )
     message = types.Content(role="user", parts=[types.Part(text="Weather in Tokyo?")])
-    async for _event in runner.run_async(new_message=message, user=probe_user):
+    async for _event in runner.run_async(
+        new_message=message, hexgate_context=probe_context
+    ):
         pass
     assert _probe.was_executed(ALLOWED_TOOL)

@@ -267,9 +267,9 @@ def test_run_drives_run_async_inline_under_user_scope(
         session_service=InMemorySessionService(),
         api_key="k",
     )
-    user = _user()
+    context = _user()
 
-    events = list(runner.run(new_message="hello", user=user))
+    events = list(runner.run(new_message="hello", hexgate_context=context))
 
     assert events == [{"event": "first"}, {"event": "second"}]
     assert setup_counts["setup"] == 1
@@ -284,7 +284,7 @@ def test_run_drives_run_async_inline_under_user_scope(
     }
     # HexgateContext scope was live during the underlying call.
     [active] = fake_runner.active_users
-    assert active is user
+    assert active is context
     # Scope unwound after the call.
     assert get_current_context() is None
 
@@ -331,7 +331,7 @@ def test_run_drains_pending_tasks_before_closing_loop(
             api_key="k",
         )
 
-        events = list(runner.run(new_message="hello", user=_user()))
+        events = list(runner.run(new_message="hello", hexgate_context=_user()))
 
         assert events == [{"event": "first"}, {"event": "second"}]
         # If run() had closed the loop without draining pending tasks first,
@@ -355,7 +355,7 @@ def test_run_keeps_scope_visible_across_awaits(
         session_service=InMemorySessionService(),
         api_key="k",
     )
-    user = _user()
+    context = _user()
     seen: list[Any] = []
 
     async def run_async(**_kwargs: Any) -> Any:
@@ -365,10 +365,10 @@ def test_run_keeps_scope_visible_across_awaits(
 
     runner._runner.run_async = run_async  # type: ignore[attr-defined]
 
-    events = list(runner.run(new_message="hi", user=user))
+    events = list(runner.run(new_message="hi", hexgate_context=context))
 
     assert events == [{"event": "only"}]
-    assert seen == [user]
+    assert seen == [context]
     assert get_current_context() is None
 
 
@@ -386,9 +386,14 @@ async def test_run_async_opens_user_scope_and_yields_events(
         session_service=InMemorySessionService(),
         api_key="k",
     )
-    user = _user()
+    context = _user()
 
-    events = [event async for event in runner.run_async(new_message="hello", user=user)]
+    events = [
+        event
+        async for event in runner.run_async(
+            new_message="hello", hexgate_context=context
+        )
+    ]
 
     assert events == [{"event": "first"}, {"event": "second"}]
     assert setup_counts["setup"] == 1
@@ -400,7 +405,7 @@ async def test_run_async_opens_user_scope_and_yields_events(
         "new_message": "hello",
     }
     [active] = fake_runner.active_users
-    assert active is user
+    assert active is context
     assert get_current_context() is None
 
 
@@ -435,13 +440,13 @@ def test_run_propagates_user_identity_to_langfuse(
         api_key="k",
     )
 
-    list(runner.run(new_message="hi", user=_user()))
+    list(runner.run(new_message="hi", hexgate_context=_user()))
 
     [call] = propagate_calls
     assert call["tags"] == ["google.runner.run.custom_agent"]
     assert call["user_id"] == "u-1"
     assert call["session_id"] == "s-1"
-    assert call["metadata"] == {"user_role": "developer"}
+    assert call["metadata"] == {"user_roles": "developer"}
 
 
 @pytest.mark.asyncio
@@ -471,7 +476,7 @@ async def test_run_async_propagates_user_identity_to_langfuse(
         api_key="k",
     )
 
-    async for _ in runner.run_async(new_message="hi", user=_user()):
+    async for _ in runner.run_async(new_message="hi", hexgate_context=_user()):
         pass
 
     [call] = propagate_calls
@@ -528,7 +533,7 @@ def test_run_refused_before_events_when_banned(
     runner = _banned_runner(monkeypatch)
 
     with pytest.raises(AgentBannedError) as exc:
-        list(runner.run(new_message="hi", user=_user()))
+        list(runner.run(new_message="hi", hexgate_context=_user()))
 
     assert exc.value.code == "agent_banned"
     [fake_runner] = _FakeRunner.instances
@@ -542,7 +547,7 @@ async def test_run_async_refused_before_first_event_when_banned(
 ) -> None:
     runner = _banned_runner(monkeypatch)
 
-    agen = runner.run_async(new_message="hi", user=_user())
+    agen = runner.run_async(new_message="hi", hexgate_context=_user())
     with pytest.raises(AgentBannedError):
         await agen.__anext__()
 
@@ -561,7 +566,7 @@ def test_not_banned_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     runner._ban_gate = _agent_ban_gate("my_agent", banned="some-other-agent")
 
-    events = list(runner.run(new_message="hi", user=_user()))
+    events = list(runner.run(new_message="hi", hexgate_context=_user()))
 
     assert events == [{"event": "first"}, {"event": "second"}]
 
@@ -602,8 +607,8 @@ def test_run_refreshes_binding_per_call(monkeypatch: pytest.MonkeyPatch) -> None
     """Every run() pulls the policy before any event is yielded."""
     runner, binding = _runner_with_counting_binding(monkeypatch)
 
-    list(runner.run(new_message="hi", user=_user()))
-    list(runner.run(new_message="hi again", user=_user()))
+    list(runner.run(new_message="hi", hexgate_context=_user()))
+    list(runner.run(new_message="hi again", hexgate_context=_user()))
 
     assert binding.refreshes == 2
 
@@ -614,7 +619,7 @@ async def test_run_async_refreshes_binding_per_call(
 ) -> None:
     runner, binding = _runner_with_counting_binding(monkeypatch)
 
-    async for _ in runner.run_async(new_message="hi", user=_user()):
+    async for _ in runner.run_async(new_message="hi", hexgate_context=_user()):
         pass
 
     assert binding.refreshes == 1
@@ -740,9 +745,9 @@ async def test_usage_plugin_context_propagates_through_run_async(
         session_service=InMemorySessionService(),
         api_key="k",
     )
-    user = _user()
+    context = _user()
 
-    async for _ in runner.run_async(new_message=None, user=user):
+    async for _ in runner.run_async(new_message=None, hexgate_context=context):
         pass
 
     [event] = fake_sender.events

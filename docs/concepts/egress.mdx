@@ -26,7 +26,7 @@ framework-agnostic and covers any HTTP client running in the agent's process.
 request code does not change.
 
 ```python
-from hexgate import PolicyBuilder, User
+from hexgate import PolicyBuilder, HexgateContext
 from hexgate.egress import egress_guard
 from hexgate.security.enforcer import build_enforcer
 from hexgate.security.policy_set import load_policy_set
@@ -34,7 +34,7 @@ from hexgate.security.policy_set import load_policy_set
 policy = PolicyBuilder(default="deny").net_allow(hosts=["api.github.com"]).build()
 enforcer = build_enforcer(load_policy_set(policy), agent_name="support-agent")
 
-async with egress_guard(enforcer, User(user_id="alice", role="agent")):
+async with egress_guard(enforcer, HexgateContext(user_id="alice", user_roles=["agent"])):
     ...  # every outbound HTTP(S) request in this block is gated
 ```
 

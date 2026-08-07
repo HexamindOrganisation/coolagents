@@ -25,7 +25,7 @@ async def main():
     result = await runner.run(
         agent=agent,
         input="What's the weather in Cherbourg?",
-        user=HexgateContext(
+        hexgate_context=HexgateContext(
             user_id="openai_user_1",
             session_id="openai_session_1",
             user_roles=["member"],

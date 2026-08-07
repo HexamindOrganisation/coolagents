@@ -17,7 +17,7 @@ table](/adapters/overview#compatible-framework-versions) for the verified
 `wrap_pydantic_agent` returns a `HexgatePydanticAgent` proxy backed by a clone of
 the original agent whose tools are gated by a freshly built `PolicyEnforcer`.
 Tools registered via the `Agent(...)` constructor or via `@agent.tool` /
-`@agent.tool_plain` are all picked up. The `user` is supplied **per call**, so a
+`@agent.tool_plain` are all picked up. The `hexgate_context` is supplied **per call**, so a
 single wrapped agent can serve many users concurrently — role resolution happens
 at call time from the contextvar.
 
@@ -26,7 +26,7 @@ import asyncio
 from dotenv import load_dotenv
 from pydantic_ai import Agent
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.pydantic_ai import wrap_pydantic_agent
 
 INSTRUCTION = (
@@ -64,9 +64,9 @@ async def main():
 
     result = await agent.run(
         "Scale the checkout service to 5 replicas in staging.",
-        user=User(
+        hexgate_context=HexgateContext(
             user_id="engineer_1",
-            role="operator",
+            user_roles=["operator"],
             session_id="session_1",
         ),
     )
@@ -85,7 +85,7 @@ if __name__ == "__main__":
   whose toolset holds those gated copies — your original `agent` is untouched, so
   it can be reused or wrapped again independently.
 - Each invocation method on `HexgatePydanticAgent` (`run` / `run_sync` /
-  `run_stream` / `iter`) takes `user=` and opens a `User` scope around the
+  `run_stream` / `iter`) takes `hexgate_context=` and opens a `HexgateContext` scope around the
   delegated `Agent` call. The contextvar is per-task, so concurrent `run` calls
   for different users do not see each other's policies.
 - A non-allow `Decision` raises `ModelRetry(decision.as_error_message())`;

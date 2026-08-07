@@ -64,7 +64,7 @@ from.
   <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
     Roles, tools, modes, and argument constraints — the full policy shape.
   </Card>
-  <Card title="User scope + roles" icon="user" href="/concepts/user-scope">
+  <Card title="Request context + roles" icon="user" href="/concepts/user-scope">
     How the end user's identity + role reach the decision at call time.
   </Card>
   <Card title="Framework adapters" icon="puzzle-piece" href="/adapters/overview">
@@ -88,7 +88,7 @@ Hexgate is two things that move together:
 Two things feed the decision, and one thing records it:
 
 - The **end user's identity and role** are a **decision input** — carried
-  per-request via [`User`](/concepts/user-scope), they select which role's rules
+  per-request via [`HexgateContext`](/concepts/user-scope), they select which role's rules
   apply. (They also tag traces, but that's secondary.)
 - The **policy** supplies the rules — a [YAML file or signed WASM
   bundle](/policy/wasm-bundles), loaded locally or from the platform.
