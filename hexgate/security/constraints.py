@@ -536,6 +536,39 @@ def iter_const_refs(node: Node):
         yield from iter_const_refs(node.inner)
 
 
+def iter_arg_refs(node: Node):
+    """Yield every field-reference path (a :class:`Ref`'s dotted tuple) in a node.
+
+    Mirrors :func:`iter_const_refs` but for field paths (``args.amount`` →
+    ``("args", "amount")``, ``role`` → ``("role",)``). Used by the analyzer to
+    check a constraint's ``args.*`` paths against a tool's input schema. Element
+    refs (``.`` inside a quantifier) bind to a collection element, not a named
+    field, so they're skipped.
+    """
+
+    def _operand(op):
+        if isinstance(op, Ref):
+            yield op.path
+        elif isinstance(op, Count) and isinstance(op.ref, Ref):
+            yield op.ref.path
+
+    if isinstance(node, Cmp):
+        yield from _operand(node.left)
+        yield from _operand(node.right)
+    elif isinstance(node, Call):
+        if isinstance(node.arg, Ref):
+            yield node.arg.path
+    elif isinstance(node, Quant):
+        if isinstance(node.ref, Ref):
+            yield node.ref.path
+        yield from iter_arg_refs(node.body)
+    elif isinstance(node, (And, Or)):
+        for part in node.parts:
+            yield from iter_arg_refs(part)
+    elif isinstance(node, Not):
+        yield from iter_arg_refs(node.inner)
+
+
 def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
     """Raise if an element ref (``.`` / ``.field``) appears outside a quantifier.
 
