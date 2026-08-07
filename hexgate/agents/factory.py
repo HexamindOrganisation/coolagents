@@ -350,6 +350,9 @@ def _resolve_tool_use_context(
         agent_name=agent_name,
         biscuit_facts=biscuit_facts,
         verified_attributes=verified_attributes,
+        # Self-minted from the contextvar in-process — pinned, not independently
+        # verified (an externally-supplied ToolUseContext leaves this False).
+        attributes_self_asserted=True,
     )
 
 

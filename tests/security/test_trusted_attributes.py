@@ -73,13 +73,17 @@ def _enforcer_with_ctx_rule() -> PolicyEnforcer:
 
 
 @contextmanager
-def _scope(*, attributes: dict, verified: dict | None) -> Iterator[None]:
+def _scope(
+    *, attributes: dict, verified: dict | None, self_asserted: bool = False
+) -> Iterator[None]:
     """Enter a HexgateContext scope + install a verified-attribute tool context."""
     with HexgateContext(
         user_id="u", user_roles=["default"], attributes=attributes
     ).sync_scope():
         token = set_current_tool_use_context(
-            ToolUseContext(verified_attributes=verified)
+            ToolUseContext(
+                verified_attributes=verified, attributes_self_asserted=self_asserted
+            )
         )
         try:
             yield
@@ -138,6 +142,67 @@ def test_decision_snapshot_carries_resolved_attributes() -> None:
     with _scope(attributes={"clearance_level": 99}, verified={"clearance_level": 5}):
         decision = enf.decide("refund", {})
     assert decision.attributes == {"clearance_level": 5}
+
+
+# ---------------------------------------------------------------------------
+# Audit provenance — self-minted values are not audited as verified
+# ---------------------------------------------------------------------------
+
+
+class _CapturingSender:
+    def __init__(self) -> None:
+        self.events: list = []
+
+    def emit(self, event) -> None:  # noqa: ANN001
+        self.events.append(event)
+
+
+def test_audit_marks_self_minted_trusted_attribute_as_self_asserted() -> None:
+    """A trusted value the SDK signed in-process (self_asserted tool context) is
+    audited as ``self_asserted``, never ``verified`` — the overclaim fix."""
+    sender = _CapturingSender()
+    enf = PolicyEnforcer(
+        load_policy_set(
+            AgentPolicy(
+                trusted_attributes=["clearance_level"],
+                tools={"refund": BaseToolPolicy(mode="allow")},
+            )
+        ),
+        agent_name="t",
+        audit_sender=sender,
+    )
+    with _scope(
+        attributes={"clearance_level": 5},
+        verified={"clearance_level": 5},
+        self_asserted=True,
+    ):
+        enf.decide("refund", {})
+    snapshot = sender.events[0].as_payload()["attributes"]
+    assert snapshot["clearance_level"]["provenance"] == "self_asserted"
+
+
+def test_audit_marks_externally_verified_trusted_attribute_as_verified() -> None:
+    """The same value from an externally-supplied token (self_asserted=False) is
+    audited as ``verified``."""
+    sender = _CapturingSender()
+    enf = PolicyEnforcer(
+        load_policy_set(
+            AgentPolicy(
+                trusted_attributes=["clearance_level"],
+                tools={"refund": BaseToolPolicy(mode="allow")},
+            )
+        ),
+        agent_name="t",
+        audit_sender=sender,
+    )
+    with _scope(
+        attributes={},
+        verified={"clearance_level": 5},
+        self_asserted=False,
+    ):
+        enf.decide("refund", {})
+    snapshot = sender.events[0].as_payload()["attributes"]
+    assert snapshot["clearance_level"]["provenance"] == "verified"
 
 
 # ---------------------------------------------------------------------------

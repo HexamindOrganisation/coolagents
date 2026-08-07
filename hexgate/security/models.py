@@ -69,9 +69,14 @@ class AgentPolicy(BaseModel):
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
 
     ``trusted_attributes`` names the ``ctx.<key>`` attributes taken only from
-    the verified Biscuit, not the spoofable contextvar bag: a trusted key absent
+    the signed Biscuit, not the spoofable contextvar bag: a trusted key absent
     from the token fails closed. Unlisted keys stay advisory. Merged through
     ``inherits`` like ``consts``.
+
+    "Trusted" means *asserted by the holder of the project API key (your
+    backend) and verifiable downstream by the platform* — not unforgeable within
+    your own process. Populate the values from trusted server-side data (an
+    IdP/session), never raw client input, exactly as you would ``user_roles``.
     """
 
     version: int = 1

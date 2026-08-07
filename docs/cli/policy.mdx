@@ -77,13 +77,21 @@ trusted_attributes:
   - clearance_level
 ```
 
-A trusted key is signed into the per-request Biscuit and verified SDK-side. The
-enforcer then ignores any contextvar value for that key and uses only the
-token-verified one; a trusted key absent from the token **fails closed** (any
-constraint on it denies). Trust is deployment-wide — a key trusted in one role
-is trusted everywhere. Values must be scalar (`str` / `int` / `bool`);
-list-valued trusted attributes are not supported yet (a list value is dropped
-and its constraint fails closed).
+A trusted key is signed into the per-request Biscuit and read back from it. The
+enforcer ignores any contextvar value for that key and uses only the token
+value; a trusted key absent from the token **fails closed** (any constraint on
+it denies). Trust is deployment-wide — a key trusted in one role is trusted
+everywhere. Values must be scalar (`str` / `int` / `bool`); list-valued trusted
+attributes are not supported yet (a list value is dropped and fails closed).
+
+**What "trusted" guarantees.** It means the value was *asserted by the holder of
+your project API key (your backend) and is verifiable downstream by the
+platform* — **not** that it's unforgeable inside your own process. Populate
+attribute values from trusted server-side data (an IdP/session), never raw
+client input, exactly as you would `user_roles`. When the SDK signs the token
+in-process from the contextvar, the audit trail records those values as
+`self_asserted` rather than `verified`; a value is `verified` only when it
+arrived on a token the process received from an external signer.
 
 Trusted attributes resolve only on the **agent-invoke** path today. The egress
 gate and the framework adapters bind the request scope but not the verified

@@ -118,6 +118,7 @@ class PolicyEnforcer:
                     if (context is not None and context.session_id)
                     else "",
                     trusted_attributes=self._trusted_attributes(),
+                    attributes_self_asserted=self._attributes_self_asserted(),
                 )
             )
 
@@ -136,6 +137,12 @@ class PolicyEnforcer:
         """Policy-declared trusted ``ctx.*`` keys, read defensively — an engine
         without the attribute (pre-signed-tier, or a test double) is all-advisory."""
         return frozenset(getattr(self.policy, "trusted_attributes", frozenset()))
+
+    def _attributes_self_asserted(self) -> bool:
+        """True when the verified attrs were self-minted from the contextvar (so
+        audit records them as self-asserted, not independently verified)."""
+        tool_ctx = get_current_tool_use_context()
+        return bool(tool_ctx and tool_ctx.attributes_self_asserted)
 
     def _resolve_attributes(self, context: object) -> dict[str, Any] | None:
         """Merge advisory contextvar attrs with token-verified trusted ones into
