@@ -64,11 +64,5 @@ def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, An
         "tags": [tag],
         "user_id": context.user_id,
         "session_id": context.session_id,
-<<<<<<< HEAD
         "metadata": {"user_roles": roles},
-=======
-        # Langfuse drops non-string metadata values, so stamp the full role
-        # list as a readable comma-joined string (not the lossy single role).
-        "metadata": {"user_roles": ", ".join(context.user_roles)},
->>>>>>> 38ae2327044067c3956d3748d22806d5a9c9cb41
     }
