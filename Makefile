@@ -192,34 +192,34 @@ postgres-reset: ## Wipe ONLY the Postgres data volume and restart
 	-docker volume rm platform_postgres-data
 	$(COMPOSE) up -d --wait postgres
 
-# -------- Platform infra (Kafka — OTLP ingestion buffer) --------
+# -------- Platform infra (Redpanda — OTLP ingestion buffer) --------
 #
-# Single-node KRaft dev broker (no ZooKeeper). Topics aren't auto-created
-# on first boot (Kafka has no docker-entrypoint-initdb.d equivalent) — run
-# `make kafka-topics` once after `make kafka-up`.
+# Single-node dev broker, Kafka-wire-protocol-compatible. Topics aren't
+# auto-created on first boot — run `make redpanda-topics` once after
+# `make redpanda-up`.
 
-.PHONY: kafka-up
-kafka-up: ## Start local Kafka and wait until healthy
-	$(COMPOSE) up -d --wait kafka
+.PHONY: redpanda-up
+redpanda-up: ## Start local Redpanda and wait until healthy
+	$(COMPOSE) up -d --wait redpanda
 
-.PHONY: kafka-stop
-kafka-stop: ## Stop Kafka (keeps the data volume)
-	$(COMPOSE) stop kafka
+.PHONY: redpanda-stop
+redpanda-stop: ## Stop Redpanda (keeps the data volume)
+	$(COMPOSE) stop redpanda
 
-.PHONY: kafka-topics
-kafka-topics: kafka-up ## Create the hexgate.otlp.raw / hexgate.otlp.dlq topics (idempotent)
-	docker cp platform/kafka/init/create-topics.sh hexgate-kafka:/tmp/create-topics.sh
-	docker exec hexgate-kafka bash /tmp/create-topics.sh
+.PHONY: redpanda-topics
+redpanda-topics: redpanda-up ## Create the hexgate.otlp.raw / hexgate.otlp.dlq topics (idempotent)
+	docker cp platform/redpanda/init/create-topics.sh hexgate-redpanda:/tmp/create-topics.sh
+	docker exec hexgate-redpanda bash /tmp/create-topics.sh
 
-.PHONY: kafka-list-topics
-kafka-list-topics: ## List topics on the local Kafka broker
-	docker exec hexgate-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+.PHONY: redpanda-list-topics
+redpanda-list-topics: ## List topics on the local Redpanda broker
+	docker exec hexgate-redpanda rpk topic list --brokers localhost:9092
 
-.PHONY: kafka-reset
-kafka-reset: ## Wipe ONLY the Kafka data volume and restart
-	$(COMPOSE) rm -sf kafka
-	-docker volume rm platform_kafka-data
-	$(COMPOSE) up -d --wait kafka
+.PHONY: redpanda-reset
+redpanda-reset: ## Wipe ONLY the Redpanda data volume and restart
+	$(COMPOSE) rm -sf redpanda
+	-docker volume rm platform_redpanda-data
+	$(COMPOSE) up -d --wait redpanda
 
 # -------- Platform API (FastAPI control plane) --------
 #
