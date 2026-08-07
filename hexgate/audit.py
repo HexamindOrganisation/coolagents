@@ -31,9 +31,15 @@ if TYPE_CHECKING:
 # entirely unless the SDK trims it first.
 MAX_ARGS_BYTES = 8 * 1024
 
-# Keys whose values are stripped from the audit copy of ``arguments`` before
-# transmission. A seatbelt, not a guarantee: values that are sensitive by
-# content rather than key name (SQL strings, email bodies) are NOT caught.
+# Mirrors the platform's MAX_ATTRIBUTES_BYTES. Same reject-don't-truncate
+# semantics as arguments; smaller because the ABAC bag holds caller facts
+# (department, clearance level), not tool payloads.
+MAX_ATTRIBUTES_BYTES = 4 * 1024
+
+# Keys whose values are stripped from the audit copy of ``arguments`` and
+# ``attributes`` before transmission. A seatbelt, not a guarantee: values that
+# are sensitive by content rather than key name (SQL strings, email bodies) are
+# NOT caught.
 _SENSITIVE_KEY_RE = re.compile(
     r"password|passwd|secret|token|api[-_]?key|credential|authorization",
     re.IGNORECASE,
@@ -58,26 +64,30 @@ def _redact(value: Any) -> Any:
     return value
 
 
-def _truncate_args(arguments: dict[str, Any]) -> dict[str, Any]:
-    """Trim ``arguments`` to fit the platform's byte cap.
+# Room for the {_truncated, original_bytes, preview} wrapper around the preview.
+_TRUNCATION_WRAPPER_HEADROOM_BYTES = 512
+
+
+def _truncate_json(payload: dict[str, Any], *, cap: int) -> dict[str, Any]:
+    """Trim ``payload`` to fit a platform byte cap.
 
     Serialization mirrors the platform's measurement (``default=str``). Over
     the cap, the dict is replaced by a marker wrapping a JSON-text preview,
     shrunk until the wrapper itself fits — lossy, but stored; the platform
     would 413-reject the raw payload and lose the event entirely."""
-    args_json = json.dumps(arguments, default=str)
-    if len(args_json.encode("utf-8")) <= MAX_ARGS_BYTES:
-        return arguments
-    preview_bytes = MAX_ARGS_BYTES - 512
+    payload_json = json.dumps(payload, default=str)
+    if len(payload_json.encode("utf-8")) <= cap:
+        return payload
+    preview_bytes = cap - _TRUNCATION_WRAPPER_HEADROOM_BYTES
     while True:
         wrapper = {
             "_truncated": True,
-            "original_bytes": len(args_json.encode("utf-8")),
-            "preview": args_json.encode("utf-8")[:preview_bytes].decode(
+            "original_bytes": len(payload_json.encode("utf-8")),
+            "preview": payload_json.encode("utf-8")[:preview_bytes].decode(
                 "utf-8", errors="ignore"
             ),
         }
-        if len(json.dumps(wrapper).encode("utf-8")) <= MAX_ARGS_BYTES:
+        if len(json.dumps(wrapper).encode("utf-8")) <= cap:
             return wrapper
         preview_bytes //= 2
 
@@ -99,11 +109,23 @@ class AuditEvent:
     def as_payload(self) -> dict[str, Any]:
         """Flat JSON payload matching the platform's DecisionEvent body.
 
-        ``arguments`` are redacted (sensitive key names) and truncated to the
-        platform byte cap here — the single choke point onto the wire."""
+        ``arguments`` and ``attributes`` are redacted (sensitive key names) and
+        truncated to their platform byte caps here — the single choke point
+        onto the wire."""
         d = self.decision
         arguments = (
-            _truncate_args(_redact(d.arguments)) if d.arguments is not None else None
+            _truncate_json(_redact(d.arguments), cap=MAX_ARGS_BYTES)
+            if d.arguments is not None
+            else None
+        )
+        # Falsy, not ``is not None``: an active context with no attributes
+        # yields ``{}`` (HexgateContext.attributes defaults to an empty dict),
+        # and an empty bag is indistinguishable from no bag downstream — both
+        # store '' and read back as None.
+        attributes = (
+            _truncate_json(_redact(d.attributes), cap=MAX_ATTRIBUTES_BYTES)
+            if d.attributes
+            else None
         )
         return {
             "event_id": str(self.event_id),
@@ -117,6 +139,7 @@ class AuditEvent:
             "violations": list(d.violations),
             "hint": d.hint,
             "arguments": arguments,
+            "attributes": attributes,
             "user_id": self.user_id,
             "session_id": self.session_id,
         }

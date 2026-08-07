@@ -122,6 +122,8 @@ function DetailDrawer({
   const e = event;
   const argStr =
     e.arguments == null ? "—" : JSON.stringify(e.arguments, null, 2);
+  const attrStr =
+    e.attributes == null ? null : JSON.stringify(e.attributes, null, 2);
   const hintStr =
     typeof e.hint === "string"
       ? e.hint
@@ -222,6 +224,14 @@ function DetailDrawer({
               {argStr}
             </pre>
           </DrawerSection>
+
+          {attrStr && (
+            <DrawerSection label="Context attributes">
+              <pre className="m-0 whitespace-pre-wrap rounded-lg border border-border bg-muted p-3 font-mono text-[11.5px] leading-relaxed text-foreground">
+                {attrStr}
+              </pre>
+            </DrawerSection>
+          )}
 
           <DrawerSection label="Envelope">
             <KV k="occurred_at" mono>

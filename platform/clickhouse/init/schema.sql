@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     reason              String,
     violations          Array(String),
     hint                String CODEC(ZSTD(3)),
-    arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3))
+    arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3)),
+    attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3))
 )
 -- ReplacingMergeTree: SDK retries (same event_id) collapse on background
 -- merges — eventual dedup; exact counts use FINAL or count(DISTINCT event_id).

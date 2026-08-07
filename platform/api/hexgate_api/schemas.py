@@ -453,6 +453,10 @@ class DecisionEvent(AuditEnvelope):
     # Byte caps enforced after serialization in audit.insert_decision.
     hint: Optional[dict] = None
     arguments: Optional[dict] = None
+    # Caller ABAC bag (the ``ctx.*`` namespace) the decision was evaluated
+    # against. Advisory: contextvar-sourced and client-assertable, exactly like
+    # ``role`` and ``user_id``.
+    attributes: Optional[dict] = None
 
 
 class LlmInvocationEvent(AuditEnvelope):
@@ -558,7 +562,7 @@ class AuditTimeseriesPoint(BaseModel):
 
 
 class AuditDecisionRow(BaseModel):
-    """One events-table row; hint/arguments are decoded JSON."""
+    """One events-table row; hint/arguments/attributes are decoded JSON."""
 
     event_id: UUID
     occurred_at: datetime
@@ -575,6 +579,7 @@ class AuditDecisionRow(BaseModel):
     violations: list[str] = Field(default_factory=list)
     hint: Any = None
     arguments: Any = None
+    attributes: Any = None
 
 
 class AuditDecisionPage(BaseModel):

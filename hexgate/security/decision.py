@@ -87,10 +87,10 @@ class Decision:
     violations: tuple[str, ...] = ()
     arguments: dict[str, Any] | None = None
     # The ABAC attribute snapshot the decision was evaluated against, so an
-    # in-process observer sees the ``ctx.*`` values that drove the outcome.
-    # Deliberately NOT rendered into ``as_error_payload`` (LLM-facing) nor
-    # persisted by the audit sender yet — durable audit + PII/retention policy
-    # lands with the signed tier.
+    # in-process observer sees the ``ctx.*`` values that drove the outcome, and
+    # so the audit record can explain a ``ctx.*``-driven deny. Persisted by the
+    # audit sender (redacted + capped in ``audit.as_payload``); deliberately
+    # still absent from ``as_error_payload`` — the model must never see it.
     attributes: dict[str, Any] | None = None
 
     @classmethod
