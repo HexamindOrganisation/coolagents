@@ -16,7 +16,7 @@ import (
 func main() {
 	info := component.BuildInfo{
 		Command:     "hexgate-collector",
-		Description: "OTLP ingestion Collector — receives spans from the SDK, authenticates them, forwards to Kafka.",
+		Description: "OTLP ingestion Collector — receives spans from the SDK, authenticates them, forwards to Redpanda.",
 		Version:     "0.1.0",
 	}
 

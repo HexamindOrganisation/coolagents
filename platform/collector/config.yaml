@@ -1,16 +1,15 @@
 # Runtime config for the hexgate-collector binary (built via
-# `make collector-generate` + `make collector-build`, or `make
-# collector-run` for both). Dev-only defaults throughout — not
-# load-tested, not the real auth.
+# `make collector-generate`, or run directly via `make collector-run`).
+# Dev-only defaults throughout — not load-tested, not the real auth.
 receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: 127.0.0.1:4317
         auth:
           authenticator: bearertokenauth
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 127.0.0.1:4318
         auth:
           authenticator: bearertokenauth
 
@@ -66,11 +65,11 @@ exporters:
 
 extensions:
   bearertokenauth:
-    # Placeholder auth for this scaffold — accepts one fixed token,
-    # nothing like real Biscuit verification. LOCAL DEV ONLY, same
-    # "committed dev creds" pattern as the Redpanda/Postgres/ClickHouse
-    # services in platform/docker-compose.yml.
-    token: hexgate-scaffold-stub-token
+    # Placeholder auth for this scaffold — accepts one token, nothing like
+    # real Biscuit verification. Env-overridable with a committed dev
+    # default, same pattern as the Redpanda/Postgres/ClickHouse creds in
+    # platform/docker-compose.yml.
+    token: ${env:HEXGATE_COLLECTOR_TOKEN:-hexgate-scaffold-stub-token}
 
 service:
   extensions: [bearertokenauth]

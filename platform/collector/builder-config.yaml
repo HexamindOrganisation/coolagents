@@ -6,7 +6,7 @@
 dist:
   name: hexgate-collector
   module: hexgate.dev/collector
-  description: OTLP ingestion Collector — receives spans from the SDK, authenticates them, forwards to Kafka.
+  description: OTLP ingestion Collector — receives spans from the SDK, authenticates them, forwards to Redpanda.
   version: 0.1.0
   output_path: .
 

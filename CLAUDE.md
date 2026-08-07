@@ -12,6 +12,7 @@ After you make changes across multiple packages, run: `make check-all`  # all pa
 hexgate/              # SDK source
 platform/api/         # FastAPI control plane (separate uv project)
 platform/api/tests/   # API tests
+platform/collector/   # OTLP ingestion Collector (Go)
 platform/dashboard/   # React/Vite frontend
 tests/                # hexgate package tests (agents, cli, security, tracing, streaming…)
 
