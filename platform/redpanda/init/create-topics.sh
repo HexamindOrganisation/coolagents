@@ -8,7 +8,7 @@
 # load-tested figure — revisit once real throughput numbers exist.
 set -euo pipefail
 
-BOOTSTRAP="${REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"
+BOOTSTRAP="${HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"
 
 # Buffer, not the system of record — ClickHouse is. Short retention is
 # fine: the enrichment job is expected to keep up, this only needs to
