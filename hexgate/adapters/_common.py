@@ -12,6 +12,11 @@ from typing import Any
 from hexgate.runtime import HexgateContext
 from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 
+# Langfuse silently drops a propagated metadata value over 200 chars, so the
+# joined role list is truncated to fit (with an ASCII ellipsis — non-ASCII
+# values are dropped too). Only bites on an unusually large role list.
+_MAX_METADATA_CHARS = 200
+
 
 def drain_pending_tasks(
     loop: asyncio.AbstractEventLoop, *, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT
@@ -50,11 +55,14 @@ def drain_pending_tasks(
 def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, Any]:
     """Build the ``propagate_attributes(**kwargs)`` mapping for a Langfuse
     span tagged ``tag``, carrying the active context's identity."""
+    # Langfuse drops non-string metadata values, so stamp the role list as a
+    # comma-joined string (not the lossy single role), truncated to the cap.
+    roles = ", ".join(context.user_roles)
+    if len(roles) > _MAX_METADATA_CHARS:
+        roles = roles[: _MAX_METADATA_CHARS - 3] + "..."
     return {
         "tags": [tag],
         "user_id": context.user_id,
         "session_id": context.session_id,
-        # Langfuse drops non-string metadata values, so stamp the full role
-        # list as a readable comma-joined string (not the lossy single role).
-        "metadata": {"user_roles": ", ".join(context.user_roles)},
+        "metadata": {"user_roles": roles},
     }
