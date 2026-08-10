@@ -394,6 +394,12 @@ SETTINGS index_granularity = 8192;
   strings, email bodies, free text — are captured verbatim. Operators whose
   tools carry such data need their own redaction before relying on this in
   production.
+- **`attributes` redaction is anchored to the whole key**
+  (`_SENSITIVE_ATTR_KEY_RE`), where `arguments` uses the substring rule above.
+  The bag holds policy facts rather than caller payloads: blanking
+  `authorization_tier` or `access_token_scope` would leave the `ctx.*`-driven
+  deny they caused unexplainable, defeating the reason the bag is persisted at
+  all. A key named exactly `token` still reads as a secret and is blanked.
 - **SDK truncation at the platform cap.** `as_payload()` measures `arguments`
   as the platform does (JSON, `default=str`); over 8 KiB it replaces the dict
   with `{"_truncated": true, "original_bytes": N, "preview": <JSON prefix>}`

@@ -123,13 +123,35 @@ def test_as_payload_absent_attributes_is_none() -> None:
     assert wire["attributes"] is None
 
 
-def test_as_payload_redacts_sensitive_attribute_keys() -> None:
+def test_as_payload_redacts_whole_key_sensitive_attributes() -> None:
+    """A bag key named exactly like a secret is a secret someone stuffed in."""
     d = _decision(attributes={"department": "finance", "api_key": "sk-live"})
     wire = AuditEvent(decision=d).as_payload()
     assert wire["attributes"] == {
         "department": "finance",
         "api_key": "[REDACTED]",
     }
+
+
+def test_as_payload_keeps_attribute_keys_that_merely_contain_a_secret_word() -> None:
+    """Attributes are policy facts, so redaction is whole-key only: blanking
+    ``authorization_tier`` would leave the ctx-driven deny it caused
+    unexplainable, which is what persisting the bag exists to prevent."""
+    attrs = {
+        "authorization_tier": "restricted",
+        "access_token_scope": "read-only",
+        "password_rotated_days": 12,
+    }
+    wire = AuditEvent(decision=_decision(attributes=attrs)).as_payload()
+    assert wire["attributes"] == attrs
+
+
+def test_as_payload_argument_redaction_stays_substring_based() -> None:
+    """Tool inputs are arbitrary caller data — the looser rule stays for them."""
+    wire = AuditEvent(
+        decision=_decision(arguments={"auth_token_header": "t"})
+    ).as_payload()
+    assert wire["arguments"] == {"auth_token_header": "[REDACTED]"}
 
 
 def test_as_payload_redaction_does_not_mutate_decision_attributes() -> None:
@@ -188,6 +210,27 @@ def test_as_payload_hint_truncation_does_not_touch_the_decision() -> None:
 def test_as_payload_small_hint_passes_through_untruncated() -> None:
     wire = AuditEvent(decision=_decision(hint={"glob": "/x/**"})).as_payload()
     assert wire["hint"] == {"glob": "/x/**"}
+
+
+def test_as_payload_under_cap_payloads_do_not_alias_the_decision() -> None:
+    """Every wire payload is a copy: mutating one must not reach the live
+    ``Decision`` the host holds, whose ``hint`` also goes to the model via
+    ``as_error_payload``."""
+    d = _decision(
+        hint={"glob": "/x/**"},
+        arguments={"path": "/x"},
+        attributes={"department": "finance"},
+    )
+    wire = AuditEvent(decision=d).as_payload()
+
+    for key, source in (
+        ("hint", d.hint),
+        ("arguments", d.arguments),
+        ("attributes", d.attributes),
+    ):
+        assert wire[key] is not source, key
+        wire[key]["injected"] = True
+        assert "injected" not in source, key
 
 
 def test_event_id_and_occurred_at_unique_per_event() -> None:

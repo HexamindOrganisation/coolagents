@@ -42,31 +42,43 @@ MAX_ATTRIBUTES_BYTES = 4 * 1024
 # allowed/denied path lists.
 MAX_HINT_BYTES = 4 * 1024
 
-# Keys whose values are stripped from the audit copy of ``arguments`` and
-# ``attributes`` before transmission. A seatbelt, not a guarantee: values that
-# are sensitive by content rather than key name (SQL strings, email bodies) are
-# NOT caught.
-_SENSITIVE_KEY_RE = re.compile(
+# Keys whose values are stripped from the audit copy of ``arguments`` before
+# transmission. Substring match: tool inputs are arbitrary caller data, so a
+# key merely *containing* a secret-ish word is worth blanking. A seatbelt, not
+# a guarantee: values that are sensitive by content rather than key name (SQL
+# strings, email bodies) are NOT caught.
+_SENSITIVE_ARG_KEY_RE = re.compile(
     r"password|passwd|secret|token|api[-_]?key|credential|authorization",
+    re.IGNORECASE,
+)
+
+# Same seatbelt for ``attributes``, but anchored to the whole key. The bag holds
+# policy facts, not payloads: ``authorization_tier`` and ``access_token_scope``
+# are legitimate ``ctx.*`` keys, and blanking them would leave a ctx-driven deny
+# unexplainable — the very thing persisting the bag exists to prevent. A key
+# named exactly ``token`` still reads as a secret someone stuffed into the bag,
+# so those keep being blanked.
+_SENSITIVE_ATTR_KEY_RE = re.compile(
+    r"^(?:password|passwd|secret|token|api[-_]?key|credential|authorization)$",
     re.IGNORECASE,
 )
 _REDACTED = "[REDACTED]"
 
 
-def _redact(value: Any) -> Any:
-    """Return a copy of ``value`` with sensitive-keyed values replaced.
+def _redact(value: Any, *, pattern: re.Pattern[str]) -> Any:
+    """Return a copy of ``value`` with values under ``pattern``-matching keys replaced.
 
     Pure — never mutates the input, so the ``Decision`` the caller holds
     keeps its full arguments; only the wire payload is redacted."""
     if isinstance(value, dict):
         return {
             k: _REDACTED
-            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k)
-            else _redact(v)
+            if isinstance(k, str) and pattern.search(k)
+            else _redact(v, pattern=pattern)
             for k, v in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_redact(v) for v in value]
+        return [_redact(v, pattern=pattern) for v in value]
     return value
 
 
@@ -80,10 +92,16 @@ def _truncate_json(payload: dict[str, Any], *, cap: int) -> dict[str, Any]:
     Serialization mirrors the platform's measurement (``default=str``). Over
     the cap, the dict is replaced by a marker wrapping a JSON-text preview,
     shrunk until the wrapper itself fits — lossy, but stored; the platform
-    would 413-reject the raw payload and lose the event entirely."""
+    would 413-reject the raw payload and lose the event entirely.
+
+    Under the cap the payload is copied rather than returned as-is, so no wire
+    payload aliases a live ``Decision`` field. ``arguments``/``attributes`` get
+    that boundary from ``_redact``; ``hint`` has none of its own, and it is the
+    same object ``as_error_payload`` hands the host. The copy is shallow —
+    enough to stop a rebind, not a nested in-place mutation."""
     payload_json = json.dumps(payload, default=str)
     if len(payload_json.encode("utf-8")) <= cap:
-        return payload
+        return dict(payload)
     preview_bytes = cap - _TRUNCATION_WRAPPER_HEADROOM_BYTES
     while True:
         wrapper = {
@@ -115,12 +133,16 @@ class AuditEvent:
     def as_payload(self) -> dict[str, Any]:
         """Flat JSON payload matching the platform's DecisionEvent body.
 
-        ``arguments`` and ``attributes`` are redacted (sensitive key names);
-        those plus ``hint`` are truncated to their platform byte caps here —
-        the single choke point onto the wire."""
+        ``arguments`` and ``attributes`` are redacted (sensitive key names, on
+        their own patterns — see ``_SENSITIVE_ATTR_KEY_RE``); those plus
+        ``hint`` are truncated to their platform byte caps here — the single
+        choke point onto the wire."""
         d = self.decision
         arguments = (
-            _truncate_json(_redact(d.arguments), cap=MAX_ARGS_BYTES)
+            _truncate_json(
+                _redact(d.arguments, pattern=_SENSITIVE_ARG_KEY_RE),
+                cap=MAX_ARGS_BYTES,
+            )
             if d.arguments is not None
             else None
         )
@@ -136,7 +158,10 @@ class AuditEvent:
         # and an empty bag is indistinguishable from no bag downstream — both
         # store '' and read back as None.
         attributes = (
-            _truncate_json(_redact(d.attributes), cap=MAX_ATTRIBUTES_BYTES)
+            _truncate_json(
+                _redact(d.attributes, pattern=_SENSITIVE_ATTR_KEY_RE),
+                cap=MAX_ATTRIBUTES_BYTES,
+            )
             if d.attributes
             else None
         )

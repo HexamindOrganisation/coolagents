@@ -264,6 +264,21 @@ def test_attributes_under_the_args_cap_still_rejected_over_their_own(
     assert r.status_code == 413
 
 
+def test_sdk_caps_do_not_exceed_the_platform_caps() -> None:
+    """The SDK truncates so an over-cap payload is never 413-dropped in flight —
+    an invariant that holds only while its caps stay ≤ ours. The constants are
+    hand-mirrored across the package boundary (hexgate/audit.py), so lowering
+    one here without the other would silently reintroduce that event loss.
+
+    Imported locally: this is a cross-package contract check, not something the
+    rest of this module needs the SDK for.
+    """
+    import hexgate.audit as sdk_audit
+
+    for name in ("MAX_ARGS_BYTES", "MAX_HINT_BYTES", "MAX_ATTRIBUTES_BYTES"):
+        assert getattr(sdk_audit, name) <= getattr(audit, name), name
+
+
 # ---------------------------------------------------------------------------
 # Ban-enforcement ingest — sibling event stream (POST /v1/audit/ban-enforcements)
 # ---------------------------------------------------------------------------
