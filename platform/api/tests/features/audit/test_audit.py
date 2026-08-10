@@ -234,6 +234,19 @@ def test_absent_attributes_store_empty_string_not_null_json(
     assert fake_clickhouse.insert.call_args.args[1][0][-1] == ""
 
 
+def test_empty_attributes_bag_stores_empty_string_like_an_absent_one(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """The SDK normalizes {} → None; the platform must too, for direct API and
+    non-Python callers. Storing "{}" makes the dashboard drawer render an empty
+    "Context attributes" box instead of omitting the section."""
+    r = client.post("/v1/audit/decisions", json=_event(attributes={}))
+    assert r.status_code == 202
+
+    rows = fake_clickhouse.insert.call_args.args[1]
+    assert rows[0][audit._DECISION_COLUMNS.index("attributes")] == ""
+
+
 def test_oversized_attributes_rejected(client: TestClient) -> None:
     big = {"key": "x" * (audit.MAX_ATTRIBUTES_BYTES + 100)}
     r = client.post("/v1/audit/decisions", json=_event(attributes=big))

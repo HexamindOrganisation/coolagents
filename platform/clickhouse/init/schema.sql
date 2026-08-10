@@ -3,7 +3,8 @@
 -- tables (tool_invocation, ...) — same names, types, and order.
 -- This init dir runs once on an empty volume; edits afterward are
 -- ignored. Don't add more files here — use a real migration runner
--- instead.
+-- instead. Until there is one: every edit below also needs a
+-- hand-applied counterpart in ../migrations/ for existing volumes.
 
 CREATE DATABASE IF NOT EXISTS hexgate_audit;
 

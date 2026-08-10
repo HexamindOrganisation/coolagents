@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import json
 
-from hexgate.audit import MAX_ARGS_BYTES, MAX_ATTRIBUTES_BYTES, AuditEvent
+from hexgate.audit import (
+    MAX_ARGS_BYTES,
+    MAX_ATTRIBUTES_BYTES,
+    MAX_HINT_BYTES,
+    AuditEvent,
+)
 from hexgate.security.decision import Decision, DecisionOutcome
 
 
@@ -157,6 +162,32 @@ def test_as_payload_attribute_cap_is_independent_of_the_argument_cap() -> None:
     assert len(json.dumps(between).encode("utf-8")) < MAX_ARGS_BYTES
     wire = AuditEvent(decision=_decision(attributes=between)).as_payload()
     assert wire["attributes"]["_truncated"] is True
+
+
+def test_as_payload_truncates_oversize_hint_under_platform_cap() -> None:
+    """A path-heavy file-scope hint must not 413 and lose the whole event."""
+    big = {"allowed_paths": [f"/srv/data/tenant_{i}/**" for i in range(500)]}
+    assert len(json.dumps(big).encode("utf-8")) > MAX_HINT_BYTES
+    wire = AuditEvent(decision=_decision(hint=big)).as_payload()
+    hint = wire["hint"]
+    assert hint["_truncated"] is True
+    assert hint["original_bytes"] > MAX_HINT_BYTES
+    # The wire form must fit the platform cap, measured as the platform does.
+    assert len(json.dumps(hint, default=str).encode("utf-8")) <= MAX_HINT_BYTES
+
+
+def test_as_payload_hint_truncation_does_not_touch_the_decision() -> None:
+    """Only the audit copy is trimmed — as_error_payload keeps the full hint."""
+    big = {"allowed_paths": [f"/srv/data/tenant_{i}/**" for i in range(500)]}
+    d = _decision(hint=big)
+    AuditEvent(decision=d).as_payload()
+    assert d.hint == big
+    assert d.as_error_payload()["hint"] == big
+
+
+def test_as_payload_small_hint_passes_through_untruncated() -> None:
+    wire = AuditEvent(decision=_decision(hint={"glob": "/x/**"})).as_payload()
+    assert wire["hint"] == {"glob": "/x/**"}
 
 
 def test_event_id_and_occurred_at_unique_per_event() -> None:

@@ -120,6 +120,7 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "violations":  ["v1", "v2"],     // tuple → list
   "hint":        {"glob": "/x/**"},// or null
   "arguments":   {"path": "/etc/passwd"},  // or null; may be truncated upstream
+  "attributes":  {"department": "finance"},// caller ABAC bag (ctx.*); or null
   "user_id":     "alice",          // "" when no request context
   "session_id":  "sess_1"          // "" when unset
 }
@@ -296,7 +297,7 @@ client does not flush anything.
 | **202 Accepted** | Row written. Body: `{"event_id": "<uuid>"}`. (Sync write, see §5.2 — 202 reflects "queued/durable" semantics but the insert has actually completed.) |
 | **400** | `occurred_at` outside the accepted time window. |
 | **401** | Missing/malformed/invalid/revoked bearer key. |
-| **413** | `arguments` > 8 KiB or `hint` > 4 KiB after JSON serialization. |
+| **413** | `arguments` > 8 KiB, or `hint` / `attributes` > 4 KiB each, after JSON serialization. |
 | **422** | Body failed schema validation, **or** ClickHouse rejected the row (non-transient — retry won't help). |
 | **503** | ClickHouse unreachable or transient insert failure (`OperationalError`). Retryable; carries `Retry-After`. |
 
@@ -340,7 +341,8 @@ CREATE TABLE hexgate_audit.policy_decision
   reason              String,
   violations          Array(String),
   hint                String CODEC(ZSTD(3)),
-  arguments           String CODEC(ZSTD(3))  -- SDK-truncated JSON; may be lossy
+  arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
+  attributes          String CODEC(ZSTD(3))   -- caller ABAC bag (ctx.*); redacted + truncated
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
@@ -365,7 +367,8 @@ SETTINGS index_granularity = 8192;
 `platform/api/audit.py` — `insert_decision`:
 
 - **Byte caps before write:** `arguments` JSON ≤ 8 KiB, `hint` JSON ≤ 4 KiB,
-  else `AuditPayloadTooLarge` → 413. `None` serializes to `""`.
+  `attributes` JSON ≤ 4 KiB — each checked independently, else
+  `AuditPayloadTooLarge` → 413. `None` serializes to `""`.
 - **Insert settings:** `async_insert=1`, `wait_for_async_insert=1`,
   `async_insert_deduplicate=1`. Small inserts are batched server-side, but the
   call **blocks until the batch flushes**, so a write failure surfaces
@@ -396,8 +399,18 @@ SETTINGS index_granularity = 8192;
   with `{"_truncated": true, "original_bytes": N, "preview": <JSON prefix>}`
   sized to fit the cap. Lossy, but the event is stored — the platform
   **rejects** (413) oversize payloads, so an untrimmed over-cap decision would
-  not be stored at all. `hint` (4 KiB cap) is policy-engine-generated and is
-  *not* SDK-trimmed.
+  not be stored at all. `attributes` (4 KiB) and `hint` (4 KiB) go through the
+  same `_truncate_json(payload, cap=...)` helper. Only the audit copy is
+  trimmed: the `Decision` the host holds — and `as_error_payload()`, which the
+  model sees — keeps the full `hint`.
+- **`attributes` carries the caller ABAC bag** (the `ctx.*` namespace the
+  decision was evaluated against): stored for 90 days and rendered verbatim in
+  the dashboard's audit detail drawer for anyone with project read access. It
+  goes through the same key-name redactor as `arguments`, with the same
+  seatbelt-not-a-guarantee caveat, so content-sensitive values (emails,
+  customer identifiers) pass through. `docs/concepts/user-scope.mdx` warns
+  callers to filter on the coarsest value the policy needs. Never rendered into
+  `as_error_payload` — the model must not see it.
 
 ---
 
@@ -454,7 +467,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 | ClickHouse unreachable | 503 + `Retry-After` (startup logs a warning, does not crash) |
 | Transient insert error | 503 + `Retry-After` |
 | Storage rejects row | 422 (retry won't help) |
-| Oversize args/hint | 413 |
+| Oversize args/hint/attributes | 413 |
 | Bad/missing bearer | 401 |
 | occurred_at out of window | 400 |
 
@@ -464,15 +477,19 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 1. **Read path auth & scoping** — `GET /v1/audit/decisions` is unauthenticated
    and cross-project (POC). Needs `read_audit` scope + `project_id` filter.
-2. **`arguments` redaction is key-name-only** — the default redactor strips
-   sensitive-keyed values, but content-sensitive values (SQL, email bodies)
-   pass through; no per-tool allow/deny lists or `redact` callable yet.
+2. **`arguments`/`attributes` redaction is key-name-only** — the default
+   redactor strips sensitive-keyed values, but content-sensitive values (SQL,
+   email bodies, identifiers in the ABAC bag) pass through; no per-tool
+   allow/deny lists, no `ctx.*` allowlist, no `redact` callable yet.
 3. **Default transport is plaintext HTTP** — safe only for localhost; require
    TLS via `HEXGATE_API_URL` elsewhere.
 4. **Sync agents emit nothing** — `emit()` requires a running loop; sync entry
    points silently produce no audit.
 5. **Schema evolution** — `init/schema.sql` runs once; there is no migration
-   runner wired up yet.
+   runner wired up yet. Interim convention: every DDL change also lands a
+   hand-applied statement in `platform/clickhouse/migrations/`, run in filename
+   order via `make clickhouse-cli` **before** deploying the API that references
+   the new column.
 6. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.

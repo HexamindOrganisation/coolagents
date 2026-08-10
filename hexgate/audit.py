@@ -36,6 +36,12 @@ MAX_ARGS_BYTES = 8 * 1024
 # (department, clearance level), not tool payloads.
 MAX_ATTRIBUTES_BYTES = 4 * 1024
 
+# Mirrors the platform's MAX_HINT_BYTES. Same reject-don't-truncate semantics.
+# Only the audit copy is trimmed — ``Decision.as_error_payload`` still carries
+# the intact hint, so the host's file-scope error message keeps its full
+# allowed/denied path lists.
+MAX_HINT_BYTES = 4 * 1024
+
 # Keys whose values are stripped from the audit copy of ``arguments`` and
 # ``attributes`` before transmission. A seatbelt, not a guarantee: values that
 # are sensitive by content rather than key name (SQL strings, email bodies) are
@@ -109,14 +115,21 @@ class AuditEvent:
     def as_payload(self) -> dict[str, Any]:
         """Flat JSON payload matching the platform's DecisionEvent body.
 
-        ``arguments`` and ``attributes`` are redacted (sensitive key names) and
-        truncated to their platform byte caps here — the single choke point
-        onto the wire."""
+        ``arguments`` and ``attributes`` are redacted (sensitive key names);
+        those plus ``hint`` are truncated to their platform byte caps here —
+        the single choke point onto the wire."""
         d = self.decision
         arguments = (
             _truncate_json(_redact(d.arguments), cap=MAX_ARGS_BYTES)
             if d.arguments is not None
             else None
+        )
+        # Not redacted — a file-scope hint is policy config (glob lists), not
+        # caller data — but still capped: a policy enumerating enough paths
+        # would 413 and take the whole event down with it, deterministically,
+        # for every denial on that tool.
+        hint = (
+            _truncate_json(d.hint, cap=MAX_HINT_BYTES) if d.hint is not None else None
         )
         # Falsy, not ``is not None``: an active context with no attributes
         # yields ``{}`` (HexgateContext.attributes defaults to an empty dict),
@@ -137,7 +150,7 @@ class AuditEvent:
             "error_type": d.error_type or "",
             "reason": d.reason,
             "violations": list(d.violations),
-            "hint": d.hint,
+            "hint": hint,
             "arguments": arguments,
             "attributes": attributes,
             "user_id": self.user_id,

@@ -97,10 +97,13 @@ def insert_decision(
         json.dumps(event.arguments, default=str) if event.arguments is not None else ""
     )
     hint_json = json.dumps(event.hint, default=str) if event.hint is not None else ""
+    # Falsy, not ``is not None``: an empty bag is indistinguishable from no bag
+    # downstream, and storing "{}" would make the dashboard render an empty
+    # "Context attributes" box. The SDK already normalizes {} → None
+    # (hexgate/audit.py); this enforces it for direct API and non-Python callers
+    # too, so the invariant holds on both sides of the wire.
     attributes_json = (
-        json.dumps(event.attributes, default=str)
-        if event.attributes is not None
-        else ""
+        json.dumps(event.attributes, default=str) if event.attributes else ""
     )
     if len(args_json.encode("utf-8")) > MAX_ARGS_BYTES:
         raise AuditPayloadTooLarge("arguments", MAX_ARGS_BYTES)
