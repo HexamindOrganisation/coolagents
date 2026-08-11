@@ -10,6 +10,7 @@ from hexgate.security import (
     ModuleContent,
     analyze,
     check,
+    check_project,
     link_policy_set,
 )
 
@@ -236,3 +237,57 @@ def test_default_policy_constraints_rejected_as_link_error():
     lints = check([module], [])
     assert [lint.code for lint in lints] == ["link-error"]
     assert "default_policy constraints" in lints[0].message
+
+
+# --- check_project: per-role attribution + project-level lints -------------
+
+
+def test_check_project_tags_a_dead_grant_with_its_role():
+    ceiling = _mod("org", "boundary", {"refund": _allow()}, default_mode="deny")
+    pay = _mod("pay", "capability", {"refund": _allow(), "send_email": _allow()})
+
+    lints = check_project([ceiling], [pay], {"support": ["pay"]})
+
+    dead = [lint for lint in lints if lint.code == "dead-grant"]
+    assert len(dead) == 1
+    assert dead[0].tool == "send_email"  # ceiling excludes it
+    assert dead[0].role == "support"
+
+
+def test_unused_capability_is_flagged():
+    used = _mod("used", "capability", {"x": _allow()})
+    unused = _mod("unused", "capability", {"y": _allow()})
+
+    lints = check_project([], [used, unused], {"default": ["used"]})
+
+    un = [lint for lint in lints if lint.code == "unused-capability"]
+    assert len(un) == 1
+    assert un[0].source == "unused.yaml"
+    assert "unused" in un[0].message
+
+
+def test_no_default_role_is_flagged():
+    cap = _mod("c", "capability", {"x": _allow()})
+    lints = check_project([], [cap], {"billing": ["c"]})
+    nd = [lint for lint in lints if lint.code == "no-default-role"]
+    assert len(nd) == 1
+    # role stays None so a role-scoped `check --role X` still surfaces it.
+    assert nd[0].role is None
+
+
+def test_check_project_unknown_capability_is_a_link_error():
+    # Same contract as resolve_for_project: an unknown capability name in a role
+    # fails, it is not silently dropped.
+    cap = _mod("c", "capability", {"x": _allow()})
+    lints = check_project([], [cap], {"r": ["missing"]})
+    assert [lint.code for lint in lints] == ["link-error"]
+
+
+def test_no_roles_emit_no_project_lints():
+    # None (no roles.yaml) -> one default importing everything. Nothing unused,
+    # and the default is present, so neither project-level lint fires.
+    cap = _mod("c", "capability", {"x": _allow()})
+    lints = check_project([], [cap], None)
+    codes = {lint.code for lint in lints}
+    assert "unused-capability" not in codes
+    assert "no-default-role" not in codes
