@@ -199,7 +199,11 @@ def after_tool(
 
     Same forms as :func:`before_tool`. An after-guard sees the
     :class:`ToolOutcome` (a return, or a raised error) and may observe or halt;
-    it does not rewrite the result in v1.
+    it does not rewrite the result in v1. Note the tool has already executed by
+    the time an after-guard runs, so a `Halt` here gates whether the model *sees*
+    the result, not the tool's side effect (which already happened). A
+    `Halt(NEEDS_APPROVAL)` on an after-guard therefore gates result release, not
+    the action; use a `@before_tool` guard to gate the action itself.
     """
     return _decorator("post", fn, tool_names, observe)
 
@@ -262,13 +266,13 @@ def build_pipeline(
     Preserves the relative order of guards within the pre list and within the
     post list. Every element must be a guard produced by ``@before_tool`` /
     ``@after_tool``; a bare undecorated callable is a hard error, since a guard
-    has to declare whether it runs before or after.
+    has to declare whether it runs before or after. Returns ``None`` only when
+    there is nothing to run and nothing to observe, so ``hooks=None`` and
+    ``hooks=[]`` behave the same when an ``observer`` is supplied.
     """
-    if hooks is None:
-        return None
     pre: list[Hook] = []
     post: list[Hook] = []
-    for h in hooks:
+    for h in hooks or ():
         if not isinstance(h, Hook):
             raise TypeError(
                 f"{h!r} is not a guard; decorate it with @before_tool or "

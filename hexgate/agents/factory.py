@@ -536,10 +536,11 @@ class HexgateAgent:
                     "with no policy to enforce — the agent would be left "
                     "unguarded. Pass a policy, or drop the source."
                 )
-            if pipeline is not None:
+            if pipeline is not None and not pipeline.is_empty:
                 # Guards-only gating: no policy engine, but each tool is still
                 # wrapped so the before/after guards run (a GuardedTool with a
-                # pipeline and no enforcer gates via guards alone).
+                # pipeline and no enforcer gates via guards alone). An
+                # observer-only pipeline (no guards) has nothing to run, so skip.
                 hooks_only: list[ToolSpec] = [
                     GuardedTool.wrap(t, pipeline=pipeline)
                     if isinstance(t, BaseTool)

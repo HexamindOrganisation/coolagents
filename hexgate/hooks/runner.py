@@ -241,7 +241,7 @@ async def _run_post_async(
         if isinstance(res, Halt):
             if await _halt_approved_async(res, call, approval_handler):
                 _notify(
-                    pipeline, call, mods, halt=res, halted_by=hook.label, approved=True
+                    pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
@@ -276,7 +276,7 @@ async def run_guarded_async(
                     _notify(
                         pipeline,
                         call,
-                        mods,
+                        [],  # mods are reported once, by the terminal notify
                         halt=outcome,
                         halted_by=hook.label,
                         approved=True,
@@ -288,6 +288,10 @@ async def run_guarded_async(
                 call = _apply_pre(call, hook, outcome, mods)
 
     if enforcer is not None:
+        # A before-guard's NEEDS_APPROVAL (handled in the loop above) and the
+        # policy's are independent gates: if both fire on one call, the handler
+        # is prompted for each. We do not merge them, because a guard's approval
+        # must not silently satisfy the policy's separate requirement.
         decision = enforcer.decide(call.tool_name, call.args)
         if not decision.allowed:
             approved = (
@@ -391,7 +395,7 @@ def _run_post_sync(
         if isinstance(res, Halt):
             if _halt_approved_sync(res, call, approval_handler):
                 _notify(
-                    pipeline, call, mods, halt=res, halted_by=hook.label, approved=True
+                    pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
@@ -426,7 +430,7 @@ def run_guarded_sync(
                     _notify(
                         pipeline,
                         call,
-                        mods,
+                        [],  # mods are reported once, by the terminal notify
                         halt=outcome,
                         halted_by=hook.label,
                         approved=True,

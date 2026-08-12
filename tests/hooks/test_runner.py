@@ -547,6 +547,28 @@ async def test_observer_is_silent_on_a_clean_allow() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rewrite_plus_approved_halt_reports_the_modification_once() -> None:
+    """A rewrite and an approved halt on one call must not double-count the mod."""
+    events: list[HookEvent] = []
+    enf, inv = FakeEnforcer(), RecordingInvoke("ok")
+    pipe = _pipe(
+        pre=[
+            lambda call: Proceed(args={"x": 1}),
+            lambda call: Halt(reason="ok?", outcome=DecisionOutcome.NEEDS_APPROVAL),
+        ],
+        observer=events.append,
+    )
+    out = await _run(enf, pipe, {"x": 0}, invoke=inv, approval_handler=True)
+
+    assert out == "ok"
+    # The mod is carried by exactly one event, not by both the approval event
+    # and the terminal event.
+    total_mods = sum(len(e.modifications) for e in events)
+    assert total_mods == 1
+    assert any(e.approved for e in events)
+
+
+@pytest.mark.asyncio
 async def test_approved_pre_halt_reports_a_hookevent() -> None:
     events: list[HookEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")

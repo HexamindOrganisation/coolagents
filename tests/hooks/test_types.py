@@ -75,6 +75,13 @@ def test_build_pipeline_keeps_an_observer_even_when_empty() -> None:
     assert pipe is not None and pipe.is_empty
 
 
+def test_build_pipeline_none_and_empty_behave_the_same_with_an_observer() -> None:
+    """hooks=None must not silently drop an observer that hooks=[] would keep."""
+    obs = lambda e: None  # noqa: E731
+    assert build_pipeline(None, observer=obs) is not None
+    assert build_pipeline([], observer=obs) is not None
+
+
 def test_build_pipeline_rejects_an_undecorated_callable() -> None:
     with pytest.raises(TypeError, match="not a guard"):
         build_pipeline([lambda call: None])
