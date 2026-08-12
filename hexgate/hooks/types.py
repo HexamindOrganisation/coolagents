@@ -64,8 +64,10 @@ class ToolCall:
 class ToolOutcome:
     """The result of running the wrapped tool, handed to post-hooks.
 
-    ``value`` may be JSON-ish or an opaque object. In v1 post-hooks observe or
-    halt; they do not rewrite it.
+    ``ok=True`` carries the return in ``value`` (JSON-ish or an opaque object);
+    ``ok=False`` carries the stringified exception in ``error`` when the tool
+    raised, so a post-hook sees a failure the same way it sees a result. In v1
+    post-hooks observe or halt; they do not rewrite the value.
     """
 
     ok: bool
@@ -138,16 +140,21 @@ class Hook:
 class HookEvent:
     """What the pipeline reports to a :data:`HookObserver`.
 
-    A local-process, fire-and-forget record (like ``decision_observer``): the
-    call, the modifications applied, and the halt if one fired. This is the
-    observer half of provenance; durable platform persistence of
-    ``modifications`` is a later increment.
+    A local-process, fire-and-forget record (like ``decision_observer``),
+    emitted when a hook *acts* on a call, not on every call: a halt (blocked),
+    an approved halt (``approved=True``, a hook required and got sign-off and
+    the call proceeded), or the set of modifications applied to a proceeding
+    call. A plain allow with no hook action emits nothing; per-call logging is
+    ``decision_observer`` / the audit sender. This is the observer half of
+    provenance; durable platform persistence of ``modifications`` is a later
+    increment.
     """
 
     call: ToolCall
     modifications: tuple[Modification, ...]
     halt: Halt | None = None
     halted_by: str | None = None
+    approved: bool = False
 
 
 HookObserver = Callable[[HookEvent], None]
@@ -168,8 +175,9 @@ class ToolPipeline:
     """An ordered pre-list and post-list of hooks for one agent.
 
     Bare callables are coerced to default (fail-closed, all-tools)
-    :class:`Hook`s. ``observer`` receives a :class:`HookEvent` per call,
-    isolated so a broken observer never breaks a tool call.
+    :class:`Hook`s. ``observer`` receives a :class:`HookEvent` whenever a hook
+    acts on a call (a halt, an approval grant, or applied modifications), not
+    on every call, isolated so a broken observer never breaks a tool call.
     """
 
     __slots__ = ("pre", "post", "observer")

@@ -10,7 +10,10 @@ question (allow / deny / approval); hooks are the open surface for everything
 else an operator bolts on around a tool call: strip a secret out of args,
 rate-limit per user, watch a result before the model sees it. A hook is a plain
 callable registered on a `ToolPipeline(pre=[...], post=[...])` and threaded into
-each guarded tool via `enforce_policy(..., pipeline=...)`.
+each guarded tool via `enforce_policy(..., pipeline=...)`. A pipeline can run
+without a policy engine: `enforce_policy(None, pipeline=...)` wraps each tool for
+hooks-only gating (the enforcer is `None`, the pre/decide/invoke/post order just
+skips the decide step).
 
 ## The order is a security invariant, not a preference
 
@@ -51,6 +54,12 @@ mutate) that PR1 does not build.
 MUST NOT wire `Proceed(result=...)` handling into post-hooks without that
 projection rule. The type reserves the shape (`_UNSET` sentinel) and the runner
 rejects it in v1 on purpose.
+
+Post-hooks run whether the tool returned or raised. `invoke` is wrapped, so a
+raised exception becomes `ToolOutcome(ok=False, error=...)` and post-hooks still
+run (a watcher sees a failure the same way it sees a result). If a post-hook
+halts, the rendered refusal replaces the exception; if none halts, the original
+exception propagates unchanged.
 
 ## The halt message has two audiences
 

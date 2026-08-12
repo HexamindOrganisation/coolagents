@@ -10,7 +10,10 @@ string).
 Ordering is fixed and load-bearing: **pre-hooks run before ``decide``**, so
 ``decide`` always authorizes the exact args that will execute. A pre-hook can
 rewrite args or halt; it can never widen, because ``decide`` still runs on its
-output. Post-hooks observe or halt in v1 (result rewrite is a later phase).
+output. Post-hooks observe or halt in v1 (result rewrite is a later phase), and
+they run whether the tool returned or raised, so a watcher sees a failure the
+same way it sees a result. If the tool raised and no post-hook halts, the
+original exception propagates unchanged.
 """
 
 from __future__ import annotations
@@ -44,21 +47,32 @@ _log = logging.getLogger(__name__)
 
 RenderError = Callable[[Decision], Any]
 
+# Sentinel a post-hook runner returns when nothing halted, distinct from any
+# value ``render_error`` might produce (a dict or str). Identity-compared only.
+_NO_HALT: Any = object()
+
 
 # ---------------------------------------------------------------------------
 # Shared, async-free helpers
 # ---------------------------------------------------------------------------
 
 
+def _has_hooks(pipeline: ToolPipeline | None) -> bool:
+    return pipeline is not None and not pipeline.is_empty
+
+
 def _new_call(
-    tool_name: str, args: Mapping[str, Any], enforcer: "PolicyEnforcer | None"
+    tool_name: str,
+    args: Mapping[str, Any],
+    enforcer: "PolicyEnforcer | None",
+    context: Any,
 ) -> ToolCall:
     agent_name = getattr(enforcer, "agent_name", None) if enforcer is not None else None
     return ToolCall(
         tool_name=tool_name,
         args=dict(args),
         agent_name=agent_name,
-        context=get_current_context(),
+        context=context,
         scratch={},
     )
 
@@ -163,6 +177,7 @@ def _notify(
     *,
     halt: Halt | None = None,
     halted_by: str | None = None,
+    approved: bool = False,
 ) -> None:
     if pipeline is None or pipeline.observer is None:
         return
@@ -173,6 +188,7 @@ def _notify(
                 modifications=tuple(mods),
                 halt=halt,
                 halted_by=halted_by,
+                approved=approved,
             )
         )
     except Exception:
@@ -202,6 +218,39 @@ async def _halt_approved_async(
     return await resolve_approval_async(approval_handler, _halt_to_decision(halt, call))
 
 
+async def _run_post_async(
+    pipeline: ToolPipeline | None,
+    call: ToolCall,
+    outcome: ToolOutcome,
+    mods: list[Modification],
+    approval_handler: "ApprovalHandler | None",
+    render_error: RenderError,
+) -> Any:
+    """Run the post-hooks over ``outcome``.
+
+    Returns a rendered error when a post-hook halts, else :data:`_NO_HALT`.
+    Runs for a successful result and for a tool that raised
+    (``outcome.ok is False``), so an observe or redact hook sees failures too.
+    """
+    if pipeline is None:
+        return _NO_HALT
+    for hook in pipeline.post:
+        if not _applies(hook, call.tool_name):
+            continue
+        res = await _call_hook_async(hook, call, outcome)
+        if isinstance(res, Halt):
+            if await _halt_approved_async(res, call, approval_handler):
+                _notify(
+                    pipeline, call, mods, halt=res, halted_by=hook.label, approved=True
+                )
+                continue
+            _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
+            return render_error(_halt_to_decision(res, call))
+        if isinstance(res, Proceed):
+            _reject_post_proceed(hook, res)
+    return _NO_HALT
+
+
 async def run_guarded_async(
     tool_name: str,
     args: Mapping[str, Any],
@@ -213,7 +262,8 @@ async def run_guarded_async(
     render_error: RenderError,
 ) -> Any:
     """Run one guarded tool call, async. See module docstring for the order."""
-    call = _new_call(tool_name, args, enforcer)
+    context = get_current_context() if _has_hooks(pipeline) else None
+    call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
 
     if pipeline is not None:
@@ -223,6 +273,14 @@ async def run_guarded_async(
             outcome = await _call_hook_async(hook, call)
             if isinstance(outcome, Halt):
                 if await _halt_approved_async(outcome, call, approval_handler):
+                    _notify(
+                        pipeline,
+                        call,
+                        mods,
+                        halt=outcome,
+                        halted_by=hook.label,
+                        approved=True,
+                    )
                     continue
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
                 return render_error(_halt_to_decision(outcome, call))
@@ -242,22 +300,33 @@ async def run_guarded_async(
                     _notify(pipeline, call, mods)
                 return render_error(decision)
 
-    raw = await invoke(call.args)
+    try:
+        raw = await invoke(call.args)
+    except Exception as exc:
+        rendered = await _run_post_async(
+            pipeline,
+            call,
+            ToolOutcome(ok=False, value=None, error=str(exc)),
+            mods,
+            approval_handler,
+            render_error,
+        )
+        if rendered is not _NO_HALT:
+            return rendered
+        if mods:
+            _notify(pipeline, call, mods)
+        raise
 
-    if pipeline is not None and pipeline.post:
-        result_outcome = ToolOutcome(ok=True, value=raw)
-        for hook in pipeline.post:
-            if not _applies(hook, call.tool_name):
-                continue
-            outcome = await _call_hook_async(hook, call, result_outcome)
-            if isinstance(outcome, Halt):
-                if await _halt_approved_async(outcome, call, approval_handler):
-                    continue
-                _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
-                return render_error(_halt_to_decision(outcome, call))
-            if isinstance(outcome, Proceed):
-                _reject_post_proceed(hook, outcome)
-
+    rendered = await _run_post_async(
+        pipeline,
+        call,
+        ToolOutcome(ok=True, value=raw),
+        mods,
+        approval_handler,
+        render_error,
+    )
+    if rendered is not _NO_HALT:
+        return rendered
     if mods:
         _notify(pipeline, call, mods)
     return raw
@@ -274,8 +343,20 @@ def _call_hook_sync(hook: Hook, *hook_args: Any) -> Proceed | Halt | None:
     except Exception:
         return _fail_closed(hook)
     if isawaitable(result):
-        # A wiring mistake (async hook on a sync entry point), not a runtime
-        # denial. Surface it loudly rather than drop an un-awaited coroutine.
+        if hook.observe_only:
+            # observe_only is fail-open: an async side-effect hook on a sync
+            # path never ran, but it must not break the call. Drop the
+            # coroutine (avoids an un-awaited warning) and log.
+            result.close()
+            _log.warning(
+                "observe_only hook %s returned a coroutine on a sync path; "
+                "ignoring (write it sync, or use an async entry point)",
+                hook.label,
+            )
+            return None
+        # A non-observe hook returning a coroutine on a sync path is a wiring
+        # mistake, not a runtime denial. Surface it loudly.
+        result.close()
         raise RuntimeError(
             f"hook {hook.label!r} returned a coroutine; sync tool invocation "
             "cannot await it — use an async entry point (ainvoke / astream / "
@@ -292,6 +373,34 @@ def _halt_approved_sync(
     return resolve_approval_sync(approval_handler, _halt_to_decision(halt, call))
 
 
+def _run_post_sync(
+    pipeline: ToolPipeline | None,
+    call: ToolCall,
+    outcome: ToolOutcome,
+    mods: list[Modification],
+    approval_handler: "ApprovalHandler | None",
+    render_error: RenderError,
+) -> Any:
+    """Sync mirror of :func:`_run_post_async`."""
+    if pipeline is None:
+        return _NO_HALT
+    for hook in pipeline.post:
+        if not _applies(hook, call.tool_name):
+            continue
+        res = _call_hook_sync(hook, call, outcome)
+        if isinstance(res, Halt):
+            if _halt_approved_sync(res, call, approval_handler):
+                _notify(
+                    pipeline, call, mods, halt=res, halted_by=hook.label, approved=True
+                )
+                continue
+            _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
+            return render_error(_halt_to_decision(res, call))
+        if isinstance(res, Proceed):
+            _reject_post_proceed(hook, res)
+    return _NO_HALT
+
+
 def run_guarded_sync(
     tool_name: str,
     args: Mapping[str, Any],
@@ -303,7 +412,8 @@ def run_guarded_sync(
     render_error: RenderError,
 ) -> Any:
     """Run one guarded tool call, sync. Mirrors :func:`run_guarded_async`."""
-    call = _new_call(tool_name, args, enforcer)
+    context = get_current_context() if _has_hooks(pipeline) else None
+    call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
 
     if pipeline is not None:
@@ -313,6 +423,14 @@ def run_guarded_sync(
             outcome = _call_hook_sync(hook, call)
             if isinstance(outcome, Halt):
                 if _halt_approved_sync(outcome, call, approval_handler):
+                    _notify(
+                        pipeline,
+                        call,
+                        mods,
+                        halt=outcome,
+                        halted_by=hook.label,
+                        approved=True,
+                    )
                     continue
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
                 return render_error(_halt_to_decision(outcome, call))
@@ -332,22 +450,33 @@ def run_guarded_sync(
                     _notify(pipeline, call, mods)
                 return render_error(decision)
 
-    raw = invoke(call.args)
+    try:
+        raw = invoke(call.args)
+    except Exception as exc:
+        rendered = _run_post_sync(
+            pipeline,
+            call,
+            ToolOutcome(ok=False, value=None, error=str(exc)),
+            mods,
+            approval_handler,
+            render_error,
+        )
+        if rendered is not _NO_HALT:
+            return rendered
+        if mods:
+            _notify(pipeline, call, mods)
+        raise
 
-    if pipeline is not None and pipeline.post:
-        result_outcome = ToolOutcome(ok=True, value=raw)
-        for hook in pipeline.post:
-            if not _applies(hook, call.tool_name):
-                continue
-            outcome = _call_hook_sync(hook, call, result_outcome)
-            if isinstance(outcome, Halt):
-                if _halt_approved_sync(outcome, call, approval_handler):
-                    continue
-                _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
-                return render_error(_halt_to_decision(outcome, call))
-            if isinstance(outcome, Proceed):
-                _reject_post_proceed(hook, outcome)
-
+    rendered = _run_post_sync(
+        pipeline,
+        call,
+        ToolOutcome(ok=True, value=raw),
+        mods,
+        approval_handler,
+        render_error,
+    )
+    if rendered is not _NO_HALT:
+        return rendered
     if mods:
         _notify(pipeline, call, mods)
     return raw

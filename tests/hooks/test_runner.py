@@ -424,3 +424,133 @@ def test_sync_rejects_a_coroutine_returning_hook() -> None:
             invoke=inv.sync,
             render_error=langchain_error,
         )
+
+
+def test_sync_observe_only_async_hook_is_swallowed() -> None:
+    """An async observe_only hook on the sync path is fail-open, not fatal."""
+
+    async def watcher(call: ToolCall):
+        return None
+
+    enf, inv = FakeEnforcer(), RecordingInvoke("ok")
+    pipe = ToolPipeline(pre=[observe(watcher)])
+    out = run_guarded_sync(
+        "echo",
+        {"x": 1},
+        enforcer=enf,
+        pipeline=pipe,
+        approval_handler=None,
+        invoke=inv.sync,
+        render_error=langchain_error,
+    )
+    assert out == "ok"
+    assert inv.calls == [{"x": 1}]
+
+
+# ---------------------------------------------------------------------------
+# Tool failures reach post-hooks (the try/except around invoke)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_hook_observes_a_tool_that_raised() -> None:
+    seen: list[ToolOutcome] = []
+    enf = FakeEnforcer()
+
+    def watch(call: ToolCall, out: ToolOutcome):
+        seen.append(out)
+        return None
+
+    async def boom(_final):
+        raise ValueError("db error blah")
+
+    pipe = ToolPipeline(post=[watch])
+    with pytest.raises(ValueError, match="db error"):
+        await run_guarded_async(
+            "echo",
+            {"x": 1},
+            enforcer=enf,
+            pipeline=pipe,
+            approval_handler=None,
+            invoke=boom,
+            render_error=langchain_error,
+        )
+    assert seen[0].ok is False
+    assert seen[0].value is None
+    assert "db error" in (seen[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_post_hook_can_halt_a_raising_tool_instead_of_propagating() -> None:
+    enf = FakeEnforcer()
+
+    def scrub(call: ToolCall, out: ToolOutcome):
+        if not out.ok:
+            return Halt(reason="An upstream error was suppressed by policy.")
+        return None
+
+    async def boom(_final):
+        raise ValueError("leaky-secret-in-message")
+
+    pipe = ToolPipeline(post=[scrub])
+    out = await run_guarded_async(
+        "echo",
+        {"x": 1},
+        enforcer=enf,
+        pipeline=pipe,
+        approval_handler=None,
+        invoke=boom,
+        render_error=langchain_error,
+    )
+    assert out["ok"] is False
+    assert "leaky-secret" not in str(out)
+
+
+@pytest.mark.asyncio
+async def test_tool_raise_without_post_hooks_propagates_unchanged() -> None:
+    enf = FakeEnforcer()
+
+    async def boom(_final):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await run_guarded_async(
+            "echo",
+            {"x": 1},
+            enforcer=enf,
+            pipeline=None,
+            approval_handler=None,
+            invoke=boom,
+            render_error=langchain_error,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Observer scope: fires on hook actions, not on every call
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_observer_is_silent_on_a_clean_allow() -> None:
+    events: list[HookEvent] = []
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = ToolPipeline(pre=[lambda call: None], observer=events.append)
+    await _run(enf, pipe, {"x": 1}, invoke=inv)
+    assert events == []  # no rewrite, no halt, no approval -> no HookEvent
+
+
+@pytest.mark.asyncio
+async def test_approved_pre_halt_reports_a_hookevent() -> None:
+    events: list[HookEvent] = []
+    enf, inv = FakeEnforcer(), RecordingInvoke("ok")
+    pipe = ToolPipeline(
+        pre=[
+            lambda call: Halt(reason="sign-off", outcome=DecisionOutcome.NEEDS_APPROVAL)
+        ],
+        observer=events.append,
+    )
+    out = await _run(enf, pipe, {"x": 1}, invoke=inv, approval_handler=True)
+    assert out == "ok"
+    assert len(events) == 1
+    assert events[0].approved is True
+    assert events[0].halt is not None
