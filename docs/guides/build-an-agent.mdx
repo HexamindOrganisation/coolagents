@@ -44,7 +44,7 @@ await runner.run(
 That's it. You get:
 
 - Tool-call enforcement at every tool boundary (`PolicyEnforcer.decide()`)
-- Role resolution from the active context's primary role at call time
+- Role resolution from the active context's `user_roles` at call time (every role evaluated, most permissive wins)
 - Per-request biscuit attenuation
 - Langfuse traces tagged with the caller's identity
 

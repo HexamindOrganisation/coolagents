@@ -10,8 +10,8 @@ Hexgate splits that into two pieces:
   behalf of alice, with roles X, and these attributes." Async context manager;
   pushes a fact-bearing Biscuit through the agent runtime.
 - **Role policies** — one `policy.yaml` per role, optionally inheriting from a
-  base mixin. The runtime picks the right one at call time based on the active
-  context's primary role.
+  base mixin. At call time the runtime evaluates *every* role the active context
+  carries and takes the most permissive outcome.
 
 The two are deliberately decoupled: tokens carry **identity** (who is calling),
 policy files carry **rules** (what they can do).
@@ -29,8 +29,10 @@ async with HexgateContext(user_id="alice", user_roles=["billing"], ttl_seconds=3
 ```
 
 No manual `attenuate_for_user`, `extract_facts`, or `ToolUseContext` plumbing at
-the call site. The runtime mints the per-request token, picks the `billing`
-role's policy file, and evaluates its constraints against each tool call.
+the call site. The runtime mints the per-request token (attesting every role in
+`user_roles`), picks the `billing` role's policy file, and evaluates its
+constraints against each tool call. Pass more than one role and each is evaluated
+— see [most permissive wins](#multiple-roles-most-permissive-wins).
 
 ## Filtering on attributes (`ctx.*`)
 
@@ -143,13 +145,67 @@ invoke_agent(...)` is fine — the agent runs to completion inside the scope.
 | Field | Type | Required | Effect |
 |---|---|---|---|
 | `user_id` | `str` | ✅ | Becomes `user("alice")` in the attenuated Biscuit. |
-| `user_roles` | `list[str]` | optional | The first role selects which role policy file applies at tool-call time. Fall-back: the `default` role. |
+| `user_roles` | `list[str]` | optional | Every role is evaluated at tool-call time; access is granted if any of them grants it. Unrecognised names and an empty list fall back to the `default` role. |
 | `session_id` | `str?` | optional | Trace tagging — surfaces on Langfuse spans. |
 | `attributes` | `dict[str, str \| int \| bool \| list[str]]` | optional | Caller attributes exposed to `ctx.*` constraints. Populate from trusted server data. |
 | `ttl_seconds` | `int?` | optional | Embeds a `check if time($t), $t < now+ttl` predicate so the token can't outlive the request. |
 
-Only the **first** role in `user_roles` reaches policy selection today (read via
-`primary_role`); the rest are carried but inert until multi-role selection lands.
+### Multiple roles: most permissive wins
+
+Every role in `user_roles` is evaluated and the outcomes are combined, so
+**access is granted if any single role grants it**:
+
+```
+ALLOW  >  NEEDS_APPROVAL  >  DENY
+```
+
+A caller with `user_roles=["support", "billing"]` can do everything `support` can
+do plus everything `billing` can do. Adding a role can only ever widen access,
+never narrow it. Evaluation stops at the first role that allows the call, and the
+role that granted it is recorded on the decision (`granted by:` in `hexgate
+chat`, and in the audit trail).
+
+<Warning>
+**Approval is not sticky.** If one role allows a tool outright and another would
+gate it on approval, the call runs with **no approval prompt** — `ALLOW` beats
+`NEEDS_APPROVAL`. With:
+
+```yaml
+roles:
+  support:
+    tools:
+      refund_order: { mode: approval_required }
+  billing:
+    tools:
+      refund_order: { mode: allow }
+```
+
+`user_roles=["support"]` prompts for approval, but
+`user_roles=["support", "billing"]` does not. If a tool must always be gated, no
+role may grant it outright.
+</Warning>
+
+<Warning>
+**Keep `default` least-privilege.** `default` is the fallback for any role name
+the policy doesn't define, and every unrecognised name in `user_roles` still
+contributes `default`'s permissions to the union. A caller who controls their own
+role list can therefore always reach whatever `default` grants, simply by
+carrying a name you never defined. If `default` allows a tool, treat that as
+"every caller can call this tool".
+
+`default` is a **fallback, not a floor** — a caller whose role *is* defined never
+inherits `default`'s permissions. For a baseline genuinely shared by every role,
+write it as a mixin and `inherits` it, so it is explicit in the YAML.
+
+`hexgate policy validate` warns (`permissive-default`) when the `default` role
+grants something no named role grants; run it with
+`--max-severity warning` in CI to make that a hard failure.
+</Warning>
+
+Two practical limits: at most **32** distinct roles are evaluated per call (extra
+roles are ignored, with a warning — they can only ever have widened access), and
+each role costs one policy evaluation, so the first role that allows the call is
+the cheapest outcome.
 
 ## Role policies — one file per role
 
