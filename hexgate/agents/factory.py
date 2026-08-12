@@ -636,6 +636,8 @@ def create_agent(
     workspace: Workspace | None = None,
     bind_policy: bool | None = None,
     approval_handler: ApprovalHandler | None = None,
+    hooks: "Sequence[Hook] | None" = None,
+    hook_observer: "HookObserver | None" = None,
 ) -> tuple[AgentGraph, CallbackHandler]:
     """Create a hexgate agent as a thin wrapper over LangChain.
 
@@ -646,6 +648,12 @@ def create_agent(
     for another agent can't surprise-404 an unregistered prototype at
     construction). Binding gates the tools and attaches a refresh source, like
     ``load_hexgate_agent``. ``approval_handler`` applies on that path.
+
+    ``hooks`` is a flat list of guards authored with ``@before_tool`` /
+    ``@after_tool`` (see :meth:`HexgateAgent.enforce_policy`). They wrap each
+    tool whether or not a policy binds — with the resolved policy when it does,
+    guards-only when it does not. ``hook_observer`` receives a provenance
+    ``HookEvent`` when a guard acts.
     """
     # Validate at the public boundary, before the (relatively expensive) graph
     # build, so the error lands at the call site rather than deep in dispatch.
@@ -694,7 +702,12 @@ def create_agent(
         workspace=workspace,
     )
     if _should_bind_policy(bind_policy, name):
-        agent = _bind_policy(agent, name, approval_handler)  # type: ignore[arg-type]
+        agent = _bind_policy(  # type: ignore[arg-type]
+            agent, name, approval_handler, hooks=hooks, hook_observer=hook_observer
+        )
+    elif hooks:
+        # No policy binding, but guards still wrap each tool (guards-only).
+        agent = agent.enforce_policy(None, hooks=hooks, hook_observer=hook_observer)
 
     handler = get_langfuse_handler(
         session_id=session_id,
@@ -752,12 +765,16 @@ def _bind_policy(
     agent: HexgateAgent,
     name: str,
     approval_handler: ApprovalHandler | None,
+    *,
+    hooks: "Sequence[Hook] | None" = None,
+    hook_observer: "HookObserver | None" = None,
 ) -> HexgateAgent:
     """Resolve the policy for ``name`` and enforce it on ``agent``.
 
     Mirrors ``load_hexgate_agent``: resolve → enforce → attach the
     refresh source. Fail-loud — an unregistered agent (platform 404)
-    raises; register it first with ``hexgate register``.
+    raises; register it first with ``hexgate register``. ``hooks`` ride the
+    same enforcement so guards wrap the tools alongside the policy.
     """
     from hexgate.security.binding import resolve_policy
 
@@ -769,7 +786,11 @@ def _bind_policy(
 
     resolved = resolve_policy(name, client=client)
     enforced = agent.enforce_policy(
-        resolved.engine, approval_handler=approval_handler, source=resolved.source
+        resolved.engine,
+        approval_handler=approval_handler,
+        source=resolved.source,
+        hooks=hooks,
+        hook_observer=hook_observer,
     )
     enforced.hexgate_client = client
     return enforced
