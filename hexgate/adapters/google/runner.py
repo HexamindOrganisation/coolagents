@@ -4,8 +4,9 @@ active role. Langfuse propagation mirrors HexgateContext identity into spans.
 """
 
 import asyncio
+from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import Any, AsyncGenerator, Generator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator
 
 import nest_asyncio
 from google.adk.agents import BaseAgent
@@ -25,6 +26,9 @@ from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext
 from hexgate.security.bans import resolve_ban_gate
 
+if TYPE_CHECKING:
+    from hexgate.hooks.types import Hook, HookObserver
+
 
 class HexgateRunner:
     """Runner for Google ADK agents with Hexgate tool policy and observability."""
@@ -37,6 +41,8 @@ class HexgateRunner:
         session_service: BaseSessionService,
         api_key: str | None = None,
         approval_handler: ApprovalHandler | None = None,
+        hooks: "Sequence[Hook] | None" = None,
+        hook_observer: "HookObserver | None" = None,
         **runner_kwargs: Any,
     ):
         self.api_key = resolve_api_key(api_key)
@@ -53,6 +59,8 @@ class HexgateRunner:
             api_key=self.api_key,
             approval_handler=approval_handler,
             client=client,
+            hooks=hooks,
+            hook_observer=hook_observer,
         )
         plugins = list(runner_kwargs.pop("plugins", None) or [])
         plugins.append(HexgateUsagePlugin(api_key=self.api_key))

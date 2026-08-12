@@ -18,10 +18,15 @@ from typing import Any
 from agents import FunctionTool
 from agents.tool import ToolContext
 
-from hexgate.agents.approvals import resolve_approval_async
 from hexgate.approvals import ApprovalHandler
-from hexgate.security.decision import DecisionOutcome
+from hexgate.hooks.runner import run_guarded_async
+from hexgate.hooks.types import ToolPipeline
 from hexgate.security.enforcer import PolicyEnforcer
+
+
+def _render_error(decision: Any) -> str:
+    """OpenAI renders a blocked decision as a string tool result."""
+    return decision.as_error_message()
 
 
 def _parse_args(raw: str) -> dict[str, Any] | None:
@@ -40,8 +45,13 @@ def wrap_tool(
     enforcer: PolicyEnforcer,
     *,
     approval_handler: ApprovalHandler | None = None,
+    pipeline: ToolPipeline | None = None,
 ) -> FunctionTool:
-    """Return a copy of ``tool`` with ``on_invoke_tool`` gated by ``enforcer``."""
+    """Return a copy of ``tool`` with ``on_invoke_tool`` gated by ``enforcer``.
+
+    Routes through the shared :func:`run_guarded_async`, so before/after
+    guards run around the policy check exactly as on the other adapters.
+    """
     if not isinstance(tool, FunctionTool):
         raise TypeError(
             f"Cannot install policy on tool {getattr(tool, 'name', tool)!r}: "
@@ -53,16 +63,24 @@ def wrap_tool(
 
     @functools.wraps(original_invoke, updated=())
     async def guarded_invoke(ctx: ToolContext[Any], input: str) -> Any:
-        decision = enforcer.decide(name, _parse_args(input) or {})
-        if decision.allowed:
-            return await original_invoke(ctx, input)
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and approval_handler is not None
-            and await resolve_approval_async(approval_handler, decision)
-        ):
-            return await original_invoke(ctx, input)
-        return decision.as_error_message()
+        parsed = _parse_args(input) or {}
+
+        def invoke(final: dict[str, Any]) -> Any:
+            # Keep the original raw ``input`` when no before-guard rewrote the
+            # args (this preserves a non-dict payload the parse dropped);
+            # re-serialize only when a rewrite actually changed them.
+            payload = input if final == parsed else json.dumps(final)
+            return original_invoke(ctx, payload)
+
+        return await run_guarded_async(
+            name,
+            parsed,
+            enforcer=enforcer,
+            pipeline=pipeline,
+            approval_handler=approval_handler,
+            invoke=invoke,
+            render_error=_render_error,
+        )
 
     wrapped = copy.copy(tool)
     wrapped.on_invoke_tool = guarded_invoke
@@ -74,9 +92,13 @@ def wrap_tools(
     enforcer: PolicyEnforcer,
     *,
     approval_handler: ApprovalHandler | None = None,
+    pipeline: ToolPipeline | None = None,
 ) -> list[FunctionTool]:
     """Return a fresh list of policy-gated copies."""
-    return [wrap_tool(t, enforcer, approval_handler=approval_handler) for t in tools]
+    return [
+        wrap_tool(t, enforcer, approval_handler=approval_handler, pipeline=pipeline)
+        for t in tools
+    ]
 
 
 __all__ = ["_parse_args", "wrap_tool", "wrap_tools"]

@@ -150,10 +150,15 @@ class Decision:
         """Default LLM-facing string rendering for adapters that return a
         tool-result string (OpenAI Agents, Google ADK) or raise a
         text-bearing exception (pydantic_ai's `ModelRetry`).
+
+        Includes ``reason`` when present, so a guard ``Halt``'s actionable
+        message (e.g. "remove the credential") reaches the model on the
+        string-rendering adapters, the way it does in ``as_error_payload``.
         """
         marker = self.error_type or self.outcome.value
         if self.outcome is DecisionOutcome.NEEDS_APPROVAL:
             body = f"Tool '{self.tool_name}' requires human approval before execution"
         else:
             body = f"Tool '{self.tool_name}' is denied by the agent policy"
-        return f"[{marker}] {body}. The tool was not executed."
+        detail = f" {self.reason}" if self.reason else ""
+        return f"[{marker}] {body}.{detail} The tool was not executed."

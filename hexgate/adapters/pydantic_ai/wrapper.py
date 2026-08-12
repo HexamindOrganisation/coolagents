@@ -11,6 +11,8 @@ proxy at the top of every run.
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 from pydantic_ai.tools import Tool
@@ -20,9 +22,13 @@ from hexgate.adapters.pydantic_ai.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
+from hexgate.hooks.types import build_pipeline
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+
+if TYPE_CHECKING:
+    from hexgate.hooks.types import Hook, HookObserver
 
 
 def _extract_tools(agent: Agent) -> list[Tool]:
@@ -52,6 +58,8 @@ def wrap_pydantic_agent(
     agent: Agent,
     api_key: str | None = None,
     approval_handler: ApprovalHandler | None = None,
+    hooks: Sequence[Hook] | None = None,
+    hook_observer: HookObserver | None = None,
 ) -> HexgatePydanticAgent:
     """Wrap a pydantic_ai agent with Hexgate policy + observability.
 
@@ -81,8 +89,12 @@ def wrap_pydantic_agent(
     enforcer = build_enforcer(
         resolved.engine, agent_name=agent_name, api_key=resolved_key
     )
+    pipeline = build_pipeline(hooks, observer=hook_observer)
     cloned_agent = _clone_agent_with_tools(
-        agent, wrap_tools(tools, enforcer, approval_handler=approval_handler)
+        agent,
+        wrap_tools(
+            tools, enforcer, approval_handler=approval_handler, pipeline=pipeline
+        ),
     )
 
     return HexgatePydanticAgent(

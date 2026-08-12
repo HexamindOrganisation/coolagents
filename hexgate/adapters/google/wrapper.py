@@ -10,17 +10,20 @@ is what the runner refreshes per run.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from google.adk.agents import BaseAgent
 
 from hexgate.adapters.google.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
+from hexgate.hooks.types import build_pipeline
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
 if TYPE_CHECKING:
     from hexgate.cloud.client import HexgateClient
+    from hexgate.hooks.types import Hook, HookObserver
 
 
 def wrap_google_agent(
@@ -29,6 +32,8 @@ def wrap_google_agent(
     api_key: str,
     approval_handler: ApprovalHandler | None = None,
     client: HexgateClient | None = None,
+    hooks: Sequence[Hook] | None = None,
+    hook_observer: HookObserver | None = None,
 ) -> tuple[BaseAgent, PolicyBinding]:
     """Return a policy-gated clone of ``agent`` plus its refresh binding.
 
@@ -47,7 +52,10 @@ def wrap_google_agent(
 
     resolved = resolve_policy(agent_name, api_key=api_key, client=client)
     enforcer = build_enforcer(resolved.engine, agent_name=agent_name, api_key=api_key)
-    guarded_tools = wrap_tools(tools, enforcer, approval_handler=approval_handler)
+    pipeline = build_pipeline(hooks, observer=hook_observer)
+    guarded_tools = wrap_tools(
+        tools, enforcer, approval_handler=approval_handler, pipeline=pipeline
+    )
     return (
         agent.model_copy(update={"tools": guarded_tools}),
         PolicyBinding(enforcer, resolved.source),
