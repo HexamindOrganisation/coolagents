@@ -1,46 +1,80 @@
-"""Tests for the hook type layer: pipeline coercion, flags, labels."""
+"""Tests for the guard decorators and the pipeline split."""
 
 from __future__ import annotations
 
-from hexgate.hooks.types import Hook, ToolPipeline, observe
+import pytest
+
+from hexgate.hooks import after_tool, before_tool, build_pipeline
+from hexgate.hooks.types import Hook, ToolPipeline
 
 
-def _hook_fn(call):  # noqa: ANN001, ANN202 - test stub
+def _fn(call):  # noqa: ANN001, ANN202 - test stub
     return None
 
 
-def test_bare_callable_is_coerced_to_a_default_hook() -> None:
-    pipe = ToolPipeline(pre=[_hook_fn])
-    assert isinstance(pipe.pre[0], Hook)
-    assert pipe.pre[0].observe_only is False
-    assert pipe.pre[0].matches is None
+def _post(call, out):  # noqa: ANN001, ANN202 - test stub
+    return None
 
 
-def test_existing_hook_passes_through_uncoerced() -> None:
-    h = Hook(_hook_fn, observe_only=True)
-    pipe = ToolPipeline(pre=[h])
-    assert pipe.pre[0] is h
+def test_before_tool_bare_defaults() -> None:
+    h = before_tool(_fn)
+    assert isinstance(h, Hook)
+    assert h.position == "pre"
+    assert h.tool_names is None
+    assert h.observe is False
 
 
-def test_observe_marks_a_hook_fail_open() -> None:
-    h = observe(_hook_fn)
-    assert h.observe_only is True
-    assert h.fn is _hook_fn
+def test_after_tool_bare_is_post() -> None:
+    assert after_tool(_post).position == "post"
 
 
-def test_hook_label_uses_function_name() -> None:
-    assert Hook(_hook_fn).label == "_hook_fn"
-    assert Hook(lambda call: None).label == "<lambda>"
+def test_called_form_scopes_and_flags() -> None:
+    h = before_tool(tool_names=["a", "b"], observe=True)(_fn)
+    assert h.position == "pre"
+    assert h.tool_names == frozenset({"a", "b"})
+    assert h.observe is True
 
 
-def test_is_empty_reflects_registered_hooks() -> None:
-    assert ToolPipeline().is_empty is True
-    assert ToolPipeline(pre=[_hook_fn]).is_empty is False
-    assert ToolPipeline(post=[_hook_fn]).is_empty is False
+def test_tool_names_accepts_a_bare_string() -> None:
+    assert before_tool(tool_names="refund_order")(_fn).tool_names == frozenset(
+        {"refund_order"}
+    )
 
 
-def test_matches_predicate_is_carried() -> None:
-    h = Hook(_hook_fn, matches=lambda name: name.startswith("x"))
-    assert h.matches is not None
-    assert h.matches("x_tool") is True
-    assert h.matches("y_tool") is False
+def test_applies_reflects_scope() -> None:
+    scoped = before_tool(tool_names="x")(_fn)
+    assert scoped.applies("x") is True
+    assert scoped.applies("y") is False
+    assert before_tool(_fn).applies("anything") is True
+
+
+def test_decorated_guard_stays_callable() -> None:
+    assert before_tool(lambda call: "ran")("call") == "ran"
+
+
+def test_label() -> None:
+    assert before_tool(_fn).label == "_fn"
+    assert before_tool(lambda call: None).label == "<lambda>"
+
+
+def test_build_pipeline_splits_and_preserves_order() -> None:
+    p1, p2, q1 = before_tool(_fn), before_tool(_fn), after_tool(_post)
+    pipe = build_pipeline([p1, q1, p2])
+    assert isinstance(pipe, ToolPipeline)
+    assert pipe.pre == (p1, p2)
+    assert pipe.post == (q1,)
+
+
+def test_build_pipeline_none_and_empty_are_none() -> None:
+    assert build_pipeline(None) is None
+    assert build_pipeline([]) is None
+
+
+def test_build_pipeline_keeps_an_observer_even_when_empty() -> None:
+    pipe = build_pipeline([], observer=lambda e: None)
+    assert pipe is not None and pipe.is_empty
+
+
+def test_build_pipeline_rejects_an_undecorated_callable() -> None:
+    with pytest.raises(TypeError, match="not a guard"):
+        build_pipeline([lambda call: None])

@@ -1,6 +1,6 @@
 """Behavioral tests for the guarded-call runner.
 
-Covers the four-step order (pre, decide, invoke, post), the security
+Covers the four-step order (before, decide, invoke, after), the security
 invariant that ``decide`` sees the exact args that execute, halt-message
 safety, the modification/observer channel, the fail-closed / observe-open
 error tiers, arg rewrite, selectivity, ordering, approval, and the sync path.
@@ -10,20 +10,29 @@ from __future__ import annotations
 
 import pytest
 
+from hexgate.hooks import after_tool, before_tool
 from hexgate.hooks.runner import run_guarded_async, run_guarded_sync
 from hexgate.hooks.types import (
     Halt,
-    HookEvent,
     Hook,
+    HookEvent,
     Modification,
     Proceed,
     ToolCall,
     ToolOutcome,
     ToolPipeline,
-    observe,
 )
 from hexgate.security.decision import DecisionOutcome
 from tests.hooks.helpers import FakeEnforcer, RecordingInvoke, langchain_error
+
+
+def _pipe(pre=(), post=(), observer=None) -> ToolPipeline:
+    """Build a pipeline, wrapping bare callables in the right decorator."""
+    return ToolPipeline(
+        pre=[p if isinstance(p, Hook) else before_tool(p) for p in pre],
+        post=[q if isinstance(q, Hook) else after_tool(q) for q in post],
+        observer=observer,
+    )
 
 
 async def _run(enforcer, pipeline, args, *, invoke, approval_handler=None):
@@ -55,7 +64,7 @@ async def test_allow_returns_raw_and_decide_sees_args() -> None:
 @pytest.mark.asyncio
 async def test_pre_observe_none_is_a_noop() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[lambda call: None])
+    pipe = _pipe(pre=[lambda call: None])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert out == "tool-ran"
     assert inv.calls == [{"x": 1}]
@@ -69,7 +78,7 @@ async def test_pre_rewrite_is_what_decide_and_the_tool_see() -> None:
     def drop_secret(call: ToolCall):
         return Proceed(args={k: v for k, v in call.args.items() if k != "secret"})
 
-    pipe = ToolPipeline(pre=[drop_secret])
+    pipe = _pipe(pre=[drop_secret])
     await _run(enf, pipe, {"x": 1, "secret": "AKIA"}, invoke=inv)
 
     assert enf.seen_args == {"x": 1}
@@ -87,7 +96,7 @@ async def test_pre_rewrite_records_a_modification_to_the_observer() -> None:
             modification=Modification("redact", "args", "dropped secret"),
         )
 
-    pipe = ToolPipeline(pre=[redact], observer=events.append)
+    pipe = _pipe(pre=[redact], observer=events.append)
     await _run(enf, pipe, {"x": 1, "secret": "s"}, invoke=inv)
 
     assert len(events) == 1
@@ -98,9 +107,7 @@ async def test_pre_rewrite_records_a_modification_to_the_observer() -> None:
 async def test_pre_rewrite_synthesizes_a_default_modification() -> None:
     events: list[HookEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(
-        pre=[lambda call: Proceed(args={"x": 2})], observer=events.append
-    )
+    pipe = _pipe(pre=[lambda call: Proceed(args={"x": 2})], observer=events.append)
     await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert events[0].modifications[0].plugin == "<lambda>"
     assert events[0].modifications[0].target == "args"
@@ -109,7 +116,7 @@ async def test_pre_rewrite_synthesizes_a_default_modification() -> None:
 @pytest.mark.asyncio
 async def test_two_pre_hooks_run_in_order_and_compose() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(
+    pipe = _pipe(
         pre=[
             lambda call: Proceed(args={**call.args, "a": 1}),
             lambda call: Proceed(args={**call.args, "b": call.args["a"] + 1}),
@@ -127,9 +134,7 @@ async def test_two_pre_hooks_run_in_order_and_compose() -> None:
 @pytest.mark.asyncio
 async def test_pre_halt_blocks_before_decide_and_tool() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(
-        pre=[lambda call: Halt(reason="Refused: a credential was found.")]
-    )
+    pipe = _pipe(pre=[lambda call: Halt(reason="Refused: a credential was found.")])
     out = await _run(enf, pipe, {"secret": "AKIAXXXX"}, invoke=inv)
 
     assert out["ok"] is False
@@ -140,7 +145,7 @@ async def test_pre_halt_blocks_before_decide_and_tool() -> None:
 @pytest.mark.asyncio
 async def test_halt_message_carries_reason_but_never_the_input_or_detail() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(
+    pipe = _pipe(
         pre=[
             lambda call: Halt(
                 reason="Refused: a credential was found in the arguments.",
@@ -174,9 +179,7 @@ async def test_rewrite_then_deny_still_reports_the_modification() -> None:
     events: list[HookEvent] = []
     enf = FakeEnforcer(DecisionOutcome.DENY)
     inv = RecordingInvoke()
-    pipe = ToolPipeline(
-        pre=[lambda call: Proceed(args={"x": 0})], observer=events.append
-    )
+    pipe = _pipe(pre=[lambda call: Proceed(args={"x": 0})], observer=events.append)
     await _run(enf, pipe, {"x": 999}, invoke=inv)
 
     assert len(events) == 1
@@ -186,16 +189,14 @@ async def test_rewrite_then_deny_still_reports_the_modification() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Post-hooks
+# After-guards
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_post_halt_suppresses_a_result_that_was_produced() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke("leaked-secret")
-    pipe = ToolPipeline(
-        post=[lambda call, out: Halt(reason="Result withheld by policy.")]
-    )
+    pipe = _pipe(post=[lambda call, out: Halt(reason="Result withheld by policy.")])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
 
     assert out["ok"] is False
@@ -211,7 +212,7 @@ async def test_post_observe_sees_the_outcome_and_passes_it_through() -> None:
         seen.append(out)
         return None
 
-    pipe = ToolPipeline(post=[watch])
+    pipe = _pipe(post=[watch])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
 
     assert out == "value"
@@ -231,7 +232,7 @@ async def test_scratch_is_shared_from_pre_to_post() -> None:
         seen.append(call.scratch.get("tag", ""))
         return None
 
-    pipe = ToolPipeline(pre=[pre], post=[post])
+    pipe = _pipe(pre=[pre], post=[post])
     await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert seen == ["hello"]
 
@@ -248,7 +249,7 @@ def _boom(*_a):
 @pytest.mark.asyncio
 async def test_raising_pre_hook_fails_closed(caplog) -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[_boom])
+    pipe = _pipe(pre=[_boom])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert out["ok"] is False
     assert inv.calls == []
@@ -257,25 +258,25 @@ async def test_raising_pre_hook_fails_closed(caplog) -> None:
 @pytest.mark.asyncio
 async def test_raising_post_hook_fails_closed_after_the_tool_ran() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(post=[_boom])
+    pipe = _pipe(post=[_boom])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert out["ok"] is False
     assert inv.calls == [{"x": 1}]
 
 
 @pytest.mark.asyncio
-async def test_observe_only_hook_is_fail_open() -> None:
+async def test_observe_guard_is_fail_open() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
-    pipe = ToolPipeline(pre=[observe(_boom)])
+    pipe = _pipe(pre=[before_tool(_boom, observe=True)])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert out == "ok"
     assert inv.calls == [{"x": 1}]
 
 
 @pytest.mark.asyncio
-async def test_observe_only_hook_cannot_halt() -> None:
+async def test_observe_guard_cannot_halt() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
-    pipe = ToolPipeline(pre=[observe(lambda call: Halt(reason="ignored"))])
+    pipe = _pipe(pre=[before_tool(lambda call: Halt(reason="ignored"), observe=True)])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert out == "ok"  # the halt is discarded
     assert inv.calls == [{"x": 1}]
@@ -289,7 +290,7 @@ async def test_observe_only_hook_cannot_halt() -> None:
 @pytest.mark.asyncio
 async def test_bad_hook_return_type_raises() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[lambda call: "not-an-outcome"])
+    pipe = _pipe(pre=[lambda call: "not-an-outcome"])
     with pytest.raises(TypeError, match="expected Proceed, Halt, or None"):
         await _run(enf, pipe, {"x": 1}, invoke=inv)
 
@@ -297,7 +298,7 @@ async def test_bad_hook_return_type_raises() -> None:
 @pytest.mark.asyncio
 async def test_pre_hook_result_rewrite_is_rejected_in_v1() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[lambda call: Proceed(result="x")])
+    pipe = _pipe(pre=[lambda call: Proceed(result="x")])
     with pytest.raises(ValueError, match="result rewrite"):
         await _run(enf, pipe, {"x": 1}, invoke=inv)
 
@@ -305,7 +306,7 @@ async def test_pre_hook_result_rewrite_is_rejected_in_v1() -> None:
 @pytest.mark.asyncio
 async def test_post_hook_arg_rewrite_is_rejected() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(post=[lambda call, out: Proceed(args={"x": 2})])
+    pipe = _pipe(post=[lambda call, out: Proceed(args={"x": 2})])
     with pytest.raises(ValueError, match="cannot rewrite args"):
         await _run(enf, pipe, {"x": 1}, invoke=inv)
 
@@ -313,7 +314,7 @@ async def test_post_hook_arg_rewrite_is_rejected() -> None:
 @pytest.mark.asyncio
 async def test_post_hook_result_rewrite_is_rejected() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(post=[lambda call, out: Proceed(result="rewritten")])
+    pipe = _pipe(post=[lambda call, out: Proceed(result="rewritten")])
     with pytest.raises(ValueError, match="result rewrite"):
         await _run(enf, pipe, {"x": 1}, invoke=inv)
 
@@ -324,12 +325,10 @@ async def test_post_hook_result_rewrite_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_matches_scopes_a_hook_to_some_tools() -> None:
+async def test_tool_names_scopes_a_guard_to_some_tools() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    hook = Hook(
-        lambda call: Halt(reason="blocked"), matches=lambda name: name == "other"
-    )
-    pipe = ToolPipeline(pre=[hook])
+    guard = before_tool(lambda call: Halt(reason="blocked"), tool_names="other")
+    pipe = _pipe(pre=[guard])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)  # tool is "echo", not "other"
     assert out == "tool-ran"
     assert inv.calls == [{"x": 1}]
@@ -339,7 +338,7 @@ async def test_matches_scopes_a_hook_to_some_tools() -> None:
 async def test_hooks_run_without_an_enforcer() -> None:
     inv = RecordingInvoke()
     seen: list[str] = []
-    pipe = ToolPipeline(pre=[lambda call: seen.append(call.tool_name) or None])
+    pipe = _pipe(pre=[lambda call: seen.append(call.tool_name) or None])
     out = await _run(None, pipe, {"x": 1}, invoke=inv)
     assert out == "tool-ran"
     assert seen == ["echo"]
@@ -354,7 +353,7 @@ async def test_hooks_run_without_an_enforcer() -> None:
 @pytest.mark.asyncio
 async def test_pre_halt_needs_approval_approved_proceeds() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
-    pipe = ToolPipeline(
+    pipe = _pipe(
         pre=[
             lambda call: Halt(reason="sign-off", outcome=DecisionOutcome.NEEDS_APPROVAL)
         ]
@@ -367,7 +366,7 @@ async def test_pre_halt_needs_approval_approved_proceeds() -> None:
 @pytest.mark.asyncio
 async def test_pre_halt_needs_approval_declined_blocks() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(
+    pipe = _pipe(
         pre=[
             lambda call: Halt(reason="sign-off", outcome=DecisionOutcome.NEEDS_APPROVAL)
         ]
@@ -384,7 +383,7 @@ async def test_pre_halt_needs_approval_declined_blocks() -> None:
 
 def test_sync_rewrite_and_allow() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke("sync-ok")
-    pipe = ToolPipeline(pre=[lambda call: Proceed(args={"y": 2})])
+    pipe = _pipe(pre=[lambda call: Proceed(args={"y": 2})])
     out = run_guarded_sync(
         "echo",
         {"secret": "z"},
@@ -401,7 +400,7 @@ def test_sync_rewrite_and_allow() -> None:
 
 def test_sync_halt_blocks() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[lambda call: Halt(reason="no")])
+    pipe = _pipe(pre=[lambda call: Halt(reason="no")])
     out = run_guarded_sync(
         "echo",
         {"x": 1},
@@ -421,7 +420,7 @@ def test_sync_rejects_a_coroutine_returning_hook() -> None:
         return None
 
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[async_hook])
+    pipe = _pipe(pre=[async_hook])
     with pytest.raises(RuntimeError, match="coroutine"):
         run_guarded_sync(
             "echo",
@@ -434,14 +433,14 @@ def test_sync_rejects_a_coroutine_returning_hook() -> None:
         )
 
 
-def test_sync_observe_only_async_hook_is_swallowed() -> None:
-    """An async observe_only hook on the sync path is fail-open, not fatal."""
+def test_sync_observe_guard_async_is_swallowed() -> None:
+    """An async observe guard on the sync path is fail-open, not fatal."""
 
     async def watcher(call: ToolCall):
         return None
 
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
-    pipe = ToolPipeline(pre=[observe(watcher)])
+    pipe = _pipe(pre=[before_tool(watcher, observe=True)])
     out = run_guarded_sync(
         "echo",
         {"x": 1},
@@ -456,7 +455,7 @@ def test_sync_observe_only_async_hook_is_swallowed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tool failures reach post-hooks (the try/except around invoke)
+# Tool failures reach after-guards (the try/except around invoke)
 # ---------------------------------------------------------------------------
 
 
@@ -472,7 +471,7 @@ async def test_post_hook_observes_a_tool_that_raised() -> None:
     async def boom(_final):
         raise ValueError("db error blah")
 
-    pipe = ToolPipeline(post=[watch])
+    pipe = _pipe(post=[watch])
     with pytest.raises(ValueError, match="db error"):
         await run_guarded_async(
             "echo",
@@ -500,7 +499,7 @@ async def test_post_hook_can_halt_a_raising_tool_instead_of_propagating() -> Non
     async def boom(_final):
         raise ValueError("leaky-secret-in-message")
 
-    pipe = ToolPipeline(post=[scrub])
+    pipe = _pipe(post=[scrub])
     out = await run_guarded_async(
         "echo",
         {"x": 1},
@@ -534,7 +533,7 @@ async def test_tool_raise_without_post_hooks_propagates_unchanged() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Observer scope: fires on hook actions, not on every call
+# Observer scope: fires on guard actions, not on every call
 # ---------------------------------------------------------------------------
 
 
@@ -542,7 +541,7 @@ async def test_tool_raise_without_post_hooks_propagates_unchanged() -> None:
 async def test_observer_is_silent_on_a_clean_allow() -> None:
     events: list[HookEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = ToolPipeline(pre=[lambda call: None], observer=events.append)
+    pipe = _pipe(pre=[lambda call: None], observer=events.append)
     await _run(enf, pipe, {"x": 1}, invoke=inv)
     assert events == []  # no rewrite, no halt, no approval -> no HookEvent
 
@@ -551,7 +550,7 @@ async def test_observer_is_silent_on_a_clean_allow() -> None:
 async def test_approved_pre_halt_reports_a_hookevent() -> None:
     events: list[HookEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
-    pipe = ToolPipeline(
+    pipe = _pipe(
         pre=[
             lambda call: Halt(reason="sign-off", outcome=DecisionOutcome.NEEDS_APPROVAL)
         ],

@@ -1,5 +1,5 @@
-"""`HexgateAgent.enforce_policy(pipeline=...)` wiring, including the
-hooks-only path where no policy engine is passed.
+"""`HexgateAgent.enforce_policy(hooks=...)` wiring, including the guards-only
+path where no policy engine is passed.
 
 The LangChain graph build is stubbed (as tests/agents/test_factory.py does) so
 these assert the tool-wrapping, not a real graph.
@@ -15,7 +15,8 @@ from langchain_core.tools import tool
 from hexgate.adapters.langchain.tools import GuardedTool
 from hexgate.agents import factory
 from hexgate.agents.factory import HexgateAgent
-from hexgate.hooks.types import Halt, ToolPipeline
+from hexgate.hooks import before_tool
+from hexgate.hooks.types import Halt
 
 
 @tool
@@ -31,26 +32,26 @@ def _agent(monkeypatch: pytest.MonkeyPatch) -> HexgateAgent:
     )
 
 
-def _pipeline() -> ToolPipeline:
-    return ToolPipeline(pre=[lambda call: Halt(reason="blocked")])
+def _hooks() -> list:
+    return [before_tool(lambda call: Halt(reason="blocked"))]
 
 
-def test_enforce_policy_none_with_pipeline_wraps_tools_hooks_only(
+def test_enforce_policy_none_with_hooks_wraps_tools_guards_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """policy=None + a pipeline still guards each tool via hooks (no enforcer)."""
+    """policy=None + hooks still guards each tool via guards (no enforcer)."""
     agent = _agent(monkeypatch)
-    pipe = _pipeline()
 
-    guarded = agent.enforce_policy(None, pipeline=pipe)
+    guarded = agent.enforce_policy(None, hooks=_hooks())
 
     wrapped = guarded.tools[0]
     assert isinstance(wrapped, GuardedTool)
-    assert wrapped.pipeline is pipe
     assert wrapped.enforcer is None
+    assert wrapped.pipeline is not None
+    assert len(wrapped.pipeline.pre) == 1
 
 
-def test_enforce_policy_none_without_pipeline_stays_unguarded(
+def test_enforce_policy_none_without_hooks_stays_unguarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _agent(monkeypatch)
@@ -58,22 +59,21 @@ def test_enforce_policy_none_without_pipeline_stays_unguarded(
     assert not isinstance(rebuilt.tools[0], GuardedTool)
 
 
-def test_enforce_policy_none_empty_pipeline_stays_unguarded(
+def test_enforce_policy_none_empty_hooks_stays_unguarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _agent(monkeypatch)
-    rebuilt = agent.enforce_policy(None, pipeline=ToolPipeline())
+    rebuilt = agent.enforce_policy(None, hooks=[])
     assert not isinstance(rebuilt.tools[0], GuardedTool)
 
 
-def test_enforce_policy_with_policy_and_pipeline_wraps_with_both(
+def test_enforce_policy_with_policy_and_hooks_wraps_with_both(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hexgate.security import AgentPolicy, PolicySet
     from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
     agent = _agent(monkeypatch)
-    pipe = _pipeline()
     policy: Any = PolicySet(
         {
             DEFAULT_ROLE_NAME: AgentPolicy.model_validate(
@@ -85,9 +85,9 @@ def test_enforce_policy_with_policy_and_pipeline_wraps_with_both(
         }
     )
 
-    guarded = agent.enforce_policy(policy, pipeline=pipe)
+    guarded = agent.enforce_policy(policy, hooks=_hooks())
 
     wrapped = guarded.tools[0]
     assert isinstance(wrapped, GuardedTool)
-    assert wrapped.pipeline is pipe
+    assert wrapped.pipeline is not None
     assert wrapped.enforcer is not None

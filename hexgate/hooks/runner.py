@@ -78,39 +78,39 @@ def _new_call(
 
 
 def _applies(hook: Hook, tool_name: str) -> bool:
-    return hook.matches is None or hook.matches(tool_name)
+    return hook.applies(tool_name)
 
 
 def _fail_closed(hook: Hook) -> Halt | None:
-    """Turn a hook exception into a denial, or ``None`` for observe-only.
+    """Turn a guard exception into a denial, or ``None`` for an observe guard.
 
     Called from inside the ``except`` block so ``_log.exception`` still has the
     live traceback.
     """
-    if hook.observe_only:
-        _log.exception("observe_only hook %s raised; ignoring", hook.label)
+    if hook.observe:
+        _log.exception("observe guard %s raised; ignoring", hook.label)
         return None
-    _log.exception("hook %s raised; failing closed (deny)", hook.label)
+    _log.exception("guard %s raised; failing closed (deny)", hook.label)
     return Halt(
-        reason="Blocked by a policy hook.",
+        reason="Blocked by a policy guard.",
         outcome=DecisionOutcome.DENY,
-        detail=f"hook {hook.label!r} raised",
+        detail=f"guard {hook.label!r} raised",
     )
 
 
 def _normalize(hook: Hook, result: Any) -> Proceed | Halt | None:
-    """Validate a hook's return value.
+    """Validate a guard's return value.
 
-    An ``observe_only`` hook's return is discarded (it can neither rewrite nor
-    halt). A normal hook must return ``Proceed``, ``Halt``, or ``None``; any
-    other type is a contract violation and raises, so the bug surfaces in
-    development rather than silently passing.
+    An observe guard's return is discarded (it can neither rewrite nor halt). A
+    normal guard must return ``Proceed``, ``Halt``, or ``None``; any other type
+    is a contract violation and raises, so the bug surfaces in development
+    rather than silently passing.
     """
-    if hook.observe_only:
+    if hook.observe:
         if result is not None:
             _log.warning(
-                "observe_only hook %s returned %s; ignoring (observe-only hooks "
-                "cannot rewrite or halt)",
+                "observe guard %s returned %s; ignoring (observe guards cannot "
+                "rewrite or halt)",
                 hook.label,
                 type(result).__name__,
             )
@@ -343,22 +343,22 @@ def _call_hook_sync(hook: Hook, *hook_args: Any) -> Proceed | Halt | None:
     except Exception:
         return _fail_closed(hook)
     if isawaitable(result):
-        if hook.observe_only:
-            # observe_only is fail-open: an async side-effect hook on a sync
-            # path never ran, but it must not break the call. Drop the
+        if hook.observe:
+            # An observe guard is fail-open: an async side-effect guard on a
+            # sync path never ran, but it must not break the call. Drop the
             # coroutine (avoids an un-awaited warning) and log.
             result.close()
             _log.warning(
-                "observe_only hook %s returned a coroutine on a sync path; "
+                "observe guard %s returned a coroutine on a sync path; "
                 "ignoring (write it sync, or use an async entry point)",
                 hook.label,
             )
             return None
-        # A non-observe hook returning a coroutine on a sync path is a wiring
+        # A non-observe guard returning a coroutine on a sync path is a wiring
         # mistake, not a runtime denial. Surface it loudly.
         result.close()
         raise RuntimeError(
-            f"hook {hook.label!r} returned a coroutine; sync tool invocation "
+            f"guard {hook.label!r} returned a coroutine; sync tool invocation "
             "cannot await it — use an async entry point (ainvoke / astream / "
             "astream_events / run_async / etc.)."
         )

@@ -20,6 +20,7 @@ from hexgate.agents.loader import (
     unregister_agent_factory,
 )
 from hexgate.cloud import HexgateClient, HexgateConfig
+from hexgate.hooks import after_tool, before_tool
 from hexgate.manifest import AgentManifest, create_manifest
 from hexgate.runtime import (
     ContextAttributeValue,
@@ -63,7 +64,9 @@ __all__ = [
     "LocalWorkspace",
     "ToolUseContext",
     "Workspace",
+    "after_tool",
     "agent_tool",
+    "before_tool",
     "bash",
     "edit_file",
     "clear_registered_agents",

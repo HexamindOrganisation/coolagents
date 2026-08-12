@@ -1,10 +1,10 @@
-"""Pre/post tool-call hooks.
+"""Tool guards: functions that run before and after a tool call.
 
-A pluggable pipeline that runs alongside ``PolicyEnforcer.decide``: an
-ordered list of hooks before a tool call (which may observe, rewrite args,
-or halt) and after it (observe or halt in v1). See ``tool-hooks-design.md``
-for the design and the later phases (result rewrite, egress, official
-plugins).
+Author a guard with ``@before_tool`` / ``@after_tool``; it observes a call,
+rewrites its args (before only), or halts. Register guards as one flat
+``hooks=[...]`` list on the agent. See ``tool-hooks-explained.md`` for the
+intuition, ``docs/adr/R-HOOK-001..003`` for the decisions, and the later phases
+(result rewrite, egress, official plugins) in ``ROADMAP.md``.
 """
 
 from __future__ import annotations
@@ -12,32 +12,28 @@ from __future__ import annotations
 from hexgate.hooks.runner import run_guarded_async, run_guarded_sync
 from hexgate.hooks.types import (
     Halt,
-    Hook,
     HookEvent,
     HookObserver,
     Modification,
-    PostHook,
-    PreHook,
     Proceed,
     ToolCall,
     ToolOutcome,
-    ToolPipeline,
-    observe,
+    after_tool,
+    before_tool,
+    build_pipeline,
 )
 
 __all__ = [
     "Halt",
-    "Hook",
     "HookEvent",
     "HookObserver",
     "Modification",
-    "PostHook",
-    "PreHook",
     "Proceed",
     "ToolCall",
     "ToolOutcome",
-    "ToolPipeline",
-    "observe",
+    "after_tool",
+    "before_tool",
+    "build_pipeline",
     "run_guarded_async",
     "run_guarded_sync",
 ]
