@@ -65,13 +65,15 @@ class HexgateContext(BaseModel):
     Binds an agent invocation to a caller for the duration of a block. The
     runtime checks for an active context on each invocation, lazily mints a
     per-request Biscuit (signed by the platform-bound
-    :class:`~hexgate.cloud.HexgateClient`), and selects a policy from
-    ``primary_role``. The policy's per-tool ``constraints`` then evaluate
+    :class:`~hexgate.cloud.HexgateClient`), and selects a policy per role in
+    ``user_roles``. The policy's per-tool ``constraints`` then evaluate
     against each call's arguments. Four distinct jobs live here, deliberately
     named:
 
     * identity / audit    -> ``user_id`` / ``session_id``
-    * policy selection     -> ``user_roles`` (only ``primary_role`` used today)
+    * policy selection     -> ``user_roles`` (every role is evaluated; access is
+      granted iff any of them grants it — see
+      :func:`~hexgate.security.decision.combine_role_verdicts`)
     * token lifetime       -> ``ttl_seconds`` (feeds attenuation, never policy)
     * ABAC filter surface  -> ``attributes`` (feeds the ``ctx.*`` constraint
       namespace; untrusted/spoofable — same trust tier as ``user_roles``, since
@@ -104,7 +106,11 @@ class HexgateContext(BaseModel):
     user_id: str
     user_roles: list[str] = Field(
         default_factory=list,
-        description="The roles of the end user invoking the agent.",
+        description=(
+            "The roles of the end user invoking the agent. Every role is "
+            "evaluated and the most permissive outcome wins, so adding a role "
+            "can only widen access. An empty list selects the default policy."
+        ),
     )
     session_id: str | None = None
     ttl_seconds: int | None = None
@@ -120,12 +126,6 @@ class HexgateContext(BaseModel):
     # set() rather than reset(token): async-generator finalizers run __aexit__
     # in a different Context, where a token reset would raise — set() doesn't.
     _saved: list["HexgateContext | None"] = PrivateAttr(default_factory=list)
-
-    @property
-    def primary_role(self) -> str | None:
-        """Single role used for policy selection today. Multi-role widens the
-        *selector* later; callers read this, never ``user_roles[0]`` directly."""
-        return self.user_roles[0] if self.user_roles else None
 
     async def __aenter__(self) -> "HexgateContext":
         self._saved.append(_CURRENT_CONTEXT.get())

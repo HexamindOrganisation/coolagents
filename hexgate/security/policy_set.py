@@ -7,15 +7,20 @@ caller). A ``policies/`` directory is the new shape:
     ├── agent.yaml
     ├── system.md
     └── policies/
-        ├── default.yaml      # fallback when no primary role is active
+        ├── default.yaml      # fallback when the caller's roles are unknown
         ├── read_only.yaml    # mixin — is_mixin: true
         ├── support.yaml      # inherits: [read_only]
         └── billing.yaml      # inherits: [read_only, support]
 
 A :class:`PolicySet` holds the resolved (post-inheritance) policy per role
-name, plus the ``default`` fallback. At tool-call time, the runtime asks
-the set for ``policy_for(user_role)`` and the rest of the enforcement path
-is unchanged.
+name, plus the ``default`` fallback. At tool-call time the enforcer asks the
+set for ``policy_for(role)`` once per role the caller carries and takes the
+most permissive verdict; this module stays single-role and unaware of that.
+
+``default`` is a *fallback*, not a *floor*: a caller whose role is defined
+never inherits ``default``'s permissions. To express a baseline shared by
+every role, write it as a mixin and ``inherits`` it — that way it is opt-in
+and visible in the YAML.
 
 Inheritance semantics: left-to-right merge — ``inherits: [A, B]`` resolves
 to ``merge(A, merge(B, self))``, where ``merge`` deep-merges the ``tools``
@@ -51,9 +56,8 @@ class PolicySet:
 
     ``policies`` keys are role names; values are fully-resolved
     :class:`AgentPolicy` instances (inheritance flattened, mixins inlined).
-    The ``default`` key is always present — it's what the runtime falls
-    back to when the active ``primary_role`` is ``None`` or doesn't match any
-    defined role.
+    The ``default`` key is always present — it's what a lookup falls back to
+    when a role is ``None`` or doesn't match any defined role.
     """
 
     def __init__(self, policies: dict[str, AgentPolicy]) -> None:
