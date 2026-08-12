@@ -60,6 +60,13 @@ _ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, ContextAttributeValue]] = TypeAdapter
     dict[str, ContextAttributeValue]
 )
 
+# Lint severities ``--max-severity`` accepts, and the threshold that leaves
+# warnings printed but non-blocking. Mirrors ``analyzer.SEVERITY_RANK``'s keys
+# without importing it at module scope (the analyzer is imported lazily so the
+# fast verbs don't pay for it).
+_MAX_SEVERITY_CHOICES = ("error", "warning", "info")
+_DEFAULT_MAX_SEVERITY = "error"
+
 
 # ---------------------------------------------------------------------------
 # Argparse wiring
@@ -148,8 +155,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_val.add_argument("source", help="Path to the policy.yaml file.")
     p_val.add_argument(
         "--max-severity",
-        choices=("error", "warning", "info"),
-        default="error",
+        choices=_MAX_SEVERITY_CHOICES,
+        default=_DEFAULT_MAX_SEVERITY,
         help=(
             "Exit non-zero if any lint is at or above this severity (default "
             "error — i.e. cross-role warnings are printed but don't fail). Pass "
@@ -283,8 +290,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_check.add_argument(
         "--max-severity",
-        choices=("error", "warning", "info"),
-        default="error",
+        choices=_MAX_SEVERITY_CHOICES,
+        default=_DEFAULT_MAX_SEVERITY,
         help="Exit non-zero if any lint is at or above this severity (default error).",
     )
     p_check.set_defaults(func=_main_check)
@@ -466,10 +473,22 @@ def _main_validate(args: argparse.Namespace) -> int:
     for lint in lints:
         print(f"⚠ {lint.code}: {lint.message}", file=sys.stderr)
 
-    print("✓ Policy parses cleanly.")
-    threshold = getattr(args, "max_severity", "error")
-    if lints and SEVERITY_RANK[threshold] >= SEVERITY_RANK["warning"]:
+    # Same fold as ``policy check``: the worst lint decides, so a future
+    # ``error``-severity lint gates at the default threshold instead of
+    # slipping through a comparison against a hardcoded "warning".
+    severity = getattr(args, "max_severity", _DEFAULT_MAX_SEVERITY)
+    threshold = SEVERITY_RANK[severity]
+    if lints and min(SEVERITY_RANK[lint.severity] for lint in lints) <= threshold:
+        # Below the gate on purpose: stdout must not claim a clean policy on a
+        # run that exits non-zero.
+        print(
+            f"✗ Policy parses, but {len(lints)} lint(s) are at or above "
+            f"--max-severity {severity}.",
+            file=sys.stderr,
+        )
         return 1
+
+    print("✓ Policy parses cleanly.")
     return 0
 
 

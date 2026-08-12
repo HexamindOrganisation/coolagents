@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from hexgate.security import analyzer
+from hexgate.security.analyzer import PolicyLint
+
 from hexgate.cli.policy.main import (
     _main_build,
     _main_keygen,
@@ -1092,8 +1095,42 @@ def test_validate_gates_on_the_permissive_default_warning(
 
     rc = _main_validate(_ns(source=str(p), max_severity="warning"))
 
+    captured = capsys.readouterr()
     assert rc == 1
-    assert "permissive-default" in capsys.readouterr().err
+    assert "permissive-default" in captured.err
+    # A gated run must not also claim success — a CI log saying "parses cleanly"
+    # next to a non-zero exit sends the reader hunting for a phantom failure.
+    assert "Policy parses cleanly" not in captured.out
+    assert "at or above --max-severity warning" in captured.err
+
+
+def _lint_of_severity(severity: str) -> list[PolicyLint]:
+    return [PolicyLint(code="stub-lint", severity=severity, message="stub")]
+
+
+@pytest.mark.parametrize(
+    ("severity", "expected_rc"),
+    [("error", 1), ("warning", 0), ("info", 0)],
+)
+def test_validate_gates_on_each_lint_severity_not_a_hardcoded_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    severity: str,
+    expected_rc: int,
+) -> None:
+    """The default threshold gates on the lint's own severity.
+
+    Only ``check_default_role_exposure``'s warnings exist today, so an
+    ``error``-severity lint slipping through the default threshold would be
+    invisible until the first one is written.
+    """
+    p = tmp_path / "clean.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+    monkeypatch.setattr(
+        analyzer, "check_default_role_exposure", lambda _: _lint_of_severity(severity)
+    )
+
+    assert _main_validate(_ns(source=str(p), max_severity="error")) == expected_rc
 
 
 def test_validate_clean_role_policy_has_no_warning(
