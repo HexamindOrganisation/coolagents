@@ -415,6 +415,8 @@ def test_explicit_default_argument_is_not_an_implicit_default() -> None:
     assert [lint.code for lint in check_default_role_exposure(lints)] != [
         "implicit-default"
     ]
+
+
 # --- check_project: per-role attribution + project-level lints -------------
 
 
