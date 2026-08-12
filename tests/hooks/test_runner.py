@@ -310,6 +310,14 @@ async def test_post_hook_arg_rewrite_is_rejected() -> None:
         await _run(enf, pipe, {"x": 1}, invoke=inv)
 
 
+@pytest.mark.asyncio
+async def test_post_hook_result_rewrite_is_rejected() -> None:
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = ToolPipeline(post=[lambda call, out: Proceed(result="rewritten")])
+    with pytest.raises(ValueError, match="result rewrite"):
+        await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+
 # ---------------------------------------------------------------------------
 # Selectivity and no-enforcer
 # ---------------------------------------------------------------------------
