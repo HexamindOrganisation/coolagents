@@ -4,6 +4,12 @@
 call and stops — adapters translate it for their host. Stateless across
 calls: each :meth:`decide` re-reads the active :class:`HexgateContext`
 from the contextvar.
+
+Multi-role callers are handled here, not in the engines: :meth:`decide`
+resolves the caller's role set and folds one verdict per role through
+:func:`~hexgate.security.decision.combine_role_verdicts` (permissive union,
+``ALLOW > NEEDS_APPROVAL > DENY``). Both engines stay single-role, so they
+remain byte-for-byte comparable one role at a time.
 """
 
 from __future__ import annotations
@@ -11,14 +17,62 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_context
-from hexgate.security.decision import Decision, PolicyEngine
+from hexgate.security.decision import Decision, PolicyEngine, combine_role_verdicts
 from hexgate.tracing._senders import AuditSender
 
+if TYPE_CHECKING:
+    from hexgate.runtime.context import HexgateContext
+
 _log = logging.getLogger(__name__)
+
+# Upper bound on the roles evaluated for one tool call. N roles cost N engine
+# invocations (one WASM module call each) and ``user_roles`` is caller-supplied,
+# so it needs a ceiling. Dropping the tail can only *narrow* a permissive
+# union, which makes the cap fail-closed; it is logged once per process so a
+# legitimately wide caller is visible rather than silently trimmed.
+MAX_EVALUATED_ROLES = 32
+
+_warned_role_cap = False
+
+
+def _roles_to_evaluate(context: HexgateContext | None) -> list[str | None]:
+    """Resolve the roles one decision evaluates, in caller order.
+
+    Distinct by *name*, not by resolved policy: two names can select the same
+    policy and still differ in the ``role`` fact a constraint reads, so both
+    must be evaluated.
+
+    Returns ``[None]`` when there is no context or it carries no roles — the
+    engines map that to the ``default`` policy, exactly as a single ``role=None``
+    call does today. Never returns an empty list: skipping evaluation entirely
+    would fail open.
+    """
+    global _warned_role_cap
+    if context is None:
+        return [None]
+    seen: list[str] = []
+    for role in context.user_roles:
+        if role not in seen:
+            seen.append(role)
+    if not seen:
+        return [None]
+    if len(seen) > MAX_EVALUATED_ROLES:
+        if not _warned_role_cap:
+            _log.warning(
+                "context carries %d distinct roles; evaluating the first %d "
+                "(MAX_EVALUATED_ROLES). Later roles cannot grant access. "
+                "Subsequent occurrences in this process are suppressed.",
+                len(seen),
+                MAX_EVALUATED_ROLES,
+            )
+            _warned_role_cap = True
+        seen = seen[:MAX_EVALUATED_ROLES]
+    return list(seen)
+
 
 # A sync, fire-and-forget hook fired after every decision is built.
 # Used today by ``hexgate chat`` to render denies / approvals inline in the
@@ -70,9 +124,14 @@ class PolicyEnforcer:
         self._decision_observer = decision_observer
 
     def decide(self, tool_name: str, arguments: Mapping[str, Any]) -> Decision:
-        """Resolve role from the contextvar, ask the engine for a
-        :class:`~hexgate.security.decision.Verdict`, and lift it into a
-        host-facing :class:`Decision` with this agent's context.
+        """Resolve the caller's role set from the contextvar, fold one engine
+        :class:`~hexgate.security.decision.Verdict` per role into a permissive
+        union, and lift the winner into a host-facing :class:`Decision` with
+        this agent's context.
+
+        Access is granted iff *any* of the caller's roles grants it; the first
+        allowing role short-circuits the rest and is recorded as the deciding
+        role.
 
         Emits an :class:`~hexgate.audit.AuditEvent` to this enforcer's
         injected sender after the decision is built, and calls the
@@ -80,9 +139,9 @@ class PolicyEnforcer:
         Both are no-ops when not injected; both are isolated so a
         broken observer never breaks enforcement."""
         context = get_current_context()
-        role = context.primary_role if context is not None else None
+        roles = _roles_to_evaluate(context)
         # ABAC bag read off the contextvar, feeding the ``ctx.*`` constraint
-        # namespace. Untrusted/spoofable at the same trust tier as ``role``
+        # namespace. Untrusted/spoofable at the same trust tier as the role set
         # above (both contextvar-sourced, not token-verified) — so a ``ctx.*``
         # rule is exactly as trustworthy as a ``role`` rule today. The signed
         # tier will let declared keys be verified from ``biscuit_facts``; until
@@ -93,19 +152,29 @@ class PolicyEnforcer:
         # call, so a shallow copy would alias a mutable value into a retained
         # Decision exactly like a shallow ``args`` copy would.
         retained = self._audit_sender is not None or self._decision_observer is not None
+        # Snapshotted once and shared across every role's evaluation: the
+        # engines don't mutate them, and re-copying per role would multiply the
+        # deep-copy cost by the number of roles.
         args_snapshot = _snapshot(arguments, deep=retained)
         attrs_snapshot = (
             _snapshot(attributes, deep=retained) if attributes is not None else None
         )
 
-        verdict = self.policy.evaluate(
-            role=role, tool=tool_name, args=args_snapshot, attributes=attrs_snapshot
+        verdict, deciding_role = combine_role_verdicts(
+            roles,
+            lambda role: self.policy.evaluate(
+                role=role,
+                tool=tool_name,
+                args=args_snapshot,
+                attributes=attrs_snapshot,
+            ),
         )
         decision = Decision.from_verdict(
             verdict,
             agent_name=self.agent_name,
             tool_name=tool_name,
-            role=role,
+            user_roles=tuple(role for role in roles if role is not None),
+            deciding_role=deciding_role,
             arguments=args_snapshot,
             attributes=attrs_snapshot,
         )

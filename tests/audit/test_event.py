@@ -22,7 +22,7 @@ def _decision(**overrides) -> Decision:
 
 def test_as_payload_full_payload() -> None:
     d = _decision(
-        role="analyst",
+        user_roles=("analyst",),
         reason="denied for path",
         error_type="policy_denied",
         hint={"glob": "/x/**"},
@@ -58,8 +58,9 @@ def test_as_payload_server_resolved_fields_absent() -> None:
 
 
 def test_as_payload_none_normalizes_to_empty_string() -> None:
-    d = _decision(role=None, error_type=None)
+    d = _decision(user_roles=(), error_type=None)
     wire = AuditEvent(decision=d).as_payload()  # user_id/session_id default to ""
+    # No roles on the Decision → the legacy scalar ``role`` field goes out empty.
     assert wire["role"] == ""
     assert wire["error_type"] == ""
     assert wire["user_id"] == ""

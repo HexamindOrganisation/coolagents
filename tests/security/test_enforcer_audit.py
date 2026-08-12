@@ -67,7 +67,10 @@ async def test_sender_with_user_populates_envelope_from_user() -> None:
     ):
         decision = enforcer.decide("read_file", {})
     ev = sender.events[0]
-    assert decision.role == "analyst"  # role propagates from HexgateContext to Decision
+    # The role set propagates from HexgateContext to the Decision, and the
+    # legacy scalar view still reads the caller's first role.
+    assert decision.user_roles == ("analyst",)
+    assert decision.role == "analyst"
     assert ev.user_id == "alice"
     assert ev.session_id == "sess_42"
     assert ev.decision is decision  # same Decision instance wrapped
@@ -134,3 +137,42 @@ async def test_user_session_id_none_normalizes_to_empty_string() -> None:
     ev = sender.events[0]
     assert ev.user_id == "bob"
     assert ev.session_id == ""
+
+
+async def test_audited_decision_carries_the_full_role_set_and_deciding_role() -> None:
+    """A multi-role caller's audit record must answer both "who was calling?"
+    and "which role granted it?" — one event, never one per role."""
+
+    class _AllowBillingEngine:
+        def evaluate(
+            self,
+            *,
+            role: str | None,
+            tool: str,
+            args: Mapping[str, Any],
+            attributes: Mapping[str, Any] | None = None,
+        ) -> Verdict:
+            if role == "billing":
+                return Verdict(outcome=DecisionOutcome.ALLOW)
+            return Verdict(outcome=DecisionOutcome.DENY, reason="not billing")
+
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(
+        _AllowBillingEngine(), agent_name="r", audit_sender=sender
+    )
+    async with HexgateContext(user_id="alice", user_roles=["support", "billing"]):
+        decision = enforcer.decide("refund", {})
+
+    assert len(sender.events) == 1  # one decision, one event
+    assert decision.user_roles == ("support", "billing")
+    assert decision.deciding_role == "billing"
+
+
+async def test_audited_deny_records_no_deciding_role() -> None:
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+    async with HexgateContext(user_id="alice", user_roles=["support", "billing"]):
+        decision = enforcer.decide("refund", {})
+
+    assert decision.user_roles == ("support", "billing")
+    assert decision.deciding_role is None

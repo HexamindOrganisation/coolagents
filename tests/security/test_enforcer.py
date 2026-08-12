@@ -2,8 +2,13 @@
 
 The enforcer depends only on the
 :class:`~hexgate.security.decision.PolicyEngine` protocol, so a hand-rolled
-fake engine is enough to pin its behavior: forward role/tool/args, lift the
-returned :class:`Verdict` into a :class:`Decision` with host context.
+fake engine is enough to pin its behavior: forward role/tool/args once per
+role in the caller's set, fold the verdicts, and lift the winner into a
+:class:`Decision` with host context.
+
+``_RecordingEngine.calls`` is a *list* on purpose — with multi-role callers the
+number and order of engine invocations is part of the contract (role-set
+resolution, dedup, the cap, and the short-circuit are all observable there).
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from hexgate.security import (
     evaluate_tool_call,
 )
 from hexgate.security.decision import Decision
-from hexgate.security.enforcer import PolicyEnforcer
+from hexgate.security.enforcer import MAX_EVALUATED_ROLES, PolicyEnforcer
 from hexgate.security.policy_set import PolicySet
 
 
@@ -84,7 +89,7 @@ def test_enforcer_forwards_context_attributes_to_engine() -> None:
 
     assert engine.calls == [
         {
-            "role": "billing",  # primary_role
+            "role": "billing",
             "tool": "refund",
             "args": {"amount": 10},
             "attributes": {"department": "finance", "clearance_level": 3},
@@ -92,6 +97,214 @@ def test_enforcer_forwards_context_attributes_to_engine() -> None:
     ]
     # The bag is also stamped onto the Decision for in-process observers.
     assert decision.attributes == {"department": "finance", "clearance_level": 3}
+
+
+# ---------------------------------------------------------------------------
+# Multi-role: role-set resolution + the permissive union
+# ---------------------------------------------------------------------------
+
+
+def _allows_only(tool: str) -> AgentPolicy:
+    """A deny-by-default policy that permits exactly one tool."""
+    return AgentPolicy.model_validate(
+        {"default_policy": {"mode": "deny"}, "tools": {tool: {"mode": "allow"}}}
+    )
+
+
+def test_enforcer_evaluates_every_role_in_caller_order() -> None:
+    """All roles are asked, in the caller's order, when none of them allows."""
+    from hexgate.runtime.context import HexgateContext
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY, reason="no"))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=["billing", "support"]).sync_scope():
+        decision = enforcer.decide("refund", {})
+
+    assert [call["role"] for call in engine.calls] == ["billing", "support"]
+    assert decision.user_roles == ("billing", "support")
+    assert decision.deciding_role is None
+    assert decision.outcome is DecisionOutcome.DENY
+
+
+def test_enforcer_stops_at_the_first_allowing_role() -> None:
+    """The union short-circuits, so a later role is never even asked."""
+    from hexgate.runtime.context import HexgateContext
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=["billing", "support"]).sync_scope():
+        decision = enforcer.decide("refund", {})
+
+    assert [call["role"] for call in engine.calls] == ["billing"]
+    assert decision.deciding_role == "billing"
+    # The full set is still recorded — the audit trail must show who was calling,
+    # not just who granted it.
+    assert decision.user_roles == ("billing", "support")
+
+
+def test_enforcer_grants_access_when_only_a_later_role_allows() -> None:
+    """The point of the feature, end to end on the real pydantic engine."""
+    from hexgate.runtime.context import HexgateContext
+
+    policy_set = PolicySet(
+        {
+            "default": AgentPolicy.model_validate({"default_policy": {"mode": "deny"}}),
+            "support": AgentPolicy.model_validate({"default_policy": {"mode": "deny"}}),
+            "billing": _allows_only("refund"),
+        }
+    )
+    enforcer = PolicyEnforcer(policy_set, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=["support"]).sync_scope():
+        assert not enforcer.decide("refund", {}).allowed
+
+    with HexgateContext(user_id="u", user_roles=["support", "billing"]).sync_scope():
+        decision = enforcer.decide("refund", {})
+
+    assert decision.allowed
+    assert decision.deciding_role == "billing"
+
+
+def test_enforcer_binds_the_role_fact_per_role() -> None:
+    """A ``role ==`` constraint sees the role being evaluated, not the whole set.
+
+    Without per-role binding a constraint like ``role == "billing"`` could never
+    pass for a multi-role caller.
+    """
+    from hexgate.runtime.context import HexgateContext
+
+    policy_set = PolicySet(
+        {
+            "default": AgentPolicy.model_validate({"default_policy": {"mode": "deny"}}),
+            "support": AgentPolicy.model_validate({"default_policy": {"mode": "deny"}}),
+            "billing": AgentPolicy.model_validate(
+                {
+                    "default_policy": {"mode": "deny"},
+                    "tools": {
+                        "refund": {
+                            "mode": "allow",
+                            "constraints": ['role == "billing"'],
+                        }
+                    },
+                }
+            ),
+        }
+    )
+    enforcer = PolicyEnforcer(policy_set, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=["support", "billing"]).sync_scope():
+        assert enforcer.decide("refund", {}).allowed
+
+    with HexgateContext(user_id="u", user_roles=["support"]).sync_scope():
+        assert not enforcer.decide("refund", {}).allowed
+
+
+def test_enforcer_evaluates_no_roles_as_the_default_policy() -> None:
+    """Empty ``user_roles`` and no context both evaluate once with role=None."""
+    from hexgate.runtime.context import HexgateContext
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=[]).sync_scope():
+        decision = enforcer.decide("refund", {})
+
+    assert [call["role"] for call in engine.calls] == [None]
+    assert decision.user_roles == ()
+    assert decision.role is None  # legacy single-role view
+
+
+def test_enforcer_dedups_repeated_role_names() -> None:
+    from hexgate.runtime.context import HexgateContext
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY, reason="no"))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    with HexgateContext(
+        user_id="u", user_roles=["billing", "support", "billing"]
+    ).sync_scope():
+        decision = enforcer.decide("refund", {})
+
+    assert [call["role"] for call in engine.calls] == ["billing", "support"]
+    assert decision.user_roles == ("billing", "support")
+
+
+def test_enforcer_caps_the_number_of_roles_evaluated(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A caller-supplied list can't force unbounded engine invocations.
+
+    Dropping the tail only narrows a permissive union, so the cap is
+    fail-closed — but it is logged, not silent.
+    """
+    import logging
+
+    from hexgate.runtime.context import HexgateContext
+    from hexgate.security import enforcer as enforcer_module
+
+    monkey_roles = [f"role_{index}" for index in range(MAX_EVALUATED_ROLES + 5)]
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY, reason="no"))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    enforcer_module._warned_role_cap = False
+    with caplog.at_level(logging.WARNING, logger="hexgate.security.enforcer"):
+        with HexgateContext(user_id="u", user_roles=monkey_roles).sync_scope():
+            decision = enforcer.decide("refund", {})
+
+    assert len(engine.calls) == MAX_EVALUATED_ROLES
+    assert len(decision.user_roles) == MAX_EVALUATED_ROLES
+    assert decision.user_roles[0] == "role_0"
+    assert "MAX_EVALUATED_ROLES" in caplog.text
+
+
+def test_enforcer_warns_once_per_process_about_the_role_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from hexgate.runtime.context import HexgateContext
+    from hexgate.security import enforcer as enforcer_module
+
+    roles = [f"role_{index}" for index in range(MAX_EVALUATED_ROLES + 1)]
+    enforcer = PolicyEnforcer(
+        _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY)), agent_name="a"
+    )
+
+    enforcer_module._warned_role_cap = False
+    with caplog.at_level(logging.WARNING, logger="hexgate.security.enforcer"):
+        with HexgateContext(user_id="u", user_roles=roles).sync_scope():
+            enforcer.decide("refund", {})
+            enforcer.decide("refund", {})
+
+    assert caplog.text.count("MAX_EVALUATED_ROLES") == 1
+
+
+def test_enforcer_single_role_matches_the_pre_multi_role_verdict() -> None:
+    """D12: one role in ``user_roles`` produces exactly the verdict that role
+    produces on its own, structured detail included."""
+    from hexgate.runtime.context import HexgateContext
+
+    policy = AgentPolicy.model_validate(
+        {
+            "default_policy": {"mode": "deny"},
+            "tools": {
+                "refund": {"mode": "allow", "constraints": ["args.amount <= 100"]}
+            },
+        }
+    )
+    policy_set = PolicySet({"default": policy, "billing": policy})
+    enforcer = PolicyEnforcer(policy_set, agent_name="a")
+
+    direct = policy_set.evaluate(role="billing", tool="refund", args={"amount": 500})
+    with HexgateContext(user_id="u", user_roles=["billing"]).sync_scope():
+        decision = enforcer.decide("refund", {"amount": 500})
+
+    assert decision.outcome is direct.outcome
+    assert decision.reason == direct.reason
+    assert decision.violations == direct.violations
+    assert decision.hint == direct.hint
 
 
 def test_enforcer_lifts_deny_verdict_with_structured_detail() -> None:

@@ -62,6 +62,7 @@ from hexgate.security.decision import (
     DecisionOutcome,
     PolicyEngine,
     Verdict,
+    combine_role_verdicts,
 )
 from hexgate.security.policy import (
     authorize_tool_call,
@@ -195,6 +196,7 @@ __all__ = [
     "Verdict",
     "authorize_tool_call",
     "authorize_tool_call_wasm",
+    "combine_role_verdicts",
     "evaluate_tool_call",
     "evaluate_tool_call_wasm",
     "verdict_from_rego",
