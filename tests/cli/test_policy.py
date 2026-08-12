@@ -1009,3 +1009,66 @@ def test_test_roles_dedups_and_labels_the_set(
     out = capsys.readouterr().out
     assert rc == 0
     assert "[support, billing]" in out
+
+
+# ---------------------------------------------------------------------------
+# validate: the permissive-default warning + its CI gate
+# ---------------------------------------------------------------------------
+
+_PERMISSIVE_DEFAULT_POLICY = """\
+version: 1
+roles:
+  default:
+    tools:
+      deploy:
+        mode: allow
+  support:
+    default_policy:
+      mode: deny
+    tools:
+      read_file:
+        mode: allow
+"""
+
+
+def test_validate_warns_on_a_permissive_default_without_failing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Default severity keeps validate passing — a permissive `default` is legal
+    (a flat policy.yaml is exactly that) — but the exposure is reported."""
+    p = tmp_path / "exposed.yaml"
+    p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="error"))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "permissive-default" in captured.err
+    assert "deploy" in captured.err
+    assert "Policy parses cleanly" in captured.out
+
+
+def test_validate_gates_on_the_permissive_default_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--max-severity warning` is how CI refuses a default role that grants
+    what no named role grants."""
+    p = tmp_path / "exposed.yaml"
+    p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="warning"))
+
+    assert rc == 1
+    assert "permissive-default" in capsys.readouterr().err
+
+
+def test_validate_clean_role_policy_has_no_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p = tmp_path / "clean.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="warning"))
+
+    assert rc == 0
+    assert "permissive-default" not in capsys.readouterr().err

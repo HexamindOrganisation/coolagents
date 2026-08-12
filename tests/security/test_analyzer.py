@@ -1,4 +1,5 @@
-"""Tests for the policy analyzer — soft lints over a linked bundle."""
+"""Tests for the policy analyzer — soft lints over a linked bundle, plus the
+cross-role `permissive-default` check over a resolved role map."""
 
 from __future__ import annotations
 
@@ -8,10 +9,13 @@ from hexgate.security import (
     AgentPolicy,
     BaseToolPolicy,
     ModuleContent,
+    PolicySet,
     analyze,
     check,
     link_policy_set,
+    load_policy_map,
 )
+from hexgate.security.analyzer import check_default_role_exposure
 
 
 def _mod(name, kind, tools, *, default_mode="allow"):
@@ -236,3 +240,118 @@ def test_default_policy_constraints_rejected_as_link_error():
     lints = check([module], [])
     assert [lint.code for lint in lints] == ["link-error"]
     assert "default_policy constraints" in lints[0].message
+
+
+# ---------------------------------------------------------------------------
+# permissive-default — cross-role exposure of the `default` fallback
+# ---------------------------------------------------------------------------
+
+
+def _policy_set(roles: dict[str, dict]) -> PolicySet:
+    return load_policy_map(
+        {name: AgentPolicy.model_validate(spec) for name, spec in roles.items()}
+    )
+
+
+def test_permissive_default_flags_a_grant_no_named_role_has() -> None:
+    """A tool only `default` grants is reachable by any caller carrying a role
+    name the policy doesn't define — the enforcer resolves it to `default`."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"delete_everything": {"mode": "allow"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert [lint.code for lint in lints] == ["permissive-default"]
+    assert lints[0].severity == "warning"
+    assert lints[0].tool == "delete_everything"
+
+
+def test_permissive_default_is_quiet_when_a_named_role_also_grants_it() -> None:
+    """A shared grant is intentional (typically via a mixin), not exposure."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"read_file": {"mode": "allow"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_is_quiet_for_a_least_privilege_default() -> None:
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"default_policy": {"mode": "deny"}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_is_quiet_for_a_single_role_policy() -> None:
+    """A legacy flat policy.yaml *is* the `default` role, so there is no
+    cross-role exposure to report — flagging it would fail every such build."""
+    lints = check_default_role_exposure(
+        _policy_set({"default": {"tools": {"read_file": {"mode": "allow"}}}})
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_flags_a_granting_catch_all() -> None:
+    """`default_policy: allow` under `default` exposes every unlisted tool."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"default_policy": {"mode": "allow"}},
+                "support": {
+                    "default_policy": {"mode": "deny"},
+                    "tools": {"read_file": {"mode": "allow"}},
+                },
+            }
+        )
+    )
+
+    assert [lint.code for lint in lints] == ["permissive-default"]
+    assert "default_policy" in lints[0].message
+    assert lints[0].tool is None
+
+
+def test_permissive_default_flags_approval_required_grants_too() -> None:
+    """`approval_required` is still a grant — it reaches the tool, with a gate."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"deploy": {"mode": "approval_required"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert len(lints) == 1
+    assert lints[0].tool == "deploy"
+
+
+def test_permissive_default_sees_through_inheritance() -> None:
+    """Grants a named role inherits from a mixin count as that role's grants —
+    the check runs on resolved policies, matching what the enforcer evaluates."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "base": {"is_mixin": True, "tools": {"read_file": {"mode": "allow"}}},
+                "default": {"tools": {"read_file": {"mode": "allow"}}},
+                "support": {"inherits": ["base"]},
+            }
+        )
+    )
+
+    assert lints == []

@@ -145,6 +145,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_val.add_argument("source", help="Path to the policy.yaml file.")
+    p_val.add_argument(
+        "--max-severity",
+        choices=("error", "warning", "info"),
+        default="error",
+        help=(
+            "Exit non-zero if any lint is at or above this severity (default "
+            "error — i.e. cross-role warnings are printed but don't fail). Pass "
+            "'warning' in CI to gate on a permissive default role."
+        ),
+    )
     p_val.set_defaults(func=_main_validate)
 
     # ---- show-rego ----
@@ -432,7 +442,7 @@ def _main_validate(args: argparse.Namespace) -> int:
 
     # Schema + inheritance + mixin validation (constraints already clean above).
     try:
-        load_policy_set_from_dict(payload)
+        policy_set = load_policy_set_from_dict(payload)
     except (PolicySetError, ValidationError) as exc:
         print(f"policy schema: {exc}", file=sys.stderr)
         return 1
@@ -447,7 +457,19 @@ def _main_validate(args: argparse.Namespace) -> int:
         print(f"policy build: {exc}", file=sys.stderr)
         return 1
 
+    # Cross-role exposure: warnings, not errors — a permissive ``default`` is
+    # legitimate for a single-role policy, so this must not fail those builds.
+    # CI opts in with --max-severity warning.
+    from hexgate.security.analyzer import SEVERITY_RANK, check_default_role_exposure
+
+    lints = check_default_role_exposure(policy_set)
+    for lint in lints:
+        print(f"⚠ {lint.code}: {lint.message}", file=sys.stderr)
+
     print("✓ Policy parses cleanly.")
+    threshold = getattr(args, "max_severity", "error")
+    if lints and SEVERITY_RANK[threshold] >= SEVERITY_RANK["warning"]:
+        return 1
     return 0
 
 
