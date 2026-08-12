@@ -15,6 +15,7 @@ the agent. Same code path, same chain, different trigger.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from hexgate.cloud.biscuit import (
@@ -22,6 +23,15 @@ from hexgate.cloud.biscuit import (
     TokenSignatureError,
     parse_envelope,
 )
+
+
+def _distinct(values: Sequence[str]) -> list[str]:
+    """De-duplicate while preserving order (validation happens per entry)."""
+    seen: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.append(value)
+    return seen
 
 
 def _escape_datalog_string(value: str) -> str:
@@ -40,7 +50,7 @@ def attenuate_for_user(
     public_key_bytes: bytes,
     *,
     user: str,
-    role: str | None = None,
+    roles: Sequence[str] | None = None,
     ttl_seconds: int | None = None,
 ) -> str:
     """Return a new envelope with a user-attribution block appended.
@@ -49,10 +59,16 @@ def attenuate_for_user(
     appends a Biscuit block carrying:
 
     * ``user("...")`` — the authenticated user id.
-    * ``role("...")`` — the user's role (when supplied), used by the agent
-      runtime to pick the matching role policy file.
+    * one ``role("...")`` fact per entry in ``roles`` — the caller's whole role
+      set, which the agent runtime enforces as a permissive union. Biscuit facts
+      are naturally multi-valued and ``extract_facts`` already returns a list
+      per predicate, so N roles need no reader change; a token attesting only
+      one of several enforced roles would leave the rest unattested.
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
+
+    Duplicate role names are collapsed (order-preserving): Biscuit facts are a
+    set, so emitting a name twice attests nothing extra.
 
     The resulting envelope keeps the ``fty_<env>_<project>_<...>`` wire
     format unchanged — only the biscuit payload grows by one block.
@@ -63,7 +79,7 @@ def attenuate_for_user(
     policies carry rules.
 
     Raises:
-        TokenError: malformed envelope, malformed role string, or non-positive
+        TokenError: malformed envelope, a malformed role string, or non-positive
             ``ttl_seconds``.
         TokenSignatureError: malformed public key, or parent biscuit fails
             to verify (tampered / wrong key / corrupt payload).
@@ -88,7 +104,7 @@ def attenuate_for_user(
         raise TokenSignatureError(str(exc)) from exc
 
     source_lines: list[str] = [f'user("{_escape_datalog_string(user)}");']
-    if role is not None:
+    for role in _distinct(roles or ()):
         if not isinstance(role, str) or not role:
             raise TokenError(f"role must be a non-empty string, got {role!r}")
         source_lines.append(f'role("{_escape_datalog_string(role)}");')
