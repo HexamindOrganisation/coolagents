@@ -29,10 +29,10 @@ async with HexgateContext(user_id="alice", user_roles=["billing"], ttl_seconds=3
 ```
 
 No manual `attenuate_for_user`, `extract_facts`, or `ToolUseContext` plumbing at
-the call site. The runtime mints the per-request token (attesting every role in
-`user_roles`), picks the `billing` role's policy file, and evaluates its
-constraints against each tool call. Pass more than one role and each is evaluated
-— see [most permissive wins](#multiple-roles-most-permissive-wins).
+the call site. The runtime mints the per-request token, picks the `billing`
+role's policy file, and evaluates its constraints against each tool call. Pass
+more than one role and each is evaluated — see
+[most permissive wins](#multiple-roles-most-permissive-wins).
 
 ## Filtering on attributes (`ctx.*`)
 

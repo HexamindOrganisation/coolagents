@@ -78,11 +78,11 @@ def test_attenuate_adds_user_fact_and_chains(keys: tuple[bytes, bytes]) -> None:
 
 
 def test_attenuate_adds_role_fact(keys: tuple[bytes, bytes]) -> None:
-    """The optional roles param stamps a ``role("...")`` fact."""
+    """The optional role param stamps a ``role("...")`` fact."""
     priv, pub = keys
     parent = _parent_envelope(priv)
 
-    child = attenuate_for_user(parent, pub, user="alice", roles=["billing"])
+    child = attenuate_for_user(parent, pub, user="alice", role="billing")
     facts = extract_facts(_biscuit_b64(child), pub)
     assert facts["user"] == ["alice"]
     assert facts["role"] == ["billing"]
@@ -91,47 +91,11 @@ def test_attenuate_adds_role_fact(keys: tuple[bytes, bytes]) -> None:
     assert facts["scope"] == ["read"]
 
 
-def test_attenuate_attests_every_role_in_the_set(keys: tuple[bytes, bytes]) -> None:
-    """The enforcer evaluates every role, so the token attests every role —
-    one fact each, all under one predicate."""
-    priv, pub = keys
-    parent = _parent_envelope(priv)
-
-    child = attenuate_for_user(
-        parent, pub, user="alice", roles=["support", "billing", "auditor"]
-    )
-    facts = extract_facts(_biscuit_b64(child), pub)
-    assert sorted(facts["role"]) == ["auditor", "billing", "support"]
-
-
-def test_attenuate_collapses_duplicate_roles(keys: tuple[bytes, bytes]) -> None:
-    """Biscuit facts are a set, so a repeated name attests nothing extra."""
-    priv, pub = keys
-    parent = _parent_envelope(priv)
-
-    child = attenuate_for_user(
-        parent, pub, user="alice", roles=["billing", "billing", "support"]
-    )
-    facts = extract_facts(_biscuit_b64(child), pub)
-    assert sorted(facts["role"]) == ["billing", "support"]
-
-
 def test_attenuate_without_role_omits_role_fact(keys: tuple[bytes, bytes]) -> None:
-    """No roles param means no ``role(...)`` fact in the attenuation block."""
+    """No role param means no ``role(...)`` fact in the attenuation block."""
     priv, pub = keys
     parent = _parent_envelope(priv)
     child = attenuate_for_user(parent, pub, user="alice")
-    facts = extract_facts(_biscuit_b64(child), pub)
-    assert "role" not in facts
-
-
-def test_attenuate_with_empty_role_list_omits_role_fact(
-    keys: tuple[bytes, bytes],
-) -> None:
-    """Empty ``user_roles`` is the "no roles" case, not an error."""
-    priv, pub = keys
-    parent = _parent_envelope(priv)
-    child = attenuate_for_user(parent, pub, user="alice", roles=[])
     facts = extract_facts(_biscuit_b64(child), pub)
     assert "role" not in facts
 
@@ -157,8 +121,8 @@ def test_attenuate_stacks_multiple_times(keys: tuple[bytes, bytes]) -> None:
     priv, pub = keys
     parent = _parent_envelope(priv)
 
-    first = attenuate_for_user(parent, pub, user="alice", roles=["support"])
-    second = attenuate_for_user(first, pub, user="alice", roles=["billing"])
+    first = attenuate_for_user(parent, pub, user="alice", role="support")
+    second = attenuate_for_user(first, pub, user="alice", role="billing")
 
     facts = extract_facts(_biscuit_b64(second), pub)
     # `user("alice")` shows up twice (once per attenuation); UNION semantics.
@@ -178,27 +142,7 @@ def test_attenuate_rejects_empty_role(keys: tuple[bytes, bytes]) -> None:
     priv, pub = keys
     parent = _parent_envelope(priv)
     with pytest.raises(TokenError, match="role must be a non-empty"):
-        attenuate_for_user(parent, pub, user="alice", roles=[""])
-
-
-def test_attenuate_rejects_an_empty_role_among_valid_ones(
-    keys: tuple[bytes, bytes],
-) -> None:
-    """One bad entry fails the whole attenuation: dropping it would attest a set
-    the caller never asked for."""
-    priv, pub = keys
-    parent = _parent_envelope(priv)
-    with pytest.raises(TokenError, match="role must be a non-empty"):
-        attenuate_for_user(parent, pub, user="alice", roles=["billing", ""])
-
-
-def test_attenuate_rejects_a_bare_string_role(keys: tuple[bytes, bytes]) -> None:
-    """``roles="admin"`` type-checks (str is a Sequence[str]) but iterates per
-    character, so it would attest five one-letter roles and never ``admin``."""
-    priv, pub = keys
-    parent = _parent_envelope(priv)
-    with pytest.raises(TypeError, match="not a bare str"):
-        attenuate_for_user(parent, pub, user="alice", roles="admin")  # type: ignore[arg-type]
+        attenuate_for_user(parent, pub, user="alice", role="")
 
 
 def test_attenuate_rejects_non_positive_ttl(keys: tuple[bytes, bytes]) -> None:

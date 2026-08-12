@@ -556,38 +556,3 @@ async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
     assert event.user_id == "u-1"
     assert event.session_id == "s-1"
     assert get_current_context() is None
-
-
-# ---------------------------------------------------------------------------
-# _resolve_user_facts — biscuit attenuation from the active context
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_user_facts_attests_every_context_role() -> None:
-    """The per-request token carries the whole role set, since enforcement
-    evaluates all of it. Uses a real biscuit, not a mock."""
-    from types import SimpleNamespace
-
-    from biscuit_auth import Algorithm, BiscuitBuilder, KeyPair, PrivateKey
-
-    from hexgate.runtime.context import HexgateContext
-
-    kp = KeyPair()
-    priv, pub = kp.private_key.to_bytes(), kp.public_key.to_bytes()
-    parent = BiscuitBuilder('project("acme");').build(
-        PrivateKey.from_bytes(priv, Algorithm.Ed25519)
-    )
-    client = SimpleNamespace(
-        config=SimpleNamespace(api_key=f"fty_live_acme_{parent.to_base64()}"),
-        public_key_bytes=lambda: pub,
-    )
-    agent = SimpleNamespace(hexgate_client=client)
-
-    with HexgateContext(
-        user_id="alice", user_roles=["support", "billing"]
-    ).sync_scope():
-        facts = factory._resolve_user_facts(agent)  # type: ignore[arg-type]
-
-    assert facts is not None
-    assert facts["user"] == ["alice"]
-    assert sorted(facts["role"]) == ["billing", "support"]

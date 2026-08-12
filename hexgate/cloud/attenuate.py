@@ -16,7 +16,6 @@ trigger.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from hexgate.cloud.biscuit import (
@@ -24,10 +23,6 @@ from hexgate.cloud.biscuit import (
     TokenSignatureError,
     parse_envelope,
 )
-
-# Dedup only, not ``resolve_role_set``: a token records what the caller claimed,
-# so capping or substituting a default would make it disagree with the request.
-from hexgate.runtime.roles import distinct_roles
 
 
 def _escape_datalog_string(value: str) -> str:
@@ -46,7 +41,7 @@ def attenuate_for_user(
     public_key_bytes: bytes,
     *,
     user: str,
-    roles: Sequence[str] | None = None,
+    role: str | None = None,
     ttl_seconds: int | None = None,
 ) -> str:
     """Return a new envelope with a user-attribution block appended.
@@ -55,9 +50,12 @@ def attenuate_for_user(
     appends a Biscuit block carrying:
 
     * ``user("...")`` — the authenticated user id.
-    * one ``role("...")`` fact per entry in ``roles`` — the whole set, since the
-      runtime enforces every role; attesting one would leave the rest unsigned.
-      Biscuit facts are multi-valued, so readers need no change.
+    * ``role("...")`` — the user's role, when supplied.
+
+      Single-valued for now: the enforcer evaluates every role in
+      ``user_roles``, so a multi-role caller has only their first role attested.
+      Closing that gap is its own change (the enforcer would also have to
+      *prefer* the verified facts over the contextvar, which it does not yet).
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
 
@@ -70,7 +68,6 @@ def attenuate_for_user(
     policies carry rules.
 
     Raises:
-        TypeError: ``roles`` is a bare ``str`` rather than a sequence of names.
         TokenError: malformed envelope, a malformed role string, or non-positive
             ``ttl_seconds``.
         TokenSignatureError: malformed public key, or parent biscuit fails
@@ -96,7 +93,7 @@ def attenuate_for_user(
         raise TokenSignatureError(str(exc)) from exc
 
     source_lines: list[str] = [f'user("{_escape_datalog_string(user)}");']
-    for role in distinct_roles(roles or ()):
+    if role is not None:
         if not isinstance(role, str) or not role:
             raise TokenError(f"role must be a non-empty string, got {role!r}")
         source_lines.append(f'role("{_escape_datalog_string(role)}");')

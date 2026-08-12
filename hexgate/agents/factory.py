@@ -256,7 +256,10 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
             client.config.api_key,
             pub,
             user=context.user_id,
-            roles=context.user_roles,
+            # Only the first role is attested; the enforcer evaluates them all.
+            # See attenuate_for_user's docstring for why closing that is its own
+            # change.
+            role=context.user_roles[0] if context.user_roles else None,
             ttl_seconds=context.ttl_seconds,
         )
         _, _, biscuit_b64 = parse_envelope(child_envelope)
