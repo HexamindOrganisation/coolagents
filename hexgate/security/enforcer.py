@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_context
+from hexgate.runtime.roles import resolve_role_set
 from hexgate.security.decision import Decision, PolicyEngine, combine_role_verdicts
 from hexgate.tracing._senders import AuditSender
 
@@ -29,49 +30,40 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# Upper bound on the roles evaluated for one tool call. N roles cost N engine
-# invocations (one WASM module call each) and ``user_roles`` is caller-supplied,
-# so it needs a ceiling. Dropping the tail can only *narrow* a permissive
-# union, which makes the cap fail-closed; it is logged once per process so a
-# legitimately wide caller is visible rather than silently trimmed.
-MAX_EVALUATED_ROLES = 32
-
 _warned_role_cap = False
 
 
-def _roles_to_evaluate(context: HexgateContext | None) -> list[str | None]:
-    """Resolve the roles one decision evaluates, in caller order.
+def _warn_role_cap(total: int, kept: int) -> None:
+    """Warn once per process that a caller's role list was trimmed.
 
-    Distinct by *name*, not by resolved policy: two names can select the same
-    policy and still differ in the ``role`` fact a constraint reads, so both
-    must be evaluated.
-
-    Returns ``[None]`` when there is no context or it carries no roles — the
-    engines map that to the ``default`` policy, exactly as a single ``role=None``
-    call does today. Never returns an empty list: skipping evaluation entirely
-    would fail open.
+    Once, because a wide caller would otherwise re-log on every tool call; at
+    all, because the cap silently narrows what that caller can do and an
+    operator needs to see it.
     """
     global _warned_role_cap
-    if context is None:
-        return [None]
-    seen: list[str] = []
-    for role in context.user_roles:
-        if role not in seen:
-            seen.append(role)
-    if not seen:
-        return [None]
-    if len(seen) > MAX_EVALUATED_ROLES:
-        if not _warned_role_cap:
-            _log.warning(
-                "context carries %d distinct roles; evaluating the first %d "
-                "(MAX_EVALUATED_ROLES). Later roles cannot grant access. "
-                "Subsequent occurrences in this process are suppressed.",
-                len(seen),
-                MAX_EVALUATED_ROLES,
-            )
-            _warned_role_cap = True
-        seen = seen[:MAX_EVALUATED_ROLES]
-    return list(seen)
+    if _warned_role_cap:
+        return
+    _log.warning(
+        "context carries %d distinct roles; evaluating the first %d "
+        "(MAX_EVALUATED_ROLES). Later roles cannot grant access. "
+        "Subsequent occurrences in this process are suppressed.",
+        total,
+        kept,
+    )
+    _warned_role_cap = True
+
+
+def _roles_to_evaluate(context: HexgateContext | None) -> list[str | None]:
+    """The roles this decision evaluates, per :func:`resolve_role_set`.
+
+    A thin adapter from "no active context" to "no roles" — the normalisation
+    rules themselves are shared with the ``hexgate policy test`` dry-run so the
+    two cannot drift.
+    """
+    return resolve_role_set(
+        context.user_roles if context is not None else (),
+        on_truncate=_warn_role_cap,
+    )
 
 
 # A sync, fire-and-forget hook fired after every decision is built.

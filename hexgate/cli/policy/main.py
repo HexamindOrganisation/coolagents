@@ -27,6 +27,7 @@ from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
 from hexgate.runtime.context import ContextAttributeValue
+from hexgate.runtime.roles import distinct_roles, resolve_role_set
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -716,8 +717,9 @@ def _main_test(args: argparse.Namespace) -> int:
 def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
     """Distinct roles to dry-run, from ``--role`` or ``--roles`` (mutually exclusive).
 
-    Dedups by name and preserves order, matching the enforcer's role-set
-    resolution — so the printed deciding role is the one production would pick.
+    Parsing is this command's business; normalisation is shared with the
+    enforcer via :func:`distinct_roles`, so the printed deciding role is the one
+    production would pick.
     """
     single = getattr(args, "role", None)
     raw = (
@@ -729,11 +731,7 @@ def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
             if part.strip()
         ]
     )
-    seen: list[str] = []
-    for role in raw:
-        if role not in seen:
-            seen.append(role)
-    return seen
+    return distinct_roles(raw)
 
 
 def _render_verdict(verdict: Verdict, label: str, deciding_role: str | None) -> int:
@@ -787,7 +785,9 @@ def _test_via_pydantic(
             policy, tool, tool_args, role=role, attributes=attributes
         )
 
-    verdict, deciding_role = combine_role_verdicts(_roles_or_default(roles), evaluate)
+    verdict, deciding_role = combine_role_verdicts(
+        resolve_role_set(roles, on_truncate=_warn_role_cap), evaluate
+    )
     return _render_verdict(verdict, label, deciding_role)
 
 
@@ -811,6 +811,12 @@ def _test_via_wasm(
         print(f"wasm compile error: {exc}", file=sys.stderr)
         return 1
 
+    try:
+        wasm_policy = WasmPolicy.from_bytes(artifact.wasm)
+    except WasmEvalError as exc:
+        print(f"wasm eval error: {exc}", file=sys.stderr)
+        return 1
+
     def evaluate(role: str | None) -> Verdict:
         # ``None`` maps to the default role, mirroring PolicyBundle.evaluate.
         role_ = role or DEFAULT_ROLE_NAME
@@ -820,9 +826,8 @@ def _test_via_wasm(
         return verdict_from_rego(decision, tool_name=tool, role=role_)
 
     try:
-        wasm_policy = WasmPolicy.from_bytes(artifact.wasm)
         verdict, deciding_role = combine_role_verdicts(
-            _roles_or_default(roles), evaluate
+            resolve_role_set(roles, on_truncate=_warn_role_cap), evaluate
         )
     except WasmEvalError as exc:
         print(f"wasm eval error: {exc}", file=sys.stderr)
@@ -831,9 +836,17 @@ def _test_via_wasm(
     return _render_verdict(verdict, label, deciding_role)
 
 
-def _roles_or_default(roles: list[str]) -> list[str | None]:
-    """``[None]`` for an empty set, so the default policy is evaluated once."""
-    return list(roles) if roles else [None]
+def _warn_role_cap(total: int, kept: int) -> None:
+    """Mirror the enforcer's role cap in the dry-run, on stderr.
+
+    Printed rather than logged: a dry-run that silently evaluated fewer roles
+    than it was given would misreport what production does.
+    """
+    print(
+        f"warning: {total} distinct roles given; evaluating the first {kept} "
+        "(MAX_EVALUATED_ROLES), as the enforcer would",
+        file=sys.stderr,
+    )
 
 
 # ---------------------------------------------------------------------------

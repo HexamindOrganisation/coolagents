@@ -75,15 +75,16 @@ class PolicyEngine(Protocol):
 # --- Permissive union over a caller's roles -----------------------------------
 #
 # "Access iff any of the caller's roles grants it", extended to cover approval:
-# a lattice max over the three outcomes. ALLOW beats NEEDS_APPROVAL — if one
-# role grants unconditional access, the caller has it and no approval is asked.
-# Approval is deliberately NOT sticky; the opposite reading is restrictive,
-# which would contradict the point of a union.
-_RANK: dict[DecisionOutcome, int] = {
-    DecisionOutcome.ALLOW: 2,
-    DecisionOutcome.NEEDS_APPROVAL: 1,
-    DecisionOutcome.DENY: 0,
-}
+# a lattice max over the three outcomes:
+#
+#     ALLOW  >  NEEDS_APPROVAL  >  DENY
+#
+# ALLOW beats NEEDS_APPROVAL — if one role grants unconditional access, the
+# caller has it and no approval is asked. Approval is deliberately NOT sticky;
+# the opposite reading is restrictive, which would contradict the point of a
+# union. The loop below doesn't compute that max explicitly: returning on the
+# first ALLOW leaves only {NEEDS_APPROVAL, DENY} to order, which is just "an
+# approval outranks any number of denials".
 
 # Mirrors the platform's ``DecisionEvent.reason`` max_length. A merged reason
 # over N roles can genuinely get long; over this cap the platform rejects the
@@ -114,28 +115,27 @@ def combine_role_verdicts(
             "evaluate the default policy (an empty list would fail open)"
         )
 
-    best: Verdict | None = None
-    best_role: str | None = None
-    denials: list[Verdict] = []
-    denial_roles: list[str | None] = []
+    approval: tuple[Verdict, str | None] | None = None
+    denials: list[tuple[str | None, Verdict]] = []
 
     for role in roles:
         verdict = evaluate(role)
         if verdict.outcome is DecisionOutcome.ALLOW:
-            return verdict, role
-        if verdict.outcome is DecisionOutcome.DENY:
-            denials.append(verdict)
-            denial_roles.append(role)
-        if best is None or _RANK[verdict.outcome] > _RANK[best.outcome]:
-            best, best_role = verdict, role
+            return verdict, role  # any allow wins; the rest are never asked
+        if verdict.outcome is DecisionOutcome.NEEDS_APPROVAL:
+            approval = approval or (verdict, role)  # the first gate wins
+        else:
+            denials.append((role, verdict))
 
-    if best is not None and best.outcome is not DecisionOutcome.DENY:
-        return best, best_role
-    return _merge_denials(denials, denial_roles), None
+    return approval or (_merge_denials(denials), None)
 
 
-def _merge_denials(denials: Sequence[Verdict], roles: Sequence[str | None]) -> Verdict:
+def _merge_denials(denials: Sequence[tuple[str | None, Verdict]]) -> Verdict:
     """Fold every role's denial into one, so "why?" stays answerable.
+
+    Takes ``(role, verdict)`` pairs rather than two aligned sequences: the
+    attribution of a reason to the role that produced it is the whole point of
+    the merge, so it should not depend on two lists staying in step.
 
     Identical denials collapse to the first verbatim — the common case, since
     unrecognised roles all resolve to the same ``default`` policy, and it keeps
@@ -148,25 +148,27 @@ def _merge_denials(denials: Sequence[Verdict], roles: Sequence[str | None]) -> V
     """
     if not denials:  # pragma: no cover - callers only merge non-empty denials
         raise ValueError("_merge_denials needs at least one denial")
-    first = denials[0]
-    if all(other == first for other in denials[1:]):
+    verdicts = [verdict for _, verdict in denials]
+    first = verdicts[0]
+    if all(other == first for other in verdicts[1:]):
         return first
 
     violations: list[str] = []
-    for verdict in denials:
+    for verdict in verdicts:
         for violation in verdict.violations:
             if violation not in violations:
                 violations.append(violation)
 
-    named = [role for role in roles if role is not None]
+    named = [role for role, _ in denials if role is not None]
     header = f"denied for all roles [{', '.join(named)}]" if named else "denied"
-    clauses: list[str] = []
-    for role, verdict in zip(roles, denials):
-        if verdict.reason:
-            clauses.append(f"{role or 'default'}: {verdict.reason}")
+    clauses = [
+        f"{role or 'default'}: {verdict.reason}"
+        for role, verdict in denials
+        if verdict.reason
+    ]
     reason = _bounded_reason(header, clauses)
 
-    hint = first.hint if all(v.hint == first.hint for v in denials[1:]) else None
+    hint = first.hint if all(v.hint == first.hint for v in verdicts[1:]) else None
     return Verdict(
         outcome=DecisionOutcome.DENY,
         reason=reason,

@@ -24,14 +24,11 @@ from hexgate.cloud.biscuit import (
     parse_envelope,
 )
 
-
-def _distinct(values: Sequence[str]) -> list[str]:
-    """De-duplicate while preserving order (validation happens per entry)."""
-    seen: list[str] = []
-    for value in values:
-        if value not in seen:
-            seen.append(value)
-    return seen
+# Shared with the enforcer so a token attests the same role names the policy
+# evaluates. Only the dedup is shared: attenuation must NOT cap the set or
+# substitute a default — a token records what the caller claimed, and trimming
+# that claim would make the token disagree with the request it authorises.
+from hexgate.runtime.roles import distinct_roles
 
 
 def _escape_datalog_string(value: str) -> str:
@@ -104,7 +101,7 @@ def attenuate_for_user(
         raise TokenSignatureError(str(exc)) from exc
 
     source_lines: list[str] = [f'user("{_escape_datalog_string(user)}");']
-    for role in _distinct(roles or ()):
+    for role in distinct_roles(roles or ()):
         if not isinstance(role, str) or not role:
             raise TokenError(f"role must be a non-empty string, got {role!r}")
         source_lines.append(f'role("{_escape_datalog_string(role)}");')

@@ -22,7 +22,7 @@ from hexgate.security.decision import (
     Verdict,
     combine_role_verdicts,
 )
-from hexgate.security.enforcer import MAX_EVALUATED_ROLES
+from hexgate.runtime.roles import MAX_EVALUATED_ROLES
 
 
 def _deny_decision() -> Decision:
