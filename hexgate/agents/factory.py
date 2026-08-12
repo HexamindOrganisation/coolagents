@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     # TYPE_CHECKING to avoid the runtime cycle (security.* and cloud.* both
     # eventually import from this module).
     from hexgate.cloud.client import HexgateClient
+    from hexgate.hooks.types import ToolPipeline
     from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
     from hexgate.security.enforcer import DecisionObserver
@@ -476,6 +477,7 @@ class HexgateAgent:
         approval_handler: ApprovalHandler | None = None,
         source: PolicySource | None = None,
         decision_observer: "DecisionObserver | None" = None,
+        pipeline: "ToolPipeline | None" = None,
     ) -> Self:
         """Return a new agent with Gate 1 policy enforcement applied.
 
@@ -494,6 +496,12 @@ class HexgateAgent:
         ``decision_observer`` (callable) receives every :class:`Decision`
         after it's built — ``hexgate chat`` uses it to render denies /
         approvals inline; default ``None`` is silent.
+
+        ``pipeline`` (:class:`~hexgate.hooks.types.ToolPipeline`) runs pre and
+        post hooks around each guarded tool call: pre-hooks observe, rewrite
+        args, or halt before ``decide``; post-hooks observe or halt. It rides
+        the same ``GuardedTool`` the enforcer does, so it survives hot reload
+        with the tools. Default ``None`` runs no hooks.
 
         The ``(policy, source)`` matrix:
 
@@ -540,6 +548,7 @@ class HexgateAgent:
                         tool_spec,
                         enforcer=enforcer,
                         approval_handler=approval_handler,
+                        pipeline=pipeline,
                     )
                 )
             else:

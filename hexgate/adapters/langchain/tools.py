@@ -20,14 +20,10 @@ from langchain_core.tools import BaseTool
 from langchain_core.tools.structured import StructuredTool
 from pydantic import ConfigDict
 
-from hexgate.agents.approvals import (
-    resolve_approval_async as _resolve_approval_async,
-)
-from hexgate.agents.approvals import (
-    resolve_approval_sync as _resolve_approval_sync,
-)
 from hexgate.approvals import ApprovalHandler
-from hexgate.security.decision import DecisionOutcome
+from hexgate.hooks.runner import run_guarded_async, run_guarded_sync
+from hexgate.hooks.types import ToolPipeline
+from hexgate.security.decision import Decision
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.tools.decorators import TOOL_METADATA_ATTR
 
@@ -38,6 +34,16 @@ def _copy_tool_metadata(source: Any, target: Any) -> Any:
     if metadata is not None:
         setattr(target, TOOL_METADATA_ATTR, metadata)
     return target
+
+
+def _langchain_error(decision: Decision) -> dict[str, Any]:
+    """Render a blocked decision as the LangChain tool-result error dict.
+
+    The shared runner shapes every non-allow (policy deny, approval-required,
+    or a hook ``Halt``) into a :class:`Decision` and hands it here, so the LLM
+    sees governance failures as ``{"ok": False, ...}`` tool output.
+    """
+    return {"ok": False, "error": decision.as_error_payload()}
 
 
 class GuardedTool(BaseTool):
@@ -55,6 +61,7 @@ class GuardedTool(BaseTool):
     wrapped_tool: BaseTool
     enforcer: PolicyEnforcer | None = None
     approval_handler: ApprovalHandler | None = None
+    pipeline: ToolPipeline | None = None
 
     @classmethod
     def wrap(
@@ -63,6 +70,7 @@ class GuardedTool(BaseTool):
         *,
         enforcer: PolicyEnforcer | None = None,
         approval_handler: ApprovalHandler | None = None,
+        pipeline: ToolPipeline | None = None,
     ) -> "GuardedTool":
         """Return a GuardedTool delegating to ``tool`` after policy check.
 
@@ -78,10 +86,12 @@ class GuardedTool(BaseTool):
                 if approval_handler is not None
                 else tool.approval_handler
             )
+            resolved_pipeline = pipeline if pipeline is not None else tool.pipeline
         else:
             inner = tool
             resolved_enforcer = enforcer
             resolved_approval = approval_handler
+            resolved_pipeline = pipeline
 
         guarded = cls(
             name=inner.name,
@@ -99,36 +109,41 @@ class GuardedTool(BaseTool):
             wrapped_tool=inner,
             enforcer=resolved_enforcer,
             approval_handler=resolved_approval,
+            pipeline=resolved_pipeline,
         )
         return _copy_tool_metadata(inner, guarded)
 
+    def _guarded(self) -> bool:
+        """True when this tool has anything to run: an enforcer or hooks."""
+        return self.enforcer is not None or (
+            self.pipeline is not None and not self.pipeline.is_empty
+        )
+
     async def _arun(self, *args: Any, **kwargs: Any) -> Any:
-        if self.enforcer is not None:
-            decision = self.enforcer.decide(self.name, kwargs)
-            if not decision.allowed:
-                if (
-                    decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-                    and self.approval_handler is not None
-                    and await _resolve_approval_async(self.approval_handler, decision)
-                ):
-                    pass  # approved → fall through and invoke
-                else:
-                    return {"ok": False, "error": decision.as_error_payload()}
-        return await self._invoke_wrapped_async(*args, **kwargs)
+        if not self._guarded():
+            return await self._invoke_wrapped_async(*args, **kwargs)
+        return await run_guarded_async(
+            self.name,
+            kwargs,
+            enforcer=self.enforcer,
+            pipeline=self.pipeline,
+            approval_handler=self.approval_handler,
+            invoke=lambda final: self._invoke_wrapped_async(*args, **final),
+            render_error=_langchain_error,
+        )
 
     def _run(self, *args: Any, **kwargs: Any) -> Any:
-        if self.enforcer is not None:
-            decision = self.enforcer.decide(self.name, kwargs)
-            if not decision.allowed:
-                if (
-                    decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-                    and self.approval_handler is not None
-                    and _resolve_approval_sync(self.approval_handler, decision)
-                ):
-                    pass
-                else:
-                    return {"ok": False, "error": decision.as_error_payload()}
-        return self._invoke_wrapped_sync(*args, **kwargs)
+        if not self._guarded():
+            return self._invoke_wrapped_sync(*args, **kwargs)
+        return run_guarded_sync(
+            self.name,
+            kwargs,
+            enforcer=self.enforcer,
+            pipeline=self.pipeline,
+            approval_handler=self.approval_handler,
+            invoke=lambda final: self._invoke_wrapped_sync(*args, **final),
+            render_error=_langchain_error,
+        )
 
     async def _invoke_wrapped_async(self, *args: Any, **kwargs: Any) -> Any:
         """Call the wrapped tool without re-entering LangChain instrumentation."""
@@ -161,6 +176,7 @@ def install_enforcer_on_tool(
     tool: BaseTool,
     *,
     enforcer: PolicyEnforcer,
+    pipeline: ToolPipeline | None = None,
 ) -> BaseTool:
     """Install :class:`PolicyEnforcer` gating on ``tool`` in place.
 
@@ -169,7 +185,8 @@ def install_enforcer_on_tool(
     the tool is already bound to a ``CompiledStateGraph``. Idempotent:
     re-install restores captured originals first so gates don't stack.
     Non-allow outcomes render as the structured error dict; approval
-    flows belong on the host side, not on this in-place installer.
+    flows belong on the host side, not on this in-place installer, so the
+    runner runs with ``approval_handler=None``.
     """
     name = tool.name
     original_func: Callable[..., Any] | None = getattr(tool, _ORIGINAL_FUNC_ATTR, None)
@@ -193,10 +210,15 @@ def install_enforcer_on_tool(
 
         @functools.wraps(captured_func)
         def guarded_func(*args: Any, **kwargs: Any) -> Any:
-            decision = enforcer.decide(name, kwargs)
-            if decision.allowed:
-                return captured_func(*args, **kwargs)
-            return {"ok": False, "error": decision.as_error_payload()}
+            return run_guarded_sync(
+                name,
+                kwargs,
+                enforcer=enforcer,
+                pipeline=pipeline,
+                approval_handler=None,
+                invoke=lambda final: captured_func(*args, **final),
+                render_error=_langchain_error,
+            )
 
         setattr(tool, _ORIGINAL_FUNC_ATTR, captured_func)
         tool.func = guarded_func
@@ -206,10 +228,15 @@ def install_enforcer_on_tool(
 
         @functools.wraps(captured_coroutine)
         async def guarded_coroutine(*args: Any, **kwargs: Any) -> Any:
-            decision = enforcer.decide(name, kwargs)
-            if decision.allowed:
-                return await captured_coroutine(*args, **kwargs)
-            return {"ok": False, "error": decision.as_error_payload()}
+            return await run_guarded_async(
+                name,
+                kwargs,
+                enforcer=enforcer,
+                pipeline=pipeline,
+                approval_handler=None,
+                invoke=lambda final: captured_coroutine(*args, **final),
+                render_error=_langchain_error,
+            )
 
         setattr(tool, _ORIGINAL_COROUTINE_ATTR, captured_coroutine)
         tool.coroutine = guarded_coroutine
@@ -223,8 +250,9 @@ def install_enforcer_on_tools(
     tools: list[BaseTool],
     *,
     enforcer: PolicyEnforcer,
+    pipeline: ToolPipeline | None = None,
 ) -> list[BaseTool]:
     """Install enforcement on every StructuredTool-style tool in place."""
     for t in tools:
-        install_enforcer_on_tool(t, enforcer=enforcer)
+        install_enforcer_on_tool(t, enforcer=enforcer, pipeline=pipeline)
     return tools
