@@ -1,0 +1,5 @@
+# Read-only capability pack (team-owned). Grants only. Shared by every role,
+# so it lives once here instead of being copied into each role.
+tools:
+  view_orders: { mode: allow }
+  lookup_order: { mode: allow }
