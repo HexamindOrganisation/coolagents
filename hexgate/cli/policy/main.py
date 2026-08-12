@@ -39,6 +39,7 @@ from hexgate.security import (
     WasmEvalError,
     WasmPolicy,
     build_signed_bundle,
+    combine_role_verdicts,
     compile_to_rego,
     compile_to_wasm,
     decode_key,
@@ -164,17 +165,27 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "test",
         help="Dry-run a tool-call decision against the policy.",
         description=(
-            "Evaluates the policy against the given role/tool/args without "
+            "Evaluates the policy against the given role(s)/tool/args without "
             "spinning up the agent. Prints ALLOW / DENY / APPROVAL_REQUIRED "
-            "with the offending constraint when relevant. Designed for "
-            "CI policy-test suites."
+            "with the offending constraint when relevant. With --roles the "
+            "verdicts are combined exactly as the enforcer combines them "
+            "(most permissive wins) and the granting role is printed. Designed "
+            "for CI policy-test suites."
         ),
     )
     p_test.add_argument("source", help="Path to the policy.yaml file.")
-    p_test.add_argument(
+    roles_group = p_test.add_mutually_exclusive_group(required=True)
+    roles_group.add_argument(
         "--role",
-        required=True,
-        help='Role to evaluate as, e.g. "billing".',
+        help='Single role to evaluate as, e.g. "billing". Errors if undefined.',
+    )
+    roles_group.add_argument(
+        "--roles",
+        help=(
+            'Comma-separated role set to evaluate as, e.g. "billing,support". '
+            "Access is granted if any of them grants it; undefined names fall "
+            "back to the default policy (with a warning), as at runtime."
+        ),
     )
     p_test.add_argument(
         "--tool",
@@ -647,37 +658,79 @@ def _main_test(args: argparse.Namespace) -> int:
         print(f"policy schema: {exc}", file=sys.stderr)
         return 1
 
-    if args.role not in policy_set:
+    roles = _resolve_test_roles(args)
+    single_role = getattr(args, "role", None)
+    if single_role is not None and single_role not in policy_set:
+        # A single --role is almost always a typo when it isn't defined; keep
+        # failing loudly rather than silently dry-running the default policy.
         print(
-            f'role "{args.role}" not in policy (known roles: {policy_set.roles!r})',
+            f'role "{single_role}" not in policy (known roles: {policy_set.roles!r})',
             file=sys.stderr,
         )
         return 1
+    for role in roles:
+        if role not in policy_set:
+            # In a --roles set an undefined name is legal at runtime (it falls
+            # back to the default policy, contributing its permissions to the
+            # union), so warn instead of failing — erroring would make the
+            # dry-run disagree with production.
+            print(
+                f'warning: role "{role}" not in policy — evaluating it against '
+                f"the {DEFAULT_ROLE_NAME!r} policy (known roles: {policy_set.roles!r})",
+                file=sys.stderr,
+            )
 
-    label = f"{args.role} → {args.tool}({json.dumps(tool_args, sort_keys=True)})"
+    shown = ", ".join(roles) if roles else DEFAULT_ROLE_NAME
+    label = f"[{shown}] → {args.tool}({json.dumps(tool_args, sort_keys=True)})"
     engine = getattr(args, "engine", "pydantic")
 
     if engine == "wasm":
-        return _test_via_wasm(
-            payload, args.role, args.tool, tool_args, attributes, label
-        )
+        return _test_via_wasm(payload, roles, args.tool, tool_args, attributes, label)
     return _test_via_pydantic(
-        policy_set, args.role, args.tool, tool_args, attributes, label
+        policy_set, roles, args.tool, tool_args, attributes, label
     )
 
 
-def _render_verdict(verdict: Verdict, label: str) -> int:
+def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
+    """Distinct roles to dry-run, from ``--role`` or ``--roles`` (mutually exclusive).
+
+    Dedups by name and preserves order, matching the enforcer's role-set
+    resolution — so the printed deciding role is the one production would pick.
+    """
+    single = getattr(args, "role", None)
+    raw = (
+        [single]
+        if single is not None
+        else [
+            part.strip()
+            for part in (getattr(args, "roles", None) or "").split(",")
+            if part.strip()
+        ]
+    )
+    seen: list[str] = []
+    for role in raw:
+        if role not in seen:
+            seen.append(role)
+    return seen
+
+
+def _render_verdict(verdict: Verdict, label: str, deciding_role: str | None) -> int:
     """Print a verdict uniformly and return the process exit code.
 
     Shared by both engines so pydantic and wasm decisions render the same
     — including the structured ``violations`` / ``hint`` detail when the
-    engine produced it.
+    engine produced it, and which role granted a multi-role call.
     """
+    granted = (
+        f"\n  granted by: {deciding_role}"
+        if deciding_role is not None and verdict.outcome is not DecisionOutcome.DENY
+        else ""
+    )
     if verdict.outcome is DecisionOutcome.ALLOW:
-        print(f"✓ ALLOW · {label}")
+        print(f"✓ ALLOW · {label}{granted}")
         return 0
     if verdict.outcome is DecisionOutcome.NEEDS_APPROVAL:
-        print(f"⚠ APPROVAL_REQUIRED · {label}\n  reason: {verdict.reason}")
+        print(f"⚠ APPROVAL_REQUIRED · {label}{granted}\n  reason: {verdict.reason}")
         return 0
     print(f"✗ DENY · {label}\n  reason: {verdict.reason}")
     if verdict.violations:
@@ -691,26 +744,34 @@ def _render_verdict(verdict: Verdict, label: str) -> int:
 
 def _test_via_pydantic(
     policy_set: Any,
-    role: str,
+    roles: list[str],
     tool: str,
     tool_args: dict,
     attributes: dict,
     label: str,
 ) -> int:
-    """Run the decision through the in-process constraint evaluator."""
-    policy: AgentPolicy = policy_set.policy_for(role)
-    # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
-    # constraints decide the same as the wasm path and production — omitting
-    # either here made `policy test` fail closed on rules production allows.
-    return _render_verdict(
-        evaluate_tool_call(policy, tool, tool_args, role=role, attributes=attributes),
-        label,
-    )
+    """Run the decision through the in-process constraint evaluator.
+
+    Routes through ``combine_role_verdicts`` — the same fold the enforcer
+    uses — so a dry-run of a multi-role caller can't disagree with production.
+    """
+
+    def evaluate(role: str | None) -> Verdict:
+        policy: AgentPolicy = policy_set.policy_for(role)
+        # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
+        # constraints decide the same as the wasm path and production — omitting
+        # either here made `policy test` fail closed on rules production allows.
+        return evaluate_tool_call(
+            policy, tool, tool_args, role=role, attributes=attributes
+        )
+
+    verdict, deciding_role = combine_role_verdicts(_roles_or_default(roles), evaluate)
+    return _render_verdict(verdict, label, deciding_role)
 
 
 def _test_via_wasm(
     payload: dict,
-    role: str,
+    roles: list[str],
     tool: str,
     tool_args: dict,
     attributes: dict,
@@ -727,18 +788,30 @@ def _test_via_wasm(
     except (OpaNotFoundError, WasmCompileError) as exc:
         print(f"wasm compile error: {exc}", file=sys.stderr)
         return 1
+
+    def evaluate(role: str | None) -> Verdict:
+        # ``None`` maps to the default role, mirroring PolicyBundle.evaluate.
+        role_ = role or DEFAULT_ROLE_NAME
+        decision = wasm_policy.decide(
+            role=role_, tool=tool, args=tool_args, ctx=attributes
+        )
+        return verdict_from_rego(decision, tool_name=tool, role=role_)
+
     try:
         wasm_policy = WasmPolicy.from_bytes(artifact.wasm)
-        decision = wasm_policy.decide(
-            role=role, tool=tool, args=tool_args, ctx=attributes
+        verdict, deciding_role = combine_role_verdicts(
+            _roles_or_default(roles), evaluate
         )
     except WasmEvalError as exc:
         print(f"wasm eval error: {exc}", file=sys.stderr)
         return 1
 
-    return _render_verdict(
-        verdict_from_rego(decision, tool_name=tool, role=role), label
-    )
+    return _render_verdict(verdict, label, deciding_role)
+
+
+def _roles_or_default(roles: list[str]) -> list[str | None]:
+    """``[None]`` for an empty set, so the default policy is evaluated once."""
+    return list(roles) if roles else [None]
 
 
 # ---------------------------------------------------------------------------

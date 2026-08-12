@@ -881,3 +881,131 @@ def test_top_level_dispatch_routes_to_show_rego(
     rc = args.func(args)
     assert rc == 0
     assert "package hexgate.policy" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# test --roles: dry-run the permissive union
+# ---------------------------------------------------------------------------
+
+_MULTI_ROLE_POLICY = """\
+version: 1
+roles:
+  default:
+    default_policy:
+      mode: deny
+  support:
+    default_policy:
+      mode: deny
+    tools:
+      read_file:
+        mode: allow
+  billing:
+    default_policy:
+      mode: deny
+    tools:
+      refund:
+        mode: allow
+"""
+
+
+def _multi_role_file(tmp_path: Path) -> Path:
+    p = tmp_path / "multi.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+    return p
+
+
+@pytest.mark.parametrize("engine", ["pydantic", "wasm"])
+def test_test_roles_allows_when_any_role_grants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str
+) -> None:
+    """A dry-run of a role set must mirror the enforcer: any role granting wins,
+    and the granting role is named. Both engines, since the CLI routes both
+    through the same fold."""
+    if engine == "wasm" and shutil.which("opa") is None:
+        pytest.skip("opa not on PATH")
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,billing",
+            tool="refund",
+            args="{}",
+            engine=engine,
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ALLOW" in out
+    assert "granted by: billing" in out
+
+
+def test_test_roles_denies_when_no_role_grants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,billing",
+            tool="deploy",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "DENY" in out
+    assert "granted by" not in out  # nothing granted it
+
+
+def test_test_roles_warns_on_an_undefined_role_but_still_evaluates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An undefined name is legal at runtime (it falls back to the default
+    policy), so the dry-run must not fail — it warns and carries on, otherwise
+    it would disagree with production."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,not_a_role",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ALLOW" in captured.out
+    assert 'warning: role "not_a_role" not in policy' in captured.err
+
+
+def test_test_single_role_still_fails_on_a_typo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--role`` keeps its hard error: one undefined role is a typo, not a set."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            role="nope",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "not in policy" in capsys.readouterr().err
+
+
+def test_test_roles_dedups_and_labels_the_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support, support ,billing",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[support, billing]" in out

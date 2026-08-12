@@ -190,7 +190,8 @@ def test_prompt_for_approval_asks_user_with_tool_arguments() -> None:
 
     assert approved is True
     assert "Approval required for write_file" in rendered
-    assert "role: support" in rendered
+    assert "roles: support" in rendered
+    assert "granted by: support" in rendered
     assert "file_path: napoleon.md" in rendered
     assert "content: new section" in rendered
     assert "Type y to approve or n to deny, then press Enter." in rendered

@@ -171,8 +171,12 @@ def _render_decision_panel(decision: Decision) -> Panel | None:
         lines.append(Text(decision.reason, style="white"))
     if decision.error_type:
         lines.append(Text(f"error_type: {decision.error_type}", style="dim"))
-    if decision.role is not None:
-        lines.append(Text(f"role: {decision.role or '(none)'}", style="dim"))
+    if decision.user_roles:
+        lines.append(Text(f"roles: {', '.join(decision.user_roles)}", style="dim"))
+    if decision.deciding_role is not None:
+        # Only meaningful on an approval here (a deny has no deciding role), but
+        # rendered unconditionally so the panel never has to know which is which.
+        lines.append(Text(f"granted by: {decision.deciding_role}", style="dim"))
     if decision.violations:
         lines.append(Text("violations:", style="dim"))
         for v in decision.violations:
