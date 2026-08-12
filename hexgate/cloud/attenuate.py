@@ -24,10 +24,8 @@ from hexgate.cloud.biscuit import (
     parse_envelope,
 )
 
-# Shared with the enforcer so a token attests the same role names the policy
-# evaluates. Only the dedup is shared: attenuation must NOT cap the set or
-# substitute a default — a token records what the caller claimed, and trimming
-# that claim would make the token disagree with the request it authorises.
+# Dedup only, not ``resolve_role_set``: a token records what the caller claimed,
+# so capping or substituting a default would make it disagree with the request.
 from hexgate.runtime.roles import distinct_roles
 
 
@@ -56,16 +54,11 @@ def attenuate_for_user(
     appends a Biscuit block carrying:
 
     * ``user("...")`` — the authenticated user id.
-    * one ``role("...")`` fact per entry in ``roles`` — the caller's whole role
-      set, which the agent runtime enforces as a permissive union. Biscuit facts
-      are naturally multi-valued and ``extract_facts`` already returns a list
-      per predicate, so N roles need no reader change; a token attesting only
-      one of several enforced roles would leave the rest unattested.
+    * one ``role("...")`` fact per entry in ``roles`` — the whole set, since the
+      runtime enforces every role; attesting one would leave the rest unsigned.
+      Biscuit facts are multi-valued, so readers need no change.
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
-
-    Duplicate role names are collapsed (order-preserving): Biscuit facts are a
-    set, so emitting a name twice attests nothing extra.
 
     The resulting envelope keeps the ``fty_<env>_<project>_<...>`` wire
     format unchanged — only the biscuit payload grows by one block.

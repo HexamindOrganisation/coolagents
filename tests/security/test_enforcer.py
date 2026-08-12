@@ -1,14 +1,9 @@
 """PolicyEnforcer + the engine protocol seam.
 
-The enforcer depends only on the
-:class:`~hexgate.security.decision.PolicyEngine` protocol, so a hand-rolled
-fake engine is enough to pin its behavior: forward role/tool/args once per
-role in the caller's set, fold the verdicts, and lift the winner into a
-:class:`Decision` with host context.
-
-``_RecordingEngine.calls`` is a *list* on purpose — with multi-role callers the
-number and order of engine invocations is part of the contract (role-set
-resolution, dedup, the cap, and the short-circuit are all observable there).
+The enforcer depends only on the :class:`PolicyEngine` protocol, so a fake
+engine pins its behaviour. ``_RecordingEngine.calls`` is a list because the
+number and order of invocations is itself the contract — role-set resolution,
+dedup, the cap, and the short-circuit are all observable there.
 """
 
 from __future__ import annotations
@@ -113,7 +108,7 @@ def _allows_only(tool: str) -> AgentPolicy:
 
 
 def test_enforcer_evaluates_every_role_in_caller_order() -> None:
-    """All roles are asked, in the caller's order, when none of them allows."""
+    """All roles are asked, in order, when none allows."""
     from hexgate.runtime.context import HexgateContext
 
     engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY, reason="no"))
@@ -129,7 +124,7 @@ def test_enforcer_evaluates_every_role_in_caller_order() -> None:
 
 
 def test_enforcer_stops_at_the_first_allowing_role() -> None:
-    """The union short-circuits, so a later role is never even asked."""
+    """A later role is never asked once one allows."""
     from hexgate.runtime.context import HexgateContext
 
     engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
@@ -140,13 +135,12 @@ def test_enforcer_stops_at_the_first_allowing_role() -> None:
 
     assert [call["role"] for call in engine.calls] == ["billing"]
     assert decision.deciding_role == "billing"
-    # The full set is still recorded — the audit trail must show who was calling,
-    # not just who granted it.
+    # The audit trail needs who was calling, not just who granted it.
     assert decision.user_roles == ("billing", "support")
 
 
 def test_enforcer_grants_access_when_only_a_later_role_allows() -> None:
-    """The point of the feature, end to end on the real pydantic engine."""
+    """The point of the feature, on the real pydantic engine."""
     from hexgate.runtime.context import HexgateContext
 
     policy_set = PolicySet(
@@ -169,11 +163,8 @@ def test_enforcer_grants_access_when_only_a_later_role_allows() -> None:
 
 
 def test_enforcer_binds_the_role_fact_per_role() -> None:
-    """A ``role ==`` constraint sees the role being evaluated, not the whole set.
-
-    Without per-role binding a constraint like ``role == "billing"`` could never
-    pass for a multi-role caller.
-    """
+    """A ``role ==`` constraint sees the role being evaluated, so it can still
+    pass for a multi-role caller."""
     from hexgate.runtime.context import HexgateContext
 
     policy_set = PolicySet(
@@ -203,7 +194,7 @@ def test_enforcer_binds_the_role_fact_per_role() -> None:
 
 
 def test_enforcer_evaluates_no_roles_as_the_default_policy() -> None:
-    """Empty ``user_roles`` and no context both evaluate once with role=None."""
+    """Empty ``user_roles`` evaluates once with role=None."""
     from hexgate.runtime.context import HexgateContext
 
     engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
@@ -235,11 +226,8 @@ def test_enforcer_dedups_repeated_role_names() -> None:
 def test_enforcer_caps_the_number_of_roles_evaluated(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A caller-supplied list can't force unbounded engine invocations.
-
-    Dropping the tail only narrows a permissive union, so the cap is
-    fail-closed — but it is logged, not silent.
-    """
+    """A caller-supplied list can't force unbounded engine invocations. Trimming
+    only narrows a union, so the cap is fail-closed — but logged, not silent."""
     import logging
 
     from hexgate.runtime.context import HexgateContext
@@ -256,7 +244,7 @@ def test_enforcer_caps_the_number_of_roles_evaluated(
 
     assert len(engine.calls) == MAX_EVALUATED_ROLES
     assert len(decision.user_roles) == MAX_EVALUATED_ROLES
-    assert decision.user_roles[0] == "role_0"
+    assert decision.user_roles[0] == "role_0"  # the head is kept, not a sample
     assert "MAX_EVALUATED_ROLES" in caplog.text
 
 
@@ -283,8 +271,8 @@ def test_enforcer_warns_once_per_process_about_the_role_cap(
 
 
 def test_enforcer_single_role_matches_the_pre_multi_role_verdict() -> None:
-    """D12: one role in ``user_roles`` produces exactly the verdict that role
-    produces on its own, structured detail included."""
+    """D12: one role produces exactly the verdict it produces alone, structured
+    detail included."""
     from hexgate.runtime.context import HexgateContext
 
     policy = AgentPolicy.model_validate(

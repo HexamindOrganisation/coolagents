@@ -72,8 +72,7 @@ class HexgateContext(BaseModel):
 
     * identity / audit    -> ``user_id`` / ``session_id``
     * policy selection     -> ``user_roles`` (every role is evaluated; access is
-      granted iff any of them grants it — see
-      :func:`~hexgate.security.decision.combine_role_verdicts`)
+      granted iff any of them grants it)
     * token lifetime       -> ``ttl_seconds`` (feeds attenuation, never policy)
     * ABAC filter surface  -> ``attributes`` (feeds the ``ctx.*`` constraint
       namespace; untrusted/spoofable — same trust tier as ``user_roles``, since
@@ -108,8 +107,8 @@ class HexgateContext(BaseModel):
         default_factory=list,
         description=(
             "The roles of the end user invoking the agent. Every role is "
-            "evaluated and the most permissive outcome wins, so adding a role "
-            "can only widen access. An empty list selects the default policy."
+            "evaluated and the most permissive outcome wins. Empty selects the "
+            "default policy."
         ),
     )
     session_id: str | None = None

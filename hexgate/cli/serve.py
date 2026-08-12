@@ -154,10 +154,9 @@ class RelayApprovalHandler:
             "arguments": decision.arguments or {},
             "reason": decision.reason,
             "agent_name": decision.agent_name,
-            # ``role`` stays the scalar key the playground already reads, now
-            # carrying the role that would grant the call; ``roles`` is additive.
-            # Both directions must tolerate the other's absence — a dev's pinned
-            # SDK talks to whatever dashboard the platform is serving.
+            # ``roles`` is additive: a dev's pinned SDK talks to whatever
+            # dashboard the platform serves, so neither may require the other's
+            # new key.
             "role": decision.deciding_role,
             "roles": list(decision.user_roles),
             "expires_at": expires_at,

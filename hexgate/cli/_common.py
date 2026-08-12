@@ -346,8 +346,7 @@ def prompt_for_approval(console: Console, decision: Decision) -> bool:
             if decision.user_roles
             else []
         ),
-        # Which role would grant it: the approver is deciding on behalf of that
-        # policy, which matters when the caller carries several.
+        # The approver is deciding on behalf of that role's policy.
         *(
             [Text(f"granted by: {decision.deciding_role}", style="dim")]
             if decision.deciding_role is not None

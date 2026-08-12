@@ -564,12 +564,8 @@ async def test_usage_handler_context_propagates_when_caller_opens_user_scope(
 
 
 def test_resolve_user_facts_attests_every_context_role() -> None:
-    """The lazily-minted per-request token carries the caller's whole role set.
-
-    Enforcement evaluates all of ``user_roles`` (permissive union), so attesting
-    only one of them would leave the rest unverifiable. Exercised against a real
-    biscuit rather than a mock, so the fact extraction is the production path.
-    """
+    """The per-request token carries the whole role set, since enforcement
+    evaluates all of it. Uses a real biscuit, not a mock."""
     from types import SimpleNamespace
 
     from biscuit_auth import Algorithm, BiscuitBuilder, KeyPair, PrivateKey

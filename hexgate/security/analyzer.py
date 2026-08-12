@@ -12,8 +12,7 @@ a module). This module runs over a **successfully linked** bundle and reports th
   the agent's manifest (drift between policy and code). Only checked when a
   manifest is supplied; boundary drift is fail-open, so it's an error.
 - **permissive-default** — the ``default`` role grants something no named role
-  grants. Reported by :func:`check_default_role_exposure`, which runs over a
-  resolved role map rather than a linked module bundle (see below).
+  grants (:func:`check_default_role_exposure`, over a resolved role map).
 
 Every :class:`PolicyLint` carries the ``source`` file it attributes to — the same
 contract the CLI (`hexgate policy check`) and the dashboard editor both consume.
@@ -315,34 +314,21 @@ def _unknown_args(
 
 
 # ---------------------------------------------------------------------------
-# Cross-role exposure — the ``default`` fallback under multi-role enforcement
-#
-# Deliberately NOT part of ``analyze()``: that pipeline is module-scoped and
-# still single-role (``LinkResult.effective`` holds only ``default``), so it has
-# nothing to say about a role map. This check takes a resolved PolicySet
-# instead, and is wired into ``hexgate policy validate`` / the platform's
-# /validate endpoint, where a roles-bearing document is already in hand.
+# Cross-role exposure. Not part of ``analyze()``: that pipeline is module-scoped
+# and single-role (``LinkResult.effective`` holds only ``default``), so it has
+# nothing to say about a role map. Takes a resolved PolicySet instead.
 # ---------------------------------------------------------------------------
 
 
 def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
     """Warn when the ``default`` role grants something no named role grants.
 
-    ``default`` is the fallback for role names the policy doesn't define, and
-    the enforcer evaluates *every* role a caller carries — so any unrecognised
-    name (a typo, a group that was never a policy role, an invented one) pulls
-    ``default``'s permissions into the caller's union. A tool reachable only
-    through ``default`` is therefore effectively reachable by anyone, which is
-    almost never what an author writing per-role policies intends.
+    Any unrecognised role name resolves to ``default`` and joins the caller's
+    union, so a tool reachable only through ``default`` is reachable by anyone.
 
-    Flags a grant (``allow`` / ``approval_required``) present in ``default``
-    but in no other concrete role, and a ``default_policy`` catch-all that
-    grants when no other role's catch-all does. Silent for a single-role policy
-    set — a legacy flat ``policy.yaml`` *is* the ``default`` role, so there is
-    no cross-role exposure to report.
-
-    ``warning``, not ``error``: a permissive ``default`` is legitimate (that
-    single-role case), so CI opts in via ``--max-severity warning``.
+    Silent for a single-role policy set: a legacy flat ``policy.yaml`` *is* the
+    ``default`` role. ``warning`` rather than ``error`` for the same reason —
+    CI opts in via ``--max-severity warning``.
     """
     named = [role for role in policy_set.roles if role != DEFAULT_ROLE_NAME]
     if not named:

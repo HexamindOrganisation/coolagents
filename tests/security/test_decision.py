@@ -1,13 +1,8 @@
 """Tests for :mod:`hexgate.security.decision` — rendering + the multi-role fold.
 
-Two halves, both engine-free:
-
-* :class:`Decision` rendering (``as_error_payload`` / ``as_error_message``).
-  These helpers used to be duplicated as private ``_render_decision`` functions
-  across every adapter; they now live on :class:`Decision`, so this one file
-  covers all adapters at once.
-* :func:`combine_role_verdicts`, the permissive union over a caller's roles.
-  Pure, so it is pinned here with a stub evaluator rather than through an engine.
+:class:`Decision`'s renderers are shared by every adapter, so this one file
+covers them all. :func:`combine_role_verdicts` is pure, so it is pinned with a
+stub evaluator rather than an engine.
 """
 
 from __future__ import annotations
@@ -115,7 +110,7 @@ def test_as_error_payload_includes_required_fields() -> None:
 
 
 def test_as_error_payload_role_is_the_deciding_role_on_approval() -> None:
-    """``role`` names the role that would grant the call, not the caller's first."""
+    """``role`` is the granting role, not the caller's first."""
     payload = Decision(
         outcome=DecisionOutcome.NEEDS_APPROVAL,
         agent_name="agent",
@@ -129,8 +124,7 @@ def test_as_error_payload_role_is_the_deciding_role_on_approval() -> None:
 
 
 def test_as_error_payload_omits_role_on_deny() -> None:
-    """A deny has no deciding role — no role granted the call, so naming one
-    (e.g. the caller's first) would misdirect the model."""
+    """A deny has no granting role, so naming one would misdirect the model."""
     decision = Decision(
         outcome=DecisionOutcome.DENY,
         agent_name="agent",
@@ -144,7 +138,7 @@ def test_as_error_payload_omits_role_on_deny() -> None:
 
 
 def test_as_error_payload_never_leaks_the_role_list_to_the_llm() -> None:
-    """The caller's other roles are withheld, same minimisation as attributes."""
+    """The caller's other roles are withheld, like attributes."""
     payload = Decision(
         outcome=DecisionOutcome.NEEDS_APPROVAL,
         agent_name="agent",
@@ -233,17 +227,15 @@ def test_as_error_payload_does_not_leak_attributes_to_the_llm() -> None:
 
 
 # ---------------------------------------------------------------------------
-# combine_role_verdicts — the permissive union over a caller's roles
-#
-# Pure fold over Verdicts: no engine, no context, no enforcer. The stub
-# ``_engine`` below maps role -> outcome so each case reads as a truth table.
+# combine_role_verdicts — the permissive union. ``_engine`` maps role -> outcome
+# so each case reads as a truth table.
 # ---------------------------------------------------------------------------
 
 
 def _engine(
     table: dict[str | None, Verdict],
 ) -> tuple[Callable[[str | None], Verdict], list[str | None]]:
-    """A canned per-role evaluator plus the list of roles it was asked about."""
+    """A canned per-role evaluator plus the roles it was asked about."""
     seen: list[str | None] = []
 
     def evaluate(role: str | None) -> Verdict:
@@ -274,7 +266,7 @@ def test_combine_allow_plus_deny_allows() -> None:
 
 
 def test_combine_deny_plus_allow_allows_regardless_of_order() -> None:
-    """Outcome is order-independent; only which role gets the credit is not."""
+    """Outcome is order-independent; the credited role is not."""
     evaluate, _ = _engine({"a": _deny(), "b": _ALLOW})
 
     verdict, deciding = combine_role_verdicts(["a", "b"], evaluate)
@@ -293,13 +285,8 @@ def test_combine_approval_plus_deny_needs_approval() -> None:
 
 
 def test_combine_allow_beats_needs_approval() -> None:
-    """D2, the locked precedence: approval is NOT sticky.
-
-    One role granting unconditional access removes the approval gate another
-    role would have imposed. A reader who assumes the opposite (any role needing
-    approval forces approval) should land on this assertion — that reading is
-    restrictive and contradicts the permissive union.
-    """
+    """D2: approval is NOT sticky. One role granting outright removes another
+    role's gate. A reader assuming the opposite lands here."""
     evaluate, _ = _engine({"a": _approval(), "b": _ALLOW})
 
     verdict, deciding = combine_role_verdicts(["a", "b"], evaluate)
@@ -309,7 +296,7 @@ def test_combine_allow_beats_needs_approval() -> None:
 
 
 def test_combine_short_circuits_on_the_first_allow() -> None:
-    """The common case costs one engine invocation, not one per role."""
+    """The common case costs one engine invocation."""
     evaluate, seen = _engine({"a": _ALLOW, "b": _deny(), "c": _deny()})
 
     combine_role_verdicts(["a", "b", "c"], evaluate)
@@ -336,7 +323,7 @@ def test_combine_all_deny_denies_with_no_deciding_role() -> None:
 
 
 def test_combine_single_role_returns_the_verdict_verbatim() -> None:
-    """D12: a one-role caller is byte-identical to evaluating that role alone."""
+    """D12: a one-role caller matches evaluating that role alone."""
     original = _deny('Policy denied tool "refund"', violations=("args.amount <= 100",))
     evaluate, _ = _engine({"billing": original})
 
@@ -347,8 +334,7 @@ def test_combine_single_role_returns_the_verdict_verbatim() -> None:
 
 
 def test_combine_identical_denials_collapse_to_one_verbatim() -> None:
-    """The common multi-role deny: every role resolves to the same policy, so
-    the message must not repeat itself once per role."""
+    """Roles sharing a policy must not repeat the message once per role."""
     original = _deny('Policy denied tool "refund"')
     evaluate, _ = _engine({"a": original, "b": original})
 
@@ -388,8 +374,8 @@ def test_combine_dedups_violations_shared_across_roles() -> None:
 
 
 def test_combine_keeps_a_unanimous_hint_and_drops_conflicting_ones() -> None:
-    """A file-scope hint promises the scope the caller may stay within, so two
-    different scopes cannot be merged into one true statement."""
+    """A hint promises the scope the caller may stay within; two scopes cannot
+    merge into one true statement."""
     same = {"allowed_paths": ["docs/**"]}
     evaluate, _ = _engine(
         {"a": _deny("a", hint=same), "b": _deny("b", hint=dict(same))}
@@ -408,8 +394,8 @@ def test_combine_keeps_a_unanimous_hint_and_drops_conflicting_ones() -> None:
 
 
 def test_combine_bounds_a_merged_reason_to_the_platform_cap() -> None:
-    """An unbounded merge would exceed DecisionEvent.reason's 4096-char limit
-    and the platform would reject the whole audit event."""
+    """Over DecisionEvent.reason's 4096-char limit the platform rejects the
+    whole audit event."""
     from hexgate.security.decision import _MAX_REASON_CHARS
 
     roles = [f"role_{index}" for index in range(MAX_EVALUATED_ROLES)]
@@ -423,7 +409,7 @@ def test_combine_bounds_a_merged_reason_to_the_platform_cap() -> None:
 
 
 def test_combine_none_role_evaluates_the_default_policy() -> None:
-    """The no-roles case: the enforcer passes [None], never an empty list."""
+    """The enforcer passes [None] for no roles, never an empty list."""
     evaluate, seen = _engine({None: _ALLOW})
 
     verdict, deciding = combine_role_verdicts([None], evaluate)
@@ -434,7 +420,7 @@ def test_combine_none_role_evaluates_the_default_policy() -> None:
 
 
 def test_combine_rejects_an_empty_role_list() -> None:
-    """Evaluating nothing would fail open — the loudest possible bug."""
+    """Evaluating nothing would fail open."""
     evaluate, _ = _engine({})
 
     with pytest.raises(ValueError, match="at least one role"):

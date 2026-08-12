@@ -1,10 +1,8 @@
 """Typed result of evaluating one proposed tool call against a PolicySet.
 
-Also home to :func:`combine_role_verdicts`, the permissive union that turns
-N single-role :class:`Verdict`s into one. It lives here rather than in the
-enforcer because it is pure and engine-agnostic: both engines produce the
-same ``Verdict`` shape per role, so folding above them keeps the two
-byte-for-byte comparable one role at a time.
+Also home to :func:`combine_role_verdicts`, the permissive union over a caller's
+roles. It sits above both engines rather than inside them, so they stay
+single-role and byte-for-byte comparable.
 """
 
 from __future__ import annotations
@@ -72,24 +70,8 @@ class PolicyEngine(Protocol):
     ) -> Verdict: ...
 
 
-# --- Permissive union over a caller's roles -----------------------------------
-#
-# "Access iff any of the caller's roles grants it", extended to cover approval:
-# a lattice max over the three outcomes:
-#
-#     ALLOW  >  NEEDS_APPROVAL  >  DENY
-#
-# ALLOW beats NEEDS_APPROVAL — if one role grants unconditional access, the
-# caller has it and no approval is asked. Approval is deliberately NOT sticky;
-# the opposite reading is restrictive, which would contradict the point of a
-# union. The loop below doesn't compute that max explicitly: returning on the
-# first ALLOW leaves only {NEEDS_APPROVAL, DENY} to order, which is just "an
-# approval outranks any number of denials".
-
-# Mirrors the platform's ``DecisionEvent.reason`` max_length. A merged reason
-# over N roles can genuinely get long; over this cap the platform rejects the
-# audit event outright, losing the record for exactly the calls most worth
-# keeping. Bounded here, at the one place that composes such a reason.
+# Over the platform's ``DecisionEvent.reason`` max_length the audit event is
+# rejected outright, losing the record for the calls most worth keeping.
 _MAX_REASON_CHARS = 4096
 
 
@@ -99,15 +81,13 @@ def combine_role_verdicts(
 ) -> tuple[Verdict, str | None]:
     """Permissive union over one caller's roles: ALLOW > NEEDS_APPROVAL > DENY.
 
-    Calls ``evaluate`` once per role, in the order given, short-circuiting on
-    the first ALLOW — so the common case costs a single engine invocation.
-    Returns the winning verdict and the role that decided it (``None`` when
-    every role denied, since no role granted anything).
+    Returns the winning verdict and the role that decided it (``None`` when every
+    role denied). ALLOW beats NEEDS_APPROVAL — approval is not sticky, so one
+    role granting outright removes another role's gate.
 
-    A single role — or several roles producing equal denials — returns that
-    verdict verbatim, so single-role behaviour is identical to evaluating that
-    role on its own. Callers must pass a non-empty sequence; the enforcer sends
-    ``[None]`` for "no roles", which the engines map to the ``default`` policy.
+    A single role, or several producing equal denials, returns that verdict
+    verbatim. ``roles`` must be non-empty; ``[None]`` means "no roles" and
+    selects the ``default`` policy.
     """
     if not roles:
         raise ValueError(
@@ -121,9 +101,9 @@ def combine_role_verdicts(
     for role in roles:
         verdict = evaluate(role)
         if verdict.outcome is DecisionOutcome.ALLOW:
-            return verdict, role  # any allow wins; the rest are never asked
+            return verdict, role  # short-circuit: the rest are never asked
         if verdict.outcome is DecisionOutcome.NEEDS_APPROVAL:
-            approval = approval or (verdict, role)  # the first gate wins
+            approval = approval or (verdict, role)
         else:
             denials.append((role, verdict))
 
@@ -133,18 +113,12 @@ def combine_role_verdicts(
 def _merge_denials(denials: Sequence[tuple[str | None, Verdict]]) -> Verdict:
     """Fold every role's denial into one, so "why?" stays answerable.
 
-    Takes ``(role, verdict)`` pairs rather than two aligned sequences: the
-    attribution of a reason to the role that produced it is the whole point of
-    the merge, so it should not depend on two lists staying in step.
-
     Identical denials collapse to the first verbatim — the common case, since
-    unrecognised roles all resolve to the same ``default`` policy, and it keeps
-    a single-role denial's message unchanged. Otherwise the reason names each
-    role's cause and ``violations`` are unioned in first-seen order.
+    unrecognised roles share the ``default`` policy. Otherwise the reason names
+    each role's cause and ``violations`` are unioned.
 
-    ``hint`` survives only when every denial produced an equal one: a
-    file-scope hint promises the scope the caller may stay within, so merging
-    two different scopes would state something false to the model.
+    ``hint`` survives only if unanimous: it promises the scope the caller may
+    stay within, so merging two different scopes would state something false.
     """
     if not denials:  # pragma: no cover - callers only merge non-empty denials
         raise ValueError("_merge_denials needs at least one denial")
@@ -178,12 +152,8 @@ def _merge_denials(denials: Sequence[tuple[str | None, Verdict]]) -> Verdict:
 
 
 def _bounded_reason(header: str, clauses: Sequence[str]) -> str:
-    """Join per-role clauses under ``_MAX_REASON_CHARS``, trimming the tail.
-
-    Drops whole clauses rather than cutting mid-sentence, and says how many it
-    dropped — a truncated explanation that hides its own truncation is worse
-    than a short one.
-    """
+    """Join clauses under ``_MAX_REASON_CHARS``, dropping whole ones and saying
+    how many — a truncation that hides itself is worse than a short reason."""
     reason = f"{header}: {'; '.join(clauses)}" if clauses else header
     if len(reason) <= _MAX_REASON_CHARS:
         return reason
@@ -215,13 +185,11 @@ class Decision:
     outcome: DecisionOutcome
     agent_name: str
     tool_name: str
-    # The distinct roles the caller carried, in their order, as evaluated by
-    # the permissive union. Empty when no context was active (or it carried no
-    # roles) — that call was decided by the ``default`` policy.
+    # Distinct roles the caller carried, in order; empty means the ``default``
+    # policy decided the call.
     user_roles: tuple[str, ...] = ()
-    # The role whose policy granted the call (or gated it on approval).
-    # ``None`` on a deny: no role granted anything, so attributing the denial
-    # to one of them would misdirect whoever reads the record.
+    # Role that granted or gated the call. ``None`` on a deny: no role granted
+    # it, so naming one would misdirect whoever reads the record.
     deciding_role: str | None = None
     reason: str = ""
     error_type: str | None = None
@@ -247,14 +215,8 @@ class Decision:
         arguments: dict[str, Any] | None = None,
         attributes: dict[str, Any] | None = None,
     ) -> "Decision":
-        """Lift an engine :class:`Verdict` into a host-facing decision.
-
-        The verdict carries the outcome and any structured detail the
-        engine produced (reason, file-scope hint); this stamps on the
-        host context the engine doesn't know — agent name, the caller's
-        role set and which of them decided, the argument snapshot, and the
-        ABAC attribute snapshot — and derives the ``error_type`` tag.
-        """
+        """Lift an engine :class:`Verdict` into a host-facing decision, stamping
+        on the context the engine doesn't know."""
         return cls(
             outcome=verdict.outcome,
             agent_name=agent_name,
@@ -275,22 +237,17 @@ class Decision:
 
     @property
     def role(self) -> str | None:
-        """The caller's first role, or ``None`` when they carried none.
+        """Legacy single-role view, kept for renderers and the audit wire field.
 
-        The legacy single-role view, kept because that is what renderers and
-        the audit wire field have always shown. Enforcement reads
-        ``user_roles``; provenance reads ``deciding_role``.
+        Enforcement reads ``user_roles``; provenance reads ``deciding_role``.
         """
         return self.user_roles[0] if self.user_roles else None
 
     def as_error_payload(self) -> dict[str, Any]:
         """Default LLM-facing dict rendering. Adapters can build their own.
 
-        ``role`` is the *deciding* role, so it appears on an approval (the role
-        that would grant it) and not on a deny (no role granted anything). The
-        caller's full role set is deliberately withheld — same minimisation as
-        ``attributes``: the model has no use for the other roles, and a denial's
-        explanation belongs in ``message``.
+        ``role`` is the deciding role, so it is absent on a deny. The caller's
+        other roles are withheld, like ``attributes``.
         """
         payload: dict[str, Any] = {
             "type": self.error_type or self.outcome.value,

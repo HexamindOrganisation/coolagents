@@ -67,8 +67,7 @@ async def test_sender_with_user_populates_envelope_from_user() -> None:
     ):
         decision = enforcer.decide("read_file", {})
     ev = sender.events[0]
-    # The role set propagates from HexgateContext to the Decision, and the
-    # legacy scalar view still reads the caller's first role.
+    # Legacy scalar view still reads the caller's first role.
     assert decision.user_roles == ("analyst",)
     assert decision.role == "analyst"
     assert ev.user_id == "alice"
@@ -140,8 +139,8 @@ async def test_user_session_id_none_normalizes_to_empty_string() -> None:
 
 
 async def test_audited_decision_carries_the_full_role_set_and_deciding_role() -> None:
-    """A multi-role caller's audit record must answer both "who was calling?"
-    and "which role granted it?" — one event, never one per role."""
+    """One event per decision, answering both who called and which role
+    granted it."""
 
     class _AllowBillingEngine:
         def evaluate(

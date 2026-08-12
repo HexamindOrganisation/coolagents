@@ -256,9 +256,6 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
             client.config.api_key,
             pub,
             user=context.user_id,
-            # The whole set, not one role: the enforcer evaluates every role in
-            # a permissive union, so attesting a single one would leave the rest
-            # unattested.
             roles=context.user_roles,
             ttl_seconds=context.ttl_seconds,
         )

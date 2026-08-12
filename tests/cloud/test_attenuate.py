@@ -92,8 +92,8 @@ def test_attenuate_adds_role_fact(keys: tuple[bytes, bytes]) -> None:
 
 
 def test_attenuate_attests_every_role_in_the_set(keys: tuple[bytes, bytes]) -> None:
-    """The enforcer evaluates all of ``user_roles``, so the token must attest all
-    of them — one ``role(...)`` fact each, all recoverable from one predicate."""
+    """The enforcer evaluates every role, so the token attests every role —
+    one fact each, all under one predicate."""
     priv, pub = keys
     parent = _parent_envelope(priv)
 
@@ -105,7 +105,7 @@ def test_attenuate_attests_every_role_in_the_set(keys: tuple[bytes, bytes]) -> N
 
 
 def test_attenuate_collapses_duplicate_roles(keys: tuple[bytes, bytes]) -> None:
-    """Biscuit facts are a set — emitting a name twice attests nothing extra."""
+    """Biscuit facts are a set, so a repeated name attests nothing extra."""
     priv, pub = keys
     parent = _parent_envelope(priv)
 
@@ -128,7 +128,7 @@ def test_attenuate_without_role_omits_role_fact(keys: tuple[bytes, bytes]) -> No
 def test_attenuate_with_empty_role_list_omits_role_fact(
     keys: tuple[bytes, bytes],
 ) -> None:
-    """An empty ``user_roles`` is the "no roles" case, not an error."""
+    """Empty ``user_roles`` is the "no roles" case, not an error."""
     priv, pub = keys
     parent = _parent_envelope(priv)
     child = attenuate_for_user(parent, pub, user="alice", roles=[])
@@ -184,8 +184,8 @@ def test_attenuate_rejects_empty_role(keys: tuple[bytes, bytes]) -> None:
 def test_attenuate_rejects_an_empty_role_among_valid_ones(
     keys: tuple[bytes, bytes],
 ) -> None:
-    """One bad entry fails the whole attenuation rather than being skipped —
-    silently dropping it would attest a role set the caller never asked for."""
+    """One bad entry fails the whole attenuation: dropping it would attest a set
+    the caller never asked for."""
     priv, pub = keys
     parent = _parent_envelope(priv)
     with pytest.raises(TokenError, match="role must be a non-empty"):

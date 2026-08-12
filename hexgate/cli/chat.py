@@ -174,8 +174,6 @@ def _render_decision_panel(decision: Decision) -> Panel | None:
     if decision.user_roles:
         lines.append(Text(f"roles: {', '.join(decision.user_roles)}", style="dim"))
     if decision.deciding_role is not None:
-        # Only meaningful on an approval here (a deny has no deciding role), but
-        # rendered unconditionally so the panel never has to know which is which.
         lines.append(Text(f"granted by: {decision.deciding_role}", style="dim"))
     if decision.violations:
         lines.append(Text("violations:", style="dim"))

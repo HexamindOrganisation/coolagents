@@ -254,8 +254,7 @@ def _policy_set(roles: dict[str, dict]) -> PolicySet:
 
 
 def test_permissive_default_flags_a_grant_no_named_role_has() -> None:
-    """A tool only `default` grants is reachable by any caller carrying a role
-    name the policy doesn't define — the enforcer resolves it to `default`."""
+    """A tool only `default` grants is reachable by any undefined role name."""
     lints = check_default_role_exposure(
         _policy_set(
             {
@@ -271,7 +270,7 @@ def test_permissive_default_flags_a_grant_no_named_role_has() -> None:
 
 
 def test_permissive_default_is_quiet_when_a_named_role_also_grants_it() -> None:
-    """A shared grant is intentional (typically via a mixin), not exposure."""
+    """A shared grant is intentional (typically a mixin), not exposure."""
     lints = check_default_role_exposure(
         _policy_set(
             {
@@ -298,8 +297,7 @@ def test_permissive_default_is_quiet_for_a_least_privilege_default() -> None:
 
 
 def test_permissive_default_is_quiet_for_a_single_role_policy() -> None:
-    """A legacy flat policy.yaml *is* the `default` role, so there is no
-    cross-role exposure to report — flagging it would fail every such build."""
+    """A legacy flat policy.yaml *is* the `default` role — nothing to report."""
     lints = check_default_role_exposure(
         _policy_set({"default": {"tools": {"read_file": {"mode": "allow"}}}})
     )
@@ -327,7 +325,7 @@ def test_permissive_default_flags_a_granting_catch_all() -> None:
 
 
 def test_permissive_default_flags_approval_required_grants_too() -> None:
-    """`approval_required` is still a grant — it reaches the tool, with a gate."""
+    """`approval_required` still reaches the tool, just with a gate."""
     lints = check_default_role_exposure(
         _policy_set(
             {
@@ -342,8 +340,7 @@ def test_permissive_default_flags_approval_required_grants_too() -> None:
 
 
 def test_permissive_default_sees_through_inheritance() -> None:
-    """Grants a named role inherits from a mixin count as that role's grants —
-    the check runs on resolved policies, matching what the enforcer evaluates."""
+    """The check runs on resolved policies, so inherited grants count."""
     lints = check_default_role_exposure(
         _policy_set(
             {

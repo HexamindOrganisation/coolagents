@@ -13,14 +13,11 @@ caller). A ``policies/`` directory is the new shape:
         └── billing.yaml      # inherits: [read_only, support]
 
 A :class:`PolicySet` holds the resolved (post-inheritance) policy per role
-name, plus the ``default`` fallback. At tool-call time the enforcer asks the
-set for ``policy_for(role)`` once per role the caller carries and takes the
-most permissive verdict; this module stays single-role and unaware of that.
+name, plus the ``default`` fallback. The enforcer calls ``policy_for(role)``
+once per role the caller carries; this module stays single-role.
 
-``default`` is a *fallback*, not a *floor*: a caller whose role is defined
-never inherits ``default``'s permissions. To express a baseline shared by
-every role, write it as a mixin and ``inherits`` it — that way it is opt-in
-and visible in the YAML.
+``default`` is a *fallback*, not a *floor*: a caller whose role is defined never
+inherits it. For a baseline shared by every role, use a mixin and ``inherits``.
 
 Inheritance semantics: left-to-right merge — ``inherits: [A, B]`` resolves
 to ``merge(A, merge(B, self))``, where ``merge`` deep-merges the ``tools``

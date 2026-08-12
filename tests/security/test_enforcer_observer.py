@@ -191,8 +191,7 @@ def test_audit_and_observer_both_fire_independently() -> None:
 
 
 async def test_observer_sees_the_whole_role_set_and_the_deciding_role() -> None:
-    """In-process consumers (the chat panel) render the union's outcome, so they
-    need both the caller's roles and which one decided."""
+    """The chat panel renders both the caller's roles and which one decided."""
 
     class _ApprovalForBilling:
         def evaluate(

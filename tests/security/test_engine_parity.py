@@ -763,12 +763,9 @@ def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) 
 
 
 # ---------------------------------------------------------------------------
-# Multi-role permissive union — parity through the shared combine
-#
-# The union lives in the enforcer (combine_role_verdicts) and both engines stay
-# single-role, so parity here proves the fold can't drift: the same role set
-# through the same fold over two different engines must agree. This is the
-# acceptance gate for multi-role enforcement.
+# Multi-role permissive union — the acceptance gate. The same role set through
+# the same fold over two different engines must agree on outcome AND deciding
+# role.
 # ---------------------------------------------------------------------------
 
 _MULTI_ROLE_POLICY = {
@@ -798,10 +795,10 @@ _MULTI_ROLE_POLICY = {
 @pytest.mark.parametrize(
     ("roles", "tool", "args", "expect", "deciding"),
     [
-        # Union grants what no single role would: billing carries refund.
+        # The union grants what no single role would.
         (["support", "billing"], "refund", {"amount": 1}, "allow", "billing"),
         (["billing", "support"], "refund", {"amount": 1}, "allow", "billing"),
-        # Nobody grants it -> deny, and no role gets the credit.
+        # Nobody grants it -> deny, no credited role.
         (["support", "auditor"], "write_file", {}, "deny", None),
         # ALLOW beats NEEDS_APPROVAL regardless of order (D2).
         (["billing", "support"], "read_file", {}, "allow", "support"),
@@ -809,14 +806,12 @@ _MULTI_ROLE_POLICY = {
         # Approval only when no role allows outright.
         (["auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
         (["support", "auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
-        # The role fact binds per role: `role == "billing"` is true only while
-        # billing is evaluated, so it still grants inside a union.
+        # The role fact binds per role, so it still grants inside a union.
         (["auditor", "billing"], "refund", {"amount": 1}, "allow", "billing"),
-        # Unrecognised names resolve to the least-privilege default (D13) and so
-        # add nothing here; a known role still decides.
+        # Unrecognised names resolve to the least-privilege default (D13).
         (["zzz", "support"], "read_file", {}, "allow", "support"),
         (["zzz", "yyy"], "read_file", {}, "deny", None),
-        # No roles at all -> the default policy, exactly as a single None role.
+        # No roles -> the default policy.
         ([], "read_file", {}, "deny", None),
     ],
 )

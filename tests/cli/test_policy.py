@@ -918,9 +918,8 @@ def _multi_role_file(tmp_path: Path) -> Path:
 def test_test_roles_allows_when_any_role_grants(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str
 ) -> None:
-    """A dry-run of a role set must mirror the enforcer: any role granting wins,
-    and the granting role is named. Both engines, since the CLI routes both
-    through the same fold."""
+    """Mirrors the enforcer on both engines: any role granting wins, and the
+    granting role is named."""
     if engine == "wasm" and shutil.which("opa") is None:
         pytest.skip("opa not on PATH")
     rc = _main_test(
@@ -959,9 +958,8 @@ def test_test_roles_denies_when_no_role_grants(
 def test_test_roles_warns_on_an_undefined_role_but_still_evaluates(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """An undefined name is legal at runtime (it falls back to the default
-    policy), so the dry-run must not fail — it warns and carries on, otherwise
-    it would disagree with production."""
+    """An undefined name falls back to ``default`` at runtime, so the dry-run
+    warns rather than failing."""
     rc = _main_test(
         _ns(
             source=str(_multi_role_file(tmp_path)),
@@ -980,7 +978,7 @@ def test_test_roles_warns_on_an_undefined_role_but_still_evaluates(
 def test_test_single_role_still_fails_on_a_typo(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """``--role`` keeps its hard error: one undefined role is a typo, not a set."""
+    """``--role`` keeps its hard error: one undefined role is a typo."""
     rc = _main_test(
         _ns(
             source=str(_multi_role_file(tmp_path)),
@@ -1034,8 +1032,8 @@ roles:
 def test_validate_warns_on_a_permissive_default_without_failing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Default severity keeps validate passing — a permissive `default` is legal
-    (a flat policy.yaml is exactly that) — but the exposure is reported."""
+    """A permissive `default` is legal (a flat policy.yaml is one), so validate
+    still passes — but reports the exposure."""
     p = tmp_path / "exposed.yaml"
     p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
 
@@ -1051,8 +1049,7 @@ def test_validate_warns_on_a_permissive_default_without_failing(
 def test_validate_gates_on_the_permissive_default_warning(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """`--max-severity warning` is how CI refuses a default role that grants
-    what no named role grants."""
+    """How CI refuses a default role granting what no named role grants."""
     p = tmp_path / "exposed.yaml"
     p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
 

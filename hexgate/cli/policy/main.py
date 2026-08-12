@@ -458,9 +458,8 @@ def _main_validate(args: argparse.Namespace) -> int:
         print(f"policy build: {exc}", file=sys.stderr)
         return 1
 
-    # Cross-role exposure: warnings, not errors — a permissive ``default`` is
-    # legitimate for a single-role policy, so this must not fail those builds.
-    # CI opts in with --max-severity warning.
+    # Warnings, not errors: a permissive ``default`` is legitimate for a
+    # single-role policy. CI opts in with --max-severity warning.
     from hexgate.security.analyzer import SEVERITY_RANK, check_default_role_exposure
 
     lints = check_default_role_exposure(policy_set)
@@ -684,8 +683,8 @@ def _main_test(args: argparse.Namespace) -> int:
     roles = _resolve_test_roles(args)
     single_role = getattr(args, "role", None)
     if single_role is not None and single_role not in policy_set:
-        # A single --role is almost always a typo when it isn't defined; keep
-        # failing loudly rather than silently dry-running the default policy.
+        # One undefined role is almost always a typo — fail rather than
+        # silently dry-run the default policy.
         print(
             f'role "{single_role}" not in policy (known roles: {policy_set.roles!r})',
             file=sys.stderr,
@@ -693,10 +692,8 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
     for role in roles:
         if role not in policy_set:
-            # In a --roles set an undefined name is legal at runtime (it falls
-            # back to the default policy, contributing its permissions to the
-            # union), so warn instead of failing — erroring would make the
-            # dry-run disagree with production.
+            # In a set, an undefined name is legal at runtime (it falls back to
+            # ``default``), so warn rather than fail.
             print(
                 f'warning: role "{role}" not in policy — evaluating it against '
                 f"the {DEFAULT_ROLE_NAME!r} policy (known roles: {policy_set.roles!r})",
@@ -715,11 +712,9 @@ def _main_test(args: argparse.Namespace) -> int:
 
 
 def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
-    """Distinct roles to dry-run, from ``--role`` or ``--roles`` (mutually exclusive).
+    """Distinct roles to dry-run, from ``--role`` or ``--roles``.
 
-    Parsing is this command's business; normalisation is shared with the
-    enforcer via :func:`distinct_roles`, so the printed deciding role is the one
-    production would pick.
+    Normalisation is shared with the enforcer via :func:`distinct_roles`.
     """
     single = getattr(args, "role", None)
     raw = (
@@ -737,9 +732,7 @@ def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
 def _render_verdict(verdict: Verdict, label: str, deciding_role: str | None) -> int:
     """Print a verdict uniformly and return the process exit code.
 
-    Shared by both engines so pydantic and wasm decisions render the same
-    — including the structured ``violations`` / ``hint`` detail when the
-    engine produced it, and which role granted a multi-role call.
+    Shared by both engines so pydantic and wasm decisions render identically.
     """
     granted = (
         f"\n  granted by: {deciding_role}"
@@ -772,8 +765,8 @@ def _test_via_pydantic(
 ) -> int:
     """Run the decision through the in-process constraint evaluator.
 
-    Routes through ``combine_role_verdicts`` — the same fold the enforcer
-    uses — so a dry-run of a multi-role caller can't disagree with production.
+    Routes through ``combine_role_verdicts``, the fold the enforcer uses, so a
+    dry-run cannot disagree with production.
     """
 
     def evaluate(role: str | None) -> Verdict:
@@ -837,11 +830,8 @@ def _test_via_wasm(
 
 
 def _warn_role_cap(total: int, kept: int) -> None:
-    """Mirror the enforcer's role cap in the dry-run, on stderr.
-
-    Printed rather than logged: a dry-run that silently evaluated fewer roles
-    than it was given would misreport what production does.
-    """
+    """Mirror the enforcer's role cap on stderr — a dry-run that silently
+    evaluated fewer roles than given would misreport production."""
     print(
         f"warning: {total} distinct roles given; evaluating the first {kept} "
         "(MAX_EVALUATED_ROLES), as the enforcer would",

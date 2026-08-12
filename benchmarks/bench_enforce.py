@@ -96,11 +96,10 @@ WORKLOAD: tuple[Case, ...] = (
 
 @dataclass(frozen=True)
 class MultiCase:
-    """A multi-role enforcer workload: the caller's role set plus the expected
-    outcome of the permissive union over it.
+    """A caller's role set plus the expected outcome of the union over it.
 
-    Separate from :class:`Case` because the *engine* contract is single-role by
-    design — the union lives in the enforcer, so only enforcer rows vary the set.
+    Separate from :class:`Case` because the engine contract is single-role: the
+    union lives in the enforcer, so only enforcer rows vary the set.
     """
 
     label: str
@@ -110,10 +109,8 @@ class MultiCase:
     expected: DecisionOutcome
 
 
-# Measures what the union actually costs: the short-circuit (first role allows),
-# the miss (a later role allows), and the worst case (nobody allows, so every
-# role is evaluated). ``single_role`` is the baseline the others are read
-# against — it must not regress against the pre-multi-role path.
+# What the union costs: short-circuit, a later-role hit, and the worst case
+# (nobody allows, so every role runs). ``single_role`` is the baseline.
 _SCALE_ARGS = {"service": "web-api", "env": "staging", "replicas": 5}
 MULTI_ROLE_WORKLOAD: tuple[MultiCase, ...] = (
     MultiCase(
@@ -217,9 +214,7 @@ def _enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
 def _multi_role_enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
     """Enforcer latency as the caller's role count grows.
 
-    N roles cost up to N engine invocations (one WASM module call each), bounded
-    by the first ALLOW — these rows are the evidence for whether that ever needs
-    optimising.
+    N roles cost up to N engine invocations, bounded by the first ALLOW.
     """
     rows: list[Stats] = []
     for case in MULTI_ROLE_WORKLOAD:

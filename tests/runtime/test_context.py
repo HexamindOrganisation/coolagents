@@ -288,23 +288,21 @@ async def test_resolve_tool_use_context_ttl_threads_through(
 
 
 def test_user_roles_default_to_empty() -> None:
-    """No roles is the "default policy" case, not an error."""
+    """No roles is the "default policy" case."""
     assert HexgateContext(user_id="a").user_roles == []
     assert HexgateContext(user_id="a", user_roles=[]).user_roles == []
 
 
 def test_user_roles_are_stored_verbatim_in_caller_order() -> None:
-    """Order is preserved because it decides which role is credited with an
-    allow; the model neither dedups nor sorts (the enforcer dedups)."""
+    """Order decides which role is credited with an allow. The model neither
+    dedups nor sorts — the enforcer does."""
     ctx = HexgateContext(user_id="a", user_roles=["billing", "support", "billing"])
     assert ctx.user_roles == ["billing", "support", "billing"]
 
 
 def test_context_has_no_primary_role_helper() -> None:
-    """``primary_role`` is gone: it reduced a caller's roles to the first one,
-    and any new reader of it would silently re-introduce single-role
-    enforcement. ``Decision.role`` covers the remaining legacy renderers.
-    """
+    """Gone because a new reader would silently re-introduce single-role
+    enforcement; ``Decision.role`` covers the legacy renderers."""
     assert not hasattr(
         HexgateContext(user_id="a", user_roles=["billing"]), "primary_role"
     )
@@ -325,11 +323,8 @@ def test_attributes_default_empty_and_roundtrip() -> None:
 
 
 class _RoleRecordingEngine:
-    """Minimal PolicyEngine recording every ``role`` the enforcer forwards.
-
-    Denies, so the permissive union never short-circuits and the full sequence
-    of forwarded roles is observable.
-    """
+    """Records every ``role`` the enforcer forwards. Denies, so the union never
+    short-circuits and the whole sequence is observable."""
 
     def __init__(self) -> None:
         from hexgate.security import DecisionOutcome, Verdict
@@ -344,7 +339,7 @@ class _RoleRecordingEngine:
 
 @pytest.mark.asyncio
 async def test_enforcer_forwards_every_role_from_active_context() -> None:
-    """Every role in the active context reaches the engine, in caller order."""
+    """Every role reaches the engine, in caller order."""
     from hexgate.security.enforcer import PolicyEnforcer
 
     engine = _RoleRecordingEngine()
