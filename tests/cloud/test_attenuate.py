@@ -192,6 +192,15 @@ def test_attenuate_rejects_an_empty_role_among_valid_ones(
         attenuate_for_user(parent, pub, user="alice", roles=["billing", ""])
 
 
+def test_attenuate_rejects_a_bare_string_role(keys: tuple[bytes, bytes]) -> None:
+    """``roles="admin"`` type-checks (str is a Sequence[str]) but iterates per
+    character, so it would attest five one-letter roles and never ``admin``."""
+    priv, pub = keys
+    parent = _parent_envelope(priv)
+    with pytest.raises(TypeError, match="not a bare str"):
+        attenuate_for_user(parent, pub, user="alice", roles="admin")  # type: ignore[arg-type]
+
+
 def test_attenuate_rejects_non_positive_ttl(keys: tuple[bytes, bytes]) -> None:
     """TTL must be a positive int — 0 or negative is rejected."""
     priv, pub = keys

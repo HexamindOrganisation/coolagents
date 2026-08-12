@@ -975,6 +975,43 @@ def test_test_roles_warns_on_an_undefined_role_but_still_evaluates(
     assert 'warning: role "not_a_role" not in policy' in captured.err
 
 
+def test_test_empty_roles_fails_instead_of_dry_running_the_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CI suite whose ``$ROLES`` failed to expand must not pass green while
+    asserting nothing — the old behaviour silently evaluated ``default``."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--roles is empty" in captured.err
+    assert "ALLOW" not in captured.out
+
+
+def test_test_blank_roles_entries_fail_the_same_way(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Commas and spaces alone name no roles either."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles=" , , ",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--roles is empty" in capsys.readouterr().err
+
+
 def test_test_single_role_still_fails_on_a_typo(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

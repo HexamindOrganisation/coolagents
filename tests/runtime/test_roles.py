@@ -3,6 +3,8 @@ dry-run, and token attenuation all share it."""
 
 from __future__ import annotations
 
+import pytest
+
 from hexgate.runtime.roles import (
     MAX_EVALUATED_ROLES,
     distinct_roles,
@@ -97,3 +99,30 @@ def test_resolve_is_idempotent() -> None:
     twice = resolve_role_set([role for role in once if role is not None])
 
     assert once == twice
+
+
+# --- A bare str is a caller mistake, not a one-role set ----------------------
+
+
+def test_distinct_rejects_a_bare_string() -> None:
+    """``str`` satisfies ``Iterable[str]`` and type-checks clean, but iterates
+    per character — ``"admin"`` would silently become five one-letter roles."""
+    with pytest.raises(TypeError, match="not a bare str"):
+        distinct_roles("admin")  # type: ignore[arg-type]
+
+
+def test_resolve_rejects_a_bare_string() -> None:
+    """The authorisation path needs the same guard as the attestation one."""
+    with pytest.raises(TypeError, match="not a bare str"):
+        resolve_role_set("admin")  # type: ignore[arg-type]
+
+
+def test_bare_string_error_suggests_the_fix() -> None:
+    with pytest.raises(TypeError, match=r"\['admin'\]"):
+        distinct_roles("admin")  # type: ignore[arg-type]
+
+
+def test_other_sequences_are_untouched() -> None:
+    """Only ``str`` is special-cased; tuples and generators still work."""
+    assert distinct_roles(("billing", "support")) == ["billing", "support"]
+    assert distinct_roles(r for r in ["billing", "billing"]) == ["billing"]

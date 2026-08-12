@@ -75,13 +75,22 @@ The two flags differ on undefined names, deliberately:
 - `--roles support,nope` **warns and continues**, evaluating `nope` against the
   `default` policy. That is what happens at runtime, and a dry-run that refused
   would disagree with production.
+- `--roles ""` **fails** — an empty set names no roles. Scripting this as
+  `--roles "$ROLES"` with an unset variable would otherwise dry-run the
+  `default` policy and exit 0, passing CI while asserting nothing. Pass
+  `--roles default` if the fallback policy is what you meant to test.
+
+At most 32 distinct roles are evaluated, matching the enforcer; past that the
+dry-run warns on stderr and evaluates the first 32, as production would.
 
 That fallback is also why `default` should stay least-privilege — see
 [request context](/concepts/user-scope). `hexgate policy validate` warns when the
-`default` role grants something no named role grants:
+`default` role grants something no named role grants, and when the document
+declares roles but never names one `default` (so one of them silently becomes
+the fallback):
 
 ```bash
-hexgate policy validate policy.yaml --max-severity warning   # non-zero on that warning
+hexgate policy validate policy.yaml --max-severity warning   # non-zero on either warning
 ```
 
 ## Testing `ctx.*` attribute rules

@@ -20,7 +20,16 @@ def distinct_roles(roles: Iterable[str]) -> list[str]:
     By name, not by resolved policy: two names can select the same policy and
     still differ in the ``role`` fact a constraint reads. Order decides which
     role is credited with an allow.
+
+    Rejects a bare ``str``: it satisfies ``Iterable[str]`` and type-checks
+    clean, but iterates per *character*, so ``"admin"`` would silently become
+    five one-letter roles — attested in a token or evaluated as a role set.
     """
+    if isinstance(roles, str):
+        raise TypeError(
+            f"roles must be a sequence of role names, not a bare str: {roles!r} "
+            f"(did you mean [{roles!r}]?)"
+        )
     seen: list[str] = []
     for role in roles:
         if role not in seen:

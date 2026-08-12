@@ -326,6 +326,10 @@ def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
     Any unrecognised role name resolves to ``default`` and joins the caller's
     union, so a tool reachable only through ``default`` is reachable by anyone.
 
+    A document that declares roles but no ``default`` gets an ``implicit-default``
+    lint of its own: the loader aliases one named role as the fallback, handing
+    that role's whole grant set to every undefined name.
+
     Silent for a single-role policy set: a legacy flat ``policy.yaml`` *is* the
     ``default`` role. ``warning`` rather than ``error`` for the same reason —
     CI opts in via ``--max-severity warning``.
@@ -335,8 +339,31 @@ def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
         return []
 
     default_policy = policy_set.policy_for(DEFAULT_ROLE_NAME)
-    others = [policy_set.policy_for(role) for role in named]
+    # Drop the role ``default`` merely aliases: it resolves to the *same policy
+    # object*, so leaving it in answers "does a named role grant this too?" with
+    # yes for every one of its own grants — silencing the check on the very
+    # shape that most needs it.
+    others = [
+        policy
+        for policy in (policy_set.policy_for(role) for role in named)
+        if policy is not default_policy
+    ]
     lints: list[PolicyLint] = []
+
+    if policy_set.aliased_default is not None:
+        lints.append(
+            PolicyLint(
+                code="implicit-default",
+                severity="warning",
+                message=(
+                    f"no role is named {DEFAULT_ROLE_NAME!r}, so "
+                    f"{policy_set.aliased_default!r} is the fallback for every "
+                    "role name this policy doesn't define — any caller reaches "
+                    "its grants by carrying an undefined name. Add an explicit "
+                    f"least-privilege {DEFAULT_ROLE_NAME!r} role."
+                ),
+            )
+        )
 
     for tool, tool_policy in sorted(default_policy.tools.items()):
         if tool_policy.mode not in GRANT_MODES:

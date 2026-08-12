@@ -681,6 +681,16 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
 
     roles = _resolve_test_roles(args)
+    if getattr(args, "roles", None) is not None and not roles:
+        # --roles was given but held only blanks. Falling through would dry-run
+        # the ``default`` policy and exit 0, so a CI suite whose $ROLES failed to
+        # expand would pass while asserting nothing about the role it meant.
+        print(
+            f"--roles is empty; pass at least one role name (use --roles "
+            f"{DEFAULT_ROLE_NAME} to dry-run the fallback policy)",
+            file=sys.stderr,
+        )
+        return 1
     single_role = getattr(args, "role", None)
     if single_role is not None and single_role not in policy_set:
         # One undefined role is almost always a typo — fail rather than

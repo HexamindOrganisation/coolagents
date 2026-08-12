@@ -162,8 +162,18 @@ ALLOW  >  NEEDS_APPROVAL  >  DENY
 A caller with `user_roles=["support", "billing"]` can do everything `support` can
 do plus everything `billing` can do. Adding a role can only ever widen access,
 never narrow it. Evaluation stops at the first role that allows the call, and the
-role that granted it is recorded on the decision (`granted by:` in `hexgate
-chat`, and in the audit trail).
+role that granted it is recorded on the decision as `deciding_role` (`granted
+by:` in `hexgate chat`, and on the `Decision` your approval handler and any
+decision observer receive).
+
+<Note>
+The persisted audit trail does not carry `deciding_role` yet. Its `role` column
+keeps its existing meaning — the caller's first role — so a multi-role decision
+is stored as *who was calling*, not *which role granted the call*. Nothing
+recorded is wrong, but for genuinely multi-role callers it is incomplete until
+the audit pipeline lands the full role set. Read provenance from the `Decision`
+in-process in the meantime.
+</Note>
 
 <Warning>
 **Approval is not sticky.** If one role allows a tool outright and another would
@@ -198,8 +208,10 @@ inherits `default`'s permissions. For a baseline genuinely shared by every role,
 write it as a mixin and `inherits` it, so it is explicit in the YAML.
 
 `hexgate policy validate` warns (`permissive-default`) when the `default` role
-grants something no named role grants; run it with
-`--max-severity warning` in CI to make that a hard failure.
+grants something no named role grants, and (`implicit-default`) when a policy
+declares roles but names none of them `default` — the loader then aliases one,
+handing its whole grant set to every undefined name. Run it with
+`--max-severity warning` in CI to make either a hard failure.
 </Warning>
 
 Two practical limits: at most **32** distinct roles are evaluated per call (extra

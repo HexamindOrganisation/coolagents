@@ -237,9 +237,11 @@ class Decision:
 
     @property
     def role(self) -> str | None:
-        """Legacy single-role view, kept for renderers and the audit wire field.
+        """The caller's first role — an arbitrary pick over a set.
 
-        Enforcement reads ``user_roles``; provenance reads ``deciding_role``.
+        Sole consumer is the audit wire's like-named column, whose meaning
+        predates multi-role and stays "the caller's role". Enforcement reads
+        ``user_roles``; provenance reads ``deciding_role``.
         """
         return self.user_roles[0] if self.user_roles else None
 
