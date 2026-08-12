@@ -30,6 +30,8 @@ against the live grammar.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from hexgate.security.constraints import parse_constraint
 from hexgate.security.models import (
     AgentPolicy,
@@ -42,6 +44,7 @@ from hexgate.security.modules import (
     LinkError,
     LinkResult,
     ModuleContent,
+    ProjectLinkResult,
     Provenance,
     RuleTrace,
 )
@@ -67,6 +70,100 @@ def link_policy_set(
         layers=layers,
         trace=trace,
     )
+
+
+def resolve_role_map(
+    roles: Mapping[str, Sequence[str]] | None, library: list[ModuleContent]
+) -> dict[str, list[ModuleContent]]:
+    """Expand a role binding into ``{role: [capability modules]}``.
+
+    The one place that defines role expansion, shared by the resolver and the
+    analyzer so they can never lint a different role set than what compiles.
+
+    ``roles is None`` (no ``roles.yaml``) means a single ``default`` importing
+    every capability — the all-compose back-compat default. An **empty** binding
+    (``{}``, a present-but-empty or typo'd ``roles.yaml``) is not the same: it
+    yields a fail-closed empty ``default``, so a mistake can't silently widen
+    access. A ``default`` bucket is always present. An unknown capability name is
+    a :class:`LinkError` (same contract from both callers).
+    """
+    index: dict[str, ModuleContent] = {cap.name: cap for cap in library}
+    if roles is None:
+        names_by_role: dict[str, list[str]] = {
+            DEFAULT_ROLE_NAME: [cap.name for cap in library]
+        }
+    else:
+        names_by_role = {name: list(sel) for name, sel in roles.items()}
+    names_by_role.setdefault(DEFAULT_ROLE_NAME, [])
+
+    resolved: dict[str, list[ModuleContent]] = {}
+    for role, cap_names in names_by_role.items():
+        caps: list[ModuleContent] = []
+        for name in cap_names:
+            cap = index.get(name)
+            if cap is None:
+                raise LinkError(
+                    f"role {role!r} imports unknown capability {name!r} "
+                    f"(known capabilities: {sorted(index)!r})"
+                )
+            caps.append(cap)
+        resolved[role] = caps
+    return resolved
+
+
+def resolve_for_project(
+    boundaries: list[ModuleContent],
+    library: list[ModuleContent],
+    roles: Mapping[str, Sequence[str]] | None,
+    *,
+    agent_leaf: Sequence[ModuleContent] = (),
+    agent_boundaries: Sequence[ModuleContent] = (),
+) -> ProjectLinkResult:
+    """Resolve a project into one role-keyed :class:`PolicySet`.
+
+    Boundaries are role-independent: every role is folded against the same
+    ``boundaries + agent_boundaries``, so a role can only ever narrow, never
+    widen, its ceiling. A role names the **capabilities** it imports; the fold
+    (:func:`link`) is reused unchanged, once per role.
+
+    ``roles`` maps a role name to the capability *names* it selects (a name is a
+    :attr:`ModuleContent.name`). ``None`` (no binding at all) means a single
+    ``default`` role importing every capability — the all-compose back-compat
+    path. A ``default`` role is always present, so unroled callers get
+    fail-closed deny rather than a missing bucket.
+
+    Every capability in the library is validated up front (:func:`_reject_capability_denies`),
+    not just the ones a role imports, so a malformed but unbound module fails
+    loudly instead of lurking until someone binds it.
+    """
+    _reject_capability_denies([*library, *agent_leaf])
+    resolved = resolve_role_map(roles, library)
+    fences = [*boundaries, *agent_boundaries]
+    by_role: dict[str, LinkResult] = {}
+    effective: dict[str, AgentPolicy] = {}
+    for role, caps in resolved.items():
+        result = link_policy_set(fences, [*caps, *agent_leaf])
+        by_role[role] = result
+        effective[role] = result.effective[DEFAULT_ROLE_NAME]
+
+    return ProjectLinkResult(policy_set=PolicySet(effective), by_role=by_role)
+
+
+def _reject_capability_denies(capabilities: Sequence[ModuleContent]) -> None:
+    """A capability that denies is a config error, checked over the WHOLE library.
+
+    The per-tool guard in :func:`_fold_tool` only runs for capabilities a role
+    imports, so an unbound malformed module would slip through resolution. This
+    is a per-module property (a capability tool with ``mode: deny``), so it is
+    hoisted here and run over every capability, bound or not.
+    """
+    for cap in capabilities:
+        for tool, tp in cap.policy.tools.items():
+            if tp.mode == "deny":
+                raise LinkError(
+                    f"capability {cap.name!r} denies {tool!r}; capabilities may "
+                    f"only grant — move the deny to a boundary ({cap.source})"
+                )
 
 
 def link(

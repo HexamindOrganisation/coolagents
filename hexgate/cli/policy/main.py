@@ -226,6 +226,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Repo root containing a policies/ tree (default: current dir).",
     )
     p_resolve.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "Print just this role's effective policy. Without it, a multi-role "
+            "project (a roles.yaml) prints every role; a single-role project "
+            "prints the one effective policy."
+        ),
+    )
+    p_resolve.add_argument(
         "-o",
         "--output",
         help="Write the effective policy YAML here (default: stdout).",
@@ -249,6 +258,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--dir",
         default=".",
         help="Repo root containing a policies/ tree (default: current dir).",
+    )
+    p_check.add_argument(
+        "--role",
+        default=None,
+        help="Restrict lints to this role (plus project-level ones). Default: all roles.",
     )
     p_check.add_argument(
         "--manifest",
@@ -496,15 +510,17 @@ def _main_show_rego(args: argparse.Namespace) -> int:
 
 
 def _main_resolve(args: argparse.Namespace) -> int:
-    """Link the local module bundle into one effective policy and print it."""
+    """Resolve the local project into effective policy per role and print it."""
     from hexgate.security import (
         LinkError,
-        link_policy_set,
         load_local_modules,
+        load_roles,
+        resolve_for_project,
     )
 
     try:
         boundaries, capabilities = load_local_modules(args.dir)
+        roles = load_roles(args.dir)
     except (ValueError, OSError) as exc:
         print(f"load error: {exc}", file=sys.stderr)
         return 1
@@ -517,15 +533,49 @@ def _main_resolve(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = link_policy_set(boundaries, capabilities)
+        result = resolve_for_project(boundaries, capabilities, roles)
     except (LinkError, PolicySetError, ConstraintParseError, ValidationError) as exc:
         print(f"link error: {exc}", file=sys.stderr)
         return 1
 
-    effective = result.effective[DEFAULT_ROLE_NAME]
-    # Full dump (not exclude_defaults): a tool set to the default `deny` mode
-    # would otherwise render as `{}`, hiding the outcome in an inspection view.
-    text = yaml.safe_dump(effective.model_dump(mode="json"), sort_keys=False)
+    if args.role is not None and args.role not in result.by_role:
+        print(
+            f'role "{args.role}" not defined (known roles: {sorted(result.by_role)!r})',
+            file=sys.stderr,
+        )
+        return 1
+
+    # Full dump (not exclude_defaults): a tool at the default `deny` mode would
+    # otherwise render as `{}`, hiding the outcome in an inspection view. A
+    # single-role project prints the one policy (back-compat); a multi-role one
+    # (or an explicit --role over several) prints a role-keyed mapping.
+    if args.role is not None:
+        payload: Any = (
+            result.by_role[args.role]
+            .effective[DEFAULT_ROLE_NAME]
+            .model_dump(mode="json")
+        )
+        roles_shown = [args.role]
+    elif len(result.by_role) == 1:
+        only = next(iter(result.by_role))
+        payload = (
+            result.by_role[only].effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
+        )
+        roles_shown = [only]
+    else:
+        # Wrap in `roles:` so the emitted file round-trips through
+        # load_policy_set_from_dict / `hexgate policy build`. A bare top-level
+        # role-keyed mapping would be read as a single flat AgentPolicy, and the
+        # role keys silently dropped, compiling a deny-everything bundle.
+        payload = {
+            "roles": {
+                role: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
+                for role, lr in sorted(result.by_role.items())
+            }
+        }
+        roles_shown = sorted(result.by_role)
+
+    text = yaml.safe_dump(payload, sort_keys=False)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"✓ wrote effective policy to {args.output}")
@@ -533,23 +583,25 @@ def _main_resolve(args: argparse.Namespace) -> int:
         sys.stdout.write(text)
 
     # Provenance to stderr so stdout stays a clean policy document.
-    print("\nlayers (resolution order):", file=sys.stderr)
-    for prov in result.layers:
-        print(f"  [{prov.kind:10}] {prov.module}  ({prov.source})", file=sys.stderr)
-    if result.trace.shadowed:
-        print("shadowed (ineligible under a ceiling):", file=sys.stderr)
-        for tool, by in sorted(result.trace.shadowed.items()):
-            print(f"  {tool}  ← {by.module} ({by.source})", file=sys.stderr)
+    for role in roles_shown:
+        lr = result.by_role[role]
+        print(f"\n[{role}] layers (resolution order):", file=sys.stderr)
+        for prov in lr.layers:
+            print(f"  [{prov.kind:10}] {prov.module}  ({prov.source})", file=sys.stderr)
+        if lr.trace.shadowed:
+            print("  shadowed (ineligible under a ceiling):", file=sys.stderr)
+            for tool, by in sorted(lr.trace.shadowed.items()):
+                print(f"    {tool}  ← {by.module} ({by.source})", file=sys.stderr)
     return 0
 
 
 def _main_check(args: argparse.Namespace) -> int:
-    """Lint the local module bundle; exit non-zero at/above --max-severity."""
-    from hexgate.security import check as check_bundle
-    from hexgate.security import load_local_modules
+    """Lint the local project; exit non-zero at/above --max-severity."""
+    from hexgate.security import check_project, load_local_modules, load_roles
 
     try:
         boundaries, capabilities = load_local_modules(args.dir)
+        roles = load_roles(args.dir)
     except (ValueError, OSError) as exc:
         print(f"load error: {exc}", file=sys.stderr)
         return 1
@@ -557,6 +609,18 @@ def _main_check(args: argparse.Namespace) -> int:
         print(
             f"no modules found under {args.dir}/policies/"
             " (expected policies/boundaries/ and/or policies/capabilities/)",
+            file=sys.stderr,
+        )
+        return 1
+    # Validate against the resolved role set, not the raw roles map: a project
+    # with no roles.yaml still has the synthesised `default` role, and one that
+    # omits `default` still gets it. This keeps `check` in step with `resolve`
+    # (which validates against the resolved set) so a typo'd role errors instead
+    # of silently matching nothing and hiding every lint.
+    known_roles = set(roles or ()) | {DEFAULT_ROLE_NAME}
+    if args.role is not None and args.role not in known_roles:
+        print(
+            f'role "{args.role}" not defined (known roles: {sorted(known_roles)!r})',
             file=sys.stderr,
         )
         return 1
@@ -575,7 +639,12 @@ def _main_check(args: argparse.Namespace) -> int:
 
     from hexgate.security.analyzer import SEVERITY_RANK
 
-    lints = check_bundle(boundaries, capabilities, manifest=manifest)
+    lints = check_project(boundaries, capabilities, roles, manifest=manifest)
+
+    # --role narrows to that role's lints plus project-level ones (role is None,
+    # e.g. unused-capability), so a role view still surfaces global problems.
+    if args.role is not None:
+        lints = [lint for lint in lints if lint.role in (args.role, None)]
 
     # A link error short-circuits before drift/soft lints run, so the
     # "supply a manifest" hint only makes sense when linking succeeded.
@@ -596,7 +665,10 @@ def _main_check(args: argparse.Namespace) -> int:
     icon = {"error": "✗", "warning": "!", "info": "·"}
     for lint in lints:
         where = f" ({lint.source})" if lint.source else ""
-        print(f"{icon.get(lint.severity, '·')} [{lint.code}] {lint.message}{where}")
+        role = f" [{lint.role}]" if lint.role else ""
+        print(
+            f"{icon.get(lint.severity, '·')} [{lint.code}]{role} {lint.message}{where}"
+        )
     _drift_hint()
 
     threshold = SEVERITY_RANK[args.max_severity]
