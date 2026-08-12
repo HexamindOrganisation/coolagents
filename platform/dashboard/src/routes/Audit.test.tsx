@@ -66,6 +66,7 @@ const ROW: AuditDecisionRow = {
   violations: ["no-secrets"],
   hint: null,
   arguments: { path: "/etc/passwd" },
+  attributes: { department: "finance" },
 };
 
 const ANOMALY: AuditAnomaly = {
@@ -87,6 +88,8 @@ const SIBLING: AuditDecisionRow = {
   outcome: "allow",
   reason: "",
   violations: [],
+  // No ABAC bag — the drawer must omit the section rather than show an empty box.
+  attributes: null,
 };
 
 /**
@@ -317,6 +320,36 @@ describe("AuditPage", () => {
     await waitFor(() => {
       expect(screen.queryByText("evt-1")).not.toBeInTheDocument();
     });
+  });
+
+  it("drawer renders the context attributes bag that drove the decision", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    expect(screen.getByText("Context attributes")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "PRE" &&
+          (el.textContent ?? "").includes('"department": "finance"'),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("drawer omits the context attributes section when there is no bag", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    // Drill to the sibling, whose attributes are null.
+    const sibling = await screen.findByText("send_email");
+    await user.click(sibling);
+    await screen.findByText("evt-2");
+
+    expect(screen.queryByText("Context attributes")).not.toBeInTheDocument();
   });
 
   it("same-session list drills into the sibling event", async () => {

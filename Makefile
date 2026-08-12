@@ -139,7 +139,8 @@ demo-override: ## Build a deny-everything bundle + chat with HEXGATE_LOCAL_POLIC
 # First `make clickhouse-up` on an empty volume runs the init scripts in
 # platform/clickhouse/init/ and creates the policy_decision table.
 # Subsequent schema changes don't auto-apply — use `make clickhouse-reset`
-# (wipes data) or apply by hand via `make clickhouse-cli`.
+# (wipes data) or apply platform/clickhouse/migrations/*.sql by hand via
+# `make clickhouse-cli`, in filename order.
 
 COMPOSE := docker compose -f platform/docker-compose.yml
 

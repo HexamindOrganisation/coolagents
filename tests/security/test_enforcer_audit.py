@@ -86,6 +86,44 @@ def test_caller_mutation_after_decide_does_not_alter_audit_snapshot() -> None:
     assert snapshot == {"config": {"mode": "safe"}, "items": ["a"]}
 
 
+async def test_emitted_event_carries_the_context_attribute_bag() -> None:
+    """The bag that drove the decision reaches the audit event, so a
+    ``ctx.*``-driven deny can be explained from the stored record."""
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+    attributes = {"department": "finance", "clearance_level": 3}
+    async with HexgateContext(
+        user_id="alice", user_roles=["analyst"], attributes=attributes
+    ):
+        enforcer.decide("read_file", {})
+    assert sender.events[0].decision.attributes == attributes
+
+
+async def test_attribute_mutation_after_decide_does_not_alter_audit_snapshot() -> None:
+    """The bag lives on a contextvar outliving the call, so the retained
+    snapshot must be a deep copy — a persisted record must not be rewritable."""
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+    context = HexgateContext(
+        user_id="alice", user_roles=["analyst"], attributes={"regions": ["eu"]}
+    )
+    async with context:
+        enforcer.decide("read_file", {})
+    context.attributes["regions"].append("us")
+    context.attributes["department"] = "added-later"
+    assert sender.events[0].decision.attributes == {"regions": ["eu"]}
+
+
+async def test_no_attributes_emits_an_empty_bag() -> None:
+    """HexgateContext.attributes defaults to {}; as_payload normalizes that to
+    None on the wire (see tests/audit/test_event.py)."""
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+    async with HexgateContext(user_id="alice", user_roles=["analyst"]):
+        enforcer.decide("read_file", {})
+    assert sender.events[0].decision.attributes == {}
+
+
 async def test_user_session_id_none_normalizes_to_empty_string() -> None:
     sender = _CapturingSender()
     enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)

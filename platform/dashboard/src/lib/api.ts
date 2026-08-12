@@ -241,7 +241,7 @@ export interface AuditTimeseriesPoint {
   needs_approval: number;
 }
 
-/** One events-table row; `hint`/`arguments` are decoded JSON. */
+/** One events-table row; `hint`/`arguments`/`attributes` are decoded JSON. */
 export interface AuditDecisionRow {
   event_id: string;
   occurred_at: string;
@@ -258,6 +258,7 @@ export interface AuditDecisionRow {
   violations: string[];
   hint: unknown;
   arguments: unknown;
+  attributes: unknown;
 }
 
 export interface AuditDecisionPage {

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -100,6 +101,14 @@ REQUESTS_PER_ANOMALY_MAX = 50
 TOOL_NAMES = ["refund_customer", "create_ticket", "read_customer", "web_search"]
 RESTRICTED_TOOLS = ["refund_customer", "create_ticket"]
 
+# Caller ABAC bags (ctx.*), seeded so the "Context attributes" drawer section
+# has something to render. Deliberately non-PII — the same shape the docs use.
+ATTRIBUTE_BAGS = [
+    {"department": "finance", "region": "EU", "clearance_level": 3},
+    {"department": "support", "region": "EU", "clearance_level": 1},
+    {"department": "support", "region": "US", "clearance_level": 2},
+]
+
 # ── ClickHouse columns ────────────────────────────────────────────────────────
 # Extends _DECISION_COLUMNS with received_at so the seed can control ingestion
 # timestamps rather than letting ClickHouse stamp them at insert time.
@@ -138,6 +147,9 @@ def _normal_row(
         [] if outcome != "deny" else ["unauthorized_action"],
         "",
         "",
+        # Empty a third of the time so the drawer's "omit when absent" path
+        # shows up in the seeded data too, not just the populated one.
+        json.dumps(rng.choice(ATTRIBUTE_BAGS)) if rng.random() < 0.66 else "",
     ]
 
 
@@ -165,6 +177,9 @@ def _anomaly_row(
         ["unauthorized_action", "policy_violation"],
         "",
         "",
+        # Always populated: the anomaly is a restricted-tool deny, and the
+        # low-clearance bag is what makes it explainable in the drawer.
+        json.dumps({"department": "support", "region": "EU", "clearance_level": 1}),
     ]
 
 
@@ -175,6 +190,20 @@ def _validate_columns(client: Client) -> None:
     if missing:
         raise ValueError(
             f"ClickHouse table policy_decision is missing columns: {missing}"
+        )
+
+
+def _validate_row_width(rows: list[list]) -> None:
+    """Fail before the insert when a row builder lags _DECISION_COLUMNS.
+
+    _SEED_COLUMNS is derived from _DECISION_COLUMNS, but the row builders are
+    hand-written positional lists — appending a column upstream desyncs them
+    silently, and the driver's count-mismatch error names neither side."""
+    bad = {len(row) for row in rows} - {len(_SEED_COLUMNS)}
+    if bad:
+        raise ValueError(
+            f"seed row width {sorted(bad)} != {len(_SEED_COLUMNS)} columns "
+            f"({_SEED_COLUMNS}) — a row builder is missing a column value"
         )
 
 
@@ -274,6 +303,7 @@ def seed(
 ) -> int:
     clear(client, project_id)
     rows = build_rows(agent_name, project_id, number_users, number_anomalies)
+    _validate_row_width(rows)
     client.insert(
         "policy_decision",
         rows,

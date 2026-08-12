@@ -41,6 +41,7 @@ class AuditPayloadTooLarge(Exception):
 
 MAX_ARGS_BYTES = 8 * 1024
 MAX_HINT_BYTES = 4 * 1024
+MAX_ATTRIBUTES_BYTES = 4 * 1024
 
 _ANOMALY_MIN_REQUESTS = 5
 _TIMEDELTA_ANOMALY_HOURS = 1
@@ -66,6 +67,7 @@ _DECISION_COLUMNS = [
     "violations",
     "hint",
     "arguments",
+    "attributes",
 ]
 
 # async_insert batches small inserts; wait_for_async_insert=1 blocks until flush
@@ -95,10 +97,20 @@ def insert_decision(
         json.dumps(event.arguments, default=str) if event.arguments is not None else ""
     )
     hint_json = json.dumps(event.hint, default=str) if event.hint is not None else ""
+    # Falsy, not ``is not None``: an empty bag is indistinguishable from no bag
+    # downstream, and storing "{}" would make the dashboard render an empty
+    # "Context attributes" box. The SDK already normalizes {} → None
+    # (hexgate/audit.py); this enforces it for direct API and non-Python callers
+    # too, so the invariant holds on both sides of the wire.
+    attributes_json = (
+        json.dumps(event.attributes, default=str) if event.attributes else ""
+    )
     if len(args_json.encode("utf-8")) > MAX_ARGS_BYTES:
         raise AuditPayloadTooLarge("arguments", MAX_ARGS_BYTES)
     if len(hint_json.encode("utf-8")) > MAX_HINT_BYTES:
         raise AuditPayloadTooLarge("hint", MAX_HINT_BYTES)
+    if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
+        raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
     row = [
         event.event_id,
@@ -116,6 +128,7 @@ def insert_decision(
         list(event.violations),
         hint_json,
         args_json,
+        attributes_json,
     ]
     clickhouse_client.insert(
         "policy_decision",
@@ -398,7 +411,7 @@ def _decode_json_column(raw: str) -> object:
 _LIST_COLUMNS = (
     "event_id, occurred_at, received_at, agent_name, agent_version_id, "
     "session_id, user_id, tool_name, role, outcome, error_type, "
-    "reason, violations, hint, arguments"
+    "reason, violations, hint, arguments, attributes"
 )
 
 
@@ -458,6 +471,7 @@ def list_decisions(
         row["violations"] = list(row.get("violations") or [])
         row["hint"] = _decode_json_column(row.get("hint") or "")
         row["arguments"] = _decode_json_column(row.get("arguments") or "")
+        row["attributes"] = _decode_json_column(row.get("attributes") or "")
         rows.append(row)
 
     # An empty page past the end (offset > 0) carries no window value, so the

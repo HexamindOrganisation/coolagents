@@ -6,6 +6,7 @@ tests under @pytest.mark.integration round-trip against a real local ClickHouse.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -168,7 +169,7 @@ def test_happy_path_returns_202_and_inserts_row(
     assert args[0] == "policy_decision"
     rows = args[1]
     assert len(rows) == 1
-    assert len(rows[0]) == 15
+    assert len(rows[0]) == 16
     # Indices match _DECISION_COLUMNS in audit.py.
     assert rows[0][2] == "proj_test"  # project_id (bearer)
     assert rows[0][4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
@@ -210,6 +211,72 @@ def test_oversized_arguments_rejected(client: TestClient) -> None:
     r = client.post("/v1/audit/decisions", json=_event(arguments=big))
     assert r.status_code == 413
     assert "arguments" in r.json()["detail"]
+
+
+def test_attributes_land_in_the_row_as_json(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    attributes = {"department": "finance", "clearance_level": 3}
+    r = client.post("/v1/audit/decisions", json=_event(attributes=attributes))
+    assert r.status_code == 202
+
+    rows = fake_clickhouse.insert.call_args.args[1]
+    assert json.loads(rows[0][-1]) == attributes
+
+
+def test_absent_attributes_store_empty_string_not_null_json(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """'' round-trips through _decode_json_column to None; the string "null"
+    would decode to a JSON null and misreport "no attributes" as a value."""
+    r = client.post("/v1/audit/decisions", json=_event())
+    assert r.status_code == 202
+    assert fake_clickhouse.insert.call_args.args[1][0][-1] == ""
+
+
+def test_empty_attributes_bag_stores_empty_string_like_an_absent_one(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """The SDK normalizes {} → None; the platform must too, for direct API and
+    non-Python callers. Storing "{}" makes the dashboard drawer render an empty
+    "Context attributes" box instead of omitting the section."""
+    r = client.post("/v1/audit/decisions", json=_event(attributes={}))
+    assert r.status_code == 202
+
+    rows = fake_clickhouse.insert.call_args.args[1]
+    assert rows[0][audit._DECISION_COLUMNS.index("attributes")] == ""
+
+
+def test_oversized_attributes_rejected(client: TestClient) -> None:
+    big = {"key": "x" * (audit.MAX_ATTRIBUTES_BYTES + 100)}
+    r = client.post("/v1/audit/decisions", json=_event(attributes=big))
+    assert r.status_code == 413
+    assert "attributes" in r.json()["detail"]
+
+
+def test_attributes_under_the_args_cap_still_rejected_over_their_own(
+    client: TestClient,
+) -> None:
+    """The attribute cap is independent of (and tighter than) the argument cap."""
+    between = {"key": "x" * (audit.MAX_ATTRIBUTES_BYTES + 100)}
+    assert len(json.dumps(between).encode("utf-8")) < audit.MAX_ARGS_BYTES
+    r = client.post("/v1/audit/decisions", json=_event(attributes=between))
+    assert r.status_code == 413
+
+
+def test_sdk_caps_do_not_exceed_the_platform_caps() -> None:
+    """The SDK truncates so an over-cap payload is never 413-dropped in flight —
+    an invariant that holds only while its caps stay ≤ ours. The constants are
+    hand-mirrored across the package boundary (hexgate/audit.py), so lowering
+    one here without the other would silently reintroduce that event loss.
+
+    Imported locally: this is a cross-package contract check, not something the
+    rest of this module needs the SDK for.
+    """
+    import hexgate.audit as sdk_audit
+
+    for name in ("MAX_ARGS_BYTES", "MAX_HINT_BYTES", "MAX_ATTRIBUTES_BYTES"):
+        assert getattr(sdk_audit, name) <= getattr(audit, name), name
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +673,7 @@ def _decision_row(total: int, **overrides) -> tuple:
         "violations": ["v1"],
         "hint": '{"globs": "/workspace/**"}',
         "arguments": "",
+        "attributes": "",
         "total_matches": total,
     }
     base.update(overrides)
@@ -628,7 +696,23 @@ def test_list_decisions_total_from_window_function() -> None:
     # JSON columns decode; "" → None.
     assert page["rows"][0]["hint"] == {"globs": "/workspace/**"}
     assert page["rows"][0]["arguments"] is None
+    assert page["rows"][0]["attributes"] is None
     assert "total_matches" not in page["rows"][0]
+
+
+def test_list_decisions_decodes_stored_attributes() -> None:
+    """A stored bag decodes to a dict; '' (no bag, or a pre-column row) → None."""
+    client = MagicMock()
+    client.query.return_value.result_rows = [
+        _decision_row(2, attributes='{"department": "finance"}'),
+        _decision_row(2, attributes=""),
+    ]
+    client.query.return_value.column_names = _LIST_COLUMN_NAMES
+
+    page = list_decisions(client, project_id="p1", since_hours=24)
+
+    assert page["rows"][0]["attributes"] == {"department": "finance"}
+    assert page["rows"][1]["attributes"] is None
 
 
 def test_list_decisions_past_end_page_falls_back_to_count() -> None:
