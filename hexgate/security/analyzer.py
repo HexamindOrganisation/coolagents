@@ -431,15 +431,38 @@ def _unknown_args(
 # ---------------------------------------------------------------------------
 
 
+def _exposed_grant_message(tool: str, mode: str, alias: str | None) -> str:
+    """Wording for one grant reachable through the fallback role.
+
+    Names the aliased role when the fallback is inferred: saying "no named role
+    grants it" would be false there, since the alias *is* a named role.
+    """
+    if alias is not None:
+        return (
+            f"{alias!r} is the inferred fallback and grants {tool!r} ({mode}), so "
+            "any caller reaches it by carrying a role this policy doesn't "
+            f"define. Add an explicit least-privilege {DEFAULT_ROLE_NAME!r} role, "
+            f"or move the grant into a mixin the roles that need it inherit."
+        )
+    return (
+        f"the {DEFAULT_ROLE_NAME!r} role grants {tool!r} ({mode}) and no named "
+        f"role does. {DEFAULT_ROLE_NAME!r} is the fallback for every unrecognised "
+        "role name, so any caller can reach this tool by carrying a role this "
+        "policy doesn't define. Move the grant to the roles that need it, or "
+        f"into a mixin they inherit, and keep {DEFAULT_ROLE_NAME!r} "
+        "least-privilege."
+    )
+
+
 def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
     """Warn when the ``default`` role grants something no named role grants.
 
     Any unrecognised role name resolves to ``default`` and joins the caller's
     union, so a tool reachable only through ``default`` is reachable by anyone.
 
-    A document that declares roles but no ``default`` gets an ``implicit-default``
-    lint of its own: the loader aliases one named role as the fallback, handing
-    that role's whole grant set to every undefined name.
+    A document that declares roles but no ``default`` also gets
+    ``implicit-default``, and its per-grant messages name the aliased role rather
+    than claiming no named role grants them.
 
     Silent for a single-role policy set: a legacy flat ``policy.yaml`` *is* the
     ``default`` role. ``warning`` rather than ``error`` for the same reason —
@@ -450,28 +473,29 @@ def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
         return []
 
     default_policy = policy_set.policy_for(DEFAULT_ROLE_NAME)
-    # Drop the role ``default`` merely aliases: it resolves to the *same policy
-    # object*, so leaving it in answers "does a named role grant this too?" with
-    # yes for every one of its own grants — silencing the check on the very
-    # shape that most needs it.
+    # Drop the role ``default`` aliases — inferred by the loader, or named by an
+    # explicit ``default=``. It resolves to the *same policy object*, so leaving
+    # it in answers "does a named role grant this too?" with yes for every one of
+    # its own grants, silencing the check on the shape that most needs it.
     others = [
         policy
         for policy in (policy_set.policy_for(role) for role in named)
         if policy is not default_policy
     ]
+    alias = policy_set.aliased_default
     lints: list[PolicyLint] = []
 
-    if policy_set.aliased_default is not None:
+    if alias is not None:
         lints.append(
             PolicyLint(
                 code="implicit-default",
                 severity="warning",
                 message=(
-                    f"no role is named {DEFAULT_ROLE_NAME!r}, so "
-                    f"{policy_set.aliased_default!r} is the fallback for every "
-                    "role name this policy doesn't define — any caller reaches "
-                    "its grants by carrying an undefined name. Add an explicit "
-                    f"least-privilege {DEFAULT_ROLE_NAME!r} role."
+                    f"no role is named {DEFAULT_ROLE_NAME!r}, so {alias!r} is the "
+                    "fallback for every role name this policy doesn't define — "
+                    "any caller reaches its grants by carrying an undefined "
+                    f"name. Add an explicit least-privilege "
+                    f"{DEFAULT_ROLE_NAME!r} role."
                 ),
             )
         )
@@ -488,15 +512,7 @@ def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
             PolicyLint(
                 code="permissive-default",
                 severity="warning",
-                message=(
-                    f"the {DEFAULT_ROLE_NAME!r} role grants {tool!r} "
-                    f"({tool_policy.mode}) and no named role does. "
-                    f"{DEFAULT_ROLE_NAME!r} is the fallback for every "
-                    "unrecognised role name, so any caller can reach this tool "
-                    "by carrying a role this policy doesn't define. Move the "
-                    "grant to the roles that need it, or into a mixin they "
-                    f"inherit, and keep {DEFAULT_ROLE_NAME!r} least-privilege."
-                ),
+                message=_exposed_grant_message(tool, tool_policy.mode, alias),
                 tool=tool,
             )
         )

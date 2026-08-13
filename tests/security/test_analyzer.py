@@ -469,3 +469,34 @@ def test_no_roles_emit_no_project_lints():
     codes = {lint.code for lint in lints}
     assert "unused-capability" not in codes
     assert "no-default-role" not in codes
+
+
+def test_implicit_default_grant_messages_name_the_aliased_role() -> None:
+    """The aliased role IS a named role that grants the tool, so the message must
+    not claim otherwise — it names the fallback instead."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "billing": {"tools": {"refund": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    grant = next(lint for lint in lints if lint.tool == "refund")
+    assert "billing" in grant.message
+    assert "no named role" not in grant.message
+
+
+def test_authored_default_grant_messages_keep_the_no_named_role_wording() -> None:
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"deploy": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    grant = next(lint for lint in lints if lint.tool == "deploy")
+    assert "no named role does" in grant.message

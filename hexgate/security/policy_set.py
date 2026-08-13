@@ -185,7 +185,8 @@ def load_policy_map(
     storage shapes produce the same effective policies.
 
     ``default`` names the role to use as the fallback. Defaults to
-    ``"default"`` if the dict contains it, otherwise the first concrete key.
+    ``"default"`` if the dict contains it, otherwise the alphabetically first
+    concrete role — matching what a ``policies/`` directory infers.
     """
     if not policy_map:
         raise PolicySetError("policy_map must contain at least one role")
@@ -202,8 +203,11 @@ def load_policy_map(
     # An explicit ``default=`` is the caller's deliberate choice; only the
     # fallback we *infer* here is worth warning about downstream.
     inferred = default is None and DEFAULT_ROLE_NAME not in resolved
+    # ``sorted()``, not insertion order: ``_load_from_directory`` infers its
+    # fallback alphabetically, and the same role set must resolve undefined role
+    # names to the same policy however the document was loaded.
     default_name = default or (
-        DEFAULT_ROLE_NAME if DEFAULT_ROLE_NAME in resolved else next(iter(resolved))
+        DEFAULT_ROLE_NAME if DEFAULT_ROLE_NAME in resolved else sorted(resolved)[0]
     )
     if default_name not in resolved:
         raise PolicySetError(
