@@ -114,7 +114,9 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "agent_name":  "example_agent",
   "tool_name":   "read_file",
   "outcome":     "deny",
-  "role":        "analyst",        // "" when no role
+  "role":          "analyst",      // legacy: the caller's FIRST role; "" when none
+  "user_roles":    ["analyst", "billing"],  // every role evaluated, caller order; [] when none
+  "deciding_role": "",             // role that granted/gated it; "" on a deny
   "error_type":  "policy_denied",  // "" for allow
   "reason":      "denied for path",
   "violations":  ["v1", "v2"],     // tuple → list
@@ -137,8 +139,11 @@ Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
 
 `PolicyEnforcer.decide()` (`hexgate/security/enforcer.py`):
 
-1. Resolve `role` from the active `HexgateContext` contextvar.
-2. Ask the policy engine for a `Verdict`; lift it into a `Decision`.
+1. Resolve the caller's role *set* from the active `HexgateContext` contextvar
+   (deduped, capped at 32; `[None]` when unroled).
+2. Evaluate each role and fold the verdicts permissively (`ALLOW` >
+   `NEEDS_APPROVAL` > `DENY`), short-circuiting on the first allow; lift the
+   winner into a `Decision` carrying `user_roles` + `deciding_role`.
 3. If an `AuditSender` was injected into this enforcer, `emit()` an `AuditEvent`.
 4. Return the `Decision` to the adapter (synchronous, unaffected by step 3).
 
@@ -335,14 +340,19 @@ CREATE TABLE hexgate_audit.policy_decision
 
   -- Decision-specific
   tool_name           LowCardinality(String),
-  role                LowCardinality(String) DEFAULT '',
+  role                LowCardinality(String) DEFAULT '',      -- legacy: the caller's FIRST role
   outcome             Enum8('allow'=1, 'deny'=2, 'needs_approval'=3),
   error_type          LowCardinality(String) DEFAULT '',
   reason              String,
   violations          Array(String),
   hint                String CODEC(ZSTD(3)),
   arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
-  attributes          String CODEC(ZSTD(3))   -- caller ABAC bag (ctx.*); redacted + truncated
+  attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
+  -- Appended by migrations/0002. user_roles' DEFAULT gives pre-migration rows
+  -- the role set they logically always had; 0002 also MATERIALIZEs it, so no
+  -- read path depends on evaluating that default at query time.
+  user_roles          Array(LowCardinality(String)) DEFAULT if(role = '', [], [role]),
+  deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
@@ -432,7 +442,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / role / tool (one `GROUPING SETS` query). |
+| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / tool / user (one `GROUPING SETS` query) and by role (a second scan over the same `WHERE`). |
 | `GET /v1/projects/{id}/audit/timeseries?window=` | Per-bucket outcome counts (`toStartOfInterval`); bucket size tracks the window. |
 | `GET /v1/projects/{id}/audit/decisions?window=&agent=&role=&outcome=&limit=&offset=` | Filterable detail rows, newest first, with `total` for pagination; `hint`/`arguments` decoded back to objects. |
 
@@ -441,6 +451,12 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
   selects the empty-role bucket; an absent `role` means "no filter". No
   sentinel string is reserved on the wire — the dashboard's "(none)" is a
   display label only.
+- **`role` filters on membership** (`has(user_roles, …)`), so one call by
+  `["billing","support"]` is returned under either name. This strictly subsumes
+  the pre-multi-role `role = X` equality. Consequently the `by_role` breakdown
+  counts *memberships*, and `sum(by_role[*].all) >= totals.all` — which is why
+  role gets its own scan instead of riding the `GROUPING SETS` query, where an
+  `arrayJoin` would have inflated every other breakdown too.
 - **Concurrency.** A client firing several of these reads at once (e.g. a
   dashboard loading summary + timeseries + decisions together) would otherwise
   hit "concurrent queries within the same session". The shared, process-global
