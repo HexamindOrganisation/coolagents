@@ -205,6 +205,9 @@ export interface PolicyValidationError {
 export interface ValidatePolicyResponse {
   ok: boolean;
   errors: PolicyValidationError[];
+  /** Authoring lints (permissive-default, implicit-default). Never affect
+   * `ok`, so a warning can't block a save. */
+  warnings: PolicyValidationError[];
 }
 
 // --- Audit dashboard (mirrors platform/api/schemas.py) ----------------------
@@ -220,7 +223,11 @@ export interface OutcomeCounts {
 }
 
 /** One agent/role/tool bucket; an empty role keeps its raw `""` key —
- * the dashboard maps it to the "(none)" display label locally. */
+ * the dashboard maps it to the "(none)" display label locally.
+ *
+ * `by_role` buckets count **membership**: one call by a caller carrying
+ * `["billing", "support"]` is counted under both, so `by_role` totals can sum
+ * to more than `totals`. Every other breakdown stays one row per decision. */
 export interface AuditBreakdownRow extends OutcomeCounts {
   key: string;
 }
@@ -251,7 +258,14 @@ export interface AuditDecisionRow {
   session_id: string;
   user_id: string;
   tool_name: string;
+  /** Legacy scalar: the caller's *first* role, not the deciding one. */
   role: string;
+  /** Distinct roles the caller carried, in order. Empty for rows written
+   * before multi-role, or by an SDK that predates it — use `callerRoles()`,
+   * which falls back to `role`. */
+  user_roles: string[];
+  /** Role whose policy granted or gated the call; `""` on a deny. */
+  deciding_role: string;
   outcome: AuditOutcome;
   error_type: string;
   reason: string;
@@ -269,7 +283,9 @@ export interface AuditDecisionPage {
 }
 
 /** Scope filters shared by summary/timeseries/list. `undefined` = no
- * filter; `role: ''` = the no-role bucket (sent as `role=`). */
+ * filter; `role: ''` = the no-role bucket (sent as `role=`). A non-empty
+ * `role` matches **membership** in the caller's role set server-side, so one
+ * multi-role call is returned under each of its roles. */
 export interface AuditScope {
   window?: AuditWindow;
   agent?: string;

@@ -40,6 +40,17 @@ import { BreakdownBar, type BreakdownDatum, DecisionBadge } from "./charts";
 import { OUTCOME_SERIES } from "./chart-tokens";
 import { fmtTs } from "./fmt";
 
+/**
+ * The roles a caller carried on one decision.
+ *
+ * Falls back to the legacy scalar for rows written before `user_roles` existed
+ * (or by an older SDK), so the column never blanks out for historic events —
+ * the storage layer materializes `[role]` for them, but a row can still reach
+ * us from an API that predates the column.
+ */
+export const callerRoles = (e: AuditDecisionRow): string[] =>
+  e.user_roles?.length ? e.user_roles : e.role ? [e.role] : [];
+
 // Map a server breakdown row ({key, all, ...}) to the chart datum ({total, ...}).
 const toDatum = (r: AuditBreakdownRow): BreakdownDatum => ({
   key: r.key,
@@ -222,7 +233,7 @@ export function KpiCard({
 const DIMS = [
   { id: "tool" as const, label: "Tools", fkey: "tool" as const },
   { id: "agent" as const, label: "Agents", fkey: "agent" as const },
-  { id: "role" as const, label: "Roles", fkey: "role" as const },
+  { id: "role" as const, label: "Caller roles", fkey: "role" as const },
 ];
 
 export function BreakdownCard({
@@ -270,6 +281,16 @@ export function BreakdownCard({
               {s.label}
             </span>
           ))}
+          {/* Stated, not buried in a tooltip: a caller with several roles is
+              counted under each, so these bars legitimately sum above the
+              total decision count. Without this the first multi-role customer
+              files a bug about the numbers not adding up. */}
+          {dim === "role" && (
+            <span className="italic">
+              counts role membership — a caller with several roles counts under
+              each
+            </span>
+          )}
         </>
       }
       rows={data}
@@ -285,6 +306,23 @@ export function BreakdownCard({
         />
       )}
     />
+  );
+}
+
+/**
+ * One row's caller roles, kept to a single line: the first name plus a `+N`
+ * affordance. The column has to stay narrow — the full set is one click away
+ * in the drawer, and the title attribute carries it on hover meanwhile.
+ */
+function RolesCell({ roles }: { roles: string[] }) {
+  if (!roles.length) return <>—</>;
+  return (
+    <span title={roles.join(", ")}>
+      {roles[0]}
+      {roles.length > 1 && (
+        <span className="ml-1 text-muted-foreground">+{roles.length - 1}</span>
+      )}
+    </span>
   );
 }
 
@@ -348,8 +386,12 @@ export function EventsTable({
                 <TableCell className="font-mono text-[12.5px]">
                   {e.agent_name}
                 </TableCell>
-                <TableCell className={e.role ? "" : "text-muted-foreground"}>
-                  {e.role || "—"}
+                <TableCell
+                  className={
+                    callerRoles(e).length ? "" : "text-muted-foreground"
+                  }
+                >
+                  <RolesCell roles={callerRoles(e)} />
                 </TableCell>
                 <TableCell className="font-mono text-[12.5px]">
                   {e.tool_name}

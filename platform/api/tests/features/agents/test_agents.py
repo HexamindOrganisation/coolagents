@@ -194,7 +194,7 @@ def test_validate_inline_roles_clean(client: TestClient) -> None:
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "errors": []}
+    assert resp.json() == {"ok": True, "errors": [], "warnings": []}
 
 
 def test_validate_flat_single_policy_clean(client: TestClient) -> None:
@@ -211,7 +211,7 @@ def test_validate_flat_single_policy_clean(client: TestClient) -> None:
         },
     )
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "errors": []}
+    assert resp.json() == {"ok": True, "errors": [], "warnings": []}
 
 
 def test_validate_reports_yaml_parse_error_with_line(client: TestClient) -> None:
@@ -284,6 +284,144 @@ def test_validate_accumulates_errors_across_roles(client: TestClient) -> None:
     assert body["ok"] is False
     roles_with_errors = {e["role"] for e in body["errors"]}
     assert roles_with_errors == {"bad1", "bad2"}
+
+
+# ---------------------------------------------------------------------------
+# /validate warnings — the permissive-default lint (D14) in the editor
+# ---------------------------------------------------------------------------
+
+_PERMISSIVE_DEFAULT_YAML = (
+    "version: 1\n"
+    "roles:\n"
+    "  default:\n"
+    "    tools:\n"
+    "      refund_order: { mode: allow }\n"
+    "  support:\n"
+    "    tools:\n"
+    "      read_ticket: { mode: allow }\n"
+)
+
+
+def test_validate_warns_when_default_grants_what_no_named_role_grants(
+    client: TestClient,
+) -> None:
+    """``default`` is the fallback for every undefined role name, so a grant
+    only it carries is reachable by any caller. That must surface in the
+    editor — but as a warning, never as a save-blocking error."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
+        json={"policy_yaml": _PERMISSIVE_DEFAULT_YAML},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # The document is valid YAML and valid policy — ok stays True.
+    assert body["ok"] is True
+    assert body["errors"] == []
+    [warning] = body["warnings"]
+    assert "permissive-default" in warning["message"]
+    assert "refund_order" in warning["message"]
+
+
+def test_validate_warning_does_not_block_ok(client: TestClient) -> None:
+    """``ok = not errors`` — warnings are deliberately excluded from it, so the
+    dashboard's save path is unaffected by a lint."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
+        json={"policy_yaml": _PERMISSIVE_DEFAULT_YAML},
+    )
+    body = resp.json()
+    assert body["warnings"] and body["ok"] is True
+
+
+def test_validate_least_privilege_default_produces_no_warning(
+    client: TestClient,
+) -> None:
+    """Every ``default`` grant is also granted by a named role → nothing to flag."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
+        json={
+            "policy_yaml": (
+                "version: 1\n"
+                "roles:\n"
+                "  default:\n"
+                "    tools:\n"
+                "      read_ticket: { mode: allow }\n"
+                "  support:\n"
+                "    tools:\n"
+                "      read_ticket: { mode: allow }\n"
+                "      refund_order: { mode: allow }\n"
+            )
+        },
+    )
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["warnings"] == []
+
+
+def test_validate_single_role_policy_is_never_warned_about(
+    client: TestClient,
+) -> None:
+    """A legacy flat policy.yaml *is* the ``default`` role. Warning on it would
+    fire on every single-role agent, which is why the lint is silent when no
+    named role exists."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default/validate",
+        json={
+            "policy_yaml": (
+                "version: 1\n"
+                "default_policy: { mode: allow }\n"
+                "tools:\n"
+                "  web_search: { mode: allow }\n"
+            )
+        },
+    )
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["warnings"] == []
+
+
+def test_validate_reports_no_warnings_when_the_document_has_errors(
+    client: TestClient,
+) -> None:
+    """The lint needs a loaded PolicySet, which a broken document can't produce.
+    Errors alone are reported rather than a confusing partial lint."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
+        json={"policy_yaml": "tools: [bad: unclosed\n"},
+    )
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["warnings"] == []
+
+
+def test_validate_unresolvable_inheritance_does_not_500(client: TestClient) -> None:
+    """A document whose roles each parse but whose inheritance can't resolve
+    reaches the PolicySet build and must degrade to "no lint" — never a crash,
+    and never a new error class this endpoint didn't report before."""
+    resp = client.post(
+        f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
+        json={
+            "policy_yaml": (
+                "version: 1\n"
+                "roles:\n"
+                "  default:\n"
+                "    tools:\n"
+                "      read_ticket: { mode: allow }\n"
+                # Well-formed per role, but the parent doesn't exist — so this
+                # only fails at PolicySet link time, which is precisely the
+                # path the warnings helper has to survive.
+                "  support:\n"
+                "    inherits: [does_not_exist]\n"
+                "    tools:\n"
+                "      refund_order: { mode: allow }\n"
+            )
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Unchanged error contract: the per-role checks passed, so ok stays True.
+    assert body["ok"] is True
+    assert body["warnings"] == []
 
 
 # ---------------------------------------------------------------------------

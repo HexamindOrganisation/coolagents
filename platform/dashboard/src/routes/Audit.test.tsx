@@ -60,6 +60,8 @@ const ROW: AuditDecisionRow = {
   user_id: "u1",
   tool_name: "read_file",
   role: "",
+  user_roles: [],
+  deciding_role: "",
   outcome: "deny",
   error_type: "policy_denied",
   reason: "blocked by policy",
@@ -88,6 +90,11 @@ const SIBLING: AuditDecisionRow = {
   outcome: "allow",
   reason: "",
   violations: [],
+  // A multi-role caller granted by its *second* role — the case the legacy
+  // scalar `role` could not express.
+  role: "support",
+  user_roles: ["support", "billing"],
+  deciding_role: "billing",
   // No ABAC bag — the drawer must omit the section rather than show an empty box.
   attributes: null,
 };
@@ -350,6 +357,35 @@ describe("AuditPage", () => {
     await screen.findByText("evt-2");
 
     expect(screen.queryByText("Context attributes")).not.toBeInTheDocument();
+  });
+
+  it("drawer names the roles evaluated and the role that granted the call", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    const sibling = await screen.findByText("send_email");
+    await user.click(sibling);
+    await screen.findByText("evt-2");
+
+    expect(screen.getByText("roles evaluated")).toBeInTheDocument();
+    expect(screen.getByText("support, billing")).toBeInTheDocument();
+    // The granting role is the second one — reading `role` would have said
+    // "support" and misattributed the grant.
+    expect(screen.getByText("granted by")).toBeInTheDocument();
+    expect(screen.getByText("billing")).toBeInTheDocument();
+  });
+
+  it("drawer marks a deny as granted by no role", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    // ROW is a deny with no roles recorded at all.
+    await openDrawer(user);
+    expect(screen.getByText("∅ none")).toBeInTheDocument();
+    expect(screen.getByText("∅ none — no role granted it")).toBeInTheDocument();
   });
 
   it("same-session list drills into the sibling event", async () => {

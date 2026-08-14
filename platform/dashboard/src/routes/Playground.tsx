@@ -57,7 +57,10 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
   });
   const [composer, setComposer] = useState("");
   const [agent, setAgent] = useState<AgentRead | null>(null);
-  const [activeRole, setActiveRole] = useState<string | null>(null);
+  // A set, not a scalar: the enforcer evaluates every role the caller carries
+  // and takes the most permissive outcome, so the playground has to be able to
+  // reproduce a multi-role caller.
+  const [activeRoles, setActiveRoles] = useState<string[]>([]);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   // Fetch the serving agent so we know which roles are available. Roles
@@ -87,16 +90,18 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
     [agent],
   );
 
-  // Auto-select a sensible default when the role list changes:
-  // prefer 'default', else first option, else null (single-policy agents).
+  // Auto-select a sensible default when the role list changes: keep whichever
+  // of the current picks the new agent still defines, else fall back to the
+  // first option (empty for single-policy agents, which have no roles).
   useEffect(() => {
     if (roleOptions.length === 0) {
-      setActiveRole(null);
+      setActiveRoles([]);
       return;
     }
-    setActiveRole((prev) =>
-      prev && roleOptions.includes(prev) ? prev : roleOptions[0],
-    );
+    setActiveRoles((prev) => {
+      const kept = prev.filter((r) => roleOptions.includes(r));
+      return kept.length ? kept : [roleOptions[0]];
+    });
   }, [roleOptions]);
 
   useEffect(() => {
@@ -109,7 +114,7 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
   function submit() {
     const text = composer.trim();
     if (!text) return;
-    sendChat(text, activeRole ? { role: activeRole } : undefined);
+    sendChat(text, activeRoles.length ? { roles: activeRoles } : undefined);
     setComposer("");
   }
 
@@ -180,22 +185,50 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
               <UserCog className="size-3" />
               Acting as
             </div>
-            <select
-              value={activeRole ?? ""}
-              onChange={(e) => setActiveRole(e.target.value || null)}
-              className="h-9 rounded-md border border-border bg-background px-2.5 text-sm font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
+            <div className="flex flex-col gap-1 rounded-md border border-border bg-background p-2">
               {roleOptions.map((role) => (
-                <option key={role} value={role}>
+                <label
+                  key={role}
+                  className="flex cursor-pointer items-center gap-2 text-sm font-mono"
+                >
+                  <input
+                    type="checkbox"
+                    checked={activeRoles.includes(role)}
+                    onChange={(e) =>
+                      setActiveRoles((prev) =>
+                        e.target.checked
+                          ? // Re-derive from roleOptions so the emitted order
+                            // is the policy's, not the click order.
+                            roleOptions.filter(
+                              (r) => r === role || prev.includes(r),
+                            )
+                          : prev.filter((r) => r !== role),
+                      )
+                    }
+                    className="size-3.5 accent-primary"
+                  />
                   {role}
-                </option>
+                </label>
               ))}
-            </select>
+            </div>
             <p className="text-[11px] text-muted-foreground leading-snug">
-              Each chat turn attenuates the agent's token with{" "}
-              <span className="font-mono">role(&quot;{activeRole}&quot;)</span>.
-              The role's policy bundle decides which tools fire and with what
-              constraints.
+              {activeRoles.length ? (
+                <>
+                  Each chat turn attenuates the agent's token with{" "}
+                  <span className="font-mono">
+                    {activeRoles.map((r) => `role("${r}")`).join(", ")}
+                  </span>
+                  .{" "}
+                  {activeRoles.length > 1
+                    ? "Every role is evaluated and the most permissive outcome wins, so picking more can only widen access."
+                    : "The role's policy bundle decides which tools fire and with what constraints."}
+                </>
+              ) : (
+                <>
+                  No role selected — the turn runs unroled and the{" "}
+                  <span className="font-mono">default</span> policy decides.
+                </>
+              )}
             </p>
           </div>
         )}
@@ -242,13 +275,13 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
               live relay via control plane
             </span>
           </div>
-          {activeRole && (
+          {activeRoles.length > 0 && (
             <Badge
               variant="outline"
               className="gap-1.5 font-mono text-[11px] border-primary/40 text-primary"
             >
               <UserCog className="size-3" />
-              acting as {activeRole}
+              acting as {activeRoles.join(", ")}
             </Badge>
           )}
         </header>
@@ -537,12 +570,26 @@ function ApprovalPromptCard({
             <span className="font-mono font-medium truncate">
               {request.tool_name}
             </span>
+            {/* The badge names the role that GATED the call. When the caller
+                carried others, the title carries the full set — an older
+                `hexgate serve` sends only the singular key, so `roles` is
+                optional and absent means "not reported". */}
             {request.role && (
               <Badge
                 variant="outline"
                 className="font-mono text-[10px] shrink-0"
+                title={
+                  request.roles?.length
+                    ? `gated by ${request.role} · caller carried ${request.roles.join(", ")}`
+                    : undefined
+                }
               >
                 {request.role}
+                {request.roles && request.roles.length > 1 && (
+                  <span className="ml-1 opacity-60">
+                    +{request.roles.length - 1}
+                  </span>
+                )}
               </Badge>
             )}
           </div>

@@ -36,6 +36,7 @@ import {
   ActiveChips,
   AnomaliesCard,
   BreakdownCard,
+  callerRoles,
   EventsTable,
   FilterBar,
   KpiCard,
@@ -209,8 +210,23 @@ function DetailDrawer({
             <KV k="tool_name" mono>
               {e.tool_name}
             </KV>
-            <KV k="role">
-              {e.role || <span className="text-muted-foreground">∅ none</span>}
+            {/* Two rows, not three: "roles evaluated" answers who was calling
+                and "granted by" answers which policy allowed it. Keeping the
+                legacy scalar `role` alongside them would be a third row saying
+                almost the same thing as the first. */}
+            <KV k="roles evaluated">
+              {callerRoles(e).length ? (
+                callerRoles(e).join(", ")
+              ) : (
+                <span className="text-muted-foreground">∅ none</span>
+              )}
+            </KV>
+            <KV k="granted by">
+              {e.deciding_role || (
+                <span className="text-muted-foreground">
+                  ∅ none — no role granted it
+                </span>
+              )}
             </KV>
             {e.error_type && (
               <KV k="error_type" mono>

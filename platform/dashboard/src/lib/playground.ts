@@ -72,7 +72,12 @@ export interface ApprovalRequestEvent {
   arguments: Record<string, unknown>;
   reason: string | null;
   agent_name: string;
+  /** The *deciding* role — the one whose policy gated this call. Null when
+   * none did. */
   role: string | null;
+  /** Every role the caller carried. Optional: an older `hexgate serve` sends
+   * only the singular key. */
+  roles?: string[];
   expires_at: string; // ISO
 }
 
@@ -346,14 +351,15 @@ export function usePlayground({ projectId }: Options) {
   }, [hasPending]);
 
   /**
-   * Send a chat message, optionally scoped to a role.
+   * Send a chat message, optionally scoped to one or more roles.
    *
-   * When `role` is set, the platform forwards a `user_attenuation` block to
-   * the dev's local `hexgate serve` process, which attenuates its parent
-   * Hexgate token to carry `user("playground"), role("<role>")` for this
-   * turn. The role's policy bundle then drives tool authorization.
+   * When `roles` is non-empty, the platform forwards a `user_attenuation`
+   * block to the dev's local `hexgate serve` process, which attenuates its
+   * parent Hexgate token to carry `user("playground")` plus one `role("<n>")`
+   * fact per name for this turn. Every role is evaluated and the most
+   * permissive outcome wins, so adding one can only widen what the turn may do.
    */
-  function sendChat(message: string, opts?: { role?: string | null }) {
+  function sendChat(message: string, opts?: { roles?: string[] }) {
     const ws = activeSocket;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const turnId = randomId();
@@ -379,10 +385,15 @@ export function usePlayground({ projectId }: Options) {
       ],
     }));
     const frame: Record<string, unknown> = { type: "chat", message };
-    if (opts?.role) {
+    const roles = (opts?.roles ?? []).filter(Boolean);
+    if (roles.length) {
       frame.user_attenuation = {
         user: "playground",
-        role: opts.role,
+        roles,
+        // Singular kept for one release: a dev's pinned older `hexgate serve`
+        // reads only `role`. The current one prefers `roles` and falls back to
+        // this, so neither side requires the other's key.
+        role: roles[0],
         ttl_seconds: 300,
       };
     }

@@ -220,6 +220,11 @@ async def api_validate_policy(
     Returns a flat list of ``{role, line, message}`` diagnostics. ``role``
     is ``None`` for top-level YAML / schema errors; populated when the
     failure lives inside a specific role's section.
+
+    Also returns ``warnings`` — authoring lints from
+    :func:`check_default_role_exposure`, which flags grants reachable only
+    through the ``default`` fallback (i.e. by any caller carrying an
+    undefined role name). Warnings never set ``ok`` to False.
     """
     import yaml
     from pydantic import ValidationError
@@ -288,7 +293,46 @@ async def api_validate_policy(
             )
         _check_policy(policy, None)
 
-    return ValidatePolicyResponse(ok=not errors, errors=errors)
+    return ValidatePolicyResponse(
+        ok=not errors, errors=errors, warnings=_default_role_warnings(parsed, errors)
+    )
+
+
+def _default_role_warnings(
+    parsed: dict, errors: list[PolicyValidationError]
+) -> list[PolicyValidationError]:
+    """Authoring lints over the document as a whole (no-op if it didn't parse).
+
+    Needs a fully loaded :class:`PolicySet` — inheritance and mixins resolved,
+    ``aliased_default`` populated — which the per-role checks above deliberately
+    don't build, since they validate each role in isolation.
+    """
+    if errors:
+        return []
+
+    from pydantic import ValidationError
+
+    from hexgate.security.analyzer import check_default_role_exposure
+    from hexgate.security.policy_set import (
+        PolicySetError,
+        load_policy_set_from_dict,
+    )
+
+    try:
+        policy_set = load_policy_set_from_dict(parsed)
+    except (PolicySetError, ValidationError):
+        # Inheritance/mixin resolution failures the per-role checks don't cover.
+        # Reporting them here would widen this endpoint's error contract, which
+        # is not what the warnings channel is for — `hexgate policy validate`
+        # and the platform build both still reject them. No lint is just no
+        # lint; it never makes a broken document look clean, because `ok` is
+        # decided entirely by `errors`.
+        return []
+
+    return [
+        PolicyValidationError(role=lint.tool, message=f"{lint.code}: {lint.message}")
+        for lint in check_default_role_exposure(policy_set)
+    ]
 
 
 @router.post("/agents", response_model=RegisterAgentResponse)

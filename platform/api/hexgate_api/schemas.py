@@ -334,10 +334,16 @@ class ValidatePolicyResponse(BaseModel):
 
     ``ok`` is True when the document and every nested role parsed cleanly.
     ``errors`` carries per-issue diagnostics.
+
+    ``warnings`` carries authoring lints (``permissive-default`` /
+    ``implicit-default``). They never affect ``ok``: a single-role agent's flat
+    policy.yaml *is* the ``default`` role, so failing those documents would be
+    wrong. CI opts in via ``hexgate policy validate --max-severity warning``.
     """
 
     ok: bool
     errors: list[PolicyValidationError] = Field(default_factory=list)
+    warnings: list[PolicyValidationError] = Field(default_factory=list)
 
 
 # --- Agent manifest registration ---------------------------------------------
