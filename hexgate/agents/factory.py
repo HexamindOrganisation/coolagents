@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from hexgate.hooks.types import Hook, HookObserver
     from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
-    from hexgate.security.enforcer import DecisionObserver
+    from hexgate.security.enforcer import DecisionObserver, PolicyEnforcer
     from hexgate.security.source import PolicySource
 
 from langchain.agents import create_agent as create_langchain_agent
@@ -529,6 +529,7 @@ class HexgateAgent:
         # Split the flat guard list into the internal pre/post pipeline once.
         pipeline = build_pipeline(hooks, observer=hook_observer)
 
+        enforcer: PolicyEnforcer | None
         if policy is None:
             if source is not None:
                 raise ValueError(
@@ -536,30 +537,26 @@ class HexgateAgent:
                     "with no policy to enforce — the agent would be left "
                     "unguarded. Pass a policy, or drop the source."
                 )
-            if pipeline is not None and not pipeline.is_empty:
-                # Guards-only gating: no policy engine, but each tool is still
-                # wrapped so the before/after guards run (a GuardedTool with a
-                # pipeline and no enforcer gates via guards alone). An
-                # observer-only pipeline (no guards) has nothing to run, so skip.
-                hooks_only: list[ToolSpec] = [
-                    GuardedTool.wrap(t, pipeline=pipeline)
-                    if isinstance(t, BaseTool)
-                    else t
-                    for t in self.tools
-                ]
-                return self.with_tools(hooks_only)
-            return self.with_tools(list(self.tools))
-
-        if isinstance(policy, (PolicyBundle, PolicySet)):
-            engine = policy
+            if pipeline is None or pipeline.is_empty:
+                # Nothing to enforce and no guards to run (an observer-only
+                # pipeline can't fire without guards): return unguarded.
+                return self.with_tools(list(self.tools))
+            enforcer = None  # guards-only gating, no policy engine
         else:
-            engine = load_policy_set(policy)
-        enforcer = build_enforcer(
-            engine,
-            agent_name=self.name or "default",
-            decision_observer=decision_observer,
-        )
+            if isinstance(policy, (PolicyBundle, PolicySet)):
+                engine = policy
+            else:
+                engine = load_policy_set(policy)
+            enforcer = build_enforcer(
+                engine,
+                agent_name=self.name or "default",
+                decision_observer=decision_observer,
+            )
 
+        # One wrap loop for both paths, so the guards-only path can't drift from
+        # the policy path (e.g. silently dropping approval_handler): a
+        # GuardedTool with enforcer=None gates via guards alone and still honors
+        # a guard Halt(NEEDS_APPROVAL).
         wrapped: list[ToolSpec] = []
         for tool_spec in self.tools:
             if isinstance(tool_spec, BaseTool):
@@ -574,9 +571,10 @@ class HexgateAgent:
             else:
                 wrapped.append(tool_spec)
         rebuilt = self.with_tools(wrapped)
-        # The binding pairs the enforcer the tools just closed over with the
-        # refresh source, so refresh_policy() can swap the policy in place.
-        rebuilt._binding = PolicyBinding(enforcer, source)
+        if enforcer is not None:
+            # The binding pairs the enforcer the tools just closed over with the
+            # refresh source, so refresh_policy() can swap the policy in place.
+            rebuilt._binding = PolicyBinding(enforcer, source)
         return rebuilt
 
     def refresh_policy(self) -> None:
@@ -708,7 +706,12 @@ def create_agent(
         )
     elif hooks:
         # No policy binding, but guards still wrap each tool (guards-only).
-        agent = agent.enforce_policy(None, hooks=hooks, hook_observer=hook_observer)
+        agent = agent.enforce_policy(
+            None,
+            hooks=hooks,
+            hook_observer=hook_observer,
+            approval_handler=approval_handler,
+        )
 
     handler = get_langfuse_handler(
         session_id=session_id,

@@ -51,6 +51,20 @@ def test_enforce_policy_none_with_hooks_wraps_tools_guards_only(
     assert len(wrapped.pipeline.pre) == 1
 
 
+def test_guards_only_path_keeps_approval_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A guard Halt(NEEDS_APPROVAL) must be approvable on the guards-only path."""
+    agent = _agent(monkeypatch)
+
+    guarded = agent.enforce_policy(None, hooks=_hooks(), approval_handler=True)
+
+    wrapped = guarded.tools[0]
+    assert isinstance(wrapped, GuardedTool)
+    assert wrapped.enforcer is None
+    assert wrapped.approval_handler is True
+
+
 def test_enforce_policy_none_without_hooks_stays_unguarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

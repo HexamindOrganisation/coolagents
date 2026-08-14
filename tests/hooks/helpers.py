@@ -22,14 +22,24 @@ class FakeEnforcer:
         self._outcome = outcome
         self._reason = reason
         self.seen_args: dict[str, Any] | None = None
+        # Every Decision emitted via record() (decide's own, plus guard halts
+        # the runner records directly), so tests can assert on the trail.
+        self.recorded: list[Decision] = []
 
     def decide(self, tool_name: str, arguments: Any) -> Decision:
         self.seen_args = dict(arguments)
-        return Decision.from_verdict(
+        decision = Decision.from_verdict(
             Verdict(outcome=self._outcome, reason=self._reason),
             agent_name=self.agent_name,
             tool_name=tool_name,
         )
+        self.record(decision)
+        return decision
+
+    def record(
+        self, decision: Decision, *, user_id: str = "", session_id: str = ""
+    ) -> None:
+        self.recorded.append(decision)
 
 
 def langchain_error(decision: Decision) -> dict[str, Any]:

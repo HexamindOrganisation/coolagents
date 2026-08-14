@@ -27,6 +27,12 @@ later phase is an implementation, not a breaking change.
   a redactor when the projection rule lands.
 - Post-hooks still run when a tool raises, with `ToolOutcome(ok=False, error=...)`,
   so a watcher sees failures too; it simply cannot rewrite them.
+- The "MUST NOT rewrite" is enforced, not just documented, for JSON-ish results:
+  when post-hooks exist, the value handed to them is a `deepcopy` (gated on
+  `pipeline.post` so the no-hooks path stays zero-cost), and the runner returns the
+  original object, so an in-place mutation cannot escape into the tool's real
+  return. Opaque (non-JSON) objects pass through unenforced in v1, the same
+  boundary as the projection rule above.
 
 ## Rejected alternatives
 

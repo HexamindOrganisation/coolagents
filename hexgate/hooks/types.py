@@ -15,7 +15,7 @@ you used, and reach is the decorator's ``tool_names`` argument. See
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -53,14 +53,17 @@ class ToolCall:
     """The proposed call a guard inspects.
 
     ``args`` is always JSON-ish (the model emits tool arguments as JSON, so
-    there is no opaque object on the args side). ``context`` is the active
+    there is no opaque object on the args side). It is a read-only mapping (a
+    ``MappingProxyType``): guards read it freely, but ``Proceed(args=...)`` is
+    the only channel that rewrites it, so an in-place mutation can't slip a
+    change past the provenance/observe tier. ``context`` is the active
     :class:`HexgateContext` (caller identity, role, attributes), the same
     source ``decide`` reads. ``scratch`` is a per-call dict shared from a
     before-guard to an after-guard.
     """
 
     tool_name: str
-    args: dict[str, Any]
+    args: Mapping[str, Any]
     agent_name: str | None = None
     context: "HexgateContext | None" = None
     scratch: dict[str, Any] = field(default_factory=dict)
@@ -165,6 +168,17 @@ def _decorator(
 
     def wrap(f: Callable[..., Any]) -> Hook:
         inner = f.fn if isinstance(f, Hook) else f
+        if not callable(inner):
+            if isinstance(inner, str):
+                raise TypeError(
+                    f"@before_tool / @after_tool takes a guard function, but got "
+                    f"the string {inner!r} positionally. To scope a guard to a "
+                    f"tool, use the keyword: @before_tool(tool_names=[{inner!r}])."
+                )
+            raise TypeError(
+                f"@before_tool / @after_tool expects a callable guard, got "
+                f"{type(inner).__name__}."
+            )
         return Hook(fn=inner, position=position, tool_names=names, observe=observe)
 
     # Bare form (`@before_tool` / `before_tool(fn)`) vs called form

@@ -583,3 +583,71 @@ async def test_approved_pre_halt_reports_a_hookevent() -> None:
     assert len(events) == 1
     assert events[0].approved is True
     assert events[0].halt is not None
+
+
+# ---------------------------------------------------------------------------
+# In-place mutation is contained (args read-only, result isolated)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_observe_guard_cannot_mutate_args_in_place() -> None:
+    """call.args is read-only, so an in-place write can't slip past decide."""
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+
+    def mutate(call: ToolCall):
+        call.args["injected"] = True  # raises on the proxy; observe = fail-open
+        return None
+
+    pipe = _pipe(pre=[before_tool(mutate, observe=True)])
+    out = await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert out == "tool-ran"
+    assert enf.seen_args == {"x": 1}  # decide saw the original
+    assert inv.calls == [{"x": 1}]  # the tool saw the original
+
+
+@pytest.mark.asyncio
+async def test_observe_after_guard_cannot_mutate_the_returned_object() -> None:
+    """The value handed to after-guards is a copy; the caller's object is safe."""
+    enf = FakeEnforcer()
+    real = {"name": "bob"}
+    inv = RecordingInvoke(real)
+
+    def mutate(call: ToolCall, out: ToolOutcome):
+        out.value["ssn"] = "LEAK"  # mutates the copy, not the real object
+        return None
+
+    pipe = _pipe(post=[after_tool(mutate, observe=True)])
+    result = await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert result == {"name": "bob"}  # caller gets the original, unmutated
+    assert "ssn" not in real
+
+
+# ---------------------------------------------------------------------------
+# Guard halts hit the audit trail (record), with a distinct marker
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_halt_is_recorded_as_guard_denied_with_args() -> None:
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
+    await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert len(enf.recorded) == 1  # decide never ran; only the halt is recorded
+    assert enf.recorded[0].error_type == "guard_denied"
+    assert enf.recorded[0].arguments == {"x": 1}  # args on the trail, not the model
+
+
+@pytest.mark.asyncio
+async def test_post_halt_records_both_the_allow_and_the_guard_denial() -> None:
+    enf, inv = FakeEnforcer(), RecordingInvoke("val")
+    pipe = _pipe(post=[lambda call, out: Halt(reason="withheld")])
+    await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    outcomes = [d.outcome for d in enf.recorded]
+    markers = [d.error_type for d in enf.recorded]
+    assert DecisionOutcome.ALLOW in outcomes  # the tool genuinely ran
+    assert "guard_denied" in markers  # and the halt is also on the trail

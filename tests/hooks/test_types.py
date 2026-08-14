@@ -85,3 +85,16 @@ def test_build_pipeline_none_and_empty_behave_the_same_with_an_observer() -> Non
 def test_build_pipeline_rejects_an_undecorated_callable() -> None:
     with pytest.raises(TypeError, match="not a guard"):
         build_pipeline([lambda call: None])
+
+
+def test_positional_string_raises_with_a_tool_names_hint() -> None:
+    """A bare string positionally is a natural mistake; fail at decoration time."""
+    with pytest.raises(TypeError, match="tool_names"):
+        before_tool("refund_order")
+    with pytest.raises(TypeError, match="tool_names"):
+        after_tool("refund_order")
+
+
+def test_non_callable_guard_raises() -> None:
+    with pytest.raises(TypeError, match="callable"):
+        before_tool(42)

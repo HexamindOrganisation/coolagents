@@ -18,10 +18,12 @@ original exception propagates unchanged.
 
 from __future__ import annotations
 
+import copy
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from inspect import isawaitable
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from hexgate.agents.approvals import resolve_approval_async, resolve_approval_sync
@@ -70,7 +72,10 @@ def _new_call(
     agent_name = getattr(enforcer, "agent_name", None) if enforcer is not None else None
     return ToolCall(
         tool_name=tool_name,
-        args=dict(args),
+        # Read-only view: guards read args freely, but the only way to change
+        # them is Proceed(args=...); an in-place write raises. (Shallow: a
+        # nested dict stays mutable, the documented residual.)
+        args=MappingProxyType(dict(args)),
         agent_name=agent_name,
         context=context,
         scratch={},
@@ -138,7 +143,7 @@ def _apply_pre(
         proceed.modification
         or Modification(plugin=hook.label, target="args", summary="rewrote arguments")
     )
-    return replace(call, args=dict(proceed.args))
+    return replace(call, args=MappingProxyType(dict(proceed.args)))
 
 
 def _reject_post_proceed(hook: Hook, proceed: Proceed) -> None:
@@ -155,18 +160,53 @@ def _reject_post_proceed(hook: Hook, proceed: Proceed) -> None:
 
 
 def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
-    """Render a ``Halt`` through the same path a policy denial uses.
+    """Render a ``Halt`` as a :class:`Decision`.
 
-    No arguments are attached, so ``as_error_payload`` cannot echo the input
-    the hook objected to. ``reason`` is the model-facing text; ``detail`` stays
-    on the observer channel.
+    ``reason`` is the model-facing text; ``detail`` stays on the observer
+    channel. The arguments are attached for the audit trail only, since
+    ``as_error_payload`` / ``as_error_message`` never render them, so the model
+    still cannot see the input the guard objected to. A DENY halt is marked
+    ``guard_denied`` so it is distinguishable from a real policy denial to both
+    the model and any trail consumer.
     """
     role = call.context.primary_role if call.context is not None else None
-    return Decision.from_verdict(
+    decision = Decision.from_verdict(
         Verdict(outcome=halt.outcome, reason=halt.reason),
         agent_name=call.agent_name or "default",
         tool_name=call.tool_name,
         role=role,
+        arguments=dict(call.args),
+    )
+    if halt.outcome is DecisionOutcome.DENY:
+        decision = replace(decision, error_type="guard_denied")
+    return decision
+
+
+def _isolate_result(value: Any) -> Any:
+    """Deep-copy a JSON-ish result before the after-guards see it, so an
+    in-place mutation can't escape into the tool's real return object
+    (R-HOOK-003). Opaque objects pass through: v1 can't enforce it there."""
+    if isinstance(value, (dict, list)):
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+    return value
+
+
+def _record_halt(
+    enforcer: "PolicyEnforcer | None", decision: Decision, call: ToolCall
+) -> None:
+    """Record a guard halt on the enforcer's audit + observer channels, so a
+    guard-blocked call leaves the same trail a policy denial does. No-op with no
+    enforcer (the guards-only path has no audit sender)."""
+    if enforcer is None:
+        return
+    ctx = call.context
+    enforcer.record(
+        decision,
+        user_id=ctx.user_id if ctx is not None and ctx.user_id else "",
+        session_id=ctx.session_id if ctx is not None and ctx.session_id else "",
     )
 
 
@@ -224,6 +264,7 @@ async def _run_post_async(
     outcome: ToolOutcome,
     mods: list[Modification],
     approval_handler: "ApprovalHandler | None",
+    enforcer: "PolicyEnforcer | None",
     render_error: RenderError,
 ) -> Any:
     """Run the post-hooks over ``outcome``.
@@ -231,6 +272,8 @@ async def _run_post_async(
     Returns a rendered error when a post-hook halts, else :data:`_NO_HALT`.
     Runs for a successful result and for a tool that raised
     (``outcome.ok is False``), so an observe or redact hook sees failures too.
+    A blocking halt is recorded to the audit trail *in addition to* the tool's
+    genuine ALLOW (the tool did run; only the result is withheld).
     """
     if pipeline is None:
         return _NO_HALT
@@ -244,8 +287,10 @@ async def _run_post_async(
                     pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
+            halt_decision = _halt_to_decision(res, call)
+            _record_halt(enforcer, halt_decision, call)
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
-            return render_error(_halt_to_decision(res, call))
+            return render_error(halt_decision)
         if isinstance(res, Proceed):
             _reject_post_proceed(hook, res)
     return _NO_HALT
@@ -282,8 +327,10 @@ async def run_guarded_async(
                         approved=True,
                     )
                     continue
+                halt_decision = _halt_to_decision(outcome, call)
+                _record_halt(enforcer, halt_decision, call)
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
-                return render_error(_halt_to_decision(outcome, call))
+                return render_error(halt_decision)
             if isinstance(outcome, Proceed):
                 call = _apply_pre(call, hook, outcome, mods)
 
@@ -305,7 +352,7 @@ async def run_guarded_async(
                 return render_error(decision)
 
     try:
-        raw = await invoke(call.args)
+        raw = await invoke(dict(call.args))
     except Exception as exc:
         rendered = await _run_post_async(
             pipeline,
@@ -313,6 +360,7 @@ async def run_guarded_async(
             ToolOutcome(ok=False, value=None, error=str(exc)),
             mods,
             approval_handler,
+            enforcer,
             render_error,
         )
         if rendered is not _NO_HALT:
@@ -321,12 +369,14 @@ async def run_guarded_async(
             _notify(pipeline, call, mods)
         raise
 
+    result_value = _isolate_result(raw) if (pipeline and pipeline.post) else raw
     rendered = await _run_post_async(
         pipeline,
         call,
-        ToolOutcome(ok=True, value=raw),
+        ToolOutcome(ok=True, value=result_value),
         mods,
         approval_handler,
+        enforcer,
         render_error,
     )
     if rendered is not _NO_HALT:
@@ -383,6 +433,7 @@ def _run_post_sync(
     outcome: ToolOutcome,
     mods: list[Modification],
     approval_handler: "ApprovalHandler | None",
+    enforcer: "PolicyEnforcer | None",
     render_error: RenderError,
 ) -> Any:
     """Sync mirror of :func:`_run_post_async`."""
@@ -398,8 +449,10 @@ def _run_post_sync(
                     pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
+            halt_decision = _halt_to_decision(res, call)
+            _record_halt(enforcer, halt_decision, call)
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
-            return render_error(_halt_to_decision(res, call))
+            return render_error(halt_decision)
         if isinstance(res, Proceed):
             _reject_post_proceed(hook, res)
     return _NO_HALT
@@ -436,8 +489,10 @@ def run_guarded_sync(
                         approved=True,
                     )
                     continue
+                halt_decision = _halt_to_decision(outcome, call)
+                _record_halt(enforcer, halt_decision, call)
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
-                return render_error(_halt_to_decision(outcome, call))
+                return render_error(halt_decision)
             if isinstance(outcome, Proceed):
                 call = _apply_pre(call, hook, outcome, mods)
 
@@ -455,7 +510,7 @@ def run_guarded_sync(
                 return render_error(decision)
 
     try:
-        raw = invoke(call.args)
+        raw = invoke(dict(call.args))
     except Exception as exc:
         rendered = _run_post_sync(
             pipeline,
@@ -463,6 +518,7 @@ def run_guarded_sync(
             ToolOutcome(ok=False, value=None, error=str(exc)),
             mods,
             approval_handler,
+            enforcer,
             render_error,
         )
         if rendered is not _NO_HALT:
@@ -471,12 +527,14 @@ def run_guarded_sync(
             _notify(pipeline, call, mods)
         raise
 
+    result_value = _isolate_result(raw) if (pipeline and pipeline.post) else raw
     rendered = _run_post_sync(
         pipeline,
         call,
-        ToolOutcome(ok=True, value=raw),
+        ToolOutcome(ok=True, value=result_value),
         mods,
         approval_handler,
+        enforcer,
         render_error,
     )
     if rendered is not _NO_HALT:
