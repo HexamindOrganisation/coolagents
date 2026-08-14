@@ -22,14 +22,22 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
 
     -- Decision-specific
     tool_name           LowCardinality(String),
-    role                LowCardinality(String) DEFAULT '',
+    role                LowCardinality(String) DEFAULT '' COMMENT 'Legacy: the caller''s first role. Membership queries read user_roles',
     outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3),
     error_type          LowCardinality(String) DEFAULT '',
     reason              String,
     violations          Array(String),
     hint                String CODEC(ZSTD(3)),
     arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3)),
-    attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3))
+    attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3)),
+    -- Appended last, matching where migrations/0002's ADD COLUMNs land them, so
+    -- a hand-migrated volume and a fresh one have identical column order (what
+    -- _DECISION_COLUMNS, "order matches schema.sql", relies on).
+    -- The DEFAULT expression is carried over from 0002 verbatim so the two DDLs
+    -- match under DESCRIBE. It is inert here — every insert names the column —
+    -- and exists there to give pre-migration rows a sane read-time value.
+    user_roles          Array(LowCardinality(String)) DEFAULT if(role = '', [], [role]) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
+    deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied'
 )
 -- ReplacingMergeTree: SDK retries (same event_id) collapse on background
 -- merges — eventual dedup; exact counts use FINAL or count(DISTINCT event_id).
