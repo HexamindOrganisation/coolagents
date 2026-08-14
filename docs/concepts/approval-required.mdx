@@ -49,7 +49,8 @@ The `Decision` object holds everything the enforcer knew when it flagged the cal
 | `tool_name` | `str` | Name the model asked to call, e.g. `refund_order`, `mcp-slack-send_message`. |
 | `arguments` | `dict[str, Any]` | Exact arguments the model produced. Show these to the human verbatim, they're what will run. |
 | `reason` | `str` | Human-readable string from the policy engine, usually the failing constraint or the `reason:` field. |
-| `role` | `str \| None` | Active primary role from `HexgateContext(user_roles=[...])` at the time of the call. |
+| `deciding_role` | `str \| None` | The role whose policy gated the call — the one the approver is deciding for. `None` when no role granted it. |
+| `user_roles` | `tuple[str, ...]` | Every role the caller carried, in order. Empty when no scope was active. |
 | `agent_name` | `str` | Which agent issued the call. Useful when several agents share one approval sink. |
 
 If your UI needs more context than this (customer ID, current balance, whatever), thread it into the arguments the model calls the tool with, or attach it via the `HexgateContext` scope. The callback shouldn't be reaching out to fetch its own context.

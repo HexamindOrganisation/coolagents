@@ -19,6 +19,9 @@ from pathlib import Path
 
 import pytest
 
+from hexgate.security import analyzer
+from hexgate.security.analyzer import PolicyLint
+
 from hexgate.cli.policy.main import (
     _main_build,
     _main_keygen,
@@ -881,3 +884,262 @@ def test_top_level_dispatch_routes_to_show_rego(
     rc = args.func(args)
     assert rc == 0
     assert "package hexgate.policy" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# test --roles: dry-run the permissive union
+# ---------------------------------------------------------------------------
+
+_MULTI_ROLE_POLICY = """\
+version: 1
+roles:
+  default:
+    default_policy:
+      mode: deny
+  support:
+    default_policy:
+      mode: deny
+    tools:
+      read_file:
+        mode: allow
+  billing:
+    default_policy:
+      mode: deny
+    tools:
+      refund:
+        mode: allow
+"""
+
+
+def _multi_role_file(tmp_path: Path) -> Path:
+    p = tmp_path / "multi.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+    return p
+
+
+@pytest.mark.parametrize("engine", ["pydantic", "wasm"])
+def test_test_roles_allows_when_any_role_grants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], engine: str
+) -> None:
+    """Mirrors the enforcer on both engines: any role granting wins, and the
+    granting role is named."""
+    if engine == "wasm" and shutil.which("opa") is None:
+        pytest.skip("opa not on PATH")
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,billing",
+            tool="refund",
+            args="{}",
+            engine=engine,
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "ALLOW" in out
+    assert "granted by: billing" in out
+
+
+def test_test_roles_denies_when_no_role_grants(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,billing",
+            tool="deploy",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "DENY" in out
+    assert "granted by" not in out  # nothing granted it
+
+
+def test_test_roles_warns_on_an_undefined_role_but_still_evaluates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An undefined name falls back to ``default`` at runtime, so the dry-run
+    warns rather than failing."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support,not_a_role",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ALLOW" in captured.out
+    assert 'warning: role "not_a_role" not in policy' in captured.err
+
+
+def test_test_empty_roles_fails_instead_of_dry_running_the_default(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A CI suite whose ``$ROLES`` failed to expand must not pass green while
+    asserting nothing — the old behaviour silently evaluated ``default``."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "--roles is empty" in captured.err
+    assert "ALLOW" not in captured.out
+
+
+def test_test_blank_roles_entries_fail_the_same_way(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Commas and spaces alone name no roles either."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles=" , , ",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--roles is empty" in capsys.readouterr().err
+
+
+def test_test_single_role_still_fails_on_a_typo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--role`` keeps its hard error: one undefined role is a typo."""
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            role="nope",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "not in policy" in capsys.readouterr().err
+
+
+def test_test_roles_dedups_and_labels_the_set(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=str(_multi_role_file(tmp_path)),
+            roles="support, support ,billing",
+            tool="read_file",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[support, billing]" in out
+
+
+# ---------------------------------------------------------------------------
+# validate: the permissive-default warning + its CI gate
+# ---------------------------------------------------------------------------
+
+_PERMISSIVE_DEFAULT_POLICY = """\
+version: 1
+roles:
+  default:
+    tools:
+      deploy:
+        mode: allow
+  support:
+    default_policy:
+      mode: deny
+    tools:
+      read_file:
+        mode: allow
+"""
+
+
+def test_validate_warns_on_a_permissive_default_without_failing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A permissive `default` is legal (a flat policy.yaml is one), so validate
+    still passes — but reports the exposure."""
+    p = tmp_path / "exposed.yaml"
+    p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="error"))
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "permissive-default" in captured.err
+    assert "deploy" in captured.err
+    assert "Policy parses cleanly" in captured.out
+
+
+def test_validate_gates_on_the_permissive_default_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """How CI refuses a default role granting what no named role grants."""
+    p = tmp_path / "exposed.yaml"
+    p.write_text(_PERMISSIVE_DEFAULT_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="warning"))
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "permissive-default" in captured.err
+    # A gated run must not also claim success — a CI log saying "parses cleanly"
+    # next to a non-zero exit sends the reader hunting for a phantom failure.
+    assert "Policy parses cleanly" not in captured.out
+    assert "at or above --max-severity warning" in captured.err
+
+
+def _lint_of_severity(severity: str) -> list[PolicyLint]:
+    return [PolicyLint(code="stub-lint", severity=severity, message="stub")]
+
+
+@pytest.mark.parametrize(
+    ("severity", "expected_rc"),
+    [("error", 1), ("warning", 0), ("info", 0)],
+)
+def test_validate_gates_on_each_lint_severity_not_a_hardcoded_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    severity: str,
+    expected_rc: int,
+) -> None:
+    """The default threshold gates on the lint's own severity.
+
+    Only ``check_default_role_exposure``'s warnings exist today, so an
+    ``error``-severity lint slipping through the default threshold would be
+    invisible until the first one is written.
+    """
+    p = tmp_path / "clean.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+    monkeypatch.setattr(
+        analyzer, "check_default_role_exposure", lambda _: _lint_of_severity(severity)
+    )
+
+    assert _main_validate(_ns(source=str(p), max_severity="error")) == expected_rc
+
+
+def test_validate_clean_role_policy_has_no_warning(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    p = tmp_path / "clean.yaml"
+    p.write_text(_MULTI_ROLE_POLICY, encoding="utf-8")
+
+    rc = _main_validate(_ns(source=str(p), max_severity="warning"))
+
+    assert rc == 0
+    assert "permissive-default" not in capsys.readouterr().err

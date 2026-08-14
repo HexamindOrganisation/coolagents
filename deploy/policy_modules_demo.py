@@ -98,7 +98,8 @@ def _(mo):
 
 @app.cell
 def _(dedent):
-    # Three modules — the same files that live in deploy/demo_policies/. Edit
+    # A boundary + two capabilities, mirroring deploy/demo_policies/ (which also
+    # ships a read_only capability and a roles.yaml for the multi-role view). Edit
     # them here and the whole notebook re-resolves.
     BOUNDARIES = {
         "org_core": dedent(

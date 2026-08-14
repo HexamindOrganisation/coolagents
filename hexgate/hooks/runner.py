@@ -169,12 +169,14 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
     ``guard_denied`` so it is distinguishable from a real policy denial to both
     the model and any trail consumer.
     """
-    role = call.context.primary_role if call.context is not None else None
+    # A guard halt has no policy-deciding role (the guard decided, not a role),
+    # so deciding_role stays None; user_roles carries the caller's roles.
+    user_roles = tuple(call.context.user_roles) if call.context is not None else ()
     decision = Decision.from_verdict(
         Verdict(outcome=halt.outcome, reason=halt.reason),
         agent_name=call.agent_name or "default",
         tool_name=call.tool_name,
-        role=role,
+        user_roles=user_roles,
         arguments=dict(call.args),
     )
     if halt.outcome is DecisionOutcome.DENY:

@@ -27,6 +27,7 @@ from pydantic import TypeAdapter, ValidationError
 from yaml.error import MarkedYAMLError
 
 from hexgate.runtime.context import ContextAttributeValue
+from hexgate.runtime.roles import distinct_roles, resolve_role_set
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -39,6 +40,7 @@ from hexgate.security import (
     WasmEvalError,
     WasmPolicy,
     build_signed_bundle,
+    combine_role_verdicts,
     compile_to_rego,
     compile_to_wasm,
     decode_key,
@@ -57,6 +59,13 @@ from hexgate.security.constraints import ConstraintParseError, parse_constraint
 _ATTRIBUTES_ADAPTER: TypeAdapter[dict[str, ContextAttributeValue]] = TypeAdapter(
     dict[str, ContextAttributeValue]
 )
+
+# Lint severities ``--max-severity`` accepts, and the threshold that leaves
+# warnings printed but non-blocking. Mirrors ``analyzer.SEVERITY_RANK``'s keys
+# without importing it at module scope (the analyzer is imported lazily so the
+# fast verbs don't pay for it).
+_MAX_SEVERITY_CHOICES = ("error", "warning", "info")
+_DEFAULT_MAX_SEVERITY = "error"
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +153,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_val.add_argument("source", help="Path to the policy.yaml file.")
+    p_val.add_argument(
+        "--max-severity",
+        choices=_MAX_SEVERITY_CHOICES,
+        default=_DEFAULT_MAX_SEVERITY,
+        help=(
+            "Exit non-zero if any lint is at or above this severity (default "
+            "error — i.e. cross-role warnings are printed but don't fail). Pass "
+            "'warning' in CI to gate on a permissive default role."
+        ),
+    )
     p_val.set_defaults(func=_main_validate)
 
     # ---- show-rego ----
@@ -164,17 +183,27 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "test",
         help="Dry-run a tool-call decision against the policy.",
         description=(
-            "Evaluates the policy against the given role/tool/args without "
+            "Evaluates the policy against the given role(s)/tool/args without "
             "spinning up the agent. Prints ALLOW / DENY / APPROVAL_REQUIRED "
-            "with the offending constraint when relevant. Designed for "
-            "CI policy-test suites."
+            "with the offending constraint when relevant. With --roles the "
+            "verdicts are combined exactly as the enforcer combines them "
+            "(most permissive wins) and the granting role is printed. Designed "
+            "for CI policy-test suites."
         ),
     )
     p_test.add_argument("source", help="Path to the policy.yaml file.")
-    p_test.add_argument(
+    roles_group = p_test.add_mutually_exclusive_group(required=True)
+    roles_group.add_argument(
         "--role",
-        required=True,
-        help='Role to evaluate as, e.g. "billing".',
+        help='Single role to evaluate as, e.g. "billing". Errors if undefined.',
+    )
+    roles_group.add_argument(
+        "--roles",
+        help=(
+            'Comma-separated role set to evaluate as, e.g. "billing,support". '
+            "Access is granted if any of them grants it; undefined names fall "
+            "back to the default policy (with a warning), as at runtime."
+        ),
     )
     p_test.add_argument(
         "--tool",
@@ -226,6 +255,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Repo root containing a policies/ tree (default: current dir).",
     )
     p_resolve.add_argument(
+        "--role",
+        default=None,
+        help=(
+            "Print just this role's effective policy. Without it, a multi-role "
+            "project (a roles.yaml) prints every role; a single-role project "
+            "prints the one effective policy."
+        ),
+    )
+    p_resolve.add_argument(
         "-o",
         "--output",
         help="Write the effective policy YAML here (default: stdout).",
@@ -251,6 +289,11 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Repo root containing a policies/ tree (default: current dir).",
     )
     p_check.add_argument(
+        "--role",
+        default=None,
+        help="Restrict lints to this role (plus project-level ones). Default: all roles.",
+    )
+    p_check.add_argument(
         "--manifest",
         default=None,
         metavar="PATH",
@@ -261,8 +304,8 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_check.add_argument(
         "--max-severity",
-        choices=("error", "warning", "info"),
-        default="error",
+        choices=_MAX_SEVERITY_CHOICES,
+        default=_DEFAULT_MAX_SEVERITY,
         help="Exit non-zero if any lint is at or above this severity (default error).",
     )
     p_check.set_defaults(func=_main_check)
@@ -421,7 +464,7 @@ def _main_validate(args: argparse.Namespace) -> int:
 
     # Schema + inheritance + mixin validation (constraints already clean above).
     try:
-        load_policy_set_from_dict(payload)
+        policy_set = load_policy_set_from_dict(payload)
     except (PolicySetError, ValidationError) as exc:
         print(f"policy schema: {exc}", file=sys.stderr)
         return 1
@@ -434,6 +477,29 @@ def _main_validate(args: argparse.Namespace) -> int:
         compile_to_rego(payload)
     except (PolicySetError, ConstraintParseError, ValidationError) as exc:
         print(f"policy build: {exc}", file=sys.stderr)
+        return 1
+
+    # Warnings, not errors: a permissive ``default`` is legitimate for a
+    # single-role policy. CI opts in with --max-severity warning.
+    from hexgate.security.analyzer import SEVERITY_RANK, check_default_role_exposure
+
+    lints = check_default_role_exposure(policy_set)
+    for lint in lints:
+        print(f"⚠ {lint.code}: {lint.message}", file=sys.stderr)
+
+    # Same fold as ``policy check``: the worst lint decides, so a future
+    # ``error``-severity lint gates at the default threshold instead of
+    # slipping through a comparison against a hardcoded "warning".
+    severity = getattr(args, "max_severity", _DEFAULT_MAX_SEVERITY)
+    threshold = SEVERITY_RANK[severity]
+    if lints and min(SEVERITY_RANK[lint.severity] for lint in lints) <= threshold:
+        # Below the gate on purpose: stdout must not claim a clean policy on a
+        # run that exits non-zero.
+        print(
+            f"✗ Policy parses, but {len(lints)} lint(s) are at or above "
+            f"--max-severity {severity}.",
+            file=sys.stderr,
+        )
         return 1
 
     print("✓ Policy parses cleanly.")
@@ -496,15 +562,17 @@ def _main_show_rego(args: argparse.Namespace) -> int:
 
 
 def _main_resolve(args: argparse.Namespace) -> int:
-    """Link the local module bundle into one effective policy and print it."""
+    """Resolve the local project into effective policy per role and print it."""
     from hexgate.security import (
         LinkError,
-        link_policy_set,
         load_local_modules,
+        load_roles,
+        resolve_for_project,
     )
 
     try:
         boundaries, capabilities = load_local_modules(args.dir)
+        roles = load_roles(args.dir)
     except (ValueError, OSError) as exc:
         print(f"load error: {exc}", file=sys.stderr)
         return 1
@@ -517,15 +585,49 @@ def _main_resolve(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = link_policy_set(boundaries, capabilities)
+        result = resolve_for_project(boundaries, capabilities, roles)
     except (LinkError, PolicySetError, ConstraintParseError, ValidationError) as exc:
         print(f"link error: {exc}", file=sys.stderr)
         return 1
 
-    effective = result.effective[DEFAULT_ROLE_NAME]
-    # Full dump (not exclude_defaults): a tool set to the default `deny` mode
-    # would otherwise render as `{}`, hiding the outcome in an inspection view.
-    text = yaml.safe_dump(effective.model_dump(mode="json"), sort_keys=False)
+    if args.role is not None and args.role not in result.by_role:
+        print(
+            f'role "{args.role}" not defined (known roles: {sorted(result.by_role)!r})',
+            file=sys.stderr,
+        )
+        return 1
+
+    # Full dump (not exclude_defaults): a tool at the default `deny` mode would
+    # otherwise render as `{}`, hiding the outcome in an inspection view. A
+    # single-role project prints the one policy (back-compat); a multi-role one
+    # (or an explicit --role over several) prints a role-keyed mapping.
+    if args.role is not None:
+        payload: Any = (
+            result.by_role[args.role]
+            .effective[DEFAULT_ROLE_NAME]
+            .model_dump(mode="json")
+        )
+        roles_shown = [args.role]
+    elif len(result.by_role) == 1:
+        only = next(iter(result.by_role))
+        payload = (
+            result.by_role[only].effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
+        )
+        roles_shown = [only]
+    else:
+        # Wrap in `roles:` so the emitted file round-trips through
+        # load_policy_set_from_dict / `hexgate policy build`. A bare top-level
+        # role-keyed mapping would be read as a single flat AgentPolicy, and the
+        # role keys silently dropped, compiling a deny-everything bundle.
+        payload = {
+            "roles": {
+                role: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
+                for role, lr in sorted(result.by_role.items())
+            }
+        }
+        roles_shown = sorted(result.by_role)
+
+    text = yaml.safe_dump(payload, sort_keys=False)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
         print(f"✓ wrote effective policy to {args.output}")
@@ -533,23 +635,25 @@ def _main_resolve(args: argparse.Namespace) -> int:
         sys.stdout.write(text)
 
     # Provenance to stderr so stdout stays a clean policy document.
-    print("\nlayers (resolution order):", file=sys.stderr)
-    for prov in result.layers:
-        print(f"  [{prov.kind:10}] {prov.module}  ({prov.source})", file=sys.stderr)
-    if result.trace.shadowed:
-        print("shadowed (ineligible under a ceiling):", file=sys.stderr)
-        for tool, by in sorted(result.trace.shadowed.items()):
-            print(f"  {tool}  ← {by.module} ({by.source})", file=sys.stderr)
+    for role in roles_shown:
+        lr = result.by_role[role]
+        print(f"\n[{role}] layers (resolution order):", file=sys.stderr)
+        for prov in lr.layers:
+            print(f"  [{prov.kind:10}] {prov.module}  ({prov.source})", file=sys.stderr)
+        if lr.trace.shadowed:
+            print("  shadowed (ineligible under a ceiling):", file=sys.stderr)
+            for tool, by in sorted(lr.trace.shadowed.items()):
+                print(f"    {tool}  ← {by.module} ({by.source})", file=sys.stderr)
     return 0
 
 
 def _main_check(args: argparse.Namespace) -> int:
-    """Lint the local module bundle; exit non-zero at/above --max-severity."""
-    from hexgate.security import check as check_bundle
-    from hexgate.security import load_local_modules
+    """Lint the local project; exit non-zero at/above --max-severity."""
+    from hexgate.security import check_project, load_local_modules, load_roles
 
     try:
         boundaries, capabilities = load_local_modules(args.dir)
+        roles = load_roles(args.dir)
     except (ValueError, OSError) as exc:
         print(f"load error: {exc}", file=sys.stderr)
         return 1
@@ -557,6 +661,18 @@ def _main_check(args: argparse.Namespace) -> int:
         print(
             f"no modules found under {args.dir}/policies/"
             " (expected policies/boundaries/ and/or policies/capabilities/)",
+            file=sys.stderr,
+        )
+        return 1
+    # Validate against the resolved role set, not the raw roles map: a project
+    # with no roles.yaml still has the synthesised `default` role, and one that
+    # omits `default` still gets it. This keeps `check` in step with `resolve`
+    # (which validates against the resolved set) so a typo'd role errors instead
+    # of silently matching nothing and hiding every lint.
+    known_roles = set(roles or ()) | {DEFAULT_ROLE_NAME}
+    if args.role is not None and args.role not in known_roles:
+        print(
+            f'role "{args.role}" not defined (known roles: {sorted(known_roles)!r})',
             file=sys.stderr,
         )
         return 1
@@ -575,7 +691,12 @@ def _main_check(args: argparse.Namespace) -> int:
 
     from hexgate.security.analyzer import SEVERITY_RANK
 
-    lints = check_bundle(boundaries, capabilities, manifest=manifest)
+    lints = check_project(boundaries, capabilities, roles, manifest=manifest)
+
+    # --role narrows to that role's lints plus project-level ones (role is None,
+    # e.g. unused-capability), so a role view still surfaces global problems.
+    if args.role is not None:
+        lints = [lint for lint in lints if lint.role in (args.role, None)]
 
     # A link error short-circuits before drift/soft lints run, so the
     # "supply a manifest" hint only makes sense when linking succeeded.
@@ -596,7 +717,10 @@ def _main_check(args: argparse.Namespace) -> int:
     icon = {"error": "✗", "warning": "!", "info": "·"}
     for lint in lints:
         where = f" ({lint.source})" if lint.source else ""
-        print(f"{icon.get(lint.severity, '·')} [{lint.code}] {lint.message}{where}")
+        role = f" [{lint.role}]" if lint.role else ""
+        print(
+            f"{icon.get(lint.severity, '·')} [{lint.code}]{role} {lint.message}{where}"
+        )
     _drift_hint()
 
     threshold = SEVERITY_RANK[args.max_severity]
@@ -647,37 +771,80 @@ def _main_test(args: argparse.Namespace) -> int:
         print(f"policy schema: {exc}", file=sys.stderr)
         return 1
 
-    if args.role not in policy_set:
+    roles = _resolve_test_roles(args)
+    if getattr(args, "roles", None) is not None and not roles:
+        # --roles was given but held only blanks. Falling through would dry-run
+        # the ``default`` policy and exit 0, so a CI suite whose $ROLES failed to
+        # expand would pass while asserting nothing about the role it meant.
         print(
-            f'role "{args.role}" not in policy (known roles: {policy_set.roles!r})',
+            f"--roles is empty; pass at least one role name (use --roles "
+            f"{DEFAULT_ROLE_NAME} to dry-run the fallback policy)",
             file=sys.stderr,
         )
         return 1
+    single_role = getattr(args, "role", None)
+    if single_role is not None and single_role not in policy_set:
+        # One undefined role is almost always a typo — fail rather than
+        # silently dry-run the default policy.
+        print(
+            f'role "{single_role}" not in policy (known roles: {policy_set.roles!r})',
+            file=sys.stderr,
+        )
+        return 1
+    for role in roles:
+        if role not in policy_set:
+            # In a set, an undefined name is legal at runtime (it falls back to
+            # ``default``), so warn rather than fail.
+            print(
+                f'warning: role "{role}" not in policy — evaluating it against '
+                f"the {DEFAULT_ROLE_NAME!r} policy (known roles: {policy_set.roles!r})",
+                file=sys.stderr,
+            )
 
-    label = f"{args.role} → {args.tool}({json.dumps(tool_args, sort_keys=True)})"
+    shown = ", ".join(roles) if roles else DEFAULT_ROLE_NAME
+    label = f"[{shown}] → {args.tool}({json.dumps(tool_args, sort_keys=True)})"
     engine = getattr(args, "engine", "pydantic")
 
     if engine == "wasm":
-        return _test_via_wasm(
-            payload, args.role, args.tool, tool_args, attributes, label
-        )
+        return _test_via_wasm(payload, roles, args.tool, tool_args, attributes, label)
     return _test_via_pydantic(
-        policy_set, args.role, args.tool, tool_args, attributes, label
+        policy_set, roles, args.tool, tool_args, attributes, label
     )
 
 
-def _render_verdict(verdict: Verdict, label: str) -> int:
+def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
+    """Distinct roles to dry-run, from ``--role`` or ``--roles``.
+
+    Normalisation is shared with the enforcer via :func:`distinct_roles`.
+    """
+    single = getattr(args, "role", None)
+    raw = (
+        [single]
+        if single is not None
+        else [
+            part.strip()
+            for part in (getattr(args, "roles", None) or "").split(",")
+            if part.strip()
+        ]
+    )
+    return distinct_roles(raw)
+
+
+def _render_verdict(verdict: Verdict, label: str, deciding_role: str | None) -> int:
     """Print a verdict uniformly and return the process exit code.
 
-    Shared by both engines so pydantic and wasm decisions render the same
-    — including the structured ``violations`` / ``hint`` detail when the
-    engine produced it.
+    Shared by both engines so pydantic and wasm decisions render identically.
     """
+    granted = (
+        f"\n  granted by: {deciding_role}"
+        if deciding_role is not None and verdict.outcome is not DecisionOutcome.DENY
+        else ""
+    )
     if verdict.outcome is DecisionOutcome.ALLOW:
-        print(f"✓ ALLOW · {label}")
+        print(f"✓ ALLOW · {label}{granted}")
         return 0
     if verdict.outcome is DecisionOutcome.NEEDS_APPROVAL:
-        print(f"⚠ APPROVAL_REQUIRED · {label}\n  reason: {verdict.reason}")
+        print(f"⚠ APPROVAL_REQUIRED · {label}{granted}\n  reason: {verdict.reason}")
         return 0
     print(f"✗ DENY · {label}\n  reason: {verdict.reason}")
     if verdict.violations:
@@ -691,26 +858,36 @@ def _render_verdict(verdict: Verdict, label: str) -> int:
 
 def _test_via_pydantic(
     policy_set: Any,
-    role: str,
+    roles: list[str],
     tool: str,
     tool_args: dict,
     attributes: dict,
     label: str,
 ) -> int:
-    """Run the decision through the in-process constraint evaluator."""
-    policy: AgentPolicy = policy_set.policy_for(role)
-    # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
-    # constraints decide the same as the wasm path and production — omitting
-    # either here made `policy test` fail closed on rules production allows.
-    return _render_verdict(
-        evaluate_tool_call(policy, tool, tool_args, role=role, attributes=attributes),
-        label,
+    """Run the decision through the in-process constraint evaluator.
+
+    Routes through ``combine_role_verdicts``, the fold the enforcer uses, so a
+    dry-run cannot disagree with production.
+    """
+
+    def evaluate(role: str | None) -> Verdict:
+        policy: AgentPolicy = policy_set.policy_for(role)
+        # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
+        # constraints decide the same as the wasm path and production — omitting
+        # either here made `policy test` fail closed on rules production allows.
+        return evaluate_tool_call(
+            policy, tool, tool_args, role=role, attributes=attributes
+        )
+
+    verdict, deciding_role = combine_role_verdicts(
+        resolve_role_set(roles, on_truncate=_warn_role_cap), evaluate
     )
+    return _render_verdict(verdict, label, deciding_role)
 
 
 def _test_via_wasm(
     payload: dict,
-    role: str,
+    roles: list[str],
     tool: str,
     tool_args: dict,
     attributes: dict,
@@ -727,17 +904,39 @@ def _test_via_wasm(
     except (OpaNotFoundError, WasmCompileError) as exc:
         print(f"wasm compile error: {exc}", file=sys.stderr)
         return 1
+
     try:
         wasm_policy = WasmPolicy.from_bytes(artifact.wasm)
+    except WasmEvalError as exc:
+        print(f"wasm eval error: {exc}", file=sys.stderr)
+        return 1
+
+    def evaluate(role: str | None) -> Verdict:
+        # ``None`` maps to the default role, mirroring PolicyBundle.evaluate.
+        role_ = role or DEFAULT_ROLE_NAME
         decision = wasm_policy.decide(
-            role=role, tool=tool, args=tool_args, ctx=attributes
+            role=role_, tool=tool, args=tool_args, ctx=attributes
+        )
+        return verdict_from_rego(decision, tool_name=tool, role=role_)
+
+    try:
+        verdict, deciding_role = combine_role_verdicts(
+            resolve_role_set(roles, on_truncate=_warn_role_cap), evaluate
         )
     except WasmEvalError as exc:
         print(f"wasm eval error: {exc}", file=sys.stderr)
         return 1
 
-    return _render_verdict(
-        verdict_from_rego(decision, tool_name=tool, role=role), label
+    return _render_verdict(verdict, label, deciding_role)
+
+
+def _warn_role_cap(total: int, kept: int) -> None:
+    """Mirror the enforcer's role cap on stderr — a dry-run that silently
+    evaluated fewer roles than given would misreport production."""
+    print(
+        f"warning: {total} distinct roles given; evaluating the first {kept} "
+        "(MAX_EVALUATED_ROLES), as the enforcer would",
+        file=sys.stderr,
     )
 
 

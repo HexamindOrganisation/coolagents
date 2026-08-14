@@ -4,6 +4,11 @@
 call and stops — adapters translate it for their host. Stateless across
 calls: each :meth:`decide` re-reads the active :class:`HexgateContext`
 from the contextvar.
+
+Multi-role callers are handled here, not in the engines: :meth:`decide` folds
+one verdict per role through
+:func:`~hexgate.security.decision.combine_role_verdicts`, leaving both engines
+single-role.
 """
 
 from __future__ import annotations
@@ -11,14 +16,46 @@ from __future__ import annotations
 import copy
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_context
-from hexgate.security.decision import Decision, PolicyEngine
+from hexgate.runtime.roles import resolve_role_set
+from hexgate.security.decision import Decision, PolicyEngine, combine_role_verdicts
 from hexgate.tracing._senders import AuditSender
 
+if TYPE_CHECKING:
+    from hexgate.runtime.context import HexgateContext
+
 _log = logging.getLogger(__name__)
+
+_warned_role_cap = False
+
+
+def _warn_role_cap(total: int, kept: int) -> None:
+    """Warn once per process: the cap silently narrows what a caller can do, but
+    re-logging it on every tool call would drown the log."""
+    global _warned_role_cap
+    if _warned_role_cap:
+        return
+    _log.warning(
+        "context carries %d distinct roles; evaluating the first %d "
+        "(MAX_EVALUATED_ROLES). Later roles cannot grant access. "
+        "Subsequent occurrences in this process are suppressed.",
+        total,
+        kept,
+    )
+    _warned_role_cap = True
+
+
+def _roles_to_evaluate(context: HexgateContext | None) -> list[str | None]:
+    """Adapt "no active context" to "no roles"; :func:`resolve_role_set` owns the
+    normalisation, shared with the ``hexgate policy test`` dry-run."""
+    return resolve_role_set(
+        context.user_roles if context is not None else (),
+        on_truncate=_warn_role_cap,
+    )
+
 
 # A sync, fire-and-forget hook fired after every decision is built.
 # Used today by ``hexgate chat`` to render denies / approvals inline in the
@@ -70,42 +107,43 @@ class PolicyEnforcer:
         self._decision_observer = decision_observer
 
     def decide(self, tool_name: str, arguments: Mapping[str, Any]) -> Decision:
-        """Resolve role from the contextvar, ask the engine for a
-        :class:`~hexgate.security.decision.Verdict`, and lift it into a
-        host-facing :class:`Decision` with this agent's context.
+        """Fold one verdict per role from the active context into a
+        :class:`Decision`. Access is granted iff any role grants it.
 
-        Emits an :class:`~hexgate.audit.AuditEvent` to this enforcer's
-        injected sender after the decision is built, and calls the
-        injected ``decision_observer`` (if any) with the same Decision.
-        Both are no-ops when not injected; both are isolated so a
-        broken observer never breaks enforcement."""
+        Then emits an :class:`~hexgate.audit.AuditEvent` and calls
+        ``decision_observer``; both no-op when not injected, and a broken
+        observer never breaks enforcement."""
         context = get_current_context()
-        role = context.primary_role if context is not None else None
-        # ABAC bag read off the contextvar, feeding the ``ctx.*`` constraint
-        # namespace. Untrusted/spoofable at the same trust tier as ``role``
-        # above (both contextvar-sourced, not token-verified) — so a ``ctx.*``
-        # rule is exactly as trustworthy as a ``role`` rule today. The signed
-        # tier will let declared keys be verified from ``biscuit_facts``; until
-        # then, don't rely on ``ctx.*`` for security-critical decisions.
+        roles = _roles_to_evaluate(context)
+        # Feeds the ``ctx.*`` constraint namespace. Contextvar-sourced, so
+        # spoofable at the same tier as the role set — not for
+        # security-critical decisions until the signed tier verifies it.
         attributes = context.attributes if context is not None else None
-        # Both snapshots deep-copy on the same condition: ``attributes`` can
-        # hold a ``list[str]`` and lives on a contextvar that outlives the
-        # call, so a shallow copy would alias a mutable value into a retained
-        # Decision exactly like a shallow ``args`` copy would.
+        # Deep-copy only when something retains the Decision: the contextvar
+        # outlives the call, so a shallow copy would let a later mutation
+        # rewrite what the record says was decided. Taken once, then shared
+        # across every role's evaluation.
         retained = self._audit_sender is not None or self._decision_observer is not None
         args_snapshot = _snapshot(arguments, deep=retained)
         attrs_snapshot = (
             _snapshot(attributes, deep=retained) if attributes is not None else None
         )
 
-        verdict = self.policy.evaluate(
-            role=role, tool=tool_name, args=args_snapshot, attributes=attrs_snapshot
+        verdict, deciding_role = combine_role_verdicts(
+            roles,
+            lambda role: self.policy.evaluate(
+                role=role,
+                tool=tool_name,
+                args=args_snapshot,
+                attributes=attrs_snapshot,
+            ),
         )
         decision = Decision.from_verdict(
             verdict,
             agent_name=self.agent_name,
             tool_name=tool_name,
-            role=role,
+            user_roles=tuple(role for role in roles if role is not None),
+            deciding_role=deciding_role,
             arguments=args_snapshot,
             attributes=attrs_snapshot,
         )

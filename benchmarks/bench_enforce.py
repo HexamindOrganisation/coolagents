@@ -94,6 +94,47 @@ WORKLOAD: tuple[Case, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class MultiCase:
+    """A caller's role set plus the expected outcome of the union over it.
+
+    Separate from :class:`Case` because the engine contract is single-role: the
+    union lives in the enforcer, so only enforcer rows vary the set.
+    """
+
+    label: str
+    roles: tuple[str, ...]
+    tool: str
+    args: Mapping[str, Any]
+    expected: DecisionOutcome
+
+
+# What the union costs: short-circuit, a later-role hit, and the worst case
+# (nobody allows, so every role runs). ``single_role`` is the baseline.
+_SCALE_ARGS = {"service": "web-api", "env": "staging", "replicas": 5}
+MULTI_ROLE_WORKLOAD: tuple[MultiCase, ...] = (
+    MultiCase(
+        "single_role", ("operator",), "scale_deployment", _SCALE_ARGS,
+        DecisionOutcome.ALLOW,
+    ),
+    MultiCase(
+        "allow_first_of_2", ("operator", "default"), "scale_deployment", _SCALE_ARGS,
+        DecisionOutcome.ALLOW,
+    ),
+    MultiCase(
+        "allow_second_of_2", ("default", "operator"), "scale_deployment", _SCALE_ARGS,
+        DecisionOutcome.ALLOW,
+    ),
+    MultiCase(
+        "deny_all_5_roles",
+        ("default", "read_only", "unknown_a", "unknown_b", "unknown_c"),
+        "restart_service",
+        {"service": "web-api", "env": "dev"},
+        DecisionOutcome.DENY,
+    ),
+)
+
+
 def _build_bundle() -> PolicyBundle:
     """Compile the example policy to a real WASM bundle (needs opa)."""
     policy_yaml = POLICY_PATH.read_text(encoding="utf-8")
@@ -170,6 +211,35 @@ def _enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
     return rows
 
 
+def _multi_role_enforcer_stats(bundle: PolicyBundle, iterations: int) -> list[Stats]:
+    """Enforcer latency as the caller's role count grows.
+
+    N roles cost up to N engine invocations, bounded by the first ALLOW.
+    """
+    rows: list[Stats] = []
+    for case in MULTI_ROLE_WORKLOAD:
+        enforcer = PolicyEnforcer(
+            bundle, agent_name=AGENT_NAME, decision_observer=_noop_observer
+        )
+        context = HexgateContext(user_id="bench", user_roles=list(case.roles))
+        with context.sync_scope():
+            decision = enforcer.decide(case.tool, case.args)
+            if decision.outcome is not case.expected:
+                raise RuntimeError(
+                    f"multi-role case {case.label!r} expected {case.expected} but "
+                    f"got {decision.outcome}; update the workload or the policy."
+                )
+            rows.append(
+                measure(
+                    f"roles[{len(case.roles)}]:{case.label}",
+                    lambda c=case: enforcer.decide(c.tool, c.args),
+                    iterations=iterations,
+                    warmup=WARMUP,
+                )
+            )
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", metavar="PATH", help="write raw stats as JSON")
@@ -197,6 +267,7 @@ def main() -> int:
     rows += _instantiation_stats(bundle.wasm_bytes, bundle.wasm_hash, iterations)
     rows += _engine_stats(bundle, iterations)
     rows += _enforcer_stats(bundle, iterations)
+    rows += _multi_role_enforcer_stats(bundle, iterations)
 
     print_table(f"Bench A — enforcement latency ({iterations:,} iterations/case)", rows)
     if args.json:
