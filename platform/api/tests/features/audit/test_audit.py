@@ -169,7 +169,9 @@ def test_happy_path_returns_202_and_inserts_row(
     assert args[0] == "policy_decision"
     rows = args[1]
     assert len(rows) == 1
-    assert len(rows[0]) == 16
+    # Row width is derived, not hardcoded: the row and the column list must
+    # stay the same length or ClickHouse silently misaligns the values.
+    assert len(rows[0]) == len(audit._DECISION_COLUMNS)
     # Indices match _DECISION_COLUMNS in audit.py.
     assert rows[0][2] == "proj_test"  # project_id (bearer)
     assert rows[0][4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
@@ -220,8 +222,9 @@ def test_attributes_land_in_the_row_as_json(
     r = client.post("/v1/audit/decisions", json=_event(attributes=attributes))
     assert r.status_code == 202
 
-    rows = fake_clickhouse.insert.call_args.args[1]
-    assert json.loads(rows[0][-1]) == attributes
+    # By name, not [-1]: attributes stopped being the last column when the
+    # role-set columns were appended after it.
+    assert json.loads(_inserted(fake_clickhouse, "attributes")) == attributes
 
 
 def test_absent_attributes_store_empty_string_not_null_json(
@@ -231,7 +234,7 @@ def test_absent_attributes_store_empty_string_not_null_json(
     would decode to a JSON null and misreport "no attributes" as a value."""
     r = client.post("/v1/audit/decisions", json=_event())
     assert r.status_code == 202
-    assert fake_clickhouse.insert.call_args.args[1][0][-1] == ""
+    assert _inserted(fake_clickhouse, "attributes") == ""
 
 
 def test_empty_attributes_bag_stores_empty_string_like_an_absent_one(
@@ -245,6 +248,89 @@ def test_empty_attributes_bag_stores_empty_string_like_an_absent_one(
 
     rows = fake_clickhouse.insert.call_args.args[1]
     assert rows[0][audit._DECISION_COLUMNS.index("attributes")] == ""
+
+
+def _inserted(fake_clickhouse: MagicMock, column: str):
+    """The value stored in ``column`` by the last insert."""
+    rows = fake_clickhouse.insert.call_args.args[1]
+    return rows[0][audit._DECISION_COLUMNS.index(column)]
+
+
+def test_multi_role_event_round_trips_both_new_columns(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    r = client.post(
+        "/v1/audit/decisions",
+        json=_event(
+            role="billing", user_roles=["billing", "support"], deciding_role="support"
+        ),
+    )
+    assert r.status_code == 202
+    assert _inserted(fake_clickhouse, "user_roles") == ["billing", "support"]
+    assert _inserted(fake_clickhouse, "deciding_role") == "support"
+    # The legacy scalar keeps its own meaning — the caller's FIRST role, not
+    # the deciding one.
+    assert _inserted(fake_clickhouse, "role") == "billing"
+
+
+def test_old_sdk_role_only_event_materializes_a_single_role_set(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """An SDK that predates multi-role sends ``role`` alone. Storing [] would
+    drop every pre-upgrade agent out of the by_role breakdown, which now reads
+    user_roles — so the platform materialises [role] on the way in."""
+    r = client.post("/v1/audit/decisions", json=_event(role="analyst"))
+    assert r.status_code == 202
+    assert _inserted(fake_clickhouse, "user_roles") == ["analyst"]
+    assert _inserted(fake_clickhouse, "deciding_role") == ""
+
+
+def test_no_role_at_all_stores_an_empty_set_not_a_blank_member(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """[''] would land in the by_role '' bucket AND satisfy has(user_roles, ''),
+    blurring "no role" with "a role named ''". [] is the honest encoding."""
+    r = client.post("/v1/audit/decisions", json=_event())
+    assert r.status_code == 202
+    assert _inserted(fake_clickhouse, "user_roles") == []
+
+
+def test_explicit_user_roles_win_over_the_legacy_scalar(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """The compat fallback must only fire when user_roles is absent/empty."""
+    r = client.post(
+        "/v1/audit/decisions", json=_event(role="billing", user_roles=["support"])
+    )
+    assert r.status_code == 202
+    assert _inserted(fake_clickhouse, "user_roles") == ["support"]
+
+
+def test_too_many_roles_rejected(client: TestClient) -> None:
+    """32 = the SDK's MAX_EVALUATED_ROLES; a longer list is a client that
+    ignored its own cap."""
+    r = client.post(
+        "/v1/audit/decisions", json=_event(user_roles=[f"r{i}" for i in range(33)])
+    )
+    assert r.status_code == 422
+
+
+def test_oversized_role_name_rejected(client: TestClient) -> None:
+    r = client.post("/v1/audit/decisions", json=_event(user_roles=["x" * 257]))
+    assert r.status_code == 422
+
+
+def test_sdk_role_cap_does_not_exceed_the_platform_list_cap() -> None:
+    """Same cross-package contract as the byte caps below: the SDK bounds the
+    evaluated role set, and a body over our list cap is a 422 that drops the
+    event. Lowering ours without the SDK's would silently lose wide callers."""
+    from hexgate.runtime import MAX_EVALUATED_ROLES
+
+    field = DecisionEvent.model_fields["user_roles"]
+    platform_cap = next(
+        m.max_length for m in field.metadata if hasattr(m, "max_length")
+    )
+    assert MAX_EVALUATED_ROLES <= platform_cap
 
 
 def test_oversized_attributes_rejected(client: TestClient) -> None:
@@ -428,18 +514,35 @@ def test_scope_agent_only() -> None:
 
 
 def test_scope_role_only() -> None:
+    """A non-empty role filters on membership, not equality — one call by
+    several roles must be reachable under each of them."""
     where, params = audit._scope("p1", 168, role="analyst")
-    assert where == _BASE_WHERE + ["role = {role:String}"]
+    assert where == _BASE_WHERE + ["has(user_roles, {role:String})"]
     assert params == {"pid": "p1", "hrs": 168, "role": "analyst"}
 
 
 def test_scope_empty_role_filters_no_role_bucket() -> None:
-    """role="" (the dashboard's "(none)" drill-down) must still emit the
-    role clause — `if role:` instead of `if role is not None:` would
-    silently widen the filter to every role."""
+    """role="" (the dashboard's "(none)" drill-down) must still emit a role
+    clause — `if role:` instead of `if role is not None:` would silently
+    widen the filter to every role."""
     where, params = audit._scope("p1", 24, role="")
-    assert "role = {role:String}" in where
-    assert params["role"] == ""
+    assert "user_roles = []" in where
+    # Nothing to bind: the clause interpolates no value.
+    assert "role" not in params
+
+
+def test_scope_empty_role_avoids_the_subcolumn_rewrite() -> None:
+    """The no-role bucket must NOT use empty()/length().
+
+    With optimize_functions_to_subcolumns (default 1 since ClickHouse 24.x)
+    those are rewritten to read the ``user_roles.size0`` subcolumn, which does
+    not exist in parts written before migration 0002 and reports size 0 without
+    evaluating the column DEFAULT. Every legacy single-role row would then match
+    the "(none)" bucket. Verified against 24.10.4.191."""
+    where, _ = audit._scope("p1", 24, role="")
+    role_clauses = [c for c in where if "user_roles" in c]
+    assert role_clauses == ["user_roles = []"]
+    assert not any("empty(" in c or "length(" in c for c in role_clauses)
 
 
 def test_scope_all_filters() -> None:
@@ -448,7 +551,7 @@ def test_scope_all_filters() -> None:
     )
     assert where == _BASE_WHERE + [
         "agent_name = {agent:String}",
-        "role = {role:String}",
+        "has(user_roles, {role:String})",
         "tool_name = {tool:String}",
         "user_id = {user:String}",
     ]
@@ -545,45 +648,83 @@ def test_timeseries_bucket_uses_since_hours_when_no_dates() -> None:
 # summarize() — GROUPING SETS row classification
 # ---------------------------------------------------------------------------
 
-# Rows are (agent, role, tool, outcome, g_agent, g_role, g_tool, g_outcome, n).
+# Rows are (agent, tool, user, outcome, g_agent, g_tool, g_user, g_outcome, n).
 # GROUPING() flags: 1 = column rolled up. Only the () set rolls up outcome.
+# ``role`` is NOT in this scan — it is a set now, so it gets its own membership
+# query whose rows are (role, outcome, n).
 
 
-def _summary_result(rows: list[tuple]) -> MagicMock:
+def _summary_result(
+    rows: list[tuple], role_rows: list[tuple] | None = None
+) -> MagicMock:
+    """Two scans now: the GROUPING SETS one, then the by_role membership one.
+
+    ``side_effect`` rather than ``return_value`` is load-bearing — a shared
+    return value would feed the GROUPING SETS rows to the by_role scan too."""
     client = MagicMock()
-    client.query.return_value.result_rows = rows
+    grouping, by_role = MagicMock(), MagicMock()
+    grouping.result_rows = rows
+    by_role.result_rows = role_rows or []
+    client.query.side_effect = [grouping, by_role]
     return client
 
 
 def test_summarize_user_filter_reaches_query() -> None:
     client = _summary_result([])
     summarize(client, project_id="p1", since_hours=24, user="Bob")
-    params = client.query.call_args.kwargs["parameters"]
+    # call_args_list[0] on purpose: there are two scans now, and this asserts
+    # about the main one rather than whichever happened to run last.
+    params = client.query.call_args_list[0].kwargs["parameters"]
     assert params.get("user") == "Bob"
+
+
+def test_summarize_both_scans_share_one_scope() -> None:
+    """The by_role scan must describe the same slice as the main one —
+    otherwise the breakdown could silently disagree with the totals."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24, agent="a1", user="Bob")
+    assert client.query.call_count == 2
+    main, by_role = client.query.call_args_list
+    assert main.kwargs["parameters"] == by_role.kwargs["parameters"]
+
+
+def test_summarize_role_left_the_grouping_sets_scan() -> None:
+    """An arrayJoin inside the GROUPING SETS statement would multiply rows
+    before grouping and inflate totals/by_agent/by_tool/by_user by each
+    caller's role count. Role must therefore be its own scan."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24)
+    main_sql = client.query.call_args_list[0].args[0]
+    by_role_sql = client.query.call_args_list[1].args[0]
+    assert "role" not in main_sql
+    assert "arrayJoin" not in main_sql
+    assert "arrayJoin" in by_role_sql
 
 
 def test_summarize_classifies_grouping_sets() -> None:
     client = _summary_result(
         [
-            # agent_name, role, tool_name, user_id, outcome, g_agent, g_role, g_tool, g_user, g_outcome, n
+            # agent_name, tool_name, user_id, outcome, g_agent, g_tool, g_user, g_outcome, n
             # () — grand total (the ONLY row where g_outcome=1)
-            ("", "", "", "", "", 1, 1, 1, 1, 1, 10),
+            ("", "", "", "", 1, 1, 1, 1, 10),
             # (outcome) — per-outcome totals
-            ("", "", "", "", "allow", 1, 1, 1, 1, 0, 6),
-            ("", "", "", "", "deny", 1, 1, 1, 1, 0, 4),
+            ("", "", "", "allow", 1, 1, 1, 0, 6),
+            ("", "", "", "deny", 1, 1, 1, 0, 4),
             # (agent_name, outcome)
-            ("example_agent", "", "", "", "allow", 0, 1, 1, 1, 0, 6),
-            ("example_agent", "", "", "", "deny", 0, 1, 1, 1, 0, 3),
-            ("scraper", "", "", "", "deny", 0, 1, 1, 1, 0, 1),
-            # (role, outcome) — empty role keeps its raw "" key on the wire
-            ("", "analyst", "", "", "allow", 1, 0, 1, 1, 0, 6),
-            ("", "", "", "", "deny", 1, 0, 1, 1, 0, 4),
+            ("example_agent", "", "", "allow", 0, 1, 1, 0, 6),
+            ("example_agent", "", "", "deny", 0, 1, 1, 0, 3),
+            ("scraper", "", "", "deny", 0, 1, 1, 0, 1),
             # (tool_name, outcome)
-            ("", "", "read_file", "", "deny", 1, 1, 0, 1, 0, 4),
+            ("", "read_file", "", "deny", 1, 0, 1, 0, 4),
             # (user_id, outcome)
-            ("", "", "", "Alice", "allow", 1, 1, 1, 0, 0, 6),
-            ("", "", "", "Bob", "deny", 1, 1, 1, 0, 0, 4),
-        ]
+            ("", "", "Alice", "allow", 1, 1, 0, 0, 6),
+            ("", "", "Bob", "deny", 1, 1, 0, 0, 4),
+        ],
+        # by_role scan: (role, outcome, n). Empty role keeps its raw "" key.
+        [
+            ("analyst", "allow", 6),
+            ("", "deny", 4),
+        ],
     )
 
     data = summarize(client, project_id="p1", since_hours=24)
@@ -637,7 +778,7 @@ def test_summarize_classifies_grouping_sets() -> None:
 
 
 def test_summarize_empty_result() -> None:
-    data = summarize(_summary_result([]), project_id="p1", since_hours=24)
+    data = summarize(_summary_result([], []), project_id="p1", since_hours=24)
     assert data == {
         "totals": {"all": 0, "allow": 0, "deny": 0, "needs_approval": 0},
         "by_agent": [],
@@ -645,6 +786,18 @@ def test_summarize_empty_result() -> None:
         "by_tool": [],
         "by_user": [],
     }
+
+
+def test_summarize_by_role_counts_membership_not_decisions() -> None:
+    """by_role sums may exceed totals — a caller with several roles is counted
+    under each. Pinned so nobody "fixes" the discrepancy into a wrong number."""
+    client = _summary_result(
+        [("", "", "", "", 1, 1, 1, 1, 3)],  # () grand total: 3 decisions
+        [("billing", "allow", 3), ("support", "allow", 2)],  # 5 memberships
+    )
+    data = summarize(client, project_id="p1", since_hours=24)
+    assert data["totals"]["all"] == 3
+    assert sum(r["all"] for r in data["by_role"]) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +820,8 @@ def _decision_row(total: int, **overrides) -> tuple:
         "user_id": "u_1",
         "tool_name": "read_file",
         "role": "",
+        "user_roles": [],
+        "deciding_role": "",
         "outcome": "deny",
         "error_type": "policy_denied",
         "reason": "",
@@ -698,6 +853,44 @@ def test_list_decisions_total_from_window_function() -> None:
     assert page["rows"][0]["arguments"] is None
     assert page["rows"][0]["attributes"] is None
     assert "total_matches" not in page["rows"][0]
+
+
+def test_list_decisions_returns_the_role_set_and_deciding_role() -> None:
+    """Both new columns survive the dict(zip(...)) row build; the Array column
+    normalises to a list for the response model."""
+    client = MagicMock()
+    client.query.return_value.result_rows = [
+        _decision_row(
+            2,
+            role="billing",
+            user_roles=["billing", "support"],
+            deciding_role="support",
+        ),
+        _decision_row(2),  # legacy shape: no roles recorded
+    ]
+    client.query.return_value.column_names = _LIST_COLUMN_NAMES
+
+    page = list_decisions(client, project_id="p1", since_hours=24)
+
+    assert page["rows"][0]["user_roles"] == ["billing", "support"]
+    assert page["rows"][0]["deciding_role"] == "support"
+    assert page["rows"][1]["user_roles"] == []
+    assert page["rows"][1]["deciding_role"] == ""
+
+
+def test_list_decisions_normalizes_role_array_to_a_list() -> None:
+    """The driver hands Array columns back as a sequence, not necessarily a
+    list; AuditDecisionRow wants a list."""
+    client = MagicMock()
+    client.query.return_value.result_rows = [
+        _decision_row(1, user_roles=("billing", "support"))
+    ]
+    client.query.return_value.column_names = _LIST_COLUMN_NAMES
+
+    page = list_decisions(client, project_id="p1", since_hours=24)
+
+    assert page["rows"][0]["user_roles"] == ["billing", "support"]
+    assert isinstance(page["rows"][0]["user_roles"], list)
 
 
 def test_list_decisions_decodes_stored_attributes() -> None:
@@ -921,21 +1114,27 @@ def test_audit_read_non_member_is_403(
 def test_audit_read_empty_role_param_filters_no_role_bucket(
     client: TestClient, fake_clickhouse: MagicMock
 ) -> None:
-    """``role=`` (empty value) must reach ClickHouse as ``role = ''`` —
-    the no-role drill-down — while an absent ``role`` means no filter.
-    No "(none)" sentinel exists on the wire."""
+    """``role=`` (empty value) must reach ClickHouse as the no-role drill-down,
+    while an absent ``role`` means no filter. No "(none)" sentinel exists on
+    the wire.
+
+    The clause is now ``user_roles = []`` and binds no parameter, so this
+    asserts on the SQL rather than on params — the distinction it guards
+    (filter vs. no filter) is unchanged."""
     app.dependency_overrides[require_org_member] = lambda: MagicMock()
     fake_clickhouse.query.return_value.result_rows = []
 
     r = client.get("/v1/projects/proj_test/audit/summary?role=")
     assert r.status_code == 200, r.text
-    params = fake_clickhouse.query.call_args.kwargs["parameters"]
-    assert params["role"] == ""
+    sql = fake_clickhouse.query.call_args_list[0].args[0]
+    assert "user_roles = []" in sql
 
     fake_clickhouse.query.reset_mock()
     r = client.get("/v1/projects/proj_test/audit/summary")
     assert r.status_code == 200, r.text
-    params = fake_clickhouse.query.call_args.kwargs["parameters"]
+    sql = fake_clickhouse.query.call_args_list[0].args[0]
+    assert "user_roles" not in sql
+    params = fake_clickhouse.query.call_args_list[0].kwargs["parameters"]
     assert "role" not in params
 
 
@@ -1106,6 +1305,95 @@ def test_real_clickhouse_round_trip() -> None:
         assert outcome == "deny"
         assert received_at is not None  # server-stamped via column default
         assert av_id == "9f1e3c5a-test"
+    finally:
+        clickhouse_client.command(
+            "ALTER TABLE policy_decision DELETE WHERE project_id = {pid:String}",
+            parameters={"pid": project_id},
+        )
+
+
+@pytest.mark.integration
+def test_real_clickhouse_multi_role_read_path() -> None:
+    """The role-set write AND read SQL against a real server.
+
+    The unit tests above drive `summarize`/`list_decisions` through MagicMocks,
+    so a malformed arrayJoin or a column name that doesn't exist would pass them
+    and only fail in production as a 503. This exercises the actual statements:
+    the membership filter, the by_role scan, and the detail columns.
+    """
+    from hexgate_api.features.audit.service import insert_decision
+    from hexgate_api.core.clickhouse import get_clickhouse as real_get_clickhouse
+
+    clickhouse_client = real_get_clickhouse()
+    project_id = f"test_proj_{uuid.uuid4().hex[:8]}"
+
+    events = [
+        # A multi-role caller: one decision, two role memberships.
+        _event(
+            role="billing",
+            user_roles=["billing", "support"],
+            deciding_role="support",
+            outcome="allow",
+            reason="multi",
+        ),
+        # An old-SDK event: role only, no user_roles → normalised to ["billing"].
+        _event(role="billing", outcome="deny", reason="legacy"),
+        # A caller with no role at all → stored as [], the "" bucket.
+        _event(outcome="deny", reason="norole"),
+    ]
+    for payload in events:
+        insert_decision(
+            clickhouse_client,
+            event=DecisionEvent(**payload),
+            project_id=project_id,
+            agent_version_id="9f1e3c5a-test",
+        )
+
+    try:
+        # --- write path: the compat normalisation actually landed -----------
+        stored = {
+            reason: (list(roles), deciding)
+            for reason, roles, deciding in clickhouse_client.query(
+                "SELECT reason, user_roles, deciding_role FROM policy_decision "
+                "WHERE project_id = {pid:String}",
+                parameters={"pid": project_id},
+            ).result_rows
+        }
+        assert stored["multi"] == (["billing", "support"], "support")
+        assert stored["legacy"] == (["billing"], "")  # materialised from `role`
+        assert stored["norole"] == ([], "")
+
+        # --- read path: membership filter -----------------------------------
+        # `support` was only ever a non-first role, so this is exactly what the
+        # old `role = X` equality could not answer.
+        page = list_decisions(
+            clickhouse_client, project_id=project_id, since_hours=24, role="support"
+        )
+        assert [r["reason"] for r in page["rows"]] == ["multi"]
+        assert page["rows"][0]["user_roles"] == ["billing", "support"]
+        assert page["rows"][0]["deciding_role"] == "support"
+
+        # `billing` matches the multi-role row and the normalised legacy one.
+        page = list_decisions(
+            clickhouse_client, project_id=project_id, since_hours=24, role="billing"
+        )
+        assert sorted(r["reason"] for r in page["rows"]) == ["legacy", "multi"]
+
+        # --- read path: the no-role bucket ----------------------------------
+        page = list_decisions(
+            clickhouse_client, project_id=project_id, since_hours=24, role=""
+        )
+        assert [r["reason"] for r in page["rows"]] == ["norole"]
+
+        # --- read path: by_role membership scan -----------------------------
+        data = summarize(clickhouse_client, project_id=project_id, since_hours=24)
+        by_role = {r["key"]: r["all"] for r in data["by_role"]}
+        assert by_role == {"billing": 2, "support": 1, "": 1}
+        # Totals stay one row per decision even though role membership sums
+        # higher — the whole reason role left the GROUPING SETS scan.
+        assert data["totals"]["all"] == 3
+        assert sum(by_role.values()) == 4
+        assert {r["key"]: r["all"] for r in data["by_tool"]} == {"read_file": 3}
     finally:
         clickhouse_client.command(
             "ALTER TABLE policy_decision DELETE WHERE project_id = {pid:String}",

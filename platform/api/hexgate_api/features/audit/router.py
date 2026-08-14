@@ -151,6 +151,11 @@ async def ingest_ban_enforcement(
 # ``role`` filter semantics: absent = no filter; ``role=`` (empty value) =
 # the no-role bucket. No sentinel string is reserved on the wire — the
 # dashboard renders "(none)" purely as a display label.
+#
+# The filter matches **membership** in the caller's role set, so one call by
+# ["billing", "support"] is returned by role=billing and role=support alike.
+# That strictly subsumes the pre-multi-role ``role = X`` equality, so no
+# caller-visible query changes meaning.
 
 
 @router.get(

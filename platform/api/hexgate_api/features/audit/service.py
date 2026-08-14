@@ -68,6 +68,8 @@ _DECISION_COLUMNS = [
     "hint",
     "arguments",
     "attributes",
+    "user_roles",
+    "deciding_role",
 ]
 
 # async_insert batches small inserts; wait_for_async_insert=1 blocks until flush
@@ -112,6 +114,14 @@ def insert_decision(
     if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
         raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
+    # An older SDK sends only ``role``. Materialising [role] here (rather than
+    # storing []) keeps those events in the by_role breakdown, which now reads
+    # user_roles — otherwise every pre-upgrade agent would silently vanish from
+    # the panel. Mirrors the column DEFAULT that migration 0002 gives rows
+    # written before the column existed. No byte cap: pydantic already bounds
+    # this at 32 x 256 chars.
+    user_roles = list(event.user_roles) or ([event.role] if event.role else [])
+
     row = [
         event.event_id,
         event.occurred_at,
@@ -129,6 +139,8 @@ def insert_decision(
         hint_json,
         args_json,
         attributes_json,
+        user_roles,
+        event.deciding_role,
     ]
     clickhouse_client.insert(
         "policy_decision",
@@ -224,13 +236,32 @@ def _scope(
     end_date: datetime | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     """Shared WHERE + params for the scope filters (project/window/agent/role/
-    tool) that all reads narrow by. Pass role="" for the no-role bucket."""
+    tool) that all reads narrow by. Pass role="" for the no-role bucket.
+
+    The role filter matches **membership** in the caller's role set, so a call
+    by ["billing", "support"] is returned by role=billing and role=support
+    alike. It strictly subsumes the old ``role = X`` equality: rows written
+    before the column existed materialise ``[role]`` via its DEFAULT
+    (migration 0002)."""
     where, params = scope_filters(
         project_id, since_hours, agent=agent, start_date=start_date, end_date=end_date
     )
     if role is not None:
-        where.append("role = {role:String}")
-        params["role"] = role
+        # ``role is not None``, never ``if role``: role="" is the dashboard's
+        # "(none)" drill-down and must filter, not silently widen to every role.
+        if role:
+            where.append("has(user_roles, {role:String})")
+            params["role"] = role
+        else:
+            # ``user_roles = []``, NOT ``empty(user_roles)``: with
+            # optimize_functions_to_subcolumns (default 1 since CH 24.x),
+            # empty()/length() are rewritten to read the user_roles.size0
+            # subcolumn, which does not exist in parts written before migration
+            # 0002 and so reports size 0 WITHOUT evaluating the column DEFAULT
+            # — every legacy single-role row would match the no-role bucket.
+            # 0002's MATERIALIZE COLUMN fixes the data; this form is correct
+            # even if that mutation hasn't finished. Verified on 24.10.4.191.
+            where.append("user_roles = []")
     if tool:
         where.append("tool_name = {tool:String}")
         params["tool"] = tool
@@ -240,26 +271,39 @@ def _scope(
     return where, params
 
 
-# Grand total + per-outcome + per-(agent|role|tool, outcome) in one scan.
+# Grand total + per-outcome + per-(agent|tool|user, outcome) in one scan.
 # Rows are classified by their GROUPING() flags (1 = column rolled up); only the
 # () set rolls up outcome, so g_outcome=1 marks the grand-total row.
+#
+# ``role`` is deliberately NOT here: it is a set now (user_roles), and the
+# arrayJoin needed to unnest it would multiply rows BEFORE grouping, inflating
+# totals, by_agent, by_tool and by_user by each caller's role count. It gets its
+# own scan below instead — one extra pass over the same WHERE, in exchange for
+# exact totals.
 _GROUPING_SETS = (
     "GROUPING SETS ((), (outcome), (agent_name, outcome), "
-    "(role, outcome), (tool_name, outcome), (user_id, outcome))"
+    "(tool_name, outcome), (user_id, outcome))"
 )
 _SELECT_COLS = [
     "agent_name",
-    "role",
     "tool_name",
     "user_id",
     "outcome",
     "GROUPING(agent_name) AS g_agent",
-    "GROUPING(role) AS g_role",
     "GROUPING(tool_name) AS g_tool",
     "GROUPING(user_id) AS g_user",
     "GROUPING(outcome) AS g_outcome",
     "count() AS n",
 ]
+
+# Membership breakdown, its own scan over the same WHERE. An empty role set
+# keeps the '' bucket the dashboard already labels "(none)". ``empty()`` is safe
+# here (unlike in _scope): user_roles is genuinely read by the arrayJoin, so the
+# subcolumn rewrite described there cannot apply.
+_BY_ROLE_SELECT = (
+    "SELECT arrayJoin(if(empty(user_roles), [''], user_roles)) AS role, "
+    "outcome, count() AS n"
+)
 
 
 def summarize(
@@ -275,10 +319,16 @@ def summarize(
     end_date: datetime | None = None,
 ) -> dict:
     """Totals + breakdowns for the scoped slice. Returns ``{totals, by_agent,
-    by_role, by_tool}``; each breakdown is ``{key, all, allow, deny,
+    by_role, by_tool, by_user}``; each breakdown is ``{key, all, allow, deny,
     needs_approval}`` sorted by ``all`` desc. An empty role keeps its raw
     ``""`` key — labelling it ("(none)") is the dashboard's concern, so no
-    string is reserved on the wire."""
+    string is reserved on the wire.
+
+    ``by_role`` counts **membership** in the caller's role set and comes from
+    its own scan: a call by ["billing", "support"] is counted under both, so
+    ``sum(by_role[*].all) >= totals["all"]``. Every other breakdown stays one
+    row per decision — which is exactly why role left the GROUPING SETS scan,
+    where an arrayJoin would have inflated all of them."""
     where, params = _scope(
         project_id,
         since_hours,
@@ -310,12 +360,10 @@ def summarize(
 
     for (
         agent,
-        role,
         tool,
         user,
         outcome,
         g_agent,
-        g_role,
         g_tool,
         g_user,
         g_outcome,
@@ -324,17 +372,25 @@ def summarize(
         n = int(n)
         if g_outcome:  # only the () grand-total set rolls up outcome
             totals["all"] = n
-        elif g_agent and g_role and g_tool and g_user:  # (outcome) set
+        elif g_agent and g_tool and g_user:  # (outcome) set
             if outcome in totals:
                 totals[outcome] = n
         elif not g_agent:  # (agent_name, outcome)
             _add(by_agent, agent, outcome, n)
-        elif not g_role:  # (role, outcome)
-            _add(by_role, role, outcome, n)
         elif not g_tool:  # (tool_name, outcome)
             _add(by_tool, tool, outcome, n)
         else:  # (user_id, outcome)
             _add(by_user, user, outcome, n)
+
+    # Second scan: role membership. Same where_sql/params, so the two scans can
+    # never disagree about which slice they describe.
+    role_result = client.query(
+        f"{_BY_ROLE_SELECT} FROM policy_decision WHERE {where_sql} "
+        "GROUP BY role, outcome",
+        parameters=params,
+    )
+    for role_key, outcome, n in role_result.result_rows:
+        _add(by_role, role_key, outcome, int(n))
 
     def _ranked(store: dict[str, dict[str, int]]) -> list[dict]:
         return sorted(
@@ -410,8 +466,8 @@ def _decode_json_column(raw: str) -> object:
 
 _LIST_COLUMNS = (
     "event_id, occurred_at, received_at, agent_name, agent_version_id, "
-    "session_id, user_id, tool_name, role, outcome, error_type, "
-    "reason, violations, hint, arguments, attributes"
+    "session_id, user_id, tool_name, role, user_roles, deciding_role, "
+    "outcome, error_type, reason, violations, hint, arguments, attributes"
 )
 
 
@@ -469,6 +525,9 @@ def list_decisions(
         row = dict(zip(result.column_names, raw))
         total = int(row.pop("total_matches"))
         row["violations"] = list(row.get("violations") or [])
+        # Same tuple-or-list normalisation as violations: the driver returns
+        # Array columns as sequences, and the response model wants a list.
+        row["user_roles"] = list(row.get("user_roles") or [])
         row["hint"] = _decode_json_column(row.get("hint") or "")
         row["arguments"] = _decode_json_column(row.get("arguments") or "")
         row["attributes"] = _decode_json_column(row.get("attributes") or "")

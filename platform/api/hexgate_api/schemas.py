@@ -443,7 +443,21 @@ class DecisionEvent(AuditEnvelope):
 
     tool_name: str = Field(min_length=1, max_length=256)
     outcome: AuditOutcome
+    # Legacy scalar: the caller's FIRST role. Kept as-is so nothing already
+    # stored becomes false; membership reads go through ``user_roles``.
     role: str = Field(default="", max_length=256)
+    # Distinct roles the SDK evaluated for this call, in caller order. Advisory
+    # + client-assertable, exactly like ``role`` / ``user_id`` / ``attributes``.
+    # Per-item + list caps mirror ``violations``: a bounded list of identifiers,
+    # not a payload, so no byte cap is needed downstream. The list cap matches
+    # the SDK's MAX_EVALUATED_ROLES — a longer body is a client that ignored
+    # its own cap.
+    user_roles: list[Annotated[str, StringConstraints(max_length=256)]] = Field(
+        default_factory=list, max_length=32
+    )
+    # The role whose policy granted (or gated on approval) the call; "" when
+    # every role denied, or when an older SDK didn't send it.
+    deciding_role: str = Field(default="", max_length=256)
     error_type: str = Field(default="", max_length=64)
     reason: str = Field(default="", max_length=4096)
     # Per-item cap so 64 unbounded strings can't smuggle a multi-MB body.
@@ -513,7 +527,11 @@ class OutcomeCounts(BaseModel):
 class AuditBreakdownRow(OutcomeCounts):
     """One agent/role/tool bucket; an empty role keeps its raw ``""`` key
     (the dashboard renders the "(none)" label — nothing is reserved on
-    the wire)."""
+    the wire).
+
+    ``by_role`` buckets count **membership**: a call by a caller carrying
+    ``["billing", "support"]`` is counted under both, so ``by_role`` sums can
+    exceed ``totals``. Every other breakdown stays one row per decision."""
 
     key: str
 
@@ -573,6 +591,10 @@ class AuditDecisionRow(BaseModel):
     user_id: str = ""
     tool_name: str
     role: str = ""
+    # Empty for rows written before multi-role, or by an SDK that predates it —
+    # the storage column's DEFAULT materialises ``[role]`` for those.
+    user_roles: list[str] = Field(default_factory=list)
+    deciding_role: str = ""
     outcome: AuditOutcome
     error_type: str = ""
     reason: str = ""
