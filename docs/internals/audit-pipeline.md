@@ -348,9 +348,10 @@ CREATE TABLE hexgate_audit.policy_decision
   hint                String CODEC(ZSTD(3)),
   arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
   attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
-  -- Appended by migrations/0002, whose DEFAULT gives pre-migration rows the
-  -- role set they logically always had (and which 0002 MATERIALIZEs).
-  user_roles          Array(LowCardinality(String)) DEFAULT if(role = '', [], [role]),
+  -- No DEFAULT: present since the table's first CREATE, so there is no
+  -- pre-column part for a read-time default to rescue. An SDK predating
+  -- multi-role sends only `role`; the API normalises that to [role] on ingest.
+  user_roles          Array(LowCardinality(String)),
   deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )
 ENGINE = MergeTree

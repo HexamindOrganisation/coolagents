@@ -30,11 +30,12 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     hint                String CODEC(ZSTD(3)),
     arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3)),
     attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3)),
-    -- Appended last, and the DEFAULT copied verbatim, so a hand-migrated volume
-    -- and a fresh one give identical DESCRIBEs (what _DECISION_COLUMNS, "order
-    -- matches schema.sql", relies on). The DEFAULT is inert here — every insert
-    -- names the column; it exists for 0002's pre-migration rows.
-    user_roles          Array(LowCardinality(String)) DEFAULT if(role = '', [], [role]) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
+    -- No DEFAULT expression on user_roles: these columns have existed since the
+    -- table's first CREATE, so there is no pre-column part for a read-time
+    -- default to rescue. An SDK that predates multi-role sends only `role`;
+    -- that is normalised to [role] on the way in (audit/service.py), which is
+    -- the one compat path a fresh volume does NOT remove.
+    user_roles          Array(LowCardinality(String)) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
     deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied'
 )
 -- ReplacingMergeTree: SDK retries (same event_id) collapse on background

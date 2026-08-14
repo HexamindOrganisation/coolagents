@@ -42,7 +42,8 @@ import { fmtTs } from "./fmt";
 
 /**
  * The roles a caller carried on one decision, falling back to the legacy
- * scalar for rows from an API that predates `user_roles`.
+ * scalar. The API normalises `role` → `[role]` on ingest, so the fallback is
+ * belt-and-braces for a row that reached us from an API predating the column.
  */
 export const callerRoles = (e: AuditDecisionRow): string[] =>
   e.user_roles?.length ? e.user_roles : e.role ? [e.role] : [];

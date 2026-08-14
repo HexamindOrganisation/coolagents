@@ -521,7 +521,8 @@ def test_verify_schema_tolerates_extra_server_side_columns() -> None:
 
 
 def test_verify_schema_names_the_missing_columns() -> None:
-    """The unmigrated case this exists for: 0002's columns absent."""
+    """The case this exists for: a volume created before the role columns,
+    which is now fixed by recreating it rather than by a migration."""
     schema = _full_schema()
     schema[audit.DECISION_TABLE] = [
         c
@@ -614,22 +615,9 @@ def test_scope_empty_role_filters_no_role_bucket() -> None:
     """role="" is the "(none)" drill-down and must still emit a clause;
     `if role:` would silently widen it to every role."""
     where, params = audit._scope("p1", 24, role="")
-    assert "user_roles = []" in where
+    assert "empty(user_roles)" in where
     # Nothing to bind: the clause interpolates no value.
     assert "role" not in params
-
-
-def test_scope_empty_role_avoids_the_subcolumn_rewrite() -> None:
-    """The no-role bucket must NOT use empty()/length().
-
-    optimize_functions_to_subcolumns rewrites those into a read of
-    ``user_roles.size0``, absent from pre-0002 parts and reported as 0 without
-    evaluating the DEFAULT — every legacy single-role row would match here.
-    Verified against 24.10.4.191."""
-    where, _ = audit._scope("p1", 24, role="")
-    role_clauses = [c for c in where if "user_roles" in c]
-    assert role_clauses == ["user_roles = []"]
-    assert not any("empty(" in c or "length(" in c for c in role_clauses)
 
 
 def test_scope_all_filters() -> None:
@@ -1207,16 +1195,15 @@ def test_audit_read_empty_role_param_filters_no_role_bucket(
     while an absent ``role`` means no filter. No "(none)" sentinel exists on
     the wire.
 
-    The clause is now ``user_roles = []`` and binds no parameter, so this
-    asserts on the SQL rather than on params — the distinction it guards
-    (filter vs. no filter) is unchanged."""
+    The clause binds no parameter, so this asserts on the SQL rather than on
+    params — the distinction it guards (filter vs. no filter) is unchanged."""
     app.dependency_overrides[require_org_member] = lambda: MagicMock()
     fake_clickhouse.query.return_value.result_rows = []
 
     r = client.get("/v1/projects/proj_test/audit/summary?role=")
     assert r.status_code == 200, r.text
     sql = fake_clickhouse.query.call_args_list[0].args[0]
-    assert "user_roles = []" in sql
+    assert "empty(user_roles)" in sql
 
     fake_clickhouse.query.reset_mock()
     r = client.get("/v1/projects/proj_test/audit/summary")

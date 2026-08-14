@@ -50,7 +50,8 @@ class AuditSchemaOutOfDate(Exception):
         )
         super().__init__(
             f"ClickHouse schema is behind this build ({detail}). "
-            "Apply platform/clickhouse/migrations before starting the API."
+            "Apply any pending platform/clickhouse/migrations, or recreate the "
+            "volume so init/schema.sql runs, before starting the API."
         )
         self.missing = missing
 
@@ -134,9 +135,12 @@ def insert_decision(
     if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
         raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
-    # An old SDK sends only ``role``; materialise [role] so those events stay in
-    # the by_role breakdown, which reads user_roles. Mirrors the column DEFAULT
-    # migration 0002 gives pre-existing rows.
+    # An SDK released before multi-role (<= 0.2.11) sends only ``role``.
+    # Materialise [role] so those events stay in the by_role breakdown, which
+    # reads user_roles — otherwise every caller on a pinned SDK silently
+    # vanishes from the panel. Storage needs no equivalent: the columns have
+    # existed since the table's first CREATE. This is the compat path that
+    # outlives any database recreation, because the SDK is pip-installed.
     user_roles = list(event.user_roles) or ([event.role] if event.role else [])
 
     row = [
@@ -288,12 +292,7 @@ def _scope(
             where.append("has(user_roles, {role:String})")
             params["role"] = role
         else:
-            # NOT ``empty(user_roles)``: optimize_functions_to_subcolumns (on by
-            # default since CH 24.x) rewrites empty()/length() into a read of
-            # user_roles.size0, absent from pre-0002 parts and reported as 0
-            # without evaluating the column DEFAULT — every legacy single-role
-            # row would land in this bucket. Verified on 24.10.4.191.
-            where.append("user_roles = []")
+            where.append("empty(user_roles)")
     if tool:
         where.append("tool_name = {tool:String}")
         params["tool"] = tool
@@ -327,8 +326,7 @@ _SELECT_COLS = [
 ]
 
 # Membership breakdown, own scan over the same WHERE; an empty set keeps the ''
-# bucket the dashboard labels "(none)". ``empty()`` is safe here (unlike in
-# _scope) — the arrayJoin reads user_roles, so the subcolumn rewrite can't apply.
+# bucket the dashboard labels "(none)".
 _BY_ROLE_SELECT = (
     "SELECT arrayJoin(if(empty(user_roles), [''], user_roles)) AS role, "
     "outcome, count() AS n"
