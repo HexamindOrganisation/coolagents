@@ -6,6 +6,8 @@ import json
 
 from hexgate.audit import (
     MAX_ARGS_BYTES,
+    MAX_VIOLATION_CHARS,
+    MAX_VIOLATIONS,
     MAX_ATTRIBUTES_BYTES,
     MAX_HINT_BYTES,
     AuditEvent,
@@ -22,7 +24,7 @@ def _decision(**overrides) -> Decision:
 
 def test_as_payload_full_payload() -> None:
     d = _decision(
-        role="analyst",
+        user_roles=("analyst",),
         reason="denied for path",
         error_type="policy_denied",
         hint={"glob": "/x/**"},
@@ -58,8 +60,9 @@ def test_as_payload_server_resolved_fields_absent() -> None:
 
 
 def test_as_payload_none_normalizes_to_empty_string() -> None:
-    d = _decision(role=None, error_type=None)
+    d = _decision(user_roles=(), error_type=None)
     wire = AuditEvent(decision=d).as_payload()  # user_id/session_id default to ""
+    # No roles on the Decision → the legacy scalar ``role`` field goes out empty.
     assert wire["role"] == ""
     assert wire["error_type"] == ""
     assert wire["user_id"] == ""
@@ -238,3 +241,54 @@ def test_event_id_and_occurred_at_unique_per_event() -> None:
     w2 = AuditEvent(decision=_decision()).as_payload()
     assert w1["event_id"] != w2["event_id"]
     assert "+00:00" in w1["occurred_at"]
+
+
+def test_as_payload_caps_violations_at_the_platform_list_limit() -> None:
+    """A multi-role deny unions violations across roles; over the platform's
+    64-item cap the event is rejected (422) and a *denied* call goes unrecorded."""
+    d = _decision(violations=tuple(f"args.f{i} == 1" for i in range(72)))
+
+    wire = AuditEvent(decision=d).as_payload()
+
+    assert len(wire["violations"]) == MAX_VIOLATIONS
+    assert wire["violations"][-1] == "(+9 more)"  # 63 kept + marker
+    assert wire["violations"][0] == "args.f0 == 1"
+
+
+def test_as_payload_keeps_violations_under_the_cap_intact() -> None:
+    d = _decision(violations=tuple(f"args.f{i} == 1" for i in range(MAX_VIOLATIONS)))
+
+    wire = AuditEvent(decision=d).as_payload()
+
+    assert len(wire["violations"]) == MAX_VIOLATIONS
+    assert "more)" not in wire["violations"][-1]
+
+
+def test_as_payload_truncates_an_overlong_violation_visibly() -> None:
+    """Per-item cap too: the platform bounds each string at 1024 chars."""
+    d = _decision(violations=("x" * 2000,))
+
+    violation = AuditEvent(decision=d).as_payload()["violations"][0]
+
+    assert len(violation) == MAX_VIOLATION_CHARS
+    assert violation.endswith("...")
+
+
+def test_capped_violations_survive_the_platform_schema() -> None:
+    """The point of the cap: the trimmed payload is one the platform accepts."""
+    d = _decision(violations=tuple(f"args.f{i} == 1" for i in range(200)))
+
+    violations = AuditEvent(decision=d).as_payload()["violations"]
+
+    assert len(violations) <= MAX_VIOLATIONS
+    assert all(len(v) <= MAX_VIOLATION_CHARS for v in violations)
+
+
+def test_decision_keeps_every_violation_for_the_host() -> None:
+    """Only the audit copy is trimmed — the model-facing payload is untouched."""
+    d = _decision(violations=tuple(f"args.f{i} == 1" for i in range(72)))
+
+    AuditEvent(decision=d).as_payload()
+
+    assert len(d.violations) == 72
+    assert len(d.as_error_payload()["violations"]) == 72

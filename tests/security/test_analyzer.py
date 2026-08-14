@@ -1,4 +1,5 @@
-"""Tests for the policy analyzer — soft lints over a linked bundle."""
+"""Tests for the policy analyzer — soft lints over a linked bundle, plus the
+cross-role `permissive-default` check over a resolved role map."""
 
 from __future__ import annotations
 
@@ -8,11 +9,14 @@ from hexgate.security import (
     AgentPolicy,
     BaseToolPolicy,
     ModuleContent,
+    PolicySet,
     analyze,
     check,
     check_project,
     link_policy_set,
+    load_policy_map,
 )
+from hexgate.security.analyzer import check_default_role_exposure
 
 
 def _mod(name, kind, tools, *, default_mode="allow"):
@@ -239,6 +243,180 @@ def test_default_policy_constraints_rejected_as_link_error():
     assert "default_policy constraints" in lints[0].message
 
 
+# ---------------------------------------------------------------------------
+# permissive-default — cross-role exposure of the `default` fallback
+# ---------------------------------------------------------------------------
+
+
+def _policy_set(roles: dict[str, dict]) -> PolicySet:
+    return load_policy_map(
+        {name: AgentPolicy.model_validate(spec) for name, spec in roles.items()}
+    )
+
+
+def test_permissive_default_flags_a_grant_no_named_role_has() -> None:
+    """A tool only `default` grants is reachable by any undefined role name."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"delete_everything": {"mode": "allow"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert [lint.code for lint in lints] == ["permissive-default"]
+    assert lints[0].severity == "warning"
+    assert lints[0].tool == "delete_everything"
+
+
+def test_permissive_default_is_quiet_when_a_named_role_also_grants_it() -> None:
+    """A shared grant is intentional (typically a mixin), not exposure."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"read_file": {"mode": "allow"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_is_quiet_for_a_least_privilege_default() -> None:
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"default_policy": {"mode": "deny"}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_is_quiet_for_a_single_role_policy() -> None:
+    """A legacy flat policy.yaml *is* the `default` role — nothing to report."""
+    lints = check_default_role_exposure(
+        _policy_set({"default": {"tools": {"read_file": {"mode": "allow"}}}})
+    )
+
+    assert lints == []
+
+
+def test_permissive_default_flags_a_granting_catch_all() -> None:
+    """`default_policy: allow` under `default` exposes every unlisted tool."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"default_policy": {"mode": "allow"}},
+                "support": {
+                    "default_policy": {"mode": "deny"},
+                    "tools": {"read_file": {"mode": "allow"}},
+                },
+            }
+        )
+    )
+
+    assert [lint.code for lint in lints] == ["permissive-default"]
+    assert "default_policy" in lints[0].message
+    assert lints[0].tool is None
+
+
+def test_permissive_default_flags_approval_required_grants_too() -> None:
+    """`approval_required` still reaches the tool, just with a gate."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"deploy": {"mode": "approval_required"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert len(lints) == 1
+    assert lints[0].tool == "deploy"
+
+
+def test_permissive_default_sees_through_inheritance() -> None:
+    """The check runs on resolved policies, so inherited grants count."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "base": {"is_mixin": True, "tools": {"read_file": {"mode": "allow"}}},
+                "default": {"tools": {"read_file": {"mode": "allow"}}},
+                "support": {"inherits": ["base"]},
+            }
+        )
+    )
+
+    assert lints == []
+
+
+# ---------------------------------------------------------------------------
+# implicit-default — a roles document that never declares `default`
+#
+# The loader aliases the first concrete role as the fallback, so `default` and
+# that role resolve to the SAME policy object. Every test above declares an
+# explicit `default`, which is how a silent check shipped: comparing the
+# fallback against a list that still contained itself matched every grant.
+# ---------------------------------------------------------------------------
+
+
+def test_implicit_default_is_flagged() -> None:
+    """No `default` role means one named role silently became the fallback."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "billing": {"tools": {"refund": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    codes = [lint.code for lint in lints]
+    assert "implicit-default" in codes
+    assert all(lint.severity == "warning" for lint in lints)
+    assert "billing" in next(
+        lint.message for lint in lints if lint.code == "implicit-default"
+    )
+
+
+def test_implicit_default_still_reports_the_grants_it_exposes() -> None:
+    """The aliased role's own grants ARE the exposure — they must be listed."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "billing": {"tools": {"refund": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    assert "refund" in {lint.tool for lint in lints}
+
+
+def test_explicit_default_argument_is_not_an_implicit_default() -> None:
+    """`load_policy_map(default=...)` is a deliberate choice, not an accident."""
+    lints = load_policy_map(
+        {
+            "billing": AgentPolicy.model_validate(
+                {"tools": {"refund": {"mode": "allow"}}}
+            ),
+            "support": AgentPolicy.model_validate(
+                {"tools": {"lookup": {"mode": "allow"}}}
+            ),
+        },
+        default="billing",
+    )
+
+    assert [lint.code for lint in check_default_role_exposure(lints)] != [
+        "implicit-default"
+    ]
+
+
 # --- check_project: per-role attribution + project-level lints -------------
 
 
@@ -291,3 +469,34 @@ def test_no_roles_emit_no_project_lints():
     codes = {lint.code for lint in lints}
     assert "unused-capability" not in codes
     assert "no-default-role" not in codes
+
+
+def test_implicit_default_grant_messages_name_the_aliased_role() -> None:
+    """The aliased role IS a named role that grants the tool, so the message must
+    not claim otherwise — it names the fallback instead."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "billing": {"tools": {"refund": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    grant = next(lint for lint in lints if lint.tool == "refund")
+    assert "billing" in grant.message
+    assert "no named role" not in grant.message
+
+
+def test_authored_default_grant_messages_keep_the_no_named_role_wording() -> None:
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"tools": {"deploy": {"mode": "allow"}}},
+                "support": {"tools": {"lookup": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    grant = next(lint for lint in lints if lint.tool == "deploy")
+    assert "no named role does" in grant.message

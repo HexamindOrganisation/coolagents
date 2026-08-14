@@ -154,7 +154,11 @@ class RelayApprovalHandler:
             "arguments": decision.arguments or {},
             "reason": decision.reason,
             "agent_name": decision.agent_name,
-            "role": decision.role,
+            # ``roles`` is additive: a dev's pinned SDK talks to whatever
+            # dashboard the platform serves, so neither may require the other's
+            # new key.
+            "role": decision.deciding_role,
+            "roles": list(decision.user_roles),
             "expires_at": expires_at,
         }
         try:

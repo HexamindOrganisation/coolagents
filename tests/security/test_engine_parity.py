@@ -760,3 +760,107 @@ def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) 
 
     assert py == wf, f"enforcer divergence {role}/{tool}/{args}: py={py} wasm={wf}"
     assert py == expect
+
+
+# ---------------------------------------------------------------------------
+# Multi-role permissive union — the acceptance gate. The same role set through
+# the same fold over two different engines must agree on outcome AND deciding
+# role.
+# ---------------------------------------------------------------------------
+
+_MULTI_ROLE_POLICY = {
+    "version": 1,
+    "roles": {
+        # Least-privilege default: unrecognised role names contribute nothing.
+        "default": {"default_policy": {"mode": "deny"}},
+        "support": {
+            "default_policy": {"mode": "deny"},
+            "tools": {"read_file": {"mode": "allow"}},
+        },
+        "billing": {
+            "default_policy": {"mode": "deny"},
+            "tools": {
+                "refund": {"mode": "allow", "constraints": ['role == "billing"']},
+                "read_file": {"mode": "approval_required"},
+            },
+        },
+        "auditor": {
+            "default_policy": {"mode": "deny"},
+            "tools": {"refund": {"mode": "approval_required"}},
+        },
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("roles", "tool", "args", "expect", "deciding"),
+    [
+        # The union grants what no single role would.
+        (["support", "billing"], "refund", {"amount": 1}, "allow", "billing"),
+        (["billing", "support"], "refund", {"amount": 1}, "allow", "billing"),
+        # Nobody grants it -> deny, no credited role.
+        (["support", "auditor"], "write_file", {}, "deny", None),
+        # ALLOW beats NEEDS_APPROVAL regardless of order (D2).
+        (["billing", "support"], "read_file", {}, "allow", "support"),
+        (["support", "billing"], "read_file", {}, "allow", "support"),
+        # Approval only when no role allows outright.
+        (["auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
+        (["support", "auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
+        # The role fact binds per role, so it still grants inside a union.
+        (["auditor", "billing"], "refund", {"amount": 1}, "allow", "billing"),
+        # Unrecognised names resolve to the least-privilege default (D13).
+        (["zzz", "support"], "read_file", {}, "allow", "support"),
+        (["zzz", "yyy"], "read_file", {}, "deny", None),
+        # No roles -> the default policy.
+        ([], "read_file", {}, "deny", None),
+    ],
+)
+def test_multi_role_union_parity(
+    roles: list[str], tool: str, args: dict, expect: str, deciding: str | None
+) -> None:
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.enforcer import PolicyEnforcer
+
+    ps = load_policy_set_from_dict(_MULTI_ROLE_POLICY)
+    wasm = _WasmEngine(_wasm_bytes(compile_to_rego(_MULTI_ROLE_POLICY)))
+
+    py_enforcer = PolicyEnforcer(ps, agent_name="a")
+    wasm_enforcer = PolicyEnforcer(wasm, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=roles).sync_scope():
+        py = py_enforcer.decide(tool, args)
+        wf = wasm_enforcer.decide(tool, args)
+
+    assert py.outcome.value == wf.outcome.value, (
+        f"union divergence {roles}/{tool}/{args}: "
+        f"py={py.outcome.value} wasm={wf.outcome.value}"
+    )
+    assert py.deciding_role == wf.deciding_role, (
+        f"deciding-role divergence {roles}/{tool}/{args}: "
+        f"py={py.deciding_role} wasm={wf.deciding_role}"
+    )
+    assert py.outcome.value == expect
+    assert py.deciding_role == deciding
+
+
+@pytest.mark.parametrize("role", ["support", "billing", "zzz"])
+def test_single_role_union_matches_direct_evaluation_on_both_engines(
+    role: str,
+) -> None:
+    """D12 across engines: wrapping one role in the union changes nothing."""
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.enforcer import PolicyEnforcer
+
+    ps = load_policy_set_from_dict(_MULTI_ROLE_POLICY)
+    wasm = _WasmEngine(_wasm_bytes(compile_to_rego(_MULTI_ROLE_POLICY)))
+
+    for engine in (ps, wasm):
+        direct = engine.evaluate(role=role, tool="read_file", args={})
+        with HexgateContext(user_id="u", user_roles=[role]).sync_scope():
+            through_union = PolicyEnforcer(engine, agent_name="a").decide(
+                "read_file", {}
+            )
+        assert through_union.outcome is direct.outcome
+        assert through_union.reason == direct.reason
+        assert through_union.violations == direct.violations
+        assert through_union.hint == direct.hint

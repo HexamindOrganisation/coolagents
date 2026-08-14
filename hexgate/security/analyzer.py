@@ -11,6 +11,8 @@ a module). This module runs over a **successfully linked** bundle and reports th
 - **unknown-tool** / **unknown-arg** — a rule references a tool or arg absent from
   the agent's manifest (drift between policy and code). Only checked when a
   manifest is supplied; boundary drift is fail-open, so it's an error.
+- **permissive-default** — the ``default`` role grants something no named role
+  grants (:func:`check_default_role_exposure`, over a resolved role map).
 
 Every :class:`PolicyLint` carries the ``source`` file it attributes to — the same
 contract the CLI (`hexgate policy check`) and the dashboard editor both consume.
@@ -42,7 +44,7 @@ from hexgate.security.modules import (
     ModuleContent,
     ProjectLinkResult,
 )
-from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySetError
+from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySet, PolicySetError
 
 if TYPE_CHECKING:  # avoid importing the manifest package eagerly
     from hexgate.manifest.models import AgentManifest
@@ -420,3 +422,115 @@ def _unknown_args(
                     )
                 )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Cross-role exposure. Not part of ``analyze()``: that pipeline is module-scoped
+# and single-role (``LinkResult.effective`` holds only ``default``), so it has
+# nothing to say about a role map. Takes a resolved PolicySet instead.
+# ---------------------------------------------------------------------------
+
+
+def _exposed_grant_message(tool: str, mode: str, alias: str | None) -> str:
+    """Wording for one grant reachable through the fallback role.
+
+    Names the aliased role when the fallback is inferred: saying "no named role
+    grants it" would be false there, since the alias *is* a named role.
+    """
+    if alias is not None:
+        return (
+            f"{alias!r} is the inferred fallback and grants {tool!r} ({mode}), so "
+            "any caller reaches it by carrying a role this policy doesn't "
+            f"define. Add an explicit least-privilege {DEFAULT_ROLE_NAME!r} role, "
+            f"or move the grant into a mixin the roles that need it inherit."
+        )
+    return (
+        f"the {DEFAULT_ROLE_NAME!r} role grants {tool!r} ({mode}) and no named "
+        f"role does. {DEFAULT_ROLE_NAME!r} is the fallback for every unrecognised "
+        "role name, so any caller can reach this tool by carrying a role this "
+        "policy doesn't define. Move the grant to the roles that need it, or "
+        f"into a mixin they inherit, and keep {DEFAULT_ROLE_NAME!r} "
+        "least-privilege."
+    )
+
+
+def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
+    """Warn when the ``default`` role grants something no named role grants.
+
+    Any unrecognised role name resolves to ``default`` and joins the caller's
+    union, so a tool reachable only through ``default`` is reachable by anyone.
+
+    A document that declares roles but no ``default`` also gets
+    ``implicit-default``, and its per-grant messages name the aliased role rather
+    than claiming no named role grants them.
+
+    Silent for a single-role policy set: a legacy flat ``policy.yaml`` *is* the
+    ``default`` role. ``warning`` rather than ``error`` for the same reason —
+    CI opts in via ``--max-severity warning``.
+    """
+    named = [role for role in policy_set.roles if role != DEFAULT_ROLE_NAME]
+    if not named:
+        return []
+
+    default_policy = policy_set.policy_for(DEFAULT_ROLE_NAME)
+    # Drop the role ``default`` aliases — inferred by the loader, or named by an
+    # explicit ``default=``. It resolves to the *same policy object*, so leaving
+    # it in answers "does a named role grant this too?" with yes for every one of
+    # its own grants, silencing the check on the shape that most needs it.
+    others = [
+        policy
+        for policy in (policy_set.policy_for(role) for role in named)
+        if policy is not default_policy
+    ]
+    alias = policy_set.aliased_default
+    lints: list[PolicyLint] = []
+
+    if alias is not None:
+        lints.append(
+            PolicyLint(
+                code="implicit-default",
+                severity="warning",
+                message=(
+                    f"no role is named {DEFAULT_ROLE_NAME!r}, so {alias!r} is the "
+                    "fallback for every role name this policy doesn't define — "
+                    "any caller reaches its grants by carrying an undefined "
+                    f"name. Add an explicit least-privilege "
+                    f"{DEFAULT_ROLE_NAME!r} role."
+                ),
+            )
+        )
+
+    for tool, tool_policy in sorted(default_policy.tools.items()):
+        if tool_policy.mode not in GRANT_MODES:
+            continue
+        if any(
+            tool in other.tools and other.tools[tool].mode in GRANT_MODES
+            for other in others
+        ):
+            continue
+        lints.append(
+            PolicyLint(
+                code="permissive-default",
+                severity="warning",
+                message=_exposed_grant_message(tool, tool_policy.mode, alias),
+                tool=tool,
+            )
+        )
+
+    if default_policy.default_policy.mode in GRANT_MODES and not any(
+        other.default_policy.mode in GRANT_MODES for other in others
+    ):
+        lints.append(
+            PolicyLint(
+                code="permissive-default",
+                severity="warning",
+                message=(
+                    f"the {DEFAULT_ROLE_NAME!r} role's default_policy is "
+                    f"{default_policy.default_policy.mode!r}, so every tool not "
+                    "listed anywhere is reachable by any caller carrying an "
+                    f"unrecognised role name. Set it to 'deny' and grant tools "
+                    "explicitly."
+                ),
+            )
+        )
+    return lints

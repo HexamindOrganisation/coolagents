@@ -138,7 +138,7 @@ def test_attenuate_stacks_multiple_times(keys: tuple[bytes, bytes]) -> None:
 
 
 def test_attenuate_rejects_empty_role(keys: tuple[bytes, bytes]) -> None:
-    """Empty role string is rejected — must be either omitted or non-empty."""
+    """An empty role string is rejected — omit the entry instead."""
     priv, pub = keys
     parent = _parent_envelope(priv)
     with pytest.raises(TokenError, match="role must be a non-empty"):

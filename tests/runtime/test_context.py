@@ -5,8 +5,8 @@ canonical way for a dev's backend to bind an agent invocation to one caller. Ins
 ``async with HexgateContext(...)`` block the runtime lazily attenuates the agent's
 bound HexgateClient token and folds the resulting facts into ToolUseContext.
 
-These tests cover the contextvar bookkeeping, the ``user_roles`` / ``primary_role``
-selection contract, and the lazy attenuation hand-off without spinning up a real
+These tests cover the contextvar bookkeeping, the ``user_roles`` selection
+contract, and the lazy attenuation hand-off without spinning up a real
 platform — they monkeypatch the factory's context-resolution helper to confirm the
 right facts arrive at the runtime.
 """
@@ -83,7 +83,7 @@ async def test_user_scope_sets_and_resets_contextvar() -> None:
         context = get_current_context()
         assert context is not None
         assert context.user_id == "alice"
-        assert context.primary_role == "billing"
+        assert context.user_roles == ["billing"]
     assert get_current_context() is None
 
 
@@ -116,7 +116,7 @@ async def test_user_scope_nests_different_instances() -> None:
 async def test_user_defaults_keep_optional_fields_unset() -> None:
     """Only ``user_id`` is required; everything else has a sensible default."""
     async with HexgateContext(user_id="alice") as u:
-        assert u.primary_role is None
+        assert u.user_roles == []
         assert u.session_id is None
         assert u.ttl_seconds is None
 
@@ -283,30 +283,29 @@ async def test_resolve_tool_use_context_ttl_threads_through(
 
 
 # ---------------------------------------------------------------------------
-# user_roles / primary_role selection contract (PR 1)
+# user_roles — the whole set reaches policy selection
 # ---------------------------------------------------------------------------
 
 
-def test_primary_role_returns_first_role() -> None:
-    """``primary_role`` is the single role that reaches policy selection today."""
-    assert HexgateContext(user_id="a", user_roles=["billing"]).primary_role == "billing"
+def test_user_roles_default_to_empty() -> None:
+    """No roles is the "default policy" case."""
+    assert HexgateContext(user_id="a").user_roles == []
+    assert HexgateContext(user_id="a", user_roles=[]).user_roles == []
 
 
-def test_primary_role_is_none_when_no_roles() -> None:
-    """Empty ``user_roles`` yields ``None`` — parity with the old ``role=None``."""
-    assert HexgateContext(user_id="a").primary_role is None
-    assert HexgateContext(user_id="a", user_roles=[]).primary_role is None
+def test_user_roles_are_stored_verbatim_in_caller_order() -> None:
+    """Order decides which role is credited with an allow. The model neither
+    dedups nor sorts — the enforcer does."""
+    ctx = HexgateContext(user_id="a", user_roles=["billing", "support", "billing"])
+    assert ctx.user_roles == ["billing", "support", "billing"]
 
 
-def test_secondary_roles_are_carried_but_inert() -> None:
-    """Extra roles are retained on the model but only the first selects a policy.
-
-    Locks the single-role reduction point: multi-role widens the *selector*
-    later; until then ``user_roles[1:]`` has no effect on enforcement.
-    """
-    ctx = HexgateContext(user_id="a", user_roles=["billing", "support"])
-    assert ctx.primary_role == "billing"
-    assert ctx.user_roles == ["billing", "support"]
+def test_context_has_no_primary_role_helper() -> None:
+    """Gone because a new reader would silently re-introduce single-role
+    enforcement; ``Decision.role`` covers the legacy renderers."""
+    assert not hasattr(
+        HexgateContext(user_id="a", user_roles=["billing"]), "primary_role"
+    )
 
 
 def test_attributes_default_empty_and_roundtrip() -> None:
@@ -324,29 +323,30 @@ def test_attributes_default_empty_and_roundtrip() -> None:
 
 
 class _RoleRecordingEngine:
-    """Minimal PolicyEngine that records the ``role`` the enforcer forwards."""
+    """Records every ``role`` the enforcer forwards. Denies, so the union never
+    short-circuits and the whole sequence is observable."""
 
     def __init__(self) -> None:
         from hexgate.security import DecisionOutcome, Verdict
 
-        self.seen_role: str | None = "<unset>"
-        self._verdict = Verdict(outcome=DecisionOutcome.ALLOW)
+        self.seen_roles: list[str | None] = []
+        self._verdict = Verdict(outcome=DecisionOutcome.DENY, reason="recorded")
 
     def evaluate(self, *, role, tool, args, attributes=None):  # type: ignore[no-untyped-def]
-        self.seen_role = role
+        self.seen_roles.append(role)
         return self._verdict
 
 
 @pytest.mark.asyncio
-async def test_enforcer_forwards_primary_role_from_active_context() -> None:
-    """The active context's ``primary_role`` — not the whole list — reaches the engine."""
+async def test_enforcer_forwards_every_role_from_active_context() -> None:
+    """Every role reaches the engine, in caller order."""
     from hexgate.security.enforcer import PolicyEnforcer
 
     engine = _RoleRecordingEngine()
     enforcer = PolicyEnforcer(engine, agent_name="a")
     async with HexgateContext(user_id="alice", user_roles=["billing", "support"]):
         enforcer.decide("read_file", {})
-    assert engine.seen_role == "billing"
+    assert engine.seen_roles == ["billing", "support"]
 
 
 @pytest.mark.asyncio
@@ -361,4 +361,4 @@ async def test_enforcer_forwards_none_for_empty_roles() -> None:
     enforcer = PolicyEnforcer(engine, agent_name="a")
     async with HexgateContext(user_id="alice"):
         enforcer.decide("read_file", {})
-    assert engine.seen_role is None
+    assert engine.seen_roles == [None]
