@@ -12,6 +12,7 @@ from hexgate.audit import (
     MAX_HINT_BYTES,
     AuditEvent,
 )
+from hexgate.runtime import MAX_EVALUATED_ROLES
 from hexgate.security.decision import Decision, DecisionOutcome
 
 
@@ -67,6 +68,65 @@ def test_as_payload_none_normalizes_to_empty_string() -> None:
     assert wire["error_type"] == ""
     assert wire["user_id"] == ""
     assert wire["session_id"] == ""
+
+
+def test_as_payload_carries_the_evaluated_role_set_in_order() -> None:
+    """Caller order is preserved — it is what decides which role is credited
+    with an allow, so a reordered set would misattribute the grant."""
+    d = _decision(user_roles=("billing", "support"), deciding_role="billing")
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["user_roles"] == ["billing", "support"]
+    # The legacy scalar stays the FIRST role, not the deciding one.
+    assert wire["role"] == "billing"
+
+
+def test_as_payload_user_roles_tuple_serializes_as_list() -> None:
+    """Decision.user_roles is a tuple; JSON needs a list."""
+    wire = AuditEvent(decision=_decision(user_roles=("a", "b"))).as_payload()
+    assert wire["user_roles"] == ["a", "b"]
+    assert isinstance(wire["user_roles"], list)
+
+
+def test_as_payload_deciding_role_need_not_be_the_first_role() -> None:
+    """The two fields are independent: role = who called, deciding_role = who
+    granted. Collapsing them would lose exactly what PR B exists to record."""
+    d = _decision(
+        outcome=DecisionOutcome.ALLOW,
+        user_roles=("billing", "support"),
+        deciding_role="support",
+    )
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["role"] == "billing"
+    assert wire["deciding_role"] == "support"
+
+
+def test_as_payload_deciding_role_empty_on_a_deny() -> None:
+    """No role granted the call, so naming one would misdirect the reader."""
+    d = _decision(user_roles=("billing", "support"), deciding_role=None)
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["deciding_role"] == ""
+    assert wire["user_roles"] == ["billing", "support"]
+
+
+def test_as_payload_no_roles_sends_an_empty_list() -> None:
+    """[''] would be indistinguishable from a role literally named '' once it
+    reaches the by_role breakdown."""
+    wire = AuditEvent(decision=_decision(user_roles=())).as_payload()
+    assert wire["user_roles"] == []
+    assert wire["deciding_role"] == ""
+    assert wire["role"] == ""
+
+
+def test_as_payload_does_not_redact_role_names() -> None:
+    """Role names are policy identifiers, not caller payloads — the argument
+    and attribute redactors must not reach them. A role named 'token' is a
+    policy the operator wrote, and blanking it would make the record
+    unreadable."""
+    d = _decision(user_roles=("token", "api_key"), deciding_role="token")
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["user_roles"] == ["token", "api_key"]
+    assert wire["deciding_role"] == "token"
+    assert wire["role"] == "token"
 
 
 def test_as_payload_violations_tuple_serializes_as_list() -> None:
@@ -292,3 +352,21 @@ def test_decision_keeps_every_violation_for_the_host() -> None:
 
     assert len(d.violations) == 72
     assert len(d.as_error_payload()["violations"]) == 72
+
+
+def test_a_full_role_set_goes_out_whole() -> None:
+    """The SDK applies no cap of its own here — it relies on the enforcer having
+    already bounded the set at MAX_EVALUATED_ROLES, which is <= the platform's
+    list cap. That cross-package bound is asserted on the platform side, where
+    both packages are importable (`test_sdk_role_cap_does_not_exceed_the_
+    platform_list_cap`); here we only prove the SDK doesn't drop or trim any of
+    them on the way out.
+    """
+    roles = tuple(f"role_{i}" for i in range(MAX_EVALUATED_ROLES))
+    d = _decision(user_roles=roles, deciding_role=roles[-1])
+
+    wire = AuditEvent(decision=d).as_payload()
+
+    assert wire["user_roles"] == list(roles)
+    assert wire["deciding_role"] == roles[-1]
+    assert wire["role"] == roles[0]

@@ -161,7 +161,10 @@ class AuditEvent:
         ``arguments`` and ``attributes`` are redacted (sensitive key names, on
         their own patterns — see ``_SENSITIVE_ATTR_KEY_RE``); those plus
         ``hint`` and ``violations`` are truncated to their platform caps here —
-        the single choke point onto the wire."""
+        the single choke point onto the wire.
+
+        The role fields pass through untouched — see the comment on them below;
+        that is a decision, not an omission."""
         d = self.decision
         arguments = (
             _truncate_json(
@@ -196,7 +199,14 @@ class AuditEvent:
             "agent_name": d.agent_name,
             "tool_name": d.tool_name,
             "outcome": d.outcome.value,
-            "role": d.role or "",
+            "role": d.role or "",  # legacy: the caller's first role
+            # The distinct roles evaluated, in caller order, and the one that
+            # granted or gated the call ("" on a deny — no role granted it).
+            # Uncapped and unredacted on purpose: role names are policy
+            # identifiers, not caller payloads, and the platform bounds them
+            # (32 items x 256 chars) on ``DecisionEvent``.
+            "user_roles": list(d.user_roles),
+            "deciding_role": d.deciding_role or "",
             "error_type": d.error_type or "",
             "reason": d.reason,
             "violations": _bounded_violations(d.violations),

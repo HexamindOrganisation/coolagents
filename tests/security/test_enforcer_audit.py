@@ -166,6 +166,13 @@ async def test_audited_decision_carries_the_full_role_set_and_deciding_role() ->
     assert decision.user_roles == ("support", "billing")
     assert decision.deciding_role == "billing"
 
+    # ...and both reach the wire, in caller order. `role` stays the FIRST role
+    # (`support`), NOT the deciding one — the legacy column keeps its meaning.
+    wire = sender.events[0].as_payload()
+    assert wire["user_roles"] == ["support", "billing"]
+    assert wire["deciding_role"] == "billing"
+    assert wire["role"] == "support"
+
 
 async def test_audited_deny_records_no_deciding_role() -> None:
     sender = _CapturingSender()
@@ -175,3 +182,8 @@ async def test_audited_deny_records_no_deciding_role() -> None:
 
     assert decision.user_roles == ("support", "billing")
     assert decision.deciding_role is None
+
+    # None → "" on the wire: the platform column is a non-null String.
+    wire = sender.events[0].as_payload()
+    assert wire["deciding_role"] == ""
+    assert wire["user_roles"] == ["support", "billing"]

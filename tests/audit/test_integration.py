@@ -31,11 +31,15 @@ def _need_token() -> None:
 
 
 def _event() -> AuditEvent:
+    # Multi-role on purpose: this is the only place the role fields meet a live
+    # platform, so a single-role fixture would leave the new wire keys unproven.
+    # (``role=`` is not a constructor argument — it is a property over
+    # ``user_roles``.)
     d = Decision(
         outcome=DecisionOutcome.DENY,
         agent_name="integration_agent",
         tool_name="read_file",
-        role="analyst",
+        user_roles=("analyst", "billing"),
         reason="integration test",
     )
     return AuditEvent(decision=d, user_id="u_test", session_id="s_test")
@@ -45,11 +49,16 @@ async def test_wire_format_accepted_by_platform() -> None:
     """Manual POST proves the SDK wire format matches the platform body model."""
     _need_token()
     ev = _event()
+    payload = ev.as_payload()
+    # The keys PR B added; a platform that predates them ignores the extras
+    # (no extra="forbid"), which is the degradation this asserts still holds.
+    assert payload["user_roles"] == ["analyst", "billing"]
+    assert payload["role"] == "analyst"
     async with httpx.AsyncClient(timeout=5) as client:
         response = await client.post(
             f"{PLATFORM_URL}/v1/audit/decisions",
             headers={"Authorization": f"Bearer {TOKEN}"},
-            json=ev.as_payload(),
+            json=payload,
         )
     assert response.status_code == 202, f"{response.status_code}: {response.text}"
     assert response.json()["event_id"] == str(ev.event_id)
