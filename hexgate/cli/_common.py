@@ -335,23 +335,31 @@ def prompt_for_approval(console: Console, decision: Decision) -> bool:
     """Prompt the user in the terminal to approve one tool invocation.
 
     Reads everything from the :class:`Decision`: the proposed tool name,
-    arguments, role, and agent_name. No external lookup needed.
+    arguments, the caller's roles, and agent_name. No external lookup needed.
     """
     arguments = decision.arguments or {}
 
     header = Text(f"Approval required for {decision.tool_name}", style="bold yellow")
-    role_line = (
-        [Text(f"role: {decision.role}", style="dim")]
-        if decision.role is not None
-        else []
-    )
+    role_lines = [
+        *(
+            [Text(f"roles: {', '.join(decision.user_roles)}", style="dim")]
+            if decision.user_roles
+            else []
+        ),
+        # The approver is deciding on behalf of that role's policy.
+        *(
+            [Text(f"granted by: {decision.deciding_role}", style="dim")]
+            if decision.deciding_role is not None
+            else []
+        ),
+    ]
 
     console.print()
     console.print(
         Panel(
             Group(
                 header,
-                *role_line,
+                *role_lines,
                 *(
                     Text(
                         f"{key}: {_truncate_approval_value(value)}",

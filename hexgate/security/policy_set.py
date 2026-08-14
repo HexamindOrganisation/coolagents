@@ -7,15 +7,17 @@ caller). A ``policies/`` directory is the new shape:
     ├── agent.yaml
     ├── system.md
     └── policies/
-        ├── default.yaml      # fallback when no primary role is active
+        ├── default.yaml      # fallback when the caller's roles are unknown
         ├── read_only.yaml    # mixin — is_mixin: true
         ├── support.yaml      # inherits: [read_only]
         └── billing.yaml      # inherits: [read_only, support]
 
 A :class:`PolicySet` holds the resolved (post-inheritance) policy per role
-name, plus the ``default`` fallback. At tool-call time, the runtime asks
-the set for ``policy_for(user_role)`` and the rest of the enforcement path
-is unchanged.
+name, plus the ``default`` fallback. The enforcer calls ``policy_for(role)``
+once per role the caller carries; this module stays single-role.
+
+``default`` is a *fallback*, not a *floor*: a caller whose role is defined never
+inherits it. For a baseline shared by every role, use a mixin and ``inherits``.
 
 Inheritance semantics: left-to-right merge — ``inherits: [A, B]`` resolves
 to ``merge(A, merge(B, self))``, where ``merge`` deep-merges the ``tools``
@@ -51,18 +53,39 @@ class PolicySet:
 
     ``policies`` keys are role names; values are fully-resolved
     :class:`AgentPolicy` instances (inheritance flattened, mixins inlined).
-    The ``default`` key is always present — it's what the runtime falls
-    back to when the active ``primary_role`` is ``None`` or doesn't match any
-    defined role.
+    The ``default`` key is always present — it's what a lookup falls back to
+    when a role is ``None`` or doesn't match any defined role.
+
+    ``aliased_default`` names the role a loader *picked* as that fallback when
+    the document declared none, so the analyzer can tell an authored ``default``
+    from an inferred one. Injected rather than derived: only the loader knows
+    which key it aliased, and by the time the map reaches here the alias is
+    indistinguishable from a deliberate one.
     """
 
-    def __init__(self, policies: dict[str, AgentPolicy]) -> None:
+    def __init__(
+        self,
+        policies: dict[str, AgentPolicy],
+        *,
+        aliased_default: str | None = None,
+    ) -> None:
         if DEFAULT_ROLE_NAME not in policies:
             raise PolicySetError(
                 f"PolicySet missing required '{DEFAULT_ROLE_NAME}' role"
             )
         _validate_const_refs(policies)
         self._policies = policies
+        self._aliased_default = aliased_default
+
+    @property
+    def aliased_default(self) -> str | None:
+        """The named role ``default`` silently falls back to, if any.
+
+        ``None`` when the document declared its own ``default`` (or is a legacy
+        flat file, which *is* the default role). Otherwise every role name the
+        policy doesn't define resolves to this role's grants.
+        """
+        return self._aliased_default
 
     def policy_for(self, role: str | None) -> AgentPolicy:
         """Return the effective policy for ``role`` (or the default fallback)."""
@@ -162,7 +185,8 @@ def load_policy_map(
     storage shapes produce the same effective policies.
 
     ``default`` names the role to use as the fallback. Defaults to
-    ``"default"`` if the dict contains it, otherwise the first concrete key.
+    ``"default"`` if the dict contains it, otherwise the alphabetically first
+    concrete role — matching what a ``policies/`` directory infers.
     """
     if not policy_map:
         raise PolicySetError("policy_map must contain at least one role")
@@ -176,8 +200,14 @@ def load_policy_map(
     resolved = {name: pol for name, pol in fully_resolved.items() if not pol.is_mixin}
     if not resolved:
         raise PolicySetError("policy_map contains only mixins; need a concrete role")
+    # An explicit ``default=`` is the caller's deliberate choice; only the
+    # fallback we *infer* here is worth warning about downstream.
+    inferred = default is None and DEFAULT_ROLE_NAME not in resolved
+    # ``sorted()``, not insertion order: ``_load_from_directory`` infers its
+    # fallback alphabetically, and the same role set must resolve undefined role
+    # names to the same policy however the document was loaded.
     default_name = default or (
-        DEFAULT_ROLE_NAME if DEFAULT_ROLE_NAME in resolved else next(iter(resolved))
+        DEFAULT_ROLE_NAME if DEFAULT_ROLE_NAME in resolved else sorted(resolved)[0]
     )
     if default_name not in resolved:
         raise PolicySetError(
@@ -185,7 +215,7 @@ def load_policy_map(
         )
     if default_name != DEFAULT_ROLE_NAME:
         resolved[DEFAULT_ROLE_NAME] = resolved[default_name]
-    return PolicySet(resolved)
+    return PolicySet(resolved, aliased_default=default_name if inferred else None)
 
 
 def _load_legacy_file(path: Path) -> PolicySet:
@@ -243,13 +273,14 @@ def _load_from_directory(root: Path) -> PolicySet:
             f"every policy in {root} is a mixin; need at least one concrete role"
         )
 
+    aliased: str | None = None
     if DEFAULT_ROLE_NAME not in concrete:
         # No explicit default — pick the first concrete role alphabetically and
         # alias it as the fallback. Loud but not fatal; operators should drop
-        # in an explicit default.yaml.
-        first = sorted(concrete)[0]
-        concrete[DEFAULT_ROLE_NAME] = concrete[first]
-    return PolicySet(concrete)
+        # in an explicit default.yaml, which the ``implicit-default`` lint says.
+        aliased = sorted(concrete)[0]
+        concrete[DEFAULT_ROLE_NAME] = concrete[aliased]
+    return PolicySet(concrete, aliased_default=aliased)
 
 
 def _resolve_inheritance(

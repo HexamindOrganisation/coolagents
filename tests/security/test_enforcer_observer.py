@@ -188,3 +188,32 @@ def test_audit_and_observer_both_fire_independently() -> None:
     assert len(sender.events) == 1
     # Both saw the same Decision; the AuditEvent wraps it.
     assert sender.events[0].decision is captured[0]
+
+
+async def test_observer_sees_the_whole_role_set_and_the_deciding_role() -> None:
+    """The chat panel renders both the caller's roles and which one decided."""
+
+    class _ApprovalForBilling:
+        def evaluate(
+            self,
+            *,
+            role: str | None,
+            tool: str,
+            args: Mapping[str, Any],
+            attributes: Mapping[str, Any] | None = None,
+        ) -> Verdict:
+            if role == "billing":
+                return Verdict(
+                    outcome=DecisionOutcome.NEEDS_APPROVAL, reason="approve?"
+                )
+            return Verdict(outcome=DecisionOutcome.DENY, reason="no")
+
+    captured: list[Decision] = []
+    enforcer = PolicyEnforcer(
+        _ApprovalForBilling(), agent_name="r", decision_observer=captured.append
+    )
+    async with HexgateContext(user_id="alice", user_roles=["support", "billing"]):
+        enforcer.decide("refund", {})
+
+    assert captured[0].user_roles == ("support", "billing")
+    assert captured[0].deciding_role == "billing"

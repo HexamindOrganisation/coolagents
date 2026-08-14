@@ -19,6 +19,11 @@ hexgate policy show-rego policy.yaml
 hexgate policy test policy.yaml --role billing --tool refund_order \
     --args '{"amount": 200, "currency": "USD"}' --engine wasm
 
+# Dry-run a multi-role caller: most permissive wins, and the granting role
+# is printed. Use this to check what a caller with several roles can do.
+hexgate policy test policy.yaml --roles support,billing --tool refund_order \
+    --args '{"amount": 200, "currency": "USD"}'
+
 # Compile a bundle: writes {stem}.yaml + .rego + .wasm + .bundle.json
 hexgate policy build policy.yaml --out ./bundle
 
@@ -50,6 +55,42 @@ lists each violated constraint string verbatim:
   reason: Policy denied tool "refund_order": args.amount <= 500
   violations:
     • args.amount <= 500
+```
+
+## Multi-role dry-runs (`--roles`)
+
+`--role` evaluates one role; `--roles a,b` evaluates a whole set exactly as the
+runtime does — every role is evaluated and the most permissive outcome wins, so
+the output also names the role that granted the call:
+
+```bash
+$ hexgate policy test policy.yaml --roles support,billing --tool refund_order --args '{"amount": 200}'
+✓ ALLOW · [support, billing] → refund_order({"amount": 200})
+  granted by: billing
+```
+
+The two flags differ on undefined names, deliberately:
+
+- `--role nope` **fails** — a single undefined role is almost always a typo.
+- `--roles support,nope` **warns and continues**, evaluating `nope` against the
+  `default` policy. That is what happens at runtime, and a dry-run that refused
+  would disagree with production.
+- `--roles ""` **fails** — an empty set names no roles. Scripting this as
+  `--roles "$ROLES"` with an unset variable would otherwise dry-run the
+  `default` policy and exit 0, passing CI while asserting nothing. Pass
+  `--roles default` if the fallback policy is what you meant to test.
+
+At most 32 distinct roles are evaluated, matching the enforcer; past that the
+dry-run warns on stderr and evaluates the first 32, as production would.
+
+That fallback is also why `default` should stay least-privilege — see
+[request context](/concepts/user-scope). `hexgate policy validate` warns when the
+`default` role grants something no named role grants, and when the document
+declares roles but never names one `default` (so one of them silently becomes
+the fallback):
+
+```bash
+hexgate policy validate policy.yaml --max-severity warning   # non-zero on either warning
 ```
 
 ## Testing `ctx.*` attribute rules

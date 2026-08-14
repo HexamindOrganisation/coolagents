@@ -37,18 +37,16 @@ def test_context_from_payload_returns_user_with_all_fields() -> None:
     )
     assert context is not None
     assert context.user_id == "alice"
-    assert context.primary_role == "billing"
     assert context.user_roles == ["billing"]
     assert context.session_id == "sess_abc"
     assert context.ttl_seconds == 300
 
 
 def test_context_from_payload_maps_roles_list() -> None:
-    """A ``roles`` list is carried verbatim; ``primary_role`` is the first."""
+    """A ``roles`` list is carried verbatim — every entry is enforced."""
     context = _context_from_payload({"user": "alice", "roles": ["billing", "support"]})
     assert context is not None
     assert context.user_roles == ["billing", "support"]
-    assert context.primary_role == "billing"
 
 
 def test_context_from_payload_maps_legacy_single_role() -> None:
@@ -70,7 +68,7 @@ def test_context_from_payload_returns_user_with_just_user_id() -> None:
     context = _context_from_payload({"user": "bob"})
     assert context is not None
     assert context.user_id == "bob"
-    assert context.primary_role is None
+    assert context.user_roles == []
 
 
 def test_context_from_payload_returns_none_for_empty_dict() -> None:
@@ -159,7 +157,7 @@ async def test_handle_message_chat_with_attenuation_enters_user_scope(
     captured_user: HexgateContext | None = captured["user_during_stream"]
     assert captured_user is not None
     assert captured_user.user_id == "alice"
-    assert captured_user.primary_role == "billing"
+    assert captured_user.user_roles == ["billing"]
 
     # After the handler returns the scope must be cleanly popped.
     assert get_current_context() is None

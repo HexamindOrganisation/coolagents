@@ -47,7 +47,8 @@ def _decision(tool: str = "send_invoice", **kwargs: Any) -> Decision:
         outcome=DecisionOutcome.NEEDS_APPROVAL,
         agent_name=kwargs.pop("agent_name", "billing_bot"),
         tool_name=tool,
-        role=kwargs.pop("role", "default"),
+        user_roles=kwargs.pop("user_roles", ("default",)),
+        deciding_role=kwargs.pop("deciding_role", "default"),
         reason=kwargs.pop("reason", "test approval"),
         error_type="approval_required",
         arguments=kwargs.pop("arguments", {"order_id": "ORD-1"}),
@@ -87,7 +88,10 @@ async def test_emits_approval_request_with_expected_shape() -> None:
     assert sent["arguments"] == {"order_id": "ORD-1"}
     assert sent["reason"] == "test approval"
     assert sent["agent_name"] == "billing_bot"
+    # ``role`` is the role that would grant the call; ``roles`` is the caller's
+    # whole set (additive, so an older dashboard ignoring it still works).
     assert sent["role"] == "default"
+    assert sent["roles"] == ["default"]
     assert isinstance(sent["decision_id"], str)
     assert sent["decision_id"].startswith("appr_")
     assert isinstance(sent["expires_at"], str)

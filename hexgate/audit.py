@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,13 @@ MAX_ATTRIBUTES_BYTES = 4 * 1024
 # the intact hint, so the host's file-scope error message keeps its full
 # allowed/denied path lists.
 MAX_HINT_BYTES = 4 * 1024
+
+# Mirrors the platform's ``DecisionEvent.violations`` bounds (list max_length +
+# per-item StringConstraints). A multi-role deny unions one role's violations
+# with the next, so a wide caller on the WASM engine can exceed the list cap and
+# lose the audit record for a *denied* call — the outcome most worth keeping.
+MAX_VIOLATIONS = 64
+MAX_VIOLATION_CHARS = 1024
 
 # Keys whose values are stripped from the audit copy of ``arguments`` before
 # transmission. Substring match: tool inputs are arbitrary caller data, so a
@@ -80,6 +88,23 @@ def _redact(value: Any, *, pattern: re.Pattern[str]) -> Any:
     if isinstance(value, (list, tuple)):
         return [_redact(v, pattern=pattern) for v in value]
     return value
+
+
+def _bounded_violations(violations: Sequence[str]) -> list[str]:
+    """Trim ``violations`` to the platform's list + per-item caps.
+
+    Drops whole entries and says how many, so a truncated list can't read as a
+    complete one. Only the audit copy is trimmed; ``Decision.violations`` keeps
+    every entry for the host's error payload.
+    """
+    trimmed = [
+        v if len(v) <= MAX_VIOLATION_CHARS else v[: MAX_VIOLATION_CHARS - 3] + "..."
+        for v in violations
+    ]
+    if len(trimmed) <= MAX_VIOLATIONS:
+        return trimmed
+    kept = trimmed[: MAX_VIOLATIONS - 1]
+    return [*kept, f"(+{len(trimmed) - len(kept)} more)"]
 
 
 # Room for the {_truncated, original_bytes, preview} wrapper around the preview.
@@ -135,8 +160,8 @@ class AuditEvent:
 
         ``arguments`` and ``attributes`` are redacted (sensitive key names, on
         their own patterns — see ``_SENSITIVE_ATTR_KEY_RE``); those plus
-        ``hint`` are truncated to their platform byte caps here — the single
-        choke point onto the wire."""
+        ``hint`` and ``violations`` are truncated to their platform caps here —
+        the single choke point onto the wire."""
         d = self.decision
         arguments = (
             _truncate_json(
@@ -174,7 +199,7 @@ class AuditEvent:
             "role": d.role or "",
             "error_type": d.error_type or "",
             "reason": d.reason,
-            "violations": list(d.violations),
+            "violations": _bounded_violations(d.violations),
             "hint": hint,
             "arguments": arguments,
             "attributes": attributes,
