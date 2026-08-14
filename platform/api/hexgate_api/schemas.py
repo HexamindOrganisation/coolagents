@@ -335,10 +335,9 @@ class ValidatePolicyResponse(BaseModel):
     ``ok`` is True when the document and every nested role parsed cleanly.
     ``errors`` carries per-issue diagnostics.
 
-    ``warnings`` carries authoring lints (``permissive-default`` /
-    ``implicit-default``). They never affect ``ok``: a single-role agent's flat
-    policy.yaml *is* the ``default`` role, so failing those documents would be
-    wrong. CI opts in via ``hexgate policy validate --max-severity warning``.
+    ``warnings`` carries authoring lints and never affects ``ok``: a
+    single-role agent's flat policy.yaml *is* the ``default`` role, so failing
+    it would be wrong. CI opts in with ``--max-severity warning``.
     """
 
     ok: bool
@@ -449,20 +448,16 @@ class DecisionEvent(AuditEnvelope):
 
     tool_name: str = Field(min_length=1, max_length=256)
     outcome: AuditOutcome
-    # Legacy scalar: the caller's FIRST role. Kept as-is so nothing already
-    # stored becomes false; membership reads go through ``user_roles``.
+    # Legacy scalar: the caller's FIRST role. Membership reads use ``user_roles``.
     role: str = Field(default="", max_length=256)
-    # Distinct roles the SDK evaluated for this call, in caller order. Advisory
-    # + client-assertable, exactly like ``role`` / ``user_id`` / ``attributes``.
-    # Per-item + list caps mirror ``violations``: a bounded list of identifiers,
-    # not a payload, so no byte cap is needed downstream. The list cap matches
-    # the SDK's MAX_EVALUATED_ROLES — a longer body is a client that ignored
-    # its own cap.
+    # Distinct roles the SDK evaluated, in caller order. Advisory +
+    # client-assertable like ``role`` / ``user_id``. Caps mirror ``violations``;
+    # the list cap matches the SDK's MAX_EVALUATED_ROLES.
     user_roles: list[Annotated[str, StringConstraints(max_length=256)]] = Field(
         default_factory=list, max_length=32
     )
-    # The role whose policy granted (or gated on approval) the call; "" when
-    # every role denied, or when an older SDK didn't send it.
+    # Role whose policy granted (or gated) the call; "" on a full deny, or from
+    # an older SDK.
     deciding_role: str = Field(default="", max_length=256)
     error_type: str = Field(default="", max_length=64)
     reason: str = Field(default="", max_length=4096)
@@ -535,9 +530,9 @@ class AuditBreakdownRow(OutcomeCounts):
     (the dashboard renders the "(none)" label — nothing is reserved on
     the wire).
 
-    ``by_role`` buckets count **membership**: a call by a caller carrying
-    ``["billing", "support"]`` is counted under both, so ``by_role`` sums can
-    exceed ``totals``. Every other breakdown stays one row per decision."""
+    ``by_role`` counts membership — a caller carrying ``["billing", "support"]``
+    lands in both — so its sums can exceed ``totals``. Every other breakdown
+    stays one row per decision."""
 
     key: str
 
@@ -597,8 +592,7 @@ class AuditDecisionRow(BaseModel):
     user_id: str = ""
     tool_name: str
     role: str = ""
-    # Empty for rows written before multi-role, or by an SDK that predates it —
-    # the storage column's DEFAULT materialises ``[role]`` for those.
+    # Pre-multi-role rows get ``[role]`` from the storage column's DEFAULT.
     user_roles: list[str] = Field(default_factory=list)
     deciding_role: str = ""
     outcome: AuditOutcome

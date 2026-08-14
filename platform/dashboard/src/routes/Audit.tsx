@@ -210,10 +210,8 @@ function DetailDrawer({
             <KV k="tool_name" mono>
               {e.tool_name}
             </KV>
-            {/* Two rows, not three: "roles evaluated" answers who was calling
-                and "granted by" answers which policy allowed it. Keeping the
-                legacy scalar `role` alongside them would be a third row saying
-                almost the same thing as the first. */}
+            {/* Two rows, not three: the legacy scalar `role` would say almost
+                the same thing as "roles evaluated". */}
             <KV k="roles evaluated">
               {callerRoles(e).length ? (
                 callerRoles(e).join(", ")

@@ -348,9 +348,8 @@ CREATE TABLE hexgate_audit.policy_decision
   hint                String CODEC(ZSTD(3)),
   arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
   attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
-  -- Appended by migrations/0002. user_roles' DEFAULT gives pre-migration rows
-  -- the role set they logically always had; 0002 also MATERIALIZEs it, so no
-  -- read path depends on evaluating that default at query time.
+  -- Appended by migrations/0002, whose DEFAULT gives pre-migration rows the
+  -- role set they logically always had (and which 0002 MATERIALIZEs).
   user_roles          Array(LowCardinality(String)) DEFAULT if(role = '', [], [role]),
   deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )
@@ -452,11 +451,10 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
   sentinel string is reserved on the wire — the dashboard's "(none)" is a
   display label only.
 - **`role` filters on membership** (`has(user_roles, …)`), so one call by
-  `["billing","support"]` is returned under either name. This strictly subsumes
-  the pre-multi-role `role = X` equality. Consequently the `by_role` breakdown
-  counts *memberships*, and `sum(by_role[*].all) >= totals.all` — which is why
-  role gets its own scan instead of riding the `GROUPING SETS` query, where an
-  `arrayJoin` would have inflated every other breakdown too.
+  `["billing","support"]` is returned under either name, subsuming the old
+  `role = X` equality. `by_role` therefore counts *memberships* and
+  `sum(by_role[*].all) >= totals.all` — hence its own scan, since an
+  `arrayJoin` in the `GROUPING SETS` query would inflate every breakdown.
 - **Concurrency.** A client firing several of these reads at once (e.g. a
   dashboard loading summary + timeseries + decisions together) would otherwise
   hit "concurrent queries within the same session". The shared, process-global

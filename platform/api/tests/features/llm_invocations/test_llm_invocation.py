@@ -225,8 +225,7 @@ _BASE_WHERE = [
 ]
 
 
-# The rolling window binds a wall-clock instant (see test_query_scope), so the
-# params bag is compared with it excluded rather than by equality.
+# The window is a wall-clock instant, so compare the bag without it.
 def _params_besides_window(params: dict) -> dict:
     assert "since" in params
     return {k: v for k, v in params.items() if k != "since"}
@@ -442,7 +441,7 @@ def test_llm_summary_passes_filters_to_clickhouse_query(
     assert params["agent"] == "researcher"
     assert params["user"] == "u_1"
     assert params["model"] == "gpt-4o"
-    # window=7d reaches the query as a bound cutoff 7 days back, not an hour count.
+    # window=7d arrives as a bound cutoff, not an hour count.
     expected_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     assert abs(params["since"] - expected_cutoff) < timedelta(seconds=5)
 

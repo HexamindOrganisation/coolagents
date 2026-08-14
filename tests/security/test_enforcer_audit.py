@@ -166,8 +166,8 @@ async def test_audited_decision_carries_the_full_role_set_and_deciding_role() ->
     assert decision.user_roles == ("support", "billing")
     assert decision.deciding_role == "billing"
 
-    # ...and both reach the wire, in caller order. `role` stays the FIRST role
-    # (`support`), NOT the deciding one — the legacy column keeps its meaning.
+    # ...and both reach the wire in caller order. `role` stays the FIRST role,
+    # not the deciding one.
     wire = sender.events[0].as_payload()
     assert wire["user_roles"] == ["support", "billing"]
     assert wire["deciding_role"] == "billing"

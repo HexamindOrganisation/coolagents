@@ -41,12 +41,8 @@ import { OUTCOME_SERIES } from "./chart-tokens";
 import { fmtTs } from "./fmt";
 
 /**
- * The roles a caller carried on one decision.
- *
- * Falls back to the legacy scalar for rows written before `user_roles` existed
- * (or by an older SDK), so the column never blanks out for historic events —
- * the storage layer materializes `[role]` for them, but a row can still reach
- * us from an API that predates the column.
+ * The roles a caller carried on one decision, falling back to the legacy
+ * scalar for rows from an API that predates `user_roles`.
  */
 export const callerRoles = (e: AuditDecisionRow): string[] =>
   e.user_roles?.length ? e.user_roles : e.role ? [e.role] : [];
@@ -281,10 +277,8 @@ export function BreakdownCard({
               {s.label}
             </span>
           ))}
-          {/* Stated, not buried in a tooltip: a caller with several roles is
-              counted under each, so these bars legitimately sum above the
-              total decision count. Without this the first multi-role customer
-              files a bug about the numbers not adding up. */}
+          {/* Stated inline, not in a tooltip: these bars legitimately sum
+              above the total decision count. */}
           {dim === "role" && (
             <span className="italic">
               counts role membership — a caller with several roles counts under
@@ -310,9 +304,8 @@ export function BreakdownCard({
 }
 
 /**
- * One row's caller roles, kept to a single line: the first name plus a `+N`
- * affordance. The column has to stay narrow — the full set is one click away
- * in the drawer, and the title attribute carries it on hover meanwhile.
+ * One row's caller roles on a single line: first name plus `+N`. The column
+ * stays narrow; the full set is on hover, and in the drawer.
  */
 function RolesCell({ roles }: { roles: string[] }) {
   if (!roles.length) return <>—</>;

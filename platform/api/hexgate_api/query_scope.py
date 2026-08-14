@@ -87,11 +87,8 @@ def scope_filters(
     appended by each feature's own ``_scope()`` wrapper, in whatever order
     that feature's dashboard needs.
 
-    The returned pair is a **snapshot**: both branches bind a fixed instant,
-    so re-running it describes the same slice every time. Callers that issue
-    more than one query from one scope (``summarize``'s two scans,
-    ``list_decisions``'s page plus its fallback count, ``anomalies``'s two
-    passes) depend on that — see the rolling branch below."""
+    Both branches bind a fixed instant, so the returned pair is a snapshot —
+    callers issuing several queries from one scope depend on that."""
     where = ["project_id = {pid:String}"]
     params: dict[str, object] = {"pid": project_id}
     if _date_range_valid(start_date, end_date):
@@ -101,11 +98,9 @@ def scope_filters(
         params["start_date"] = start_date
         params["end_date"] = end_date
     else:
-        # A cutoff computed here, NOT ``now() - INTERVAL {hrs} HOUR``:
-        # ClickHouse evaluates now() independently per query, so two scans
-        # built from this one WHERE would share the SQL text but not the
-        # window, and a row inserted between them would land in one and not
-        # the other. Binding the instant makes the text and the slice agree.
+        # NOT ``now() - INTERVAL {hrs} HOUR``: ClickHouse evaluates now() per
+        # query, so two scans from one scope would share the SQL text but not
+        # the window, and a row inserted between them would land in only one.
         where.append("occurred_at >= {since:DateTime}")
         params["since"] = datetime.now(timezone.utc) - timedelta(hours=since_hours)
     if agent:

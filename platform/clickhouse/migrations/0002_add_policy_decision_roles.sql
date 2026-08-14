@@ -8,66 +8,44 @@
 -- nothing already stored becomes false.
 --
 -- ORDERING: apply this BEFORE deploying the API that references the columns.
--- Skipping it takes down both halves of the audit feature:
---   * ingest — insert_decision names `user_roles`/`deciding_role` in
---     column_names, so the driver refuses to send the row at all.
---   * reads  — both names are in _LIST_COLUMNS, and `user_roles` drives the
---     by_role breakdown and every role filter, so the SELECTs fail and
---     GET /v1/audit/decisions 503s: the whole dashboard Audit page.
--- The API guards the ordering rather than trusting it: startup DESCRIBEs both
--- audit tables and REFUSES TO BOOT when a written column is absent (see
--- audit/service.py verify_schema), so a wrong-order rollout fails and leaves
--- the previous version serving instead of silently discarding events. Should a
--- table lose a column under a live process, the ingest maps the driver's
--- refusal to 503 — retryable — never 422, which would tell the SDK the event
--- itself was bad and make it drop a record migrating would have let through.
--- The ALTERs are additive and back-compatible — the running old API never
--- references the new columns — so they can be applied arbitrarily early.
+-- Skipping it breaks ingest (the driver refuses to send a row naming an absent
+-- column) and the whole dashboard Audit page (both names are in _LIST_COLUMNS).
+-- The API guards the ordering rather than trusting it: startup DESCRIBEs the
+-- audit tables and refuses to boot on a gap (audit/service.py verify_schema),
+-- so a wrong-order rollout fails instead of silently discarding events. The
+-- ALTERs are additive, so they can be applied arbitrarily early.
 --
--- ADD COLUMN without AFTER appends physically, matching the trailing position
--- in init/schema.sql — so a hand-altered volume and a freshly-initialized one
--- end up with identical column order, which is what _DECISION_COLUMNS
--- ("order matches schema.sql") relies on.
+-- ADD COLUMN without AFTER appends physically, matching init/schema.sql, so a
+-- hand-altered volume and a fresh one keep identical column order — what
+-- _DECISION_COLUMNS ("order matches schema.sql") relies on.
 --
--- WHY THE DEFAULT EXPRESSION: parts written before the ALTER hold no
--- user_roles data. `DEFAULT if(role = '', [], [role])` gives every historic
--- single-role row the role set it logically always had, so membership reads
--- (`has(user_roles, 'billing')`) answer correctly for pre-upgrade events. New
--- inserts always name the column explicitly, so the default never applies to
--- them — which is why a genuinely empty role set stores [] and lands in the ''
--- bucket rather than [''].
+-- WHY THE DEFAULT EXPRESSION: parts written before the ALTER hold no user_roles
+-- data. `if(role = '', [], [role])` gives historic single-role rows the set they
+-- logically always had, so membership reads answer correctly for them. New
+-- inserts always name the column, so a genuinely empty set stores [], not [''].
 --
 -- WHY STATEMENT 3 IS NOT OPTIONAL — verified on clickhouse-server 24.10.4.191:
 --   `optimize_functions_to_subcolumns` (default 1 since 24.x) rewrites
---   `empty(user_roles)` and `length(user_roles)` into a read of the
---   `user_roles.size0` subcolumn. That subcolumn does not exist in a part
---   written before the ALTER, and the rewritten read yields size 0 WITHOUT
---   evaluating the DEFAULT expression above. Net effect: every legacy
---   single-role row is misreported as having an EMPTY role set by any filter
---   using empty()/length(), even though SELECTing the column shows ['billing'].
---   Concretely, the dashboard's "(none)" role drill-down would return every
---   pre-upgrade row. `has(...)` and `arrayJoin(...)` are NOT rewritten and were
---   correct throughout, which is what makes the bug easy to miss in review.
---   MATERIALIZE COLUMN writes the default into the existing parts, so no read
---   path depends on read-time DEFAULT evaluation any more and the optimizer
---   rewrite becomes harmless.
+--   `empty(user_roles)`/`length(user_roles)` into a read of `user_roles.size0`,
+--   which does not exist in pre-ALTER parts and yields 0 WITHOUT evaluating the
+--   DEFAULT above. Every legacy single-role row then reads as an empty set —
+--   the dashboard's "(none)" drill-down would return all of them — even though
+--   SELECTing the column shows ['billing']. `has(...)`/`arrayJoin(...)` are not
+--   rewritten, which is what makes this easy to miss. MATERIALIZE COLUMN writes
+--   the default into existing parts, so no read depends on it any more.
 --
--- COST of statement 3: a mutation, not a full part rewrite — it writes one
--- column's files per part and hardlinks the rest (measured: +4% bytes_on_disk
--- on the probe parts). It is the one non-metadata-only step here, so on a large
--- table run it in a maintenance window and watch system.mutations. Statements 1
--- and 2 remain instant and metadata-only.
+-- COST of statement 3: a mutation, not a full part rewrite — one column's files
+-- per part, the rest hardlinked (measured: +4% bytes_on_disk). It is the only
+-- non-metadata-only step, so on a large table run it in a maintenance window
+-- and watch system.mutations.
 --
--- `deciding_role` needs no MATERIALIZE: its DEFAULT ('') is identical to the
--- type's own zero value, so a missing-column read and the DEFAULT expression
--- cannot disagree. Only a DEFAULT that differs from the type default — like
--- user_roles' — can produce the divergence described above.
+-- `deciding_role` needs no MATERIALIZE: its DEFAULT ('') equals the type's zero
+-- value, so a missing-column read and the DEFAULT cannot disagree.
 --
 -- All four statements are idempotent and safe to re-run.
 
--- `role` keeps its meaning and its data; only its documentation changes. Kept
--- in step with init/schema.sql so a migrated volume and a fresh one produce a
--- byte-identical DESCRIBE — verified by diffing system.columns across both.
+-- Documentation only — `role` keeps its meaning and data. Kept in step with
+-- init/schema.sql so both volumes produce a byte-identical DESCRIBE.
 ALTER TABLE hexgate_audit.policy_decision
     COMMENT COLUMN IF EXISTS role 'Legacy: the caller''s first role. Membership queries read user_roles';
 
@@ -80,11 +58,10 @@ ALTER TABLE hexgate_audit.policy_decision
     ADD COLUMN IF NOT EXISTS deciding_role LowCardinality(String) DEFAULT ''
     COMMENT 'Role whose policy granted/gated the call; empty when every role denied';
 
--- Bake the DEFAULT into existing parts. mutations_sync=2 makes this block until
--- every replica finishes, so a hand-run migration can't "succeed" while the
--- data is still inconsistent. Drop to mutations_sync=0 and poll
--- system.mutations instead if the table is large enough that blocking is
--- impractical — but do not skip the statement.
+-- Bake the DEFAULT into existing parts. mutations_sync=2 blocks until every
+-- replica finishes, so this can't "succeed" while the data is inconsistent. If
+-- the table is too large to block on, drop to 0 and poll system.mutations —
+-- but do not skip the statement.
 ALTER TABLE hexgate_audit.policy_decision
     MATERIALIZE COLUMN user_roles
     SETTINGS mutations_sync = 2;

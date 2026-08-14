@@ -305,9 +305,8 @@ _PERMISSIVE_DEFAULT_YAML = (
 def test_validate_warns_when_default_grants_what_no_named_role_grants(
     client: TestClient,
 ) -> None:
-    """``default`` is the fallback for every undefined role name, so a grant
-    only it carries is reachable by any caller. That must surface in the
-    editor — but as a warning, never as a save-blocking error."""
+    """``default`` catches every undefined role name, so a grant only it
+    carries is reachable by any caller — a warning, never a save-blocking error."""
     resp = client.post(
         f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
         json={"policy_yaml": _PERMISSIVE_DEFAULT_YAML},
@@ -323,8 +322,7 @@ def test_validate_warns_when_default_grants_what_no_named_role_grants(
 
 
 def test_validate_warning_does_not_block_ok(client: TestClient) -> None:
-    """``ok = not errors`` — warnings are deliberately excluded from it, so the
-    dashboard's save path is unaffected by a lint."""
+    """``ok = not errors``, so a lint can't block the dashboard's save path."""
     resp = client.post(
         f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
         json={"policy_yaml": _PERMISSIVE_DEFAULT_YAML},
@@ -361,9 +359,8 @@ def test_validate_least_privilege_default_produces_no_warning(
 def test_validate_single_role_policy_is_never_warned_about(
     client: TestClient,
 ) -> None:
-    """A legacy flat policy.yaml *is* the ``default`` role. Warning on it would
-    fire on every single-role agent, which is why the lint is silent when no
-    named role exists."""
+    """A flat policy.yaml *is* the ``default`` role, so warning on it would fire
+    on every single-role agent."""
     resp = client.post(
         f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/default/validate",
         json={
@@ -395,9 +392,8 @@ def test_validate_reports_no_warnings_when_the_document_has_errors(
 
 
 def test_validate_unresolvable_inheritance_does_not_500(client: TestClient) -> None:
-    """A document whose roles each parse but whose inheritance can't resolve
-    reaches the PolicySet build and must degrade to "no lint" — never a crash,
-    and never a new error class this endpoint didn't report before."""
+    """Roles that each parse but whose inheritance can't resolve reach the
+    PolicySet build and must degrade to "no lint", never a crash."""
     resp = client.post(
         f"/v1/projects/{DEFAULT_PROJECT_ID}/agents/support_bot/validate",
         json={
@@ -407,9 +403,7 @@ def test_validate_unresolvable_inheritance_does_not_500(client: TestClient) -> N
                 "  default:\n"
                 "    tools:\n"
                 "      read_ticket: { mode: allow }\n"
-                # Well-formed per role, but the parent doesn't exist — so this
-                # only fails at PolicySet link time, which is precisely the
-                # path the warnings helper has to survive.
+                # Well-formed per role; fails only at PolicySet link time.
                 "  support:\n"
                 "    inherits: [does_not_exist]\n"
                 "    tools:\n"

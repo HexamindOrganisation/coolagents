@@ -71,8 +71,7 @@ def test_as_payload_none_normalizes_to_empty_string() -> None:
 
 
 def test_as_payload_carries_the_evaluated_role_set_in_order() -> None:
-    """Caller order is preserved — it is what decides which role is credited
-    with an allow, so a reordered set would misattribute the grant."""
+    """Caller order decides which role is credited with an allow."""
     d = _decision(user_roles=("billing", "support"), deciding_role="billing")
     wire = AuditEvent(decision=d).as_payload()
     assert wire["user_roles"] == ["billing", "support"]
@@ -88,8 +87,7 @@ def test_as_payload_user_roles_tuple_serializes_as_list() -> None:
 
 
 def test_as_payload_deciding_role_need_not_be_the_first_role() -> None:
-    """The two fields are independent: role = who called, deciding_role = who
-    granted. Collapsing them would lose exactly what PR B exists to record."""
+    """Independent fields: role = who called, deciding_role = who granted."""
     d = _decision(
         outcome=DecisionOutcome.ALLOW,
         user_roles=("billing", "support"),
@@ -109,8 +107,7 @@ def test_as_payload_deciding_role_empty_on_a_deny() -> None:
 
 
 def test_as_payload_no_roles_sends_an_empty_list() -> None:
-    """[''] would be indistinguishable from a role literally named '' once it
-    reaches the by_role breakdown."""
+    """[''] would be indistinguishable from a role literally named ''."""
     wire = AuditEvent(decision=_decision(user_roles=())).as_payload()
     assert wire["user_roles"] == []
     assert wire["deciding_role"] == ""
@@ -119,9 +116,7 @@ def test_as_payload_no_roles_sends_an_empty_list() -> None:
 
 def test_as_payload_does_not_redact_role_names() -> None:
     """Role names are policy identifiers, not caller payloads — the argument
-    and attribute redactors must not reach them. A role named 'token' is a
-    policy the operator wrote, and blanking it would make the record
-    unreadable."""
+    and attribute redactors must not reach them."""
     d = _decision(user_roles=("token", "api_key"), deciding_role="token")
     wire = AuditEvent(decision=d).as_payload()
     assert wire["user_roles"] == ["token", "api_key"]
@@ -355,12 +350,9 @@ def test_decision_keeps_every_violation_for_the_host() -> None:
 
 
 def test_a_full_role_set_goes_out_whole() -> None:
-    """The SDK applies no cap of its own here — it relies on the enforcer having
-    already bounded the set at MAX_EVALUATED_ROLES, which is <= the platform's
-    list cap. That cross-package bound is asserted on the platform side, where
-    both packages are importable (`test_sdk_role_cap_does_not_exceed_the_
-    platform_list_cap`); here we only prove the SDK doesn't drop or trim any of
-    them on the way out.
+    """No cap of its own: the enforcer already bounds the set at
+    MAX_EVALUATED_ROLES. That it stays <= the platform's list cap is asserted
+    platform-side; here, only that a full set reaches the wire intact.
     """
     roles = tuple(f"role_{i}" for i in range(MAX_EVALUATED_ROLES))
     d = _decision(user_roles=roles, deciding_role=roles[-1])

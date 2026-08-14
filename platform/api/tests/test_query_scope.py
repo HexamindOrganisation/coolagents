@@ -54,8 +54,7 @@ _CUTOFF_TOLERANCE = timedelta(seconds=5)
 
 
 def _assert_cutoff(params: dict, since_hours: int) -> None:
-    """The bound cutoff sits ~``since_hours`` before now — not an exact value,
-    since scope_filters stamps it from the wall clock."""
+    """The cutoff sits ~``since_hours`` before now, stamped from the wall clock."""
     expected = _now() - timedelta(hours=since_hours)
     assert abs(params["since"] - expected) < _CUTOFF_TOLERANCE
 
@@ -76,11 +75,8 @@ def test_scope_filters_agent_only() -> None:
 
 
 def test_scope_filters_binds_the_window_instead_of_calling_now() -> None:
-    """The rolling window must be a bound instant, not ``now()``.
-
-    ClickHouse evaluates now() per query, so callers that issue two queries
-    from one scope (summarize's two scans, list_decisions' page + fallback
-    count) would silently describe two different slices."""
+    """ClickHouse evaluates now() per query, so a scope reused for two queries
+    would silently describe two different slices."""
     where, params = scope_filters("p1", 24)
     assert not any("now()" in clause for clause in where)
     assert isinstance(params["since"], datetime)

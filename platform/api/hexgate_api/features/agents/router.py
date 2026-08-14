@@ -221,10 +221,9 @@ async def api_validate_policy(
     is ``None`` for top-level YAML / schema errors; populated when the
     failure lives inside a specific role's section.
 
-    Also returns ``warnings`` — authoring lints from
-    :func:`check_default_role_exposure`, which flags grants reachable only
-    through the ``default`` fallback (i.e. by any caller carrying an
-    undefined role name). Warnings never set ``ok`` to False.
+    ``warnings`` carries authoring lints — grants reachable only through the
+    ``default`` fallback, i.e. by any caller carrying an undefined role name.
+    They never set ``ok`` to False.
     """
     import yaml
     from pydantic import ValidationError
@@ -303,9 +302,8 @@ def _default_role_warnings(
 ) -> list[PolicyValidationError]:
     """Authoring lints over the document as a whole (no-op if it didn't parse).
 
-    Needs a fully loaded :class:`PolicySet` — inheritance and mixins resolved,
-    ``aliased_default`` populated — which the per-role checks above deliberately
-    don't build, since they validate each role in isolation.
+    Needs a fully loaded :class:`PolicySet` — inheritance and mixins resolved —
+    which the per-role checks above don't build, validating roles in isolation.
     """
     if errors:
         return []
@@ -321,12 +319,10 @@ def _default_role_warnings(
     try:
         policy_set = load_policy_set_from_dict(parsed)
     except (PolicySetError, ValidationError):
-        # Inheritance/mixin resolution failures the per-role checks don't cover.
-        # Reporting them here would widen this endpoint's error contract, which
-        # is not what the warnings channel is for — `hexgate policy validate`
-        # and the platform build both still reject them. No lint is just no
-        # lint; it never makes a broken document look clean, because `ok` is
-        # decided entirely by `errors`.
+        # Inheritance/mixin failures the per-role checks don't cover. Surfacing
+        # them here would widen this endpoint's error contract, and dropping the
+        # lint can't make a broken document look clean — `ok` comes from
+        # `errors`, and the CLI and platform build both still reject these.
         return []
 
     return [

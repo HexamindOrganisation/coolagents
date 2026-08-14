@@ -41,12 +41,7 @@ class AuditPayloadTooLarge(Exception):
 
 
 class AuditSchemaOutOfDate(Exception):
-    """An audit table is missing a column the ingest writes.
-
-    Raised at startup by :func:`verify_schema`, never per request — the
-    condition is a deployment ordering mistake (API ahead of migrations),
-    not something a caller can trigger.
-    """
+    """An audit table is missing a column the ingest writes."""
 
     def __init__(self, missing: dict[str, list[str]]) -> None:
         detail = "; ".join(
@@ -139,12 +134,9 @@ def insert_decision(
     if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
         raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
-    # An older SDK sends only ``role``. Materialising [role] here (rather than
-    # storing []) keeps those events in the by_role breakdown, which now reads
-    # user_roles — otherwise every pre-upgrade agent would silently vanish from
-    # the panel. Mirrors the column DEFAULT that migration 0002 gives rows
-    # written before the column existed. No byte cap: pydantic already bounds
-    # this at 32 x 256 chars.
+    # An old SDK sends only ``role``; materialise [role] so those events stay in
+    # the by_role breakdown, which reads user_roles. Mirrors the column DEFAULT
+    # migration 0002 gives pre-existing rows.
     user_roles = list(event.user_roles) or ([event.role] if event.role else [])
 
     row = [
@@ -221,18 +213,15 @@ def insert_ban_enforcement(
     )
 
 
-# --- Schema guard: the ingest names every column unconditionally -------------
+# --- Schema guard ------------------------------------------------------------
 
 
 def verify_schema(client: Client) -> None:
     """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
 
-    Both inserts name their full column list, and the driver resolves those
-    names against a DESCRIBE *before* sending anything — so one missing column
-    fails every write client-side, permanently, until an operator migrates.
-    Called once at startup rather than per insert: a request-time check would
-    add a round-trip to the hot path to detect a condition that cannot change
-    without a deployment or a manual DDL.
+    The driver resolves column names against a DESCRIBE before sending, so one
+    missing column fails every write until an operator migrates. Startup-only:
+    the condition can't change without a deployment or manual DDL.
     """
     missing = {
         table: sorted(set(columns) - table_columns(client, table))
@@ -288,29 +277,22 @@ def _scope(
     """Shared WHERE + params for the scope filters (project/window/agent/role/
     tool) that all reads narrow by. Pass role="" for the no-role bucket.
 
-    The role filter matches **membership** in the caller's role set, so a call
-    by ["billing", "support"] is returned by role=billing and role=support
-    alike. It strictly subsumes the old ``role = X`` equality: rows written
-    before the column existed materialise ``[role]`` via its DEFAULT
-    (migration 0002)."""
+    ``role`` matches membership in the caller's role set, so a call by
+    ["billing", "support"] is returned under either."""
     where, params = scope_filters(
         project_id, since_hours, agent=agent, start_date=start_date, end_date=end_date
     )
     if role is not None:
-        # ``role is not None``, never ``if role``: role="" is the dashboard's
-        # "(none)" drill-down and must filter, not silently widen to every role.
+        # Not ``if role``: role="" is the "(none)" drill-down, not "no filter".
         if role:
             where.append("has(user_roles, {role:String})")
             params["role"] = role
         else:
-            # ``user_roles = []``, NOT ``empty(user_roles)``: with
-            # optimize_functions_to_subcolumns (default 1 since CH 24.x),
-            # empty()/length() are rewritten to read the user_roles.size0
-            # subcolumn, which does not exist in parts written before migration
-            # 0002 and so reports size 0 WITHOUT evaluating the column DEFAULT
-            # — every legacy single-role row would match the no-role bucket.
-            # 0002's MATERIALIZE COLUMN fixes the data; this form is correct
-            # even if that mutation hasn't finished. Verified on 24.10.4.191.
+            # NOT ``empty(user_roles)``: optimize_functions_to_subcolumns (on by
+            # default since CH 24.x) rewrites empty()/length() into a read of
+            # user_roles.size0, absent from pre-0002 parts and reported as 0
+            # without evaluating the column DEFAULT — every legacy single-role
+            # row would land in this bucket. Verified on 24.10.4.191.
             where.append("user_roles = []")
     if tool:
         where.append("tool_name = {tool:String}")
@@ -325,11 +307,9 @@ def _scope(
 # Rows are classified by their GROUPING() flags (1 = column rolled up); only the
 # () set rolls up outcome, so g_outcome=1 marks the grand-total row.
 #
-# ``role`` is deliberately NOT here: it is a set now (user_roles), and the
-# arrayJoin needed to unnest it would multiply rows BEFORE grouping, inflating
-# totals, by_agent, by_tool and by_user by each caller's role count. It gets its
-# own scan below instead — one extra pass over the same WHERE, in exchange for
-# exact totals.
+# ``role`` is excluded: unnesting user_roles needs an arrayJoin, which would
+# multiply rows before grouping and inflate every other breakdown. It gets its
+# own scan below.
 _GROUPING_SETS = (
     "GROUPING SETS ((), (outcome), (agent_name, outcome), "
     "(tool_name, outcome), (user_id, outcome))"
@@ -346,10 +326,9 @@ _SELECT_COLS = [
     "count() AS n",
 ]
 
-# Membership breakdown, its own scan over the same WHERE. An empty role set
-# keeps the '' bucket the dashboard already labels "(none)". ``empty()`` is safe
-# here (unlike in _scope): user_roles is genuinely read by the arrayJoin, so the
-# subcolumn rewrite described there cannot apply.
+# Membership breakdown, own scan over the same WHERE; an empty set keeps the ''
+# bucket the dashboard labels "(none)". ``empty()`` is safe here (unlike in
+# _scope) — the arrayJoin reads user_roles, so the subcolumn rewrite can't apply.
 _BY_ROLE_SELECT = (
     "SELECT arrayJoin(if(empty(user_roles), [''], user_roles)) AS role, "
     "outcome, count() AS n"
@@ -374,11 +353,9 @@ def summarize(
     ``""`` key — labelling it ("(none)") is the dashboard's concern, so no
     string is reserved on the wire.
 
-    ``by_role`` counts **membership** in the caller's role set and comes from
-    its own scan: a call by ["billing", "support"] is counted under both, so
-    ``sum(by_role[*].all) >= totals["all"]``. Every other breakdown stays one
-    row per decision — which is exactly why role left the GROUPING SETS scan,
-    where an arrayJoin would have inflated all of them."""
+    ``by_role`` counts role-set membership from its own scan, so a multi-role
+    call lands in several buckets and ``sum(by_role[*].all) >= totals["all"]``.
+    Every other breakdown stays one row per decision."""
     where, params = _scope(
         project_id,
         since_hours,
@@ -432,12 +409,9 @@ def summarize(
         else:  # (user_id, outcome)
             _add(by_user, user, outcome, n)
 
-    # Second scan: role membership. Same where_sql AND same params — and the
-    # window in those params is a bound instant, not ``now()``, so both scans
-    # genuinely describe one slice (see query_scope.scope_filters). Sharing
-    # only the SQL text would not be enough: ClickHouse re-evaluates now() per
-    # query, and a row inserted between the two would show up in by_role
-    # without being counted in totals.
+    # Second scan: role membership. Same where_sql AND params — the window is a
+    # bound instant, not ``now()``, so both scans see one slice. Sharing only
+    # the SQL text would not: ClickHouse re-evaluates now() per query.
     role_result = client.query(
         f"{_BY_ROLE_SELECT} FROM policy_decision WHERE {where_sql} "
         "GROUP BY role, outcome",
@@ -562,9 +536,8 @@ def list_decisions(
         params["session_id"] = session_id
     where_sql = " AND ".join(where)
 
-    # One scan yields the page and its ``total`` together: ``count() OVER ()``
-    # is computed before LIMIT, so it carries the full match count on every
-    # returned row, and a second full scan is avoided.
+    # ``count() OVER ()`` is computed before LIMIT, so one scan yields the page
+    # and its full match count together.
     page_params = {**params, "lim": limit, "off": offset}
     result = client.query(
         f"SELECT {_LIST_COLUMNS}, count() OVER () AS total_matches "
@@ -578,8 +551,6 @@ def list_decisions(
         row = dict(zip(result.column_names, raw))
         total = int(row.pop("total_matches"))
         row["violations"] = list(row.get("violations") or [])
-        # Same tuple-or-list normalisation as violations: the driver returns
-        # Array columns as sequences, and the response model wants a list.
         row["user_roles"] = list(row.get("user_roles") or [])
         row["hint"] = _decode_json_column(row.get("hint") or "")
         row["arguments"] = _decode_json_column(row.get("arguments") or "")

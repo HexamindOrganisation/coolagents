@@ -128,11 +128,8 @@ export function PoliciesPage() {
   );
 }
 
-/**
- * Shared renderer for the validate banner's error and warning lists — same
- * `{role, line, message}` shape either way, so the markup lives in one place
- * and the two lists can't drift apart.
- */
+/** Shared renderer for the validate banner's error and warning lists — same
+ * `{role, line, message}` shape either way, so the two can't drift apart. */
 function DiagnosticList({ items }: { items: PolicyValidationError[] }) {
   return (
     <ul className="space-y-0.5 font-mono">
@@ -241,7 +238,7 @@ function YamlEditor({
   const [draft, setDraft] = useState<string>("");
   const [dirty, setDirty] = useState(false);
   // The whole response, not just the errors: warnings render alongside them
-  // but must not be mistaken for them (they never block a save).
+  // but never block a save.
   const [result, setResult] = useState<ValidatePolicyResponse | null>(null);
   const errors = result?.errors ?? null;
   const warnings = result?.warnings ?? [];
@@ -328,8 +325,8 @@ function YamlEditor({
             <DiagnosticList items={errors} />
           ) : warnings.length > 0 ? (
             <>
-              {/* "parses" and not "parses cleanly" — the document is valid and
-                  savable; the lints are about exposure, not syntax. */}
+              {/* "parses", not "parses cleanly" — the lints are about
+                  exposure, not syntax. */}
               <div className="mb-1 flex items-center gap-1.5">
                 <AlertTriangle className="size-3.5 shrink-0" />
                 <span>

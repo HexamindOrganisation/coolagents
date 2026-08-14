@@ -100,13 +100,10 @@ async def ingest_decision(
         _log.warning("audit insert failed (transient): %s", exc)
         raise _audit_unavailable()
     except ProgrammingError as exc:
-        # The driver resolves our column names against the table before it
-        # sends anything, so a schema behind this build fails here and no row
-        # ever reaches storage. 503, not 422: nothing is wrong with the
-        # *event*, and a 422 tells the SDK to discard a record that would
-        # land fine once the migration is applied. Startup already refuses to
-        # boot on this (service.verify_schema) — reaching it means ClickHouse
-        # was unreachable at boot, or the table changed under a live process.
+        # Schema behind this build: the driver rejects our column names before
+        # sending. 503, not 422 — the event is fine, and 422 would make the SDK
+        # discard a record the migration would let through. Startup normally
+        # catches this (service.verify_schema).
         _log.error("audit insert impossible against current schema: %s", exc)
         raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
@@ -150,7 +147,7 @@ async def ingest_ban_enforcement(
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("ban-enforcement insert failed (transient): %s", exc)
         raise _audit_unavailable()
-    except ProgrammingError as exc:  # server can't accept this shape at all
+    except ProgrammingError as exc:  # schema drift — see the decision handler
         _log.error("ban-enforcement insert impossible against current schema: %s", exc)
         raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
@@ -169,10 +166,8 @@ async def ingest_ban_enforcement(
 # the no-role bucket. No sentinel string is reserved on the wire — the
 # dashboard renders "(none)" purely as a display label.
 #
-# The filter matches **membership** in the caller's role set, so one call by
+# It matches membership in the caller's role set, so one call by
 # ["billing", "support"] is returned by role=billing and role=support alike.
-# That strictly subsumes the pre-multi-role ``role = X`` equality, so no
-# caller-visible query changes meaning.
 
 
 @router.get(

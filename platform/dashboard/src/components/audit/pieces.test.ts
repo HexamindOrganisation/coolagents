@@ -42,8 +42,7 @@ describe("callerRoles", () => {
   });
 
   it("falls back to the legacy scalar when no set was recorded", () => {
-    // A row from an API that predates the column: without this the Role
-    // column would blank out for every historic event.
+    // A row from an API predating the column — must not blank out.
     expect(callerRoles(row({ role: "analyst", user_roles: [] }))).toEqual([
       "analyst",
     ]);

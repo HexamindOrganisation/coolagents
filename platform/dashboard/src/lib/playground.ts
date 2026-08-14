@@ -72,11 +72,9 @@ export interface ApprovalRequestEvent {
   arguments: Record<string, unknown>;
   reason: string | null;
   agent_name: string;
-  /** The *deciding* role — the one whose policy gated this call. Null when
-   * none did. */
+  /** The *deciding* role — whose policy gated this call. Null when none did. */
   role: string | null;
-  /** Every role the caller carried. Optional: an older `hexgate serve` sends
-   * only the singular key. */
+  /** Every role the caller carried. Absent from an older `hexgate serve`. */
   roles?: string[];
   expires_at: string; // ISO
 }
@@ -353,11 +351,9 @@ export function usePlayground({ projectId }: Options) {
   /**
    * Send a chat message, optionally scoped to one or more roles.
    *
-   * When `roles` is non-empty, the platform forwards a `user_attenuation`
-   * block to the dev's local `hexgate serve` process, which attenuates its
-   * parent Hexgate token to carry `user("playground")` plus one `role("<n>")`
-   * fact per name for this turn. Every role is evaluated and the most
-   * permissive outcome wins, so adding one can only widen what the turn may do.
+   * A non-empty `roles` sends a `user_attenuation` block, which makes the dev's
+   * `hexgate serve` attenuate its token to carry one `role()` fact per name for
+   * this turn. The most permissive outcome wins, so adding a role only widens.
    */
   function sendChat(message: string, opts?: { roles?: string[] }) {
     const ws = activeSocket;
@@ -390,9 +386,8 @@ export function usePlayground({ projectId }: Options) {
       frame.user_attenuation = {
         user: "playground",
         roles,
-        // Singular kept for one release: a dev's pinned older `hexgate serve`
-        // reads only `role`. The current one prefers `roles` and falls back to
-        // this, so neither side requires the other's key.
+        // Singular kept for one release: a pinned older `hexgate serve` reads
+        // only `role`. The current one prefers `roles`.
         role: roles[0],
         ttl_seconds: 300,
       };

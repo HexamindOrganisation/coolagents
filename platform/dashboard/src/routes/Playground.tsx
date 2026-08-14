@@ -57,9 +57,8 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
   });
   const [composer, setComposer] = useState("");
   const [agent, setAgent] = useState<AgentRead | null>(null);
-  // A set, not a scalar: the enforcer evaluates every role the caller carries
-  // and takes the most permissive outcome, so the playground has to be able to
-  // reproduce a multi-role caller.
+  // A set, not a scalar: the enforcer evaluates every role the caller carries,
+  // so the playground has to be able to reproduce a multi-role caller.
   const [activeRoles, setActiveRoles] = useState<string[]>([]);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
@@ -90,9 +89,8 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
     [agent],
   );
 
-  // Auto-select a sensible default when the role list changes: keep whichever
-  // of the current picks the new agent still defines, else fall back to the
-  // first option (empty for single-policy agents, which have no roles).
+  // On an agent switch, keep whichever picks the new one still defines, else
+  // fall back to its first role.
   useEffect(() => {
     if (roleOptions.length === 0) {
       setActiveRoles([]);
@@ -197,8 +195,8 @@ function PlaygroundLive({ projectId }: { projectId: string }) {
                     onChange={(e) =>
                       setActiveRoles((prev) =>
                         e.target.checked
-                          ? // Re-derive from roleOptions so the emitted order
-                            // is the policy's, not the click order.
+                          ? // Re-derive so the emitted order is the policy's,
+                            // not the click order.
                             roleOptions.filter(
                               (r) => r === role || prev.includes(r),
                             )
@@ -570,10 +568,8 @@ function ApprovalPromptCard({
             <span className="font-mono font-medium truncate">
               {request.tool_name}
             </span>
-            {/* The badge names the role that GATED the call. When the caller
-                carried others, the title carries the full set — an older
-                `hexgate serve` sends only the singular key, so `roles` is
-                optional and absent means "not reported". */}
+            {/* The badge names the role that GATED the call; the title carries
+                the full set. Absent `roles` means an older `hexgate serve`. */}
             {request.role && (
               <Badge
                 variant="outline"

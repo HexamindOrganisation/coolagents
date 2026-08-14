@@ -31,10 +31,8 @@ def _need_token() -> None:
 
 
 def _event() -> AuditEvent:
-    # Multi-role on purpose: this is the only place the role fields meet a live
-    # platform, so a single-role fixture would leave the new wire keys unproven.
-    # (``role=`` is not a constructor argument — it is a property over
-    # ``user_roles``.)
+    # Multi-role on purpose: the only place the role fields meet a live
+    # platform. (``role`` is a property over ``user_roles``, not an argument.)
     d = Decision(
         outcome=DecisionOutcome.DENY,
         agent_name="integration_agent",
@@ -50,8 +48,7 @@ async def test_wire_format_accepted_by_platform() -> None:
     _need_token()
     ev = _event()
     payload = ev.as_payload()
-    # The keys PR B added; a platform that predates them ignores the extras
-    # (no extra="forbid"), which is the degradation this asserts still holds.
+    # A platform predating these keys ignores them (no extra="forbid").
     assert payload["user_roles"] == ["analyst", "billing"]
     assert payload["role"] == "analyst"
     async with httpx.AsyncClient(timeout=5) as client:
