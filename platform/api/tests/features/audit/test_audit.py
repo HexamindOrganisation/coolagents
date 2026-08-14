@@ -16,6 +16,7 @@ from clickhouse_connect.driver.exceptions import (
     ClickHouseError,
     DataError,
     OperationalError,
+    ProgrammingError,
 )
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -460,6 +461,93 @@ def test_deterministic_clickhouse_error_returns_422(
     assert "rejected" in r.json()["detail"]
 
 
+def test_schema_behind_the_build_returns_503_not_422(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """A missing column is the driver refusing to send (ProgrammingError), not
+    storage rejecting the event. 422 would tell the SDK the *event* is bad and
+    make it discard a record that migrating would let through, so this must
+    stay in the retryable class."""
+    fake_clickhouse.insert.side_effect = ProgrammingError(
+        "Unrecognized column 'user_roles' in table policy_decision"
+    )
+    r = client.post("/v1/audit/decisions", json=_event())
+    assert r.status_code == 503
+    assert r.headers.get("retry-after") == "5"
+
+
+def test_ban_enforcement_schema_behind_the_build_returns_503_not_422(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    fake_clickhouse.insert.side_effect = ProgrammingError(
+        "Unrecognized column 'ban_id' in table ban_enforcement"
+    )
+    r = client.post("/v1/audit/ban-enforcements", json=_ban_enforcement())
+    assert r.status_code == 503
+    assert r.headers.get("retry-after") == "5"
+
+
+# ---------------------------------------------------------------------------
+# verify_schema() — startup guard against migrating after deploying
+# ---------------------------------------------------------------------------
+
+
+def _describing(*, columns_by_table: dict[str, list[str]]) -> MagicMock:
+    """A client whose DESCRIBE returns the given columns for each table."""
+    client = MagicMock()
+
+    def _query(sql: str, **_kwargs) -> MagicMock:
+        table = sql.rsplit(" ", 1)[-1]
+        result = MagicMock()
+        result.column_names = ["name", "type"]
+        result.result_rows = [[c, "String"] for c in columns_by_table[table]]
+        return result
+
+    client.query.side_effect = _query
+    return client
+
+
+def _full_schema() -> dict[str, list[str]]:
+    return {
+        audit.DECISION_TABLE: list(audit._DECISION_COLUMNS),
+        audit.BAN_ENFORCEMENT_TABLE: list(audit._BAN_ENFORCEMENT_COLUMNS),
+    }
+
+
+def test_verify_schema_passes_on_a_current_schema() -> None:
+    audit.verify_schema(_describing(columns_by_table=_full_schema()))  # no raise
+
+
+def test_verify_schema_tolerates_extra_server_side_columns() -> None:
+    """received_at is server-stamped and deliberately absent from the insert
+    column list — a superset must not read as drift."""
+    schema = _full_schema()
+    schema[audit.DECISION_TABLE].append("received_at")
+    audit.verify_schema(_describing(columns_by_table=schema))  # no raise
+
+
+def test_verify_schema_names_the_missing_columns() -> None:
+    """The unmigrated case this exists for: 0002's columns absent."""
+    schema = _full_schema()
+    schema[audit.DECISION_TABLE] = [
+        c
+        for c in schema[audit.DECISION_TABLE]
+        if c not in ("user_roles", "deciding_role")
+    ]
+    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+        audit.verify_schema(_describing(columns_by_table=schema))
+    assert exc.value.missing == {audit.DECISION_TABLE: ["deciding_role", "user_roles"]}
+    assert "migrations" in str(exc.value)
+
+
+def test_verify_schema_covers_ban_enforcement_too() -> None:
+    schema = _full_schema()
+    schema[audit.BAN_ENFORCEMENT_TABLE].remove("ban_id")
+    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+        audit.verify_schema(_describing(columns_by_table=schema))
+    assert exc.value.missing == {audit.BAN_ENFORCEMENT_TABLE: ["ban_id"]}
+
+
 def test_naive_occurred_at_accepted_as_utc(
     client: TestClient, fake_clickhouse: MagicMock
 ) -> None:
@@ -497,20 +585,29 @@ def test_clickhouse_unreachable_at_connect_returns_503(
 
 _BASE_WHERE = [
     "project_id = {pid:String}",
-    "occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR",
+    "occurred_at >= {since:DateTime}",
 ]
+
+# The rolling window binds a wall-clock instant, so params can't be compared by
+# equality; assert the rest of the bag and let test_query_scope cover the value.
+_WINDOW_PARAM = "since"
+
+
+def _params_besides_window(params: dict) -> dict:
+    assert _WINDOW_PARAM in params
+    return {k: v for k, v in params.items() if k != _WINDOW_PARAM}
 
 
 def test_scope_no_filters() -> None:
     where, params = audit._scope("p1", 24)
     assert where == _BASE_WHERE
-    assert params == {"pid": "p1", "hrs": 24}
+    assert _params_besides_window(params) == {"pid": "p1"}
 
 
 def test_scope_agent_only() -> None:
     where, params = audit._scope("p1", 24, agent="example_agent")
     assert where == _BASE_WHERE + ["agent_name = {agent:String}"]
-    assert params == {"pid": "p1", "hrs": 24, "agent": "example_agent"}
+    assert _params_besides_window(params) == {"pid": "p1", "agent": "example_agent"}
 
 
 def test_scope_role_only() -> None:
@@ -518,7 +615,7 @@ def test_scope_role_only() -> None:
     several roles must be reachable under each of them."""
     where, params = audit._scope("p1", 168, role="analyst")
     assert where == _BASE_WHERE + ["has(user_roles, {role:String})"]
-    assert params == {"pid": "p1", "hrs": 168, "role": "analyst"}
+    assert _params_besides_window(params) == {"pid": "p1", "role": "analyst"}
 
 
 def test_scope_empty_role_filters_no_role_bucket() -> None:
@@ -555,9 +652,8 @@ def test_scope_all_filters() -> None:
         "tool_name = {tool:String}",
         "user_id = {user:String}",
     ]
-    assert params == {
+    assert _params_besides_window(params) == {
         "pid": "p1",
-        "hrs": 720,
         "agent": "example_agent",
         "role": "analyst",
         "tool": "read_file",
@@ -686,6 +782,19 @@ def test_summarize_both_scans_share_one_scope() -> None:
     assert client.query.call_count == 2
     main, by_role = client.query.call_args_list
     assert main.kwargs["parameters"] == by_role.kwargs["parameters"]
+
+
+def test_summarize_scans_share_a_bound_window_not_a_server_side_now() -> None:
+    """Sharing the WHERE *text* is not enough: ``now()`` is re-evaluated per
+    query, so a row inserted between the two scans would be counted in by_role
+    but missing from totals. The window has to arrive as a bound instant."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24)
+    main, by_role = client.query.call_args_list
+    assert "now()" not in main.args[0] and "now()" not in by_role.args[0]
+    window = main.kwargs["parameters"]["since"]
+    assert isinstance(window, datetime)
+    assert by_role.kwargs["parameters"]["since"] == window
 
 
 def test_summarize_role_left_the_grouping_sets_scan() -> None:

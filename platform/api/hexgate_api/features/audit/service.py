@@ -18,6 +18,7 @@ from collections import deque
 
 from clickhouse_connect.driver.client import Client
 
+from hexgate_api.core.clickhouse import table_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -37,6 +38,30 @@ class AuditPayloadTooLarge(Exception):
         super().__init__(f"{field} exceeds {limit} bytes")
         self.field = field
         self.limit = limit
+
+
+class AuditSchemaOutOfDate(Exception):
+    """An audit table is missing a column the ingest writes.
+
+    Raised at startup by :func:`verify_schema`, never per request — the
+    condition is a deployment ordering mistake (API ahead of migrations),
+    not something a caller can trigger.
+    """
+
+    def __init__(self, missing: dict[str, list[str]]) -> None:
+        detail = "; ".join(
+            f"{table}: {', '.join(columns)}"
+            for table, columns in sorted(missing.items())
+        )
+        super().__init__(
+            f"ClickHouse schema is behind this build ({detail}). "
+            "Apply platform/clickhouse/migrations before starting the API."
+        )
+        self.missing = missing
+
+
+DECISION_TABLE = "policy_decision"
+BAN_ENFORCEMENT_TABLE = "ban_enforcement"
 
 
 MAX_ARGS_BYTES = 8 * 1024
@@ -143,7 +168,7 @@ def insert_decision(
         event.deciding_role,
     ]
     clickhouse_client.insert(
-        "policy_decision",
+        DECISION_TABLE,
         [row],
         column_names=_DECISION_COLUMNS,
         settings=_DECISION_INSERT_SETTINGS,
@@ -188,12 +213,37 @@ def insert_ban_enforcement(
         event.reason,
     ]
     clickhouse_client.insert(
-        "ban_enforcement",
+        BAN_ENFORCEMENT_TABLE,
         [row],
         column_names=_BAN_ENFORCEMENT_COLUMNS,
         # Same async-insert-and-block semantics as decisions.
         settings=_DECISION_INSERT_SETTINGS,
     )
+
+
+# --- Schema guard: the ingest names every column unconditionally -------------
+
+
+def verify_schema(client: Client) -> None:
+    """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
+
+    Both inserts name their full column list, and the driver resolves those
+    names against a DESCRIBE *before* sending anything — so one missing column
+    fails every write client-side, permanently, until an operator migrates.
+    Called once at startup rather than per insert: a request-time check would
+    add a round-trip to the hot path to detect a condition that cannot change
+    without a deployment or a manual DDL.
+    """
+    missing = {
+        table: sorted(set(columns) - table_columns(client, table))
+        for table, columns in (
+            (DECISION_TABLE, _DECISION_COLUMNS),
+            (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
+        )
+    }
+    gaps = {table: columns for table, columns in missing.items() if columns}
+    if gaps:
+        raise AuditSchemaOutOfDate(gaps)
 
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------
@@ -382,8 +432,12 @@ def summarize(
         else:  # (user_id, outcome)
             _add(by_user, user, outcome, n)
 
-    # Second scan: role membership. Same where_sql/params, so the two scans can
-    # never disagree about which slice they describe.
+    # Second scan: role membership. Same where_sql AND same params — and the
+    # window in those params is a bound instant, not ``now()``, so both scans
+    # genuinely describe one slice (see query_scope.scope_filters). Sharing
+    # only the SQL text would not be enough: ClickHouse re-evaluates now() per
+    # query, and a row inserted between the two would show up in by_role
+    # without being counted in totals.
     role_result = client.query(
         f"{_BY_ROLE_SELECT} FROM policy_decision WHERE {where_sql} "
         "GROUP BY role, outcome",
@@ -508,10 +562,9 @@ def list_decisions(
         params["session_id"] = session_id
     where_sql = " AND ".join(where)
 
-    # One scan yields the page and its ``total`` together: a separate ``count()``
-    # would re-evaluate ``now()`` and could disagree with the page as rows arrive.
-    # ``count() OVER ()`` is computed before LIMIT, so it carries the full match
-    # count on every returned row.
+    # One scan yields the page and its ``total`` together: ``count() OVER ()``
+    # is computed before LIMIT, so it carries the full match count on every
+    # returned row, and a second full scan is avoided.
     page_params = {**params, "lim": limit, "off": offset}
     result = client.query(
         f"SELECT {_LIST_COLUMNS}, count() OVER () AS total_matches "

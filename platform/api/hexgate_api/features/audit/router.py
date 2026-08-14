@@ -4,7 +4,11 @@ import asyncio
 import logging
 from datetime import datetime
 
-from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
+from clickhouse_connect.driver.exceptions import (
+    ClickHouseError,
+    OperationalError,
+    ProgrammingError,
+)
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -95,6 +99,16 @@ async def ingest_decision(
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("audit insert failed (transient): %s", exc)
         raise _audit_unavailable()
+    except ProgrammingError as exc:
+        # The driver resolves our column names against the table before it
+        # sends anything, so a schema behind this build fails here and no row
+        # ever reaches storage. 503, not 422: nothing is wrong with the
+        # *event*, and a 422 tells the SDK to discard a record that would
+        # land fine once the migration is applied. Startup already refuses to
+        # boot on this (service.verify_schema) — reaching it means ClickHouse
+        # was unreachable at boot, or the table changed under a live process.
+        _log.error("audit insert impossible against current schema: %s", exc)
+        raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
         _log.error("audit insert rejected by ClickHouse: %s", exc)
         raise HTTPException(status_code=422, detail="audit event rejected by storage")
@@ -135,6 +149,9 @@ async def ingest_ban_enforcement(
         )
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("ban-enforcement insert failed (transient): %s", exc)
+        raise _audit_unavailable()
+    except ProgrammingError as exc:  # server can't accept this shape at all
+        _log.error("ban-enforcement insert impossible against current schema: %s", exc)
         raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
         _log.error("ban-enforcement insert rejected by ClickHouse: %s", exc)

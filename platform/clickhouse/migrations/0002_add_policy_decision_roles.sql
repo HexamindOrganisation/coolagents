@@ -8,14 +8,19 @@
 -- nothing already stored becomes false.
 --
 -- ORDERING: apply this BEFORE deploying the API that references the columns.
--- Skipping it takes down both halves of the audit feature, loudly:
+-- Skipping it takes down both halves of the audit feature:
 --   * ingest — insert_decision names `user_roles`/`deciding_role` in
---     column_names, ClickHouse rejects the row, the API logs "audit insert
---     rejected by ClickHouse" and returns 422 (non-retryable), and the SDK
---     sender drops the event.
+--     column_names, so the driver refuses to send the row at all.
 --   * reads  — both names are in _LIST_COLUMNS, and `user_roles` drives the
 --     by_role breakdown and every role filter, so the SELECTs fail and
 --     GET /v1/audit/decisions 503s: the whole dashboard Audit page.
+-- The API guards the ordering rather than trusting it: startup DESCRIBEs both
+-- audit tables and REFUSES TO BOOT when a written column is absent (see
+-- audit/service.py verify_schema), so a wrong-order rollout fails and leaves
+-- the previous version serving instead of silently discarding events. Should a
+-- table lose a column under a live process, the ingest maps the driver's
+-- refusal to 503 — retryable — never 422, which would tell the SDK the event
+-- itself was bad and make it drop a record migrating would have let through.
 -- The ALTERs are additive and back-compatible — the running old API never
 -- references the new columns — so they can be applied arbitrarily early.
 --

@@ -47,20 +47,44 @@ def test_when_occurred_at_is_older_than_retention_then_event_out_of_window_is_ra
 
 _BASE_WHERE = [
     "project_id = {pid:String}",
-    "occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR",
+    "occurred_at >= {since:DateTime}",
 ]
+
+_CUTOFF_TOLERANCE = timedelta(seconds=5)
+
+
+def _assert_cutoff(params: dict, since_hours: int) -> None:
+    """The bound cutoff sits ~``since_hours`` before now — not an exact value,
+    since scope_filters stamps it from the wall clock."""
+    expected = _now() - timedelta(hours=since_hours)
+    assert abs(params["since"] - expected) < _CUTOFF_TOLERANCE
 
 
 def test_scope_filters_no_filters() -> None:
     where, params = scope_filters("p1", 24)
     assert where == _BASE_WHERE
-    assert params == {"pid": "p1", "hrs": 24}
+    assert set(params) == {"pid", "since"}
+    assert params["pid"] == "p1"
+    _assert_cutoff(params, 24)
 
 
 def test_scope_filters_agent_only() -> None:
     where, params = scope_filters("p1", 24, agent="example_agent")
     assert where == _BASE_WHERE + ["agent_name = {agent:String}"]
-    assert params == {"pid": "p1", "hrs": 24, "agent": "example_agent"}
+    assert set(params) == {"pid", "since", "agent"}
+    assert params["agent"] == "example_agent"
+
+
+def test_scope_filters_binds_the_window_instead_of_calling_now() -> None:
+    """The rolling window must be a bound instant, not ``now()``.
+
+    ClickHouse evaluates now() per query, so callers that issue two queries
+    from one scope (summarize's two scans, list_decisions' page + fallback
+    count) would silently describe two different slices."""
+    where, params = scope_filters("p1", 24)
+    assert not any("now()" in clause for clause in where)
+    assert isinstance(params["since"], datetime)
+    assert params["since"].tzinfo is not None
 
 
 _START = datetime(2025, 1, 1, 0, 0, 0, tzinfo=timezone.utc)

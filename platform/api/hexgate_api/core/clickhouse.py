@@ -43,3 +43,14 @@ def ping() -> bool:
     except Exception as exc:
         _log.warning("ClickHouse ping failed: %s", exc)
         return False
+
+
+def table_columns(client: Client, table: str) -> set[str]:
+    """Column names ClickHouse reports for ``table``.
+
+    ``table`` is a code-owned constant, never request data — it is
+    interpolated into the DESCRIBE, which takes no bound parameters.
+    """
+    result = client.query(f"DESCRIBE TABLE {table}")
+    name_index = result.column_names.index("name")
+    return {row[name_index] for row in result.result_rows}
