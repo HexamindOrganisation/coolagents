@@ -82,6 +82,17 @@ async def test_before_guard_rewrite_reaches_the_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_before_guard_non_json_rewrite_raises_a_clear_error() -> None:
+    """This adapter re-serializes rewritten args, so a guard producing a
+    non-JSON value must name the cause, not surface an opaque json TypeError."""
+    pipe = build_pipeline([before_tool(lambda call: Proceed(args={"text": {1, 2, 3}}))])
+    wrapped = wrap_tool(_make_tool(), _allow_enforcer(), pipeline=pipe)
+
+    with pytest.raises(TypeError, match="not JSON-serializable"):
+        await wrapped.on_invoke_tool(None, '{"text": "hi"}')
+
+
+@pytest.mark.asyncio
 async def test_after_guard_halt_suppresses_a_result_that_ran() -> None:
     calls: list[Any] = []
     pipe = build_pipeline(

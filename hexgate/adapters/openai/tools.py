@@ -69,7 +69,22 @@ def wrap_tool(
             # Keep the original raw ``input`` when no before-guard rewrote the
             # args (this preserves a non-dict payload the parse dropped);
             # re-serialize only when a rewrite actually changed them.
-            payload = input if final == parsed else json.dumps(final)
+            if final == parsed:
+                payload = input
+            else:
+                try:
+                    payload = json.dumps(final)
+                except (TypeError, ValueError) as exc:
+                    # A guard rewrote args to a non-JSON value. This adapter
+                    # alone re-serializes, so without this the failure would
+                    # surface as an opaque json TypeError that reads like a
+                    # tool crash. Name the real cause instead.
+                    raise TypeError(
+                        f"a before-guard rewrote {name!r} arguments to a value "
+                        f"that is not JSON-serializable ({exc}); tool arguments "
+                        "must stay JSON (the OpenAI tool receives them as a JSON "
+                        "string)."
+                    ) from exc
             return original_invoke(ctx, payload)
 
         return await run_guarded_async(
