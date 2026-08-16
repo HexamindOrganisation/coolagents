@@ -234,8 +234,14 @@ class HookEvent:
     A local-process, fire-and-forget record (like ``decision_observer``),
     emitted when a guard *acts* on a call, not on every call: a halt (blocked),
     an approved halt (``approved=True``, a guard required and got sign-off and
-    the call proceeded), or the set of modifications applied to a proceeding
-    call. A plain allow with no guard action emits nothing.
+    the call proceeded), or the set of modifications applied to a call. A plain
+    allow with no guard action emits nothing.
+
+    ``blocked`` disambiguates a modifications-only event (``halt=None``): it is
+    ``False`` when the rewrite took effect on a proceeding call, and ``True``
+    when a pre-guard rewrote the args but the *policy* then denied the call, so
+    the rewrite never executed. Without it, a provenance consumer would read a
+    coerced-then-denied call as a proceeding one.
     """
 
     call: ToolCall
@@ -243,6 +249,7 @@ class HookEvent:
     halt: Halt | None = None
     halted_by: str | None = None
     approved: bool = False
+    blocked: bool = False
 
 
 HookObserver = Callable[[HookEvent], None]

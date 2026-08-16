@@ -6,11 +6,14 @@
 ## Decision
 
 A guard `Halt` MUST reach the same audit sender and decision observer a policy
-denial does. A before-guard halt is recorded even though `decide` never ran; an
-after-guard halt is recorded **in addition to** the tool's genuine ALLOW, not in
-place of it. A guard-denied halt MUST carry the `guard_denied` marker so it is
-distinguishable from a real policy denial. Emission is factored into
-`PolicyEnforcer.record`, which `decide` and the hook runner both call.
+denial does — whether the halt blocked the call or was approved and let it proceed.
+A before-guard halt is recorded even though `decide` never ran; an after-guard halt
+is recorded **in addition to** the tool's genuine ALLOW, not in place of it; a
+`NEEDS_APPROVAL` halt that the handler grants is recorded too, mirroring how
+`decide` records a policy `NEEDS_APPROVAL` — the human sign-off on a privileged call
+is exactly the event worth keeping. A guard-denied halt MUST carry the
+`guard_denied` marker so it is distinguishable from a real policy denial. Emission is
+factored into `PolicyEnforcer.record`, which `decide` and the hook runner both call.
 
 ## Why
 
@@ -46,7 +49,7 @@ to both the model and any trail consumer.
 ## Verify
 
 ```
-pytest tests/hooks/test_runner.py -k "pre_halt_is_recorded or post_halt_records_both"
+pytest tests/hooks/test_runner.py -k "pre_halt_is_recorded or post_halt_records_both or approved_pre_halt_is_recorded"
 ```
 
 passes.

@@ -585,8 +585,43 @@ async def test_approved_pre_halt_reports_a_hookevent() -> None:
     assert events[0].halt is not None
 
 
+@pytest.mark.asyncio
+async def test_approved_pre_halt_is_recorded_on_the_audit_trail() -> None:
+    """A granted guard approval is audited, like a policy NEEDS_APPROVAL — not
+    left only on the observer channel (R-HOOK-004)."""
+    enf, inv = FakeEnforcer(), RecordingInvoke("ok")
+    pipe = _pipe(
+        pre=[
+            lambda call: Halt(reason="sign-off", outcome=DecisionOutcome.NEEDS_APPROVAL)
+        ]
+    )
+    out = await _run(enf, pipe, {"x": 1}, invoke=inv, approval_handler=True)
+
+    assert out == "ok"
+    approvals = [d for d in enf.recorded if d.outcome is DecisionOutcome.NEEDS_APPROVAL]
+    assert len(approvals) == 1  # the granted guard approval reached record()
+    assert approvals[0].arguments == {"x": 1}  # args on the trail, not the model
+
+
+@pytest.mark.asyncio
+async def test_rewrite_then_policy_deny_marks_the_event_blocked() -> None:
+    """A pre-guard rewrite the policy then denies is reported ``blocked``, so a
+    consumer never reads it as a rewrite that took effect."""
+    events: list[HookEvent] = []
+    enf = FakeEnforcer(outcome=DecisionOutcome.DENY, reason="nope")
+    inv = RecordingInvoke()
+    pipe = _pipe(pre=[lambda call: Proceed(args={"x": 2})], observer=events.append)
+    out = await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert out["ok"] is False  # policy denied
+    assert inv.calls == []  # the tool never ran
+    assert len(events) == 1
+    assert events[0].blocked is True
+    assert len(events[0].modifications) == 1  # the rewrite is still reported
+
+
 # ---------------------------------------------------------------------------
-# In-place mutation is contained (args read-only, result isolated)
+# In-place mutation is contained (args read-only, result sealed read-only)
 # ---------------------------------------------------------------------------
 
 
@@ -609,13 +644,14 @@ async def test_observe_guard_cannot_mutate_args_in_place() -> None:
 
 @pytest.mark.asyncio
 async def test_observe_after_guard_cannot_mutate_the_returned_object() -> None:
-    """The value handed to after-guards is a copy; the caller's object is safe."""
+    """The value handed to after-guards is a read-only view; the real object
+    is safe and the write raises (swallowed here, since the guard observes)."""
     enf = FakeEnforcer()
     real = {"name": "bob"}
     inv = RecordingInvoke(real)
 
     def mutate(call: ToolCall, out: ToolOutcome):
-        out.value["ssn"] = "LEAK"  # mutates the copy, not the real object
+        out.value["ssn"] = "LEAK"  # raises on the read-only view; never applied
         return None
 
     pipe = _pipe(post=[after_tool(mutate, observe=True)])

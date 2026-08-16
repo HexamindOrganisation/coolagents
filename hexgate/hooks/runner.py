@@ -18,7 +18,6 @@ original exception propagates unchanged.
 
 from __future__ import annotations
 
-import copy
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
@@ -184,15 +183,16 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
     return decision
 
 
-def _isolate_result(value: Any) -> Any:
-    """Deep-copy a JSON-ish result before the after-guards see it, so an
-    in-place mutation can't escape into the tool's real return object
-    (R-HOOK-003). Opaque objects pass through: v1 can't enforce it there."""
-    if isinstance(value, (dict, list)):
-        try:
-            return copy.deepcopy(value)
-        except Exception:
-            return value
+def _seal_result(value: Any) -> Any:
+    """Wrap a dict result in a read-only view before the after-guards see it,
+    so an in-place mutation can't escape into the tool's real return object
+    (R-HOOK-003). O(1), the same seal ``_new_call`` puts on args — a whole
+    deep-copy on the hot path (a large response cloned for an observe-only
+    watcher) is the cost this avoids. Lists and opaque objects pass through:
+    there is no cheap read-only view for them, and a nested dict inside a
+    sealed dict is the same documented shallow residual as on args."""
+    if isinstance(value, dict):
+        return MappingProxyType(value)
     return value
 
 
@@ -220,6 +220,7 @@ def _notify(
     halt: Halt | None = None,
     halted_by: str | None = None,
     approved: bool = False,
+    blocked: bool = False,
 ) -> None:
     if pipeline is None or pipeline.observer is None:
         return
@@ -231,6 +232,7 @@ def _notify(
                 halt=halt,
                 halted_by=halted_by,
                 approved=approved,
+                blocked=blocked,
             )
         )
     except Exception:
@@ -284,12 +286,13 @@ async def _run_post_async(
             continue
         res = await _call_hook_async(hook, call, outcome)
         if isinstance(res, Halt):
+            halt_decision = _halt_to_decision(res, call)
             if await _halt_approved_async(res, call, approval_handler):
+                _record_halt(enforcer, halt_decision, call)
                 _notify(
                     pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
-            halt_decision = _halt_to_decision(res, call)
             _record_halt(enforcer, halt_decision, call)
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
             return render_error(halt_decision)
@@ -319,7 +322,12 @@ async def run_guarded_async(
                 continue
             outcome = await _call_hook_async(hook, call)
             if isinstance(outcome, Halt):
+                halt_decision = _halt_to_decision(outcome, call)
                 if await _halt_approved_async(outcome, call, approval_handler):
+                    # A granted guard approval is audited too, mirroring how
+                    # ``decide`` records a policy NEEDS_APPROVAL — the human
+                    # sign-off on a privileged call is the most worth keeping.
+                    _record_halt(enforcer, halt_decision, call)
                     _notify(
                         pipeline,
                         call,
@@ -329,7 +337,6 @@ async def run_guarded_async(
                         approved=True,
                     )
                     continue
-                halt_decision = _halt_to_decision(outcome, call)
                 _record_halt(enforcer, halt_decision, call)
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
                 return render_error(halt_decision)
@@ -349,8 +356,11 @@ async def run_guarded_async(
                 and await resolve_approval_async(approval_handler, decision)
             )
             if not approved:
+                # A pre-guard may have rewritten args that the policy then
+                # denied: report the rewrite, but flagged blocked so a
+                # consumer never reads it as a rewrite that took effect.
                 if mods:
-                    _notify(pipeline, call, mods)
+                    _notify(pipeline, call, mods, blocked=True)
                 return render_error(decision)
 
     try:
@@ -371,7 +381,7 @@ async def run_guarded_async(
             _notify(pipeline, call, mods)
         raise
 
-    result_value = _isolate_result(raw) if (pipeline and pipeline.post) else raw
+    result_value = _seal_result(raw) if (pipeline and pipeline.post) else raw
     rendered = await _run_post_async(
         pipeline,
         call,
@@ -446,12 +456,13 @@ def _run_post_sync(
             continue
         res = _call_hook_sync(hook, call, outcome)
         if isinstance(res, Halt):
+            halt_decision = _halt_to_decision(res, call)
             if _halt_approved_sync(res, call, approval_handler):
+                _record_halt(enforcer, halt_decision, call)
                 _notify(
                     pipeline, call, [], halt=res, halted_by=hook.label, approved=True
                 )
                 continue
-            halt_decision = _halt_to_decision(res, call)
             _record_halt(enforcer, halt_decision, call)
             _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
             return render_error(halt_decision)
@@ -481,7 +492,10 @@ def run_guarded_sync(
                 continue
             outcome = _call_hook_sync(hook, call)
             if isinstance(outcome, Halt):
+                halt_decision = _halt_to_decision(outcome, call)
                 if _halt_approved_sync(outcome, call, approval_handler):
+                    # See the async path: a granted guard approval is audited.
+                    _record_halt(enforcer, halt_decision, call)
                     _notify(
                         pipeline,
                         call,
@@ -491,7 +505,6 @@ def run_guarded_sync(
                         approved=True,
                     )
                     continue
-                halt_decision = _halt_to_decision(outcome, call)
                 _record_halt(enforcer, halt_decision, call)
                 _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
                 return render_error(halt_decision)
@@ -507,8 +520,10 @@ def run_guarded_sync(
                 and resolve_approval_sync(approval_handler, decision)
             )
             if not approved:
+                # See the async path: a rewrite the policy denied is reported
+                # blocked, never as one that took effect.
                 if mods:
-                    _notify(pipeline, call, mods)
+                    _notify(pipeline, call, mods, blocked=True)
                 return render_error(decision)
 
     try:
@@ -529,7 +544,7 @@ def run_guarded_sync(
             _notify(pipeline, call, mods)
         raise
 
-    result_value = _isolate_result(raw) if (pipeline and pipeline.post) else raw
+    result_value = _seal_result(raw) if (pipeline and pipeline.post) else raw
     rendered = _run_post_sync(
         pipeline,
         call,
