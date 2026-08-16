@@ -148,19 +148,29 @@ class PolicyEnforcer:
             attributes=attrs_snapshot,
         )
 
+        self.record(
+            decision,
+            user_id=context.user_id if context is not None and context.user_id else "",
+            session_id=context.session_id
+            if (context is not None and context.session_id)
+            else "",
+        )
+        return decision
+
+    def record(
+        self, decision: Decision, *, user_id: str = "", session_id: str = ""
+    ) -> None:
+        """Emit ``decision`` to this enforcer's audit sender and decision
+        observer, both isolated so a broken observer never breaks enforcement.
+
+        ``decide`` calls this on every verdict; the hook runner calls it for a
+        guard halt, which builds its own :class:`Decision` and so does not go
+        through ``decide``. Without it a guard-blocked call would leave no trail
+        (pre-halt) or record only the tool's ALLOW (post-halt)."""
         if self._audit_sender is not None:
             self._audit_sender.emit(
-                AuditEvent(
-                    decision=decision,
-                    user_id=context.user_id
-                    if context is not None and context.user_id
-                    else "",
-                    session_id=context.session_id
-                    if (context is not None and context.session_id)
-                    else "",
-                )
+                AuditEvent(decision=decision, user_id=user_id, session_id=session_id)
             )
-
         if self._decision_observer is not None:
             try:
                 self._decision_observer(decision)
@@ -169,8 +179,6 @@ class PolicyEnforcer:
                 # subscriber raising) must not break enforcement — the
                 # Decision the agent acts on is the source of truth.
                 _log.exception("decision_observer raised; ignoring")
-
-        return decision
 
 
 def build_enforcer(
