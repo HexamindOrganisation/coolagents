@@ -88,7 +88,7 @@ audit emission, and the no-audit path never constructs an event (so a
 
 The enforcer builds the `AuditEvent` immediately after the `Decision`, so
 `occurred_at` is decision time for practical purposes. The decision fields
-(`agent_name`, `tool_name`, `outcome`, `role`, `reason`, `error_type`,
+(`agent_name`, `tool_name`, `outcome`, `user_roles`, `deciding_role`, `reason`, `error_type`,
 `violations`, `hint`, `arguments`) are populated by `Decision.from_verdict()`
 from the policy engine's `Verdict` plus host context.
 
@@ -114,7 +114,6 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "agent_name":  "example_agent",
   "tool_name":   "read_file",
   "outcome":     "deny",
-  "role":          "analyst",      // legacy: the caller's FIRST role; "" when none
   "user_roles":    ["analyst", "billing"],  // every role evaluated, caller order; [] when none
   "deciding_role": "",             // role that granted/gated it; "" on a deny
   "error_type":  "policy_denied",  // "" for allow
@@ -340,7 +339,6 @@ CREATE TABLE hexgate_audit.policy_decision
 
   -- Decision-specific
   tool_name           LowCardinality(String),
-  role                LowCardinality(String) DEFAULT '',      -- legacy: the caller's FIRST role
   outcome             Enum8('allow'=1, 'deny'=2, 'needs_approval'=3),
   error_type          LowCardinality(String) DEFAULT '',
   reason              String,
@@ -348,9 +346,9 @@ CREATE TABLE hexgate_audit.policy_decision
   hint                String CODEC(ZSTD(3)),
   arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
   attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
-  -- No DEFAULT: present since the table's first CREATE, so there is no
-  -- pre-column part for a read-time default to rescue. An SDK predating
-  -- multi-role sends only `role`; the API normalises that to [role] on ingest.
+  -- Roles are stored only as a set — there is no legacy scalar `role` column.
+  -- An SDK predating multi-role sends one; the API folds it into user_roles
+  -- at ingest, so every stored row is the same shape whatever wrote it.
   user_roles          Array(LowCardinality(String)),
   deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )

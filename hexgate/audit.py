@@ -197,11 +197,12 @@ class AuditEvent:
             "agent_name": d.agent_name,
             "tool_name": d.tool_name,
             "outcome": d.outcome.value,
-            "role": d.role or "",  # legacy: the caller's first role
             # Roles evaluated, in caller order, and the one that granted or
-            # gated the call ("" on a deny). Uncapped on purpose: these are
-            # policy identifiers, not caller payloads, and the platform bounds
-            # them (32 x 256) on ``DecisionEvent``.
+            # gated the call ("" on a deny). No legacy scalar ``role``: it was
+            # only ever ``user_roles[0]``, and the platform derives what it
+            # needs from the list. Uncapped on purpose: these are policy
+            # identifiers, not caller payloads, and the platform bounds them
+            # (32 x 256) on ``DecisionEvent``.
             "user_roles": list(d.user_roles),
             "deciding_role": d.deciding_role or "",
             "error_type": d.error_type or "",

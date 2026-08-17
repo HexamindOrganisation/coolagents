@@ -81,7 +81,6 @@ _DECISION_COLUMNS = [
     "session_id",
     "user_id",
     "tool_name",
-    "role",
     "outcome",
     "error_type",
     "reason",
@@ -135,12 +134,13 @@ def insert_decision(
     if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
         raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
-    # An SDK released before multi-role (<= 0.2.11) sends only ``role``.
-    # Materialise [role] so those events stay in the by_role breakdown, which
-    # reads user_roles — otherwise every caller on a pinned SDK silently
-    # vanishes from the panel. Storage needs no equivalent: the columns have
-    # existed since the table's first CREATE. This is the compat path that
-    # outlives any database recreation, because the SDK is pip-installed.
+    # ``role`` is an ingest-only compatibility shim, the single place the legacy
+    # scalar still exists anywhere in the system. An SDK released before
+    # multi-role (<= 0.2.11) sends only ``role``; folding it into user_roles
+    # here keeps those callers in the by_role breakdown, which reads the list.
+    # Nothing downstream stores or reads the scalar — there is no ``role``
+    # column — so from here on an old event is indistinguishable from a new one.
+    # This survives any database recreation, because the SDK is pip-installed.
     user_roles = list(event.user_roles) or ([event.role] if event.role else [])
 
     row = [
@@ -152,7 +152,6 @@ def insert_decision(
         event.session_id,
         event.user_id,
         event.tool_name,
-        event.role,
         event.outcome,
         event.error_type,
         event.reason,
@@ -492,7 +491,7 @@ def _decode_json_column(raw: str) -> object:
 
 _LIST_COLUMNS = (
     "event_id, occurred_at, received_at, agent_name, agent_version_id, "
-    "session_id, user_id, tool_name, role, user_roles, deciding_role, "
+    "session_id, user_id, tool_name, user_roles, deciding_role, "
     "outcome, error_type, reason, violations, hint, arguments, attributes"
 )
 

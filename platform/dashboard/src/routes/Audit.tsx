@@ -36,7 +36,6 @@ import {
   ActiveChips,
   AnomaliesCard,
   BreakdownCard,
-  callerRoles,
   EventsTable,
   FilterBar,
   KpiCard,
@@ -213,8 +212,8 @@ function DetailDrawer({
             {/* Two rows, not three: the legacy scalar `role` would say almost
                 the same thing as "roles evaluated". */}
             <KV k="roles evaluated">
-              {callerRoles(e).length ? (
-                callerRoles(e).join(", ")
+              {e.user_roles.length ? (
+                e.user_roles.join(", ")
               ) : (
                 <span className="text-muted-foreground">∅ none</span>
               )}

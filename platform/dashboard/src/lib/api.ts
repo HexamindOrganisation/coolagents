@@ -257,10 +257,8 @@ export interface AuditDecisionRow {
   session_id: string;
   user_id: string;
   tool_name: string;
-  /** Legacy scalar: the caller's *first* role, not the deciding one. */
-  role: string;
-  /** Distinct roles the caller carried, in order. Empty on pre-multi-role
-   * rows — read it through `callerRoles()`, which falls back to `role`. */
+  /** Distinct roles the caller carried, in order. Always the full set: an
+   * SDK that sends the legacy scalar has it folded in at ingest. */
   user_roles: string[];
   /** Role whose policy granted or gated the call; `""` on a deny. */
   deciding_role: string;

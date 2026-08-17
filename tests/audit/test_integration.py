@@ -48,9 +48,8 @@ async def test_wire_format_accepted_by_platform() -> None:
     _need_token()
     ev = _event()
     payload = ev.as_payload()
-    # A platform predating these keys ignores them (no extra="forbid").
     assert payload["user_roles"] == ["analyst", "billing"]
-    assert payload["role"] == "analyst"
+    assert payload["deciding_role"] == ""
     async with httpx.AsyncClient(timeout=5) as client:
         response = await client.post(
             f"{PLATFORM_URL}/v1/audit/decisions",

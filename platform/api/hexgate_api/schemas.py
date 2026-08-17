@@ -448,7 +448,10 @@ class DecisionEvent(AuditEnvelope):
 
     tool_name: str = Field(min_length=1, max_length=256)
     outcome: AuditOutcome
-    # Legacy scalar: the caller's FIRST role. Membership reads use ``user_roles``.
+    # Ingest-only compatibility shim for SDKs released before multi-role
+    # (<= 0.2.11), which send this instead of ``user_roles``. Folded into
+    # ``user_roles`` by insert_decision and never stored on its own — there
+    # is no ``role`` column. Accepted, never emitted: current SDKs omit it.
     role: str = Field(default="", max_length=256)
     # Distinct roles the SDK evaluated, in caller order. Advisory +
     # client-assertable like ``role`` / ``user_id``. Caps mirror ``violations``;
@@ -591,8 +594,8 @@ class AuditDecisionRow(BaseModel):
     session_id: str = ""
     user_id: str = ""
     tool_name: str
-    role: str = ""
-    # Pre-multi-role rows get ``[role]`` from the storage column's DEFAULT.
+    # No legacy ``role``: an SDK that sends one has it folded into ``user_roles``
+    # at ingest, so every stored row speaks the same shape.
     user_roles: list[str] = Field(default_factory=list)
     deciding_role: str = ""
     outcome: AuditOutcome

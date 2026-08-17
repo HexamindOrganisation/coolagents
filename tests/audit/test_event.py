@@ -41,7 +41,7 @@ def test_as_payload_full_payload() -> None:
     assert wire["agent_name"] == "example_agent"
     assert wire["tool_name"] == "read_file"
     assert wire["outcome"] == "deny"
-    assert wire["role"] == "analyst"
+    assert "role" not in wire  # legacy scalar dropped from the wire
     assert wire["error_type"] == "policy_denied"
     assert wire["reason"] == "denied for path"
     assert wire["violations"] == ["v1", "v2"]
@@ -63,8 +63,7 @@ def test_as_payload_server_resolved_fields_absent() -> None:
 def test_as_payload_none_normalizes_to_empty_string() -> None:
     d = _decision(user_roles=(), error_type=None)
     wire = AuditEvent(decision=d).as_payload()  # user_id/session_id default to ""
-    # No roles on the Decision → the legacy scalar ``role`` field goes out empty.
-    assert wire["role"] == ""
+    assert wire["user_roles"] == []
     assert wire["error_type"] == ""
     assert wire["user_id"] == ""
     assert wire["session_id"] == ""
@@ -75,8 +74,6 @@ def test_as_payload_carries_the_evaluated_role_set_in_order() -> None:
     d = _decision(user_roles=("billing", "support"), deciding_role="billing")
     wire = AuditEvent(decision=d).as_payload()
     assert wire["user_roles"] == ["billing", "support"]
-    # The legacy scalar stays the FIRST role, not the deciding one.
-    assert wire["role"] == "billing"
 
 
 def test_as_payload_user_roles_tuple_serializes_as_list() -> None:
@@ -94,7 +91,7 @@ def test_as_payload_deciding_role_need_not_be_the_first_role() -> None:
         deciding_role="support",
     )
     wire = AuditEvent(decision=d).as_payload()
-    assert wire["role"] == "billing"
+    assert wire["user_roles"] == ["billing", "support"]
     assert wire["deciding_role"] == "support"
 
 
@@ -111,7 +108,6 @@ def test_as_payload_no_roles_sends_an_empty_list() -> None:
     wire = AuditEvent(decision=_decision(user_roles=())).as_payload()
     assert wire["user_roles"] == []
     assert wire["deciding_role"] == ""
-    assert wire["role"] == ""
 
 
 def test_as_payload_does_not_redact_role_names() -> None:
@@ -121,7 +117,6 @@ def test_as_payload_does_not_redact_role_names() -> None:
     wire = AuditEvent(decision=d).as_payload()
     assert wire["user_roles"] == ["token", "api_key"]
     assert wire["deciding_role"] == "token"
-    assert wire["role"] == "token"
 
 
 def test_as_payload_violations_tuple_serializes_as_list() -> None:
@@ -361,4 +356,3 @@ def test_a_full_role_set_goes_out_whole() -> None:
 
     assert wire["user_roles"] == list(roles)
     assert wire["deciding_role"] == roles[-1]
-    assert wire["role"] == roles[0]

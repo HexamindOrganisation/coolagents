@@ -267,8 +267,8 @@ def test_multi_role_event_round_trips_both_new_columns(
     assert r.status_code == 202
     assert _inserted(fake_clickhouse, "user_roles") == ["billing", "support"]
     assert _inserted(fake_clickhouse, "deciding_role") == "support"
-    # The legacy scalar stays the caller's FIRST role, not the deciding one.
-    assert _inserted(fake_clickhouse, "role") == "billing"
+    # The legacy scalar is not stored at all — no ``role`` column.
+    assert "role" not in audit._DECISION_COLUMNS
 
 
 def test_old_sdk_role_only_event_materializes_a_single_role_set(
@@ -898,7 +898,6 @@ def _decision_row(total: int, **overrides) -> tuple:
         "session_id": "sess_1",
         "user_id": "u_1",
         "tool_name": "read_file",
-        "role": "",
         "user_roles": [],
         "deciding_role": "",
         "outcome": "deny",

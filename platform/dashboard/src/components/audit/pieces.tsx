@@ -40,14 +40,6 @@ import { BreakdownBar, type BreakdownDatum, DecisionBadge } from "./charts";
 import { OUTCOME_SERIES } from "./chart-tokens";
 import { fmtTs } from "./fmt";
 
-/**
- * The roles a caller carried on one decision, falling back to the legacy
- * scalar. The API normalises `role` → `[role]` on ingest, so the fallback is
- * belt-and-braces for a row that reached us from an API predating the column.
- */
-export const callerRoles = (e: AuditDecisionRow): string[] =>
-  e.user_roles?.length ? e.user_roles : e.role ? [e.role] : [];
-
 // Map a server breakdown row ({key, all, ...}) to the chart datum ({total, ...}).
 const toDatum = (r: AuditBreakdownRow): BreakdownDatum => ({
   key: r.key,
@@ -381,11 +373,9 @@ export function EventsTable({
                   {e.agent_name}
                 </TableCell>
                 <TableCell
-                  className={
-                    callerRoles(e).length ? "" : "text-muted-foreground"
-                  }
+                  className={e.user_roles.length ? "" : "text-muted-foreground"}
                 >
-                  <RolesCell roles={callerRoles(e)} />
+                  <RolesCell roles={e.user_roles} />
                 </TableCell>
                 <TableCell className="font-mono text-[12.5px]">
                   {e.tool_name}

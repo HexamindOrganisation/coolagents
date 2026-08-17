@@ -59,7 +59,6 @@ const ROW: AuditDecisionRow = {
   session_id: "sess-1",
   user_id: "u1",
   tool_name: "read_file",
-  role: "",
   user_roles: [],
   deciding_role: "",
   outcome: "deny",
@@ -92,7 +91,6 @@ const SIBLING: AuditDecisionRow = {
   violations: [],
   // A multi-role caller granted by its *second* role — the case the legacy
   // scalar `role` could not express.
-  role: "support",
   user_roles: ["support", "billing"],
   deciding_role: "billing",
   // No ABAC bag — the drawer must omit the section rather than show an empty box.

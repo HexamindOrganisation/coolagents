@@ -205,7 +205,6 @@ def test_enforcer_evaluates_no_roles_as_the_default_policy() -> None:
 
     assert [call["role"] for call in engine.calls] == [None]
     assert decision.user_roles == ()
-    assert decision.role is None  # legacy single-role view
 
 
 def test_enforcer_dedups_repeated_role_names() -> None:

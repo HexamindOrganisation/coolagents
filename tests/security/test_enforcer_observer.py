@@ -81,15 +81,16 @@ def test_observer_sees_all_three_outcomes() -> None:
 
 
 async def test_observer_sees_role_and_args_from_user_scope() -> None:
-    """The Decision the observer sees carries role from the active HexgateContext
-    scope and the (deep-copied) arguments snapshot from the call site."""
+    """The Decision the observer sees carries the role set from the active
+    HexgateContext scope and the (deep-copied) arguments snapshot from the
+    call site."""
     captured: list[Decision] = []
     engine = _StubEngine(Verdict(outcome=DecisionOutcome.DENY))
     enforcer = PolicyEnforcer(engine, agent_name="r", decision_observer=captured.append)
     async with HexgateContext(user_id="alice", user_roles=["analyst"]):
         enforcer.decide("read_file", {"path": "/etc/passwd"})
 
-    assert captured[0].role == "analyst"
+    assert captured[0].user_roles == ("analyst",)
     assert captured[0].arguments == {"path": "/etc/passwd"}
 
 

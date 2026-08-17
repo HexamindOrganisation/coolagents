@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
 
     -- Decision-specific
     tool_name           LowCardinality(String),
-    role                LowCardinality(String) DEFAULT '' COMMENT 'Legacy: the caller''s first role. Membership queries read user_roles',
     outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3),
     error_type          LowCardinality(String) DEFAULT '',
     reason              String,
@@ -30,11 +29,11 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     hint                String CODEC(ZSTD(3)),
     arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3)),
     attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3)),
-    -- No DEFAULT expression on user_roles: these columns have existed since the
-    -- table's first CREATE, so there is no pre-column part for a read-time
-    -- default to rescue. An SDK that predates multi-role sends only `role`;
-    -- that is normalised to [role] on the way in (audit/service.py), which is
-    -- the one compat path a fresh volume does NOT remove.
+    -- The caller's roles are a set, stored only as a set — there is no legacy
+    -- scalar `role` column. An SDK predating multi-role sends one; it is folded
+    -- into user_roles at ingest (audit/service.py), so every row here is the
+    -- same shape whatever wrote it. No DEFAULT: these columns have existed
+    -- since the first CREATE, so nothing needs a read-time rescue.
     user_roles          Array(LowCardinality(String)) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
     deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied'
 )
