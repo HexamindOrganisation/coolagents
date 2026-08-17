@@ -1,7 +1,7 @@
-# R-HOOK-002: Guards fail closed; observe guards fail open
+# R-GUARD-002: Guards fail closed; observe guards fail open
 
 **Status:** Accepted · 2026-08-12
-**Applies to:** `hexgate/hooks/**`
+**Applies to:** `hexgate/guards/**`
 
 ## Decision
 
@@ -38,7 +38,7 @@ fail-open and can never break a call, and in exchange it cannot rewrite or halt.
 ## Verify
 
 ```
-pytest tests/hooks/test_runner.py -k "fails_closed or observe_guard"
+pytest tests/guards/test_runner.py -k "fails_closed or observe_guard"
 ```
 
 passes.

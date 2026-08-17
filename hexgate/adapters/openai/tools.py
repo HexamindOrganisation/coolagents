@@ -19,8 +19,8 @@ from agents import FunctionTool
 from agents.tool import ToolContext
 
 from hexgate.approvals import ApprovalHandler
-from hexgate.hooks.runner import run_guarded_async
-from hexgate.hooks.types import ToolPipeline
+from hexgate.guards.runner import run_guarded_async
+from hexgate.guards.types import ToolPipeline
 from hexgate.security.enforcer import PolicyEnforcer
 
 

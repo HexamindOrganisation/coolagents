@@ -1,4 +1,4 @@
-"""Guard (before/after hook) parity for the OpenAI Agents adapter.
+"""Guard (before/after guard) parity for the OpenAI Agents adapter.
 
 The policy path is covered in test_tools.py; here we prove a `ToolPipeline`
 routed through `run_guarded_async` runs before/after guards around the tool,
@@ -14,8 +14,8 @@ import pytest
 from agents import FunctionTool
 
 from hexgate.adapters.openai.tools import wrap_tool
-from hexgate.hooks import after_tool, before_tool, build_pipeline
-from hexgate.hooks.types import Halt, Proceed
+from hexgate.guards import after_tool, before_tool, build_pipeline
+from hexgate.guards.types import Halt, Proceed
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME

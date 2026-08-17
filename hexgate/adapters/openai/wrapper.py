@@ -18,11 +18,11 @@ from agents import Agent
 
 from hexgate.adapters.openai.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
-from hexgate.hooks.types import build_pipeline
+from hexgate.guards.types import build_pipeline
 from hexgate.security.enforcer import PolicyEnforcer
 
 if TYPE_CHECKING:
-    from hexgate.hooks.types import Hook, HookObserver
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 def wrap_openai_agent(
@@ -30,8 +30,8 @@ def wrap_openai_agent(
     *,
     enforcer: PolicyEnforcer,
     approval_handler: ApprovalHandler | None = None,
-    hooks: Sequence[Hook] | None = None,
-    hook_observer: HookObserver | None = None,
+    guards: Sequence[Guard] | None = None,
+    guard_observer: GuardObserver | None = None,
 ) -> Agent:
     """Return a clone of ``agent`` whose tools are gated by ``enforcer``.
 
@@ -39,12 +39,12 @@ def wrap_openai_agent(
     must open a :class:`HexgateContext` scope around the run. ``approval_handler``
     (async ``fn(decision) -> bool`` or ``bool`` shorthand) fires when a
     tool call carries a ``NEEDS_APPROVAL`` outcome; a truthy return runs
-    the tool, falsy surfaces the ``[approval_required]`` marker. ``hooks`` is the
+    the tool, falsy surfaces the ``[approval_required]`` marker. ``guards`` is the
     flat ``@before_tool`` / ``@after_tool`` guard list run around each tool call
-    (the same argument the other adapters take); ``hook_observer`` receives the
-    provenance ``HookEvent``s.
+    (the same argument the other adapters take); ``guard_observer`` receives the
+    provenance ``GuardEvent``s.
     """
-    pipeline = build_pipeline(hooks, observer=hook_observer)
+    pipeline = build_pipeline(guards, observer=guard_observer)
     guarded_tools = wrap_tools(
         agent.tools, enforcer, approval_handler=approval_handler, pipeline=pipeline
     )

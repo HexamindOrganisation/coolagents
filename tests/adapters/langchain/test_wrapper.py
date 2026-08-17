@@ -165,16 +165,16 @@ def test_wrap_enforces_the_resolved_policy_not_allow_all(
     assert result["error"]["type"] == "policy_denied"
 
 
-def test_wrap_threads_hooks_to_the_tools(resolved: dict[str, Any]) -> None:
+def test_wrap_threads_guards_to_the_tools(resolved: dict[str, Any]) -> None:
     """Guards passed to wrap_langchain_agent run on the wrapped tools."""
-    from hexgate.hooks import before_tool
-    from hexgate.hooks.types import Halt
+    from hexgate.guards import before_tool
+    from hexgate.guards.types import Halt
 
     tools = [_make_tool("a")]
     guard = before_tool(lambda call: Halt(reason="blocked by guard"))
 
     wrap_langchain_agent(
-        agent=_FakeCompiledGraph(), tools=tools, api_key="k", hooks=[guard]
+        agent=_FakeCompiledGraph(), tools=tools, api_key="k", guards=[guard]
     )
 
     result = tools[0].func(text="hi")  # policy allows "a"; the guard halts it

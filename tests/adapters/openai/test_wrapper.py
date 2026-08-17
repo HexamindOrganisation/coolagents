@@ -123,16 +123,16 @@ async def test_wrap_openai_agent_gates_tools_with_the_given_enforcer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wrap_openai_agent_runs_the_hooks_flat_list() -> None:
-    """The wrapper takes a flat hooks list like the other adapters and runs the
+async def test_wrap_openai_agent_runs_the_guards_flat_list() -> None:
+    """The wrapper takes a flat guards list like the other adapters and runs the
     before/after guards around each tool call."""
-    from hexgate.hooks import before_tool
-    from hexgate.hooks.types import Halt
+    from hexgate.guards import before_tool
+    from hexgate.guards.types import Halt
 
     wrapped = wrap_openai_agent(
         _make_agent(),
         enforcer=_allow_all_enforcer(["echo", "shout"]),
-        hooks=[before_tool(lambda call: Halt(reason="remove the credential"))],
+        guards=[before_tool(lambda call: Halt(reason="remove the credential"))],
     )
 
     [echo_tool, _] = wrapped.tools

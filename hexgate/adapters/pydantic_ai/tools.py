@@ -20,8 +20,8 @@ from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
 
 from hexgate.approvals import ApprovalHandler
-from hexgate.hooks.runner import run_guarded_async
-from hexgate.hooks.types import ToolPipeline
+from hexgate.guards.runner import run_guarded_async
+from hexgate.guards.types import ToolPipeline
 from hexgate.security.enforcer import PolicyEnforcer
 
 

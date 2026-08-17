@@ -17,13 +17,13 @@ from google.adk.agents import BaseAgent
 
 from hexgate.adapters.google.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
-from hexgate.hooks.types import build_pipeline
+from hexgate.guards.types import build_pipeline
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
 if TYPE_CHECKING:
     from hexgate.cloud.client import HexgateClient
-    from hexgate.hooks.types import Hook, HookObserver
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 def wrap_google_agent(
@@ -32,8 +32,8 @@ def wrap_google_agent(
     api_key: str,
     approval_handler: ApprovalHandler | None = None,
     client: HexgateClient | None = None,
-    hooks: Sequence[Hook] | None = None,
-    hook_observer: HookObserver | None = None,
+    guards: Sequence[Guard] | None = None,
+    guard_observer: GuardObserver | None = None,
 ) -> tuple[BaseAgent, PolicyBinding]:
     """Return a policy-gated clone of ``agent`` plus its refresh binding.
 
@@ -52,7 +52,7 @@ def wrap_google_agent(
 
     resolved = resolve_policy(agent_name, api_key=api_key, client=client)
     enforcer = build_enforcer(resolved.engine, agent_name=agent_name, api_key=api_key)
-    pipeline = build_pipeline(hooks, observer=hook_observer)
+    pipeline = build_pipeline(guards, observer=guard_observer)
     guarded_tools = wrap_tools(
         tools, enforcer, approval_handler=approval_handler, pipeline=pipeline
     )

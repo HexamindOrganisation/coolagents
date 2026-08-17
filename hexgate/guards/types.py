@@ -1,4 +1,4 @@
-"""Types and authoring decorators for the tool-hook pipeline.
+"""Types and authoring decorators for the tool-guard pipeline.
 
 A *guard* is a function you attach before or after a tool call with the
 ``@before_tool`` / ``@after_tool`` decorators. It receives the
@@ -6,11 +6,11 @@ A *guard* is a function you attach before or after a tool call with the
 returns :class:`Proceed` (carry on, optionally rewriting args), :class:`Halt`
 (refuse), or ``None`` (the same as ``Proceed()``).
 
-You register guards as one flat ``hooks=[...]`` list; the framework splits them
+You register guards as one flat ``guards=[...]`` list; the framework splits them
 into a pre list and a post list by their decoration, preserving order within
-each. There is no ``Hook`` type to construct by hand: position is the decorator
+each. There is no ``Guard`` type to construct by hand: position is the decorator
 you used, and reach is the decorator's ``tool_names`` argument. See
-``docs/adr/R-HOOK-001..003`` and the runner in :mod:`hexgate.hooks.runner`.
+``docs/adr/R-GUARD-001..003`` and the runner in :mod:`hexgate.guards.runner`.
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ class Halt:
 
 
 @dataclass(frozen=True)
-class Hook:
+class Guard:
     """A guard plus its decoration. Internal: built by the decorators.
 
     ``position`` is ``"pre"`` or ``"post"``. ``tool_names`` is the reach
@@ -166,8 +166,8 @@ def _decorator(
 ) -> Any:
     names = _as_names(tool_names)
 
-    def wrap(f: Callable[..., Any]) -> Hook:
-        inner = f.fn if isinstance(f, Hook) else f
+    def wrap(f: Callable[..., Any]) -> Guard:
+        inner = f.fn if isinstance(f, Guard) else f
         if not callable(inner):
             if isinstance(inner, str):
                 raise TypeError(
@@ -179,7 +179,7 @@ def _decorator(
                 f"@before_tool / @after_tool expects a callable guard, got "
                 f"{type(inner).__name__}."
             )
-        return Hook(fn=inner, position=position, tool_names=names, observe=observe)
+        return Guard(fn=inner, position=position, tool_names=names, observe=observe)
 
     # Bare form (`@before_tool` / `before_tool(fn)`) vs called form
     # (`@before_tool(tool_names=..., observe=...)`).
@@ -198,7 +198,7 @@ def before_tool(
     configure it (``@before_tool(tool_names=["refund_order"], observe=True)``).
     ``tool_names`` accepts a name or a list of names (``None`` = every tool).
     ``observe=True`` makes it a fail-open watcher that cannot rewrite or halt.
-    Also usable inline as a wrapper: ``hooks=[before_tool(lambda call: ...)]``.
+    Also usable inline as a wrapper: ``guards=[before_tool(lambda call: ...)]``.
     """
     return _decorator("pre", fn, tool_names, observe)
 
@@ -228,8 +228,8 @@ def after_tool(
 
 
 @dataclass(frozen=True, slots=True)
-class HookEvent:
-    """What the pipeline reports to a :data:`HookObserver`.
+class GuardEvent:
+    """What the pipeline reports to a :data:`GuardObserver`.
 
     A local-process, fire-and-forget record (like ``decision_observer``),
     emitted when a guard *acts* on a call, not on every call: a halt (blocked),
@@ -252,13 +252,13 @@ class HookEvent:
     blocked: bool = False
 
 
-HookObserver = Callable[[HookEvent], None]
+GuardObserver = Callable[[GuardEvent], None]
 
 
 class ToolPipeline:
     """The split pre/post guard lists for one agent. Internal.
 
-    Built by :func:`build_pipeline` from a flat ``hooks`` list; the runner and
+    Built by :func:`build_pipeline` from a flat ``guards`` list; the runner and
     the ``GuardedTool`` seam consume it. Not part of the public surface.
     """
 
@@ -266,12 +266,12 @@ class ToolPipeline:
 
     def __init__(
         self,
-        pre: "Iterable[Hook]" = (),
-        post: "Iterable[Hook]" = (),
-        observer: HookObserver | None = None,
+        pre: "Iterable[Guard]" = (),
+        post: "Iterable[Guard]" = (),
+        observer: GuardObserver | None = None,
     ) -> None:
-        self.pre: tuple[Hook, ...] = tuple(pre)
-        self.post: tuple[Hook, ...] = tuple(post)
+        self.pre: tuple[Guard, ...] = tuple(pre)
+        self.post: tuple[Guard, ...] = tuple(post)
         self.observer = observer
 
     @property
@@ -280,21 +280,21 @@ class ToolPipeline:
 
 
 def build_pipeline(
-    hooks: "Iterable[Hook] | None", *, observer: HookObserver | None = None
+    guards: "Iterable[Guard] | None", *, observer: GuardObserver | None = None
 ) -> ToolPipeline | None:
-    """Split a flat ``hooks`` list into a :class:`ToolPipeline`.
+    """Split a flat ``guards`` list into a :class:`ToolPipeline`.
 
     Preserves the relative order of guards within the pre list and within the
     post list. Every element must be a guard produced by ``@before_tool`` /
     ``@after_tool``; a bare undecorated callable is a hard error, since a guard
     has to declare whether it runs before or after. Returns ``None`` only when
-    there is nothing to run and nothing to observe, so ``hooks=None`` and
-    ``hooks=[]`` behave the same when an ``observer`` is supplied.
+    there is nothing to run and nothing to observe, so ``guards=None`` and
+    ``guards=[]`` behave the same when an ``observer`` is supplied.
     """
-    pre: list[Hook] = []
-    post: list[Hook] = []
-    for h in hooks or ():
-        if not isinstance(h, Hook):
+    pre: list[Guard] = []
+    post: list[Guard] = []
+    for h in guards or ():
+        if not isinstance(h, Guard):
             raise TypeError(
                 f"{h!r} is not a guard; decorate it with @before_tool or "
                 "@after_tool (or wrap it: before_tool(fn) / after_tool(fn))"
@@ -306,8 +306,8 @@ def build_pipeline(
 
 __all__ = [
     "Halt",
-    "HookEvent",
-    "HookObserver",
+    "GuardEvent",
+    "GuardObserver",
     "Modification",
     "Proceed",
     "ToolCall",

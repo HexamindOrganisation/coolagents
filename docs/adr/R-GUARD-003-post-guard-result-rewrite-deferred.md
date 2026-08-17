@@ -1,17 +1,17 @@
-# R-HOOK-003: Post-hooks may not rewrite results in v1
+# R-GUARD-003: Post-guards may not rewrite results in v1
 
 **Status:** Accepted · 2026-08-12
-**Applies to:** `hexgate/hooks/**`
+**Applies to:** `hexgate/guards/**`
 
 ## Decision
 
-Post-tool hooks MAY observe or halt in v1; they MUST NOT rewrite the result. The
-runner MUST reject a post-hook that returns `Proceed(result=...)`. Result rewrite
+Post-tool guards MAY observe or halt in v1; they MUST NOT rewrite the result. The
+runner MUST reject a post-guard that returns `Proceed(result=...)`. Result rewrite
 lands in a later phase behind a projection rule, not before.
 
 ## Why
 
-Tool arguments are always JSON, because the model emits them, so a pre-hook can
+Tool arguments are always JSON, because the model emits them, so a pre-guard can
 rewrite them with a clean recursive walk. A tool result is an arbitrary Python
 object: a pydantic model, a dataframe, a bare string. Redacting one generically is
 not well-defined, and the only safe target is its serialized projection, which
@@ -25,11 +25,11 @@ later phase is an implementation, not a breaking change.
 
 - A result-scanning plugin ships observe-only in v1 (it flags a leak) and becomes
   a redactor when the projection rule lands.
-- Post-hooks still run when a tool raises, with `ToolOutcome(ok=False, error=...)`,
+- Post-guards still run when a tool raises, with `ToolOutcome(ok=False, error=...)`,
   so a watcher sees failures too; it simply cannot rewrite them.
 - The "MUST NOT rewrite" is enforced, not just documented, for a dict result: when
-  post-hooks exist, the value handed to them is wrapped in a read-only
-  `MappingProxyType` (gated on `pipeline.post` so the no-hooks path stays zero-cost),
+  post-guards exist, the value handed to them is wrapped in a read-only
+  `MappingProxyType` (gated on `pipeline.post` so the no-guards path stays zero-cost),
   and the runner returns the original object, so an in-place mutation raises rather
   than escaping into the tool's real return. This is an O(1) seal, the same one
   `_new_call` puts on args; an earlier version deep-copied the whole result, which
@@ -47,7 +47,7 @@ later phase is an implementation, not a breaking change.
 ## Verify
 
 ```
-pytest tests/hooks/test_runner.py -k post_hook_result_rewrite_is_rejected
+pytest tests/guards/test_runner.py -k post_guard_result_rewrite_is_rejected
 ```
 
-passes (a post-hook returning `Proceed(result=...)` raises in v1).
+passes (a post-guard returning `Proceed(result=...)` raises in v1).

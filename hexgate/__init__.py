@@ -20,7 +20,7 @@ from hexgate.agents.loader import (
     unregister_agent_factory,
 )
 from hexgate.cloud import HexgateClient, HexgateConfig
-from hexgate.hooks import after_tool, before_tool
+from hexgate.guards import after_tool, before_tool
 from hexgate.manifest import AgentManifest, create_manifest
 from hexgate.runtime import (
     ContextAttributeValue,

@@ -1,4 +1,4 @@
-"""The guarded-call runner: pre-hooks, decide, invoke, post-hooks.
+"""The guarded-call runner: pre-guards, decide, invoke, post-guards.
 
 One shared sequence the adapters call instead of their own inline
 decide-then-invoke. It is adapter-agnostic: the caller passes an ``invoke``
@@ -7,12 +7,12 @@ closure that runs the wrapped tool on the (possibly rewritten) args, and a
 framework (LangChain returns a dict, the string-result adapters return a
 string).
 
-Ordering is fixed and load-bearing: **pre-hooks run before ``decide``**, so
-``decide`` always authorizes the exact args that will execute. A pre-hook can
+Ordering is fixed and load-bearing: **pre-guards run before ``decide``**, so
+``decide`` always authorizes the exact args that will execute. A pre-guard can
 rewrite args or halt; it can never widen, because ``decide`` still runs on its
-output. Post-hooks observe or halt in v1 (result rewrite is a later phase), and
+output. Post-guards observe or halt in v1 (result rewrite is a later phase), and
 they run whether the tool returned or raised, so a watcher sees a failure the
-same way it sees a result. If the tool raised and no post-hook halts, the
+same way it sees a result. If the tool raised and no post-guard halts, the
 original exception propagates unchanged.
 """
 
@@ -26,11 +26,11 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from hexgate.agents.approvals import resolve_approval_async, resolve_approval_sync
-from hexgate.hooks.types import (
+from hexgate.guards.types import (
     _UNSET,
     Halt,
-    Hook,
-    HookEvent,
+    Guard,
+    GuardEvent,
     Modification,
     Proceed,
     ToolCall,
@@ -48,7 +48,7 @@ _log = logging.getLogger(__name__)
 
 RenderError = Callable[[Decision], Any]
 
-# Sentinel a post-hook runner returns when nothing halted, distinct from any
+# Sentinel a post-guard runner returns when nothing halted, distinct from any
 # value ``render_error`` might produce (a dict or str). Identity-compared only.
 _NO_HALT: Any = object()
 
@@ -58,7 +58,7 @@ _NO_HALT: Any = object()
 # ---------------------------------------------------------------------------
 
 
-def _has_hooks(pipeline: ToolPipeline | None) -> bool:
+def _has_guards(pipeline: ToolPipeline | None) -> bool:
     return pipeline is not None and not pipeline.is_empty
 
 
@@ -81,28 +81,28 @@ def _new_call(
     )
 
 
-def _applies(hook: Hook, tool_name: str) -> bool:
-    return hook.applies(tool_name)
+def _applies(guard: Guard, tool_name: str) -> bool:
+    return guard.applies(tool_name)
 
 
-def _fail_closed(hook: Hook) -> Halt | None:
+def _fail_closed(guard: Guard) -> Halt | None:
     """Turn a guard exception into a denial, or ``None`` for an observe guard.
 
     Called from inside the ``except`` block so ``_log.exception`` still has the
     live traceback.
     """
-    if hook.observe:
-        _log.exception("observe guard %s raised; ignoring", hook.label)
+    if guard.observe:
+        _log.exception("observe guard %s raised; ignoring", guard.label)
         return None
-    _log.exception("guard %s raised; failing closed (deny)", hook.label)
+    _log.exception("guard %s raised; failing closed (deny)", guard.label)
     return Halt(
         reason="Blocked by a policy guard.",
         outcome=DecisionOutcome.DENY,
-        detail=f"guard {hook.label!r} raised",
+        detail=f"guard {guard.label!r} raised",
     )
 
 
-def _normalize(hook: Hook, result: Any) -> Proceed | Halt | None:
+def _normalize(guard: Guard, result: Any) -> Proceed | Halt | None:
     """Validate a guard's return value.
 
     An observe guard's return is discarded (it can neither rewrite nor halt). A
@@ -110,50 +110,50 @@ def _normalize(hook: Hook, result: Any) -> Proceed | Halt | None:
     is a contract violation and raises, so the bug surfaces in development
     rather than silently passing.
     """
-    if hook.observe:
+    if guard.observe:
         if result is not None:
             _log.warning(
                 "observe guard %s returned %s; ignoring (observe guards cannot "
                 "rewrite or halt)",
-                hook.label,
+                guard.label,
                 type(result).__name__,
             )
         return None
     if result is None or isinstance(result, (Proceed, Halt)):
         return result
     raise TypeError(
-        f"hook {hook.label!r} returned {type(result).__name__}; "
+        f"guard {guard.label!r} returned {type(result).__name__}; "
         "expected Proceed, Halt, or None"
     )
 
 
 def _apply_pre(
-    call: ToolCall, hook: Hook, proceed: Proceed, mods: list[Modification]
+    call: ToolCall, guard: Guard, proceed: Proceed, mods: list[Modification]
 ) -> ToolCall:
-    """Apply a pre-hook ``Proceed`` (an arg rewrite) to the working call."""
+    """Apply a pre-guard ``Proceed`` (an arg rewrite) to the working call."""
     if proceed.result is not _UNSET:
         raise ValueError(
-            f"pre-hook {hook.label!r} returned Proceed(result=...); result "
-            "rewrite is a post-hook, later-phase feature"
+            f"pre-guard {guard.label!r} returned Proceed(result=...); result "
+            "rewrite is a post-guard, later-phase feature"
         )
     if proceed.args is None:
         return call
     mods.append(
         proceed.modification
-        or Modification(plugin=hook.label, target="args", summary="rewrote arguments")
+        or Modification(plugin=guard.label, target="args", summary="rewrote arguments")
     )
     return replace(call, args=MappingProxyType(dict(proceed.args)))
 
 
-def _reject_post_proceed(hook: Hook, proceed: Proceed) -> None:
+def _reject_post_proceed(guard: Guard, proceed: Proceed) -> None:
     if proceed.args is not None:
         raise ValueError(
-            f"post-hook {hook.label!r} returned Proceed(args=...); post-hooks "
+            f"post-guard {guard.label!r} returned Proceed(args=...); post-guards "
             "cannot rewrite args"
         )
     if proceed.result is not _UNSET:
         raise ValueError(
-            f"post-hook {hook.label!r} returned Proceed(result=...); result "
+            f"post-guard {guard.label!r} returned Proceed(result=...); result "
             "rewrite is a later phase"
         )
 
@@ -186,7 +186,7 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
 def _seal_result(value: Any) -> Any:
     """Wrap a dict result in a read-only view before the after-guards see it,
     so an in-place mutation can't escape into the tool's real return object
-    (R-HOOK-003). O(1), the same seal ``_new_call`` puts on args — a whole
+    (R-GUARD-003). O(1), the same seal ``_new_call`` puts on args — a whole
     deep-copy on the hot path (a large response cloned for an observe-only
     watcher) is the cost this avoids. Lists and opaque objects pass through:
     there is no cheap read-only view for them, and a nested dict inside a
@@ -226,7 +226,7 @@ def _notify(
         return
     try:
         pipeline.observer(
-            HookEvent(
+            GuardEvent(
                 call=call,
                 modifications=tuple(mods),
                 halt=halt,
@@ -236,7 +236,7 @@ def _notify(
             )
         )
     except Exception:
-        _log.exception("hook observer raised; ignoring")
+        _log.exception("guard observer raised; ignoring")
 
 
 # ---------------------------------------------------------------------------
@@ -244,14 +244,14 @@ def _notify(
 # ---------------------------------------------------------------------------
 
 
-async def _call_hook_async(hook: Hook, *hook_args: Any) -> Proceed | Halt | None:
+async def _call_guard_async(guard: Guard, *guard_args: Any) -> Proceed | Halt | None:
     try:
-        result = hook.fn(*hook_args)
+        result = guard.fn(*guard_args)
         if isawaitable(result):
             result = await result
     except Exception:
-        return _fail_closed(hook)
-    return _normalize(hook, result)
+        return _fail_closed(guard)
+    return _normalize(guard, result)
 
 
 async def _halt_approved_async(
@@ -271,33 +271,33 @@ async def _run_post_async(
     enforcer: "PolicyEnforcer | None",
     render_error: RenderError,
 ) -> Any:
-    """Run the post-hooks over ``outcome``.
+    """Run the post-guards over ``outcome``.
 
-    Returns a rendered error when a post-hook halts, else :data:`_NO_HALT`.
+    Returns a rendered error when a post-guard halts, else :data:`_NO_HALT`.
     Runs for a successful result and for a tool that raised
-    (``outcome.ok is False``), so an observe or redact hook sees failures too.
+    (``outcome.ok is False``), so an observe or redact guard sees failures too.
     A blocking halt is recorded to the audit trail *in addition to* the tool's
     genuine ALLOW (the tool did run; only the result is withheld).
     """
     if pipeline is None:
         return _NO_HALT
-    for hook in pipeline.post:
-        if not _applies(hook, call.tool_name):
+    for guard in pipeline.post:
+        if not _applies(guard, call.tool_name):
             continue
-        res = await _call_hook_async(hook, call, outcome)
+        res = await _call_guard_async(guard, call, outcome)
         if isinstance(res, Halt):
             halt_decision = _halt_to_decision(res, call)
             if await _halt_approved_async(res, call, approval_handler):
                 _record_halt(enforcer, halt_decision, call)
                 _notify(
-                    pipeline, call, [], halt=res, halted_by=hook.label, approved=True
+                    pipeline, call, [], halt=res, halted_by=guard.label, approved=True
                 )
                 continue
             _record_halt(enforcer, halt_decision, call)
-            _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
+            _notify(pipeline, call, mods, halt=res, halted_by=guard.label)
             return render_error(halt_decision)
         if isinstance(res, Proceed):
-            _reject_post_proceed(hook, res)
+            _reject_post_proceed(guard, res)
     return _NO_HALT
 
 
@@ -312,15 +312,15 @@ async def run_guarded_async(
     render_error: RenderError,
 ) -> Any:
     """Run one guarded tool call, async. See module docstring for the order."""
-    context = get_current_context() if _has_hooks(pipeline) else None
+    context = get_current_context() if _has_guards(pipeline) else None
     call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
 
     if pipeline is not None:
-        for hook in pipeline.pre:
-            if not _applies(hook, call.tool_name):
+        for guard in pipeline.pre:
+            if not _applies(guard, call.tool_name):
                 continue
-            outcome = await _call_hook_async(hook, call)
+            outcome = await _call_guard_async(guard, call)
             if isinstance(outcome, Halt):
                 halt_decision = _halt_to_decision(outcome, call)
                 if await _halt_approved_async(outcome, call, approval_handler):
@@ -333,15 +333,15 @@ async def run_guarded_async(
                         call,
                         [],  # mods are reported once, by the terminal notify
                         halt=outcome,
-                        halted_by=hook.label,
+                        halted_by=guard.label,
                         approved=True,
                     )
                     continue
                 _record_halt(enforcer, halt_decision, call)
-                _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
+                _notify(pipeline, call, mods, halt=outcome, halted_by=guard.label)
                 return render_error(halt_decision)
             if isinstance(outcome, Proceed):
-                call = _apply_pre(call, hook, outcome, mods)
+                call = _apply_pre(call, guard, outcome, mods)
 
     if enforcer is not None:
         # A before-guard's NEEDS_APPROVAL (handled in the loop above) and the
@@ -403,13 +403,13 @@ async def run_guarded_async(
 # ---------------------------------------------------------------------------
 
 
-def _call_hook_sync(hook: Hook, *hook_args: Any) -> Proceed | Halt | None:
+def _call_guard_sync(guard: Guard, *guard_args: Any) -> Proceed | Halt | None:
     try:
-        result = hook.fn(*hook_args)
+        result = guard.fn(*guard_args)
     except Exception:
-        return _fail_closed(hook)
+        return _fail_closed(guard)
     if isawaitable(result):
-        if hook.observe:
+        if guard.observe:
             # An observe guard is fail-open: an async side-effect guard on a
             # sync path never ran, but it must not break the call. Drop the
             # coroutine (avoids an un-awaited warning) and log.
@@ -417,18 +417,18 @@ def _call_hook_sync(hook: Hook, *hook_args: Any) -> Proceed | Halt | None:
             _log.warning(
                 "observe guard %s returned a coroutine on a sync path; "
                 "ignoring (write it sync, or use an async entry point)",
-                hook.label,
+                guard.label,
             )
             return None
         # A non-observe guard returning a coroutine on a sync path is a wiring
         # mistake, not a runtime denial. Surface it loudly.
         result.close()
         raise RuntimeError(
-            f"guard {hook.label!r} returned a coroutine; sync tool invocation "
+            f"guard {guard.label!r} returned a coroutine; sync tool invocation "
             "cannot await it — use an async entry point (ainvoke / astream / "
             "astream_events / run_async / etc.)."
         )
-    return _normalize(hook, result)
+    return _normalize(guard, result)
 
 
 def _halt_approved_sync(
@@ -451,23 +451,23 @@ def _run_post_sync(
     """Sync mirror of :func:`_run_post_async`."""
     if pipeline is None:
         return _NO_HALT
-    for hook in pipeline.post:
-        if not _applies(hook, call.tool_name):
+    for guard in pipeline.post:
+        if not _applies(guard, call.tool_name):
             continue
-        res = _call_hook_sync(hook, call, outcome)
+        res = _call_guard_sync(guard, call, outcome)
         if isinstance(res, Halt):
             halt_decision = _halt_to_decision(res, call)
             if _halt_approved_sync(res, call, approval_handler):
                 _record_halt(enforcer, halt_decision, call)
                 _notify(
-                    pipeline, call, [], halt=res, halted_by=hook.label, approved=True
+                    pipeline, call, [], halt=res, halted_by=guard.label, approved=True
                 )
                 continue
             _record_halt(enforcer, halt_decision, call)
-            _notify(pipeline, call, mods, halt=res, halted_by=hook.label)
+            _notify(pipeline, call, mods, halt=res, halted_by=guard.label)
             return render_error(halt_decision)
         if isinstance(res, Proceed):
-            _reject_post_proceed(hook, res)
+            _reject_post_proceed(guard, res)
     return _NO_HALT
 
 
@@ -482,15 +482,15 @@ def run_guarded_sync(
     render_error: RenderError,
 ) -> Any:
     """Run one guarded tool call, sync. Mirrors :func:`run_guarded_async`."""
-    context = get_current_context() if _has_hooks(pipeline) else None
+    context = get_current_context() if _has_guards(pipeline) else None
     call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
 
     if pipeline is not None:
-        for hook in pipeline.pre:
-            if not _applies(hook, call.tool_name):
+        for guard in pipeline.pre:
+            if not _applies(guard, call.tool_name):
                 continue
-            outcome = _call_hook_sync(hook, call)
+            outcome = _call_guard_sync(guard, call)
             if isinstance(outcome, Halt):
                 halt_decision = _halt_to_decision(outcome, call)
                 if _halt_approved_sync(outcome, call, approval_handler):
@@ -501,15 +501,15 @@ def run_guarded_sync(
                         call,
                         [],  # mods are reported once, by the terminal notify
                         halt=outcome,
-                        halted_by=hook.label,
+                        halted_by=guard.label,
                         approved=True,
                     )
                     continue
                 _record_halt(enforcer, halt_decision, call)
-                _notify(pipeline, call, mods, halt=outcome, halted_by=hook.label)
+                _notify(pipeline, call, mods, halt=outcome, halted_by=guard.label)
                 return render_error(halt_decision)
             if isinstance(outcome, Proceed):
-                call = _apply_pre(call, hook, outcome, mods)
+                call = _apply_pre(call, guard, outcome, mods)
 
     if enforcer is not None:
         decision = enforcer.decide(call.tool_name, call.args)

@@ -27,7 +27,7 @@ from hexgate.runtime import HexgateContext
 from hexgate.security.bans import resolve_ban_gate
 
 if TYPE_CHECKING:
-    from hexgate.hooks.types import Hook, HookObserver
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 class HexgateRunner:
@@ -41,8 +41,8 @@ class HexgateRunner:
         session_service: BaseSessionService,
         api_key: str | None = None,
         approval_handler: ApprovalHandler | None = None,
-        guards: "Sequence[Hook] | None" = None,
-        hook_observer: "HookObserver | None" = None,
+        guards: "Sequence[Guard] | None" = None,
+        guard_observer: "GuardObserver | None" = None,
         **runner_kwargs: Any,
     ):
         # ``guards`` matches the OpenAI runner's constructor. ADK's ``run`` has
@@ -62,8 +62,8 @@ class HexgateRunner:
             api_key=self.api_key,
             approval_handler=approval_handler,
             client=client,
-            hooks=guards,
-            hook_observer=hook_observer,
+            guards=guards,
+            guard_observer=guard_observer,
         )
         plugins = list(runner_kwargs.pop("plugins", None) or [])
         plugins.append(HexgateUsagePlugin(api_key=self.api_key))

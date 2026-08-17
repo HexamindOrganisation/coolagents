@@ -21,13 +21,13 @@ from hexgate.adapters.langchain.agent import HexgateLangchainAgent
 from hexgate.adapters.langchain.tools import install_enforcer_on_tools
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.hooks.types import build_pipeline
+from hexgate.guards.types import build_pipeline
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
 if TYPE_CHECKING:
-    from hexgate.hooks.types import Hook, HookObserver
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 def wrap_langchain_agent(
@@ -35,8 +35,8 @@ def wrap_langchain_agent(
     agent: CompiledStateGraph,
     tools: list[BaseTool],
     api_key: str | None = None,
-    hooks: Sequence[Hook] | None = None,
-    hook_observer: HookObserver | None = None,
+    guards: Sequence[Guard] | None = None,
+    guard_observer: GuardObserver | None = None,
 ) -> HexgateLangchainAgent:
     """Wrap a pre-built LangGraph agent with Hexgate policy enforcement.
 
@@ -44,9 +44,9 @@ def wrap_langchain_agent(
     The returned proxy takes ``hexgate_context`` per invocation; role resolves at
     call time from the active :class:`HexgateContext`. ``api_key`` falls back to
     ``HEXGATE_API_KEY``. ``NEEDS_APPROVAL`` outcomes render as structured
-    errors — wire any host-side approval flow outside the SDK. ``hooks`` is a flat
+    errors — wire any host-side approval flow outside the SDK. ``guards`` is a flat
     list of guards authored with ``@before_tool`` / ``@after_tool``; they wrap each
-    tool in place alongside the policy (``hook_observer`` receives their provenance
+    tool in place alongside the policy (``guard_observer`` receives their provenance
     events). The enforced policy is the platform's; unlisted tools are denied.
     """
     resolved_key = resolve_api_key(api_key)
@@ -65,7 +65,7 @@ def wrap_langchain_agent(
     enforcer = build_enforcer(
         resolved.engine, agent_name=agent_name, api_key=resolved_key
     )
-    pipeline = build_pipeline(hooks, observer=hook_observer)
+    pipeline = build_pipeline(guards, observer=guard_observer)
     install_enforcer_on_tools(tools, enforcer=enforcer, pipeline=pipeline)
 
     return HexgateLangchainAgent(
