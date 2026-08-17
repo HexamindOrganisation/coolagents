@@ -222,9 +222,8 @@ def insert_ban_enforcement(
 def verify_schema(client: Client) -> None:
     """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
 
-    The driver resolves column names against a DESCRIBE before sending, so one
-    missing column fails every write until an operator migrates. Startup-only:
-    the condition can't change without a deployment or manual DDL.
+    Extra server-side columns are fine — only gaps in what we write break
+    inserts. Startup-only: changing this needs a deployment or manual DDL.
     """
     missing = {
         table: sorted(set(columns) - table_columns(client, table))

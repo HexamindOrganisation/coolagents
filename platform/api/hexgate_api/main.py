@@ -155,10 +155,9 @@ async def lifespan(app_: FastAPI):
             "ClickHouse unreachable at startup; audit endpoints will 503 until reachable"
         )
     else:
-        # Reachable but behind this build is the worse failure: every insert
-        # would be rejected and the event lost. Refuse to boot so the previous
-        # deployment keeps serving until the migration lands. Guarded by the
-        # ping so a dev machine without ClickHouse still starts.
+        # Behind this build, every insert is rejected and dropped by the SDK —
+        # silently, from this side. Refuse to boot so the previous deployment
+        # keeps serving.
         verify_audit_schema(get_clickhouse())
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
