@@ -123,6 +123,25 @@ async def test_wrap_openai_agent_gates_tools_with_the_given_enforcer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_wrap_openai_agent_runs_the_hooks_flat_list() -> None:
+    """The wrapper takes a flat hooks list like the other adapters and runs the
+    before/after guards around each tool call."""
+    from hexgate.hooks import before_tool
+    from hexgate.hooks.types import Halt
+
+    wrapped = wrap_openai_agent(
+        _make_agent(),
+        enforcer=_allow_all_enforcer(["echo", "shout"]),
+        hooks=[before_tool(lambda call: Halt(reason="remove the credential"))],
+    )
+
+    [echo_tool, _] = wrapped.tools
+    async with HexgateContext(user_id="u-1"):
+        result = await echo_tool.on_invoke_tool(None, '{"text": "hi"}')
+    assert "remove the credential" in result  # the guard halted before the tool ran
+
+
+@pytest.mark.asyncio
 async def test_refresh_swap_reaches_every_clone() -> None:
     """Rebinding enforcer.policy (what refresh does) flips decisions in ALL
     clones produced from the shared enforcer — the per-call rewrap is safe."""

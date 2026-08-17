@@ -35,7 +35,6 @@ from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.hooks.types import build_pipeline
 from hexgate.runtime import HexgateContext
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
@@ -109,9 +108,10 @@ class HexgateRunner:
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
         self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
-        # Guards are fixed per runner; build the pipeline once and reuse it on
-        # every per-call rewrap below.
-        self._pipeline = build_pipeline(hooks, observer=hook_observer)
+        # Guards are fixed per runner; threaded into each per-call rewrap below,
+        # where wrap_openai_agent builds the pipeline (matching the other adapters).
+        self._hooks = hooks
+        self._hook_observer = hook_observer
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
         """Get-or-resolve the cached policy binding for ``agent``'s name.
@@ -193,7 +193,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            pipeline=self._pipeline,
+            hooks=self._hooks,
+            hook_observer=self._hook_observer,
         )
         async with hexgate_context:
             with self._propagate(hexgate_context, agent.name):
@@ -226,7 +227,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            pipeline=self._pipeline,
+            hooks=self._hooks,
+            hook_observer=self._hook_observer,
         )
         with hexgate_context.sync_scope():
             with self._propagate(hexgate_context, agent.name):
@@ -294,7 +296,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            pipeline=self._pipeline,
+            hooks=self._hooks,
+            hook_observer=self._hook_observer,
         )
 
         with hexgate_context.sync_scope():
