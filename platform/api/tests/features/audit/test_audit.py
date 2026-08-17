@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 from clickhouse_connect.driver.exceptions import (
     ClickHouseError,
+    DatabaseError,
     DataError,
     OperationalError,
     ProgrammingError,
@@ -532,7 +533,7 @@ def test_verify_schema_names_the_missing_columns() -> None:
     with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
         audit.verify_schema(_describing(columns_by_table=schema))
     assert exc.value.missing == {audit.DECISION_TABLE: ["deciding_role", "user_roles"]}
-    assert "migrations" in str(exc.value)
+    assert "recreate the volume" in str(exc.value).lower()
 
 
 def test_verify_schema_covers_ban_enforcement_too() -> None:
@@ -541,6 +542,23 @@ def test_verify_schema_covers_ban_enforcement_too() -> None:
     with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
         audit.verify_schema(_describing(columns_by_table=schema))
     assert exc.value.missing == {audit.BAN_ENFORCEMENT_TABLE: ["ban_id"]}
+
+
+def test_verify_schema_reports_an_absent_table_as_a_schema_gap() -> None:
+    """A dropped table must give the actionable error, not a raw DatabaseError
+    escaping the lifespan and crash-looping the whole control plane."""
+    client = MagicMock()
+    client.query.side_effect = DatabaseError("Table does not exist")
+    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+        audit.verify_schema(client)
+    assert exc.value.missing[audit.DECISION_TABLE] == sorted(audit._DECISION_COLUMNS)
+
+
+def test_verify_schema_degrades_when_clickhouse_is_unreachable() -> None:
+    """Connectivity is /ready's business; startup must not depend on it."""
+    client = MagicMock()
+    client.query.side_effect = OperationalError("connection refused")
+    audit.verify_schema(client)  # no raise
 
 
 def test_naive_occurred_at_accepted_as_utc(

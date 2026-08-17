@@ -4,7 +4,9 @@
 -- This init dir runs once on an empty volume; edits afterward are
 -- ignored. Don't add more files here — use a real migration runner
 -- instead. Until there is one: every edit below also needs a
--- hand-applied counterpart in ../migrations/ for existing volumes.
+-- hand-applied counterpart in ../migrations/ for existing volumes —
+-- unless no ALTER can restate pre-existing rows truthfully (the role
+-- set), in which case the volume is recreated and no migration ships.
 
 CREATE DATABASE IF NOT EXISTS hexgate_audit;
 

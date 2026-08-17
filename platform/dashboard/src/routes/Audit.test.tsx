@@ -97,6 +97,17 @@ const SIBLING: AuditDecisionRow = {
   attributes: null,
 };
 
+/** An agent enforcing without a HexgateContext: `default` granted the call, so
+ * the wire carries no roles and an empty deciding_role — same encoding as a
+ * deny, and the drawer must not read it as one. */
+const UNROLED_ALLOW: AuditDecisionRow = {
+  ...SIBLING,
+  event_id: "evt-3",
+  tool_name: "list_files",
+  user_roles: [],
+  deciding_role: "",
+};
+
 /**
  * Same fetch-stub helper pattern as Orgs.test.tsx, extended to record
  * every requested URL (path + query) so tests can assert what filter
@@ -144,8 +155,8 @@ function stubFetch(anomalies: AuditAnomaly[] = [], role = "owner"): string[] {
           // The drawer's session drill-down vs the main table.
           if (url.searchParams.get("session_id") === "sess-1") {
             return json({
-              rows: [ROW, SIBLING],
-              total: 2,
+              rows: [ROW, SIBLING, UNROLED_ALLOW],
+              total: 3,
               limit: 12,
               offset: 0,
             });
@@ -384,6 +395,24 @@ describe("AuditPage", () => {
     await openDrawer(user);
     expect(screen.getByText("∅ none")).toBeInTheDocument();
     expect(screen.getByText("∅ none — no role granted it")).toBeInTheDocument();
+  });
+
+  it("drawer credits the default policy on an allow with no roles", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    await user.click(await screen.findByText("list_files"));
+    await screen.findByText("evt-3");
+
+    // Same empty deciding_role as the deny above; the opposite meaning.
+    expect(
+      screen.getByText("default policy — no roles evaluated"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("∅ none — no role granted it"),
+    ).not.toBeInTheDocument();
   });
 
   it("same-session list drills into the sibling event", async () => {

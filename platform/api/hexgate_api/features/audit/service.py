@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from collections import deque
 
 from clickhouse_connect.driver.client import Client
+from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from hexgate_api.core.clickhouse import table_columns
 from hexgate_api.query_scope import scope_filters
@@ -50,8 +51,9 @@ class AuditSchemaOutOfDate(Exception):
         )
         super().__init__(
             f"ClickHouse schema is behind this build ({detail}). "
-            "Apply any pending platform/clickhouse/migrations, or recreate the "
-            "volume so init/schema.sql runs, before starting the API."
+            "Recreate the volume so init/schema.sql runs (`make clickhouse-reset` "
+            "locally) before starting the API. The multi-role columns ship no "
+            "migration: no ALTER can restate pre-existing rows truthfully."
         )
         self.missing = missing
 
@@ -224,17 +226,29 @@ def verify_schema(client: Client) -> None:
 
     Extra server-side columns are fine — only gaps in what we write break
     inserts. Startup-only: changing this needs a deployment or manual DDL.
+
+    A table we can't DESCRIBE counts as every column missing: an absent table
+    breaks inserts exactly like an absent column, so it earns the same
+    actionable error rather than a raw driver traceback out of the lifespan.
+    Connectivity failures degrade to a warning — /ready owns that signal.
     """
-    missing = {
-        table: sorted(set(columns) - table_columns(client, table))
-        for table, columns in (
-            (DECISION_TABLE, _DECISION_COLUMNS),
-            (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
-        )
-    }
-    gaps = {table: columns for table, columns in missing.items() if columns}
-    if gaps:
-        raise AuditSchemaOutOfDate(gaps)
+    missing: dict[str, list[str]] = {}
+    for table, columns in (
+        (DECISION_TABLE, _DECISION_COLUMNS),
+        (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
+    ):
+        try:
+            present = table_columns(client, table)
+        except OperationalError:
+            _log.warning("ClickHouse unreachable during %s schema check", table)
+            return
+        except DatabaseError:
+            present = set()
+        gaps = sorted(set(columns) - present)
+        if gaps:
+            missing[table] = gaps
+    if missing:
+        raise AuditSchemaOutOfDate(missing)
 
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------

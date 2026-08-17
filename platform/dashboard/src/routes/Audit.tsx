@@ -218,10 +218,19 @@ function DetailDrawer({
                 <span className="text-muted-foreground">∅ none</span>
               )}
             </KV>
+            {/* An empty deciding_role means three different things on the wire:
+                every role denied, no roles evaluated at all (the enforcer ran
+                without a HexgateContext, so `default` decided), or a pre-multi-
+                role SDK that only sent the scalar. outcome + user_roles tell
+                them apart — without this branch an allow reads as a denial. */}
             <KV k="granted by">
               {e.deciding_role || (
                 <span className="text-muted-foreground">
-                  ∅ none — no role granted it
+                  {e.outcome === "deny"
+                    ? "∅ none — no role granted it"
+                    : e.user_roles.length === 0
+                      ? "default policy — no roles evaluated"
+                      : "not recorded (legacy event)"}
                 </span>
               )}
             </KV>

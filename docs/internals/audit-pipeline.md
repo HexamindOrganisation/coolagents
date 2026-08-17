@@ -505,10 +505,13 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 4. **Sync agents emit nothing** — `emit()` requires a running loop; sync entry
    points silently produce no audit.
 5. **Schema evolution** — `init/schema.sql` runs once; there is no migration
-   runner wired up yet. Interim convention: every DDL change also lands a
+   runner wired up yet. Interim convention: a DDL change also lands a
    hand-applied statement in `platform/clickhouse/migrations/`, run in filename
    order via `make clickhouse-cli` **before** deploying the API that references
-   the new column.
+   the new column. Exception: when no `ALTER` can restate pre-existing rows
+   truthfully — the multi-role columns — no migration ships and the volume is
+   recreated instead (`make clickhouse-reset`), which is what
+   `AuditSchemaOutOfDate` tells the operator.
 6. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.
