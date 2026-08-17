@@ -3,11 +3,14 @@
 Project-scoped: a project holds boundary + capability modules and a role
 binding, and the resolve/check endpoints compose them via the hexgate SDK.
 Reads gate on org membership; writes gate on project admin/owner (policy edits
-are a management action). Compiling an agent's bundle from these modules is a
-later step — this slice is store + inspection only, so no agent is touched.
+are a management action). A write to a modular project recompiles its agents'
+bundles from the resolved modules (see ``agents.service.recompile_project`` and
+docs/adr/R-POL-002).
 """
 
 from __future__ import annotations
+
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -29,6 +32,8 @@ from hexgate_api.schemas import (
 
 router = APIRouter()
 
+logger = logging.getLogger("hexgate.platform.policy_modules")
+
 
 def _module_read(row: PolicyModule) -> PolicyModuleRead:
     return PolicyModuleRead(
@@ -38,6 +43,26 @@ def _module_read(row: PolicyModule) -> PolicyModuleRead:
         content_hash=row.content_hash,
         updated_at=row.updated_at,
     )
+
+
+async def _recompile_project_agents(session: AsyncSession, project_id: str) -> None:
+    """Recompile the project's agent bundles after a policy change.
+
+    Best-effort and never fatal to the write: the store row is the source of
+    truth, the bundle is a derived artifact. A resolve failure leaves live
+    bundles untouched (handled in the service); any other failure (opa, signing,
+    a DB hiccup on the agent commit) is logged and swallowed so the policy edit
+    still returns success. ``check`` surfaces an unresolvable state. R-POL-002.
+    """
+    from hexgate_api.core.keystore import keystore
+    from hexgate_api.features.agents.service import recompile_project
+
+    try:
+        await recompile_project(session, project_id, keystore.sign)
+    except Exception:  # noqa: BLE001 — bundles are derived + fail-safe
+        logger.exception(
+            "recompile after policy change failed for project %s", project_id
+        )
 
 
 # --- module CRUD -------------------------------------------------------------
@@ -71,6 +96,10 @@ async def api_put_policy_module(
         )
     except service.InvalidModuleError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Module content only affects enforcement once the project is modular; a
+    # classic library edit changes no agent, so skip the recompile there.
+    if await service.is_modular(session, project_id):
+        await _recompile_project_agents(session, project_id)
     return _module_read(row)
 
 
@@ -91,6 +120,8 @@ async def api_delete_policy_module(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="module not found")
+    if await service.is_modular(session, project_id):
+        await _recompile_project_agents(session, project_id)
     return Response(status_code=204)
 
 
@@ -113,7 +144,14 @@ async def api_set_policy_roles(
     _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> RoleBindingsRead:
+    before = await service.get_roles(session, project_id)
     roles = await service.set_roles(session, project_id=project_id, roles=body.roles)
+    # Recompile only when the bindings actually changed — an idempotent re-save
+    # shouldn't pay a resolve + opa compile. A real change (including a
+    # modular<->classic flip) still triggers it, and recompile_project handles
+    # both directions (resolved bundle vs each agent's policy_yaml).
+    if roles != before:
+        await _recompile_project_agents(session, project_id)
     return RoleBindingsRead(roles=roles)
 
 
@@ -130,7 +168,7 @@ async def api_resolve_policy(
     """The composed effective policy per role. 422 if the module set can't be
     composed (e.g. a capability that denies, or a role importing an unknown
     capability) — use /policy/check to see that as a lint instead."""
-    from hexgate.security import DEFAULT_ROLE_NAME, LinkError, PolicySetError
+    from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
 
     try:
@@ -144,13 +182,7 @@ async def api_resolve_policy(
             detail=f"role {role!r} not defined (known: {sorted(result.by_role)})",
         )
 
-    items = result.by_role.items() if role is None else [(role, result.by_role[role])]
-    return ResolvedPolicyResponse(
-        roles={
-            r: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
-            for r, lr in items
-        }
-    )
+    return ResolvedPolicyResponse(roles=service.roles_json(result, role=role))
 
 
 @router.get("/projects/{project_id}/policy/check", tags=["policy"])

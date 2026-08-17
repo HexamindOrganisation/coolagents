@@ -249,3 +249,50 @@ async def check(session: AsyncSession, project_id: str):
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
     return check_project(boundaries, capabilities, roles)
+
+
+# --- enforcement integration (see docs/adr/R-POL-002) ------------------------
+
+
+async def is_modular(session: AsyncSession, project_id: str) -> bool:
+    """Whether the project compiles agents from modules rather than policy_yaml.
+
+    A project is modular once it has at least one role binding. Binding a role is
+    the deliberate opt-in: uploading a capability or boundary module alone does
+    not flip enforcement, so a half-built library never bricks live agents.
+    """
+    row = (
+        await session.exec(
+            select(RoleBinding.id)  # type: ignore[arg-type]
+            .where(RoleBinding.project_id == project_id)
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+def roles_json(result, role: str | None = None) -> dict:
+    """The effective policy per role, as JSON-able dicts.
+
+    One place for the role-keying + ``DEFAULT_ROLE_NAME`` detail, shared by the
+    ``/policy/resolve`` endpoint and the compile path. ``role`` narrows to a
+    single role (the resolve endpoint's ``?role=``); ``None`` returns all.
+    """
+    from hexgate.security import DEFAULT_ROLE_NAME
+
+    items = result.by_role.items() if role is None else [(role, result.by_role[role])]
+    return {
+        r: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json") for r, lr in items
+    }
+
+
+async def resolved_policy_yaml(session: AsyncSession, project_id: str) -> str:
+    """The project's resolved role-keyed policy as inline-roles YAML.
+
+    Serializes to the ``roles:`` shape ``build_signed_bundle`` accepts, so the
+    platform compile path is byte-for-byte the same as a single-file policy.
+    Raises the SDK's ``LinkError`` / ``PolicySetError`` / ``ConstraintParseError``
+    if the modules don't compose, so callers can leave live bundles untouched.
+    """
+    result = await resolve(session, project_id)
+    return yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
