@@ -63,33 +63,37 @@ def wrap_tool(
 
     @functools.wraps(original_invoke, updated=())
     async def guarded_invoke(ctx: ToolContext[Any], input: str) -> Any:
-        parsed = _parse_args(input) or {}
+        parsed = _parse_args(input)  # None when the payload is not a JSON object
 
         def invoke(final: dict[str, Any]) -> Any:
-            # Keep the original raw ``input`` when no before-guard rewrote the
-            # args (this preserves a non-dict payload the parse dropped);
-            # re-serialize only when a rewrite actually changed them.
-            if final == parsed:
-                payload = input
-            else:
-                try:
-                    payload = json.dumps(final)
-                except (TypeError, ValueError) as exc:
-                    # A guard rewrote args to a non-JSON value. This adapter
-                    # alone re-serializes, so without this the failure would
-                    # surface as an opaque json TypeError that reads like a
-                    # tool crash. Name the real cause instead.
-                    raise TypeError(
-                        f"a before-guard rewrote {name!r} arguments to a value "
-                        f"that is not JSON-serializable ({exc}); tool arguments "
-                        "must stay JSON (the OpenAI tool receives them as a JSON "
-                        "string)."
-                    ) from exc
+            # A non-object payload (bare string, list, or unparseable) has no
+            # dict form to forward, so keep the raw ``input`` — unless a guard
+            # replaced the args outright (then ``final`` is non-empty).
+            if parsed is None and not final:
+                return original_invoke(ctx, input)
+            # A dict payload: serialize the (possibly rewritten) args, so an
+            # in-place nested rewrite reaches the tool the way it does on the
+            # Google/Pydantic adapters, not only a Proceed(args=...) replace.
+            try:
+                payload = json.dumps(final)
+            except (TypeError, ValueError) as exc:
+                # Parsed args always round-trip, so a non-JSON value here is a
+                # guard rewrite. This adapter alone re-serializes, so without
+                # this the failure would surface as an opaque json TypeError
+                # that reads like a tool crash; name the real cause. (It also
+                # rides ToolOutcome.error, so a failure-halting after-guard
+                # still sees it.)
+                raise TypeError(
+                    f"a before-guard rewrote {name!r} arguments to a value "
+                    f"that is not JSON-serializable ({exc}); tool arguments "
+                    "must stay JSON (the OpenAI tool receives them as a JSON "
+                    "string)."
+                ) from exc
             return original_invoke(ctx, payload)
 
         return await run_guarded_async(
             name,
-            parsed,
+            parsed or {},
             enforcer=enforcer,
             pipeline=pipeline,
             approval_handler=approval_handler,

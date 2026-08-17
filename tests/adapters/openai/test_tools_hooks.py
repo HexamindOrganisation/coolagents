@@ -82,6 +82,24 @@ async def test_before_guard_rewrite_reaches_the_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_before_guard_nested_in_place_rewrite_reaches_the_tool() -> None:
+    """A nested in-place mutation (the documented shallow residual) reaches the
+    tool on OpenAI too, matching the Google/Pydantic adapters."""
+    calls: list[Any] = []
+
+    def redact(call: Any) -> None:
+        call.args["meta"]["secret"] = "REDACTED"  # top-level proxy, nested dict mutable
+        return None
+
+    pipe = build_pipeline([before_tool(redact)])
+    wrapped = wrap_tool(_make_tool(calls=calls), _allow_enforcer(), pipeline=pipe)
+
+    await wrapped.on_invoke_tool(None, '{"text": "hi", "meta": {"secret": "AKIA"}}')
+
+    assert json.loads(calls[0]) == {"text": "hi", "meta": {"secret": "REDACTED"}}
+
+
+@pytest.mark.asyncio
 async def test_before_guard_non_json_rewrite_raises_a_clear_error() -> None:
     """This adapter re-serializes rewritten args, so a guard producing a
     non-JSON value must name the cause, not surface an opaque json TypeError."""

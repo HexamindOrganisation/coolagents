@@ -92,6 +92,35 @@ def test_as_error_message_falls_back_to_outcome_value_when_no_error_type() -> No
     assert decision.as_error_message().startswith("[deny]")
 
 
+def test_as_error_message_separates_the_reason_as_its_own_clause() -> None:
+    """The reason is introduced with a colon and terminated, so a guard's
+    lowercase imperative does not run into the closing sentence."""
+    decision = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="agent",
+        tool_name="send",
+        reason="remove the credential",
+        error_type="guard_denied",
+    )
+
+    msg = decision.as_error_message()
+    assert ": remove the credential. The tool was not executed." in msg
+    assert "credential The" not in msg  # no run-on into the closing sentence
+
+
+def test_as_error_message_does_not_double_terminate_a_punctuated_reason() -> None:
+    decision = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="agent",
+        tool_name="send",
+        reason="Blocked by a policy guard.",
+        error_type="guard_denied",
+    )
+
+    assert "policy guard.. " not in decision.as_error_message()
+    assert "policy guard. The tool was not executed." in decision.as_error_message()
+
+
 # ---------------------------------------------------------------------------
 # as_error_payload — dict rendering for LangChain GuardedTool
 # ---------------------------------------------------------------------------

@@ -280,5 +280,11 @@ class Decision:
             body = f"Tool '{self.tool_name}' requires human approval before execution"
         else:
             body = f"Tool '{self.tool_name}' is denied by the agent policy"
-        detail = f" {self.reason}" if self.reason else ""
-        return f"[{marker}] {body}.{detail} The tool was not executed."
+        if self.reason:
+            # Introduce the reason with a colon (so a lowercase, imperative
+            # guard reason reads naturally) and give it terminal punctuation,
+            # so it does not run straight into the closing sentence.
+            reason = self.reason.rstrip()
+            end = "" if reason.endswith((".", "!", "?")) else "."
+            return f"[{marker}] {body}: {reason}{end} The tool was not executed."
+        return f"[{marker}] {body}. The tool was not executed."
