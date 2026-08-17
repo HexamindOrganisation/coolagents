@@ -271,13 +271,15 @@ def _rules_for_role(
 ) -> list[str]:
     """Render rules for one resolved role (allow + violations per tool).
 
-    Explicitly-listed tools each get their own ``input.tool == "X"`` rule;
+    Explicitly-listed tools each get their own ``input.tool == "X"`` rule
+    (including the lowered ``agent.*`` keys in ``effective_tools``);
     ``default_policy`` (when not ``deny``) gets a catch-all for any tool *not*
     explicitly listed — mirroring the pydantic engine's
-    ``policy.tools.get(tool, default_policy)`` fallback so both engines agree
+    ``effective_tools.get(tool, default_policy)`` fallback so both engines agree
     on unlisted tools.
     """
-    listed = sorted(policy.tools)
+    effective = policy.effective_tools
+    listed = sorted(effective)
     out: list[str] = []
     for tool_name in listed:
         tool_guard = [f'    input.tool == "{_escape_string(tool_name)}"']
@@ -286,7 +288,7 @@ def _rules_for_role(
                 role,
                 role_guard,
                 tool_guard,
-                policy.tools[tool_name],
+                effective[tool_name],
                 tool_name,
                 helpers,
             )

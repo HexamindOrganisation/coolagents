@@ -36,8 +36,14 @@ def load_policy(policy: str | Path | AgentPolicy | None) -> AgentPolicy:
 
 
 def get_tool_policy(policy: AgentPolicy, tool_name: str) -> ToolPolicy:
-    """Resolve the effective policy for a tool name."""
-    return policy.tools.get(tool_name, policy.default_policy)
+    """Resolve the effective policy for a tool name.
+
+    Reads ``effective_tools`` (authored tools plus lowered ``agent.*`` keys) so
+    a synthetic agent-level key resolves through the same path as any tool, and
+    an unlisted key falls to ``default_policy`` — the same fallback the Rego
+    compiler emits, keeping both engines in agreement.
+    """
+    return policy.effective_tools.get(tool_name, policy.default_policy)
 
 
 def evaluate_tool_call(
