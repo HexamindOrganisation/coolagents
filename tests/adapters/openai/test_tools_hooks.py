@@ -82,6 +82,19 @@ async def test_before_guard_rewrite_reaches_the_tool() -> None:
 
 
 @pytest.mark.asyncio
+async def test_no_guards_forwards_the_raw_payload_byte_for_byte() -> None:
+    """With no guards, the model's payload is forwarded unchanged — no json
+    round-trip that would reformat whitespace or turn 1e400 into Infinity."""
+    calls: list[Any] = []
+    wrapped = wrap_tool(_make_tool(calls=calls), _allow_enforcer(), pipeline=None)
+
+    raw = '{"a":1, "big":1e400}'
+    await wrapped.on_invoke_tool(None, raw)
+
+    assert calls == [raw]  # verbatim, not '{"a": 1, "big": Infinity}'
+
+
+@pytest.mark.asyncio
 async def test_before_guard_nested_in_place_rewrite_reaches_the_tool() -> None:
     """A nested in-place mutation (the documented shallow residual) reaches the
     tool on OpenAI too, matching the Google/Pydantic adapters."""

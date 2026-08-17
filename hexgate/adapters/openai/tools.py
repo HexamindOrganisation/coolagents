@@ -60,18 +60,25 @@ def wrap_tool(
 
     name = tool.name
     original_invoke = tool.on_invoke_tool
+    # Without guards nothing can rewrite the args, so we forward the model's
+    # payload byte-for-byte. Re-serializing would be a silent change on every
+    # call (reformatted whitespace, collapsed duplicate keys, 1e400 -> Infinity,
+    # escaped unicode), and until a caller adds guards every call is guard-free.
+    has_guards = pipeline is not None and not pipeline.is_empty
 
     @functools.wraps(original_invoke, updated=())
     async def guarded_invoke(ctx: ToolContext[Any], input: str) -> Any:
         parsed = _parse_args(input)  # None when the payload is not a JSON object
 
         def invoke(final: dict[str, Any]) -> Any:
+            if not has_guards:
+                return original_invoke(ctx, input)
             # A non-object payload (bare string, list, or unparseable) has no
             # dict form to forward, so keep the raw ``input`` — unless a guard
             # replaced the args outright (then ``final`` is non-empty).
             if parsed is None and not final:
                 return original_invoke(ctx, input)
-            # A dict payload: serialize the (possibly rewritten) args, so an
+            # Guards ran: serialize the (possibly rewritten) args, so an
             # in-place nested rewrite reaches the tool the way it does on the
             # Google/Pydantic adapters, not only a Proceed(args=...) replace.
             try:
