@@ -93,9 +93,13 @@ class HexgateRunner:
         api_key: str | None = None,
         *,
         approval_handler: ApprovalHandler | None = None,
-        hooks: "Sequence[Hook] | None" = None,
+        guards: "Sequence[Hook] | None" = None,
         hook_observer: "HookObserver | None" = None,
     ):
+        # ``guards`` (not ``hooks``) on purpose: ``run*`` below already take a
+        # ``hooks=`` that means the agents SDK's ``RunHooks`` (we mirror the SDK
+        # Runner). Naming the guard list ``guards`` keeps the two from shadowing
+        # each other; ``_merge_hooks`` rejects a guard list passed to ``run``.
         self.api_key = resolve_api_key(api_key)
         if self.api_key is None:
             raise ValueError(
@@ -110,7 +114,7 @@ class HexgateRunner:
         self._approval_handler = approval_handler
         # Guards are fixed per runner; threaded into each per-call rewrap below,
         # where wrap_openai_agent builds the pipeline (matching the other adapters).
-        self._hooks = hooks
+        self._guards = guards
         self._hook_observer = hook_observer
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
@@ -170,6 +174,15 @@ class HexgateRunner:
         usage_hooks = HexgateUsageHooks(api_key=self.api_key)
         if hooks is None:
             return usage_hooks
+        if not isinstance(hooks, RunHooksBase):
+            # A Hexgate guard list passed to run(hooks=...) instead of the
+            # constructor would otherwise crash at the first lifecycle callback,
+            # far from the mistake. Name it here.
+            raise TypeError(
+                f"run(hooks=...) takes an agents RunHooks object, got "
+                f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
+                "HexgateRunner(guards=[...])."
+            )
         return _CompositeRunHooks([hooks, usage_hooks])
 
     async def run(
@@ -193,7 +206,7 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            hooks=self._hooks,
+            hooks=self._guards,
             hook_observer=self._hook_observer,
         )
         async with hexgate_context:
@@ -227,7 +240,7 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            hooks=self._hooks,
+            hooks=self._guards,
             hook_observer=self._hook_observer,
         )
         with hexgate_context.sync_scope():
@@ -296,7 +309,7 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
-            hooks=self._hooks,
+            hooks=self._guards,
             hook_observer=self._hook_observer,
         )
 
