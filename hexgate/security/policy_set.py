@@ -312,12 +312,10 @@ def _resolve_inheritance(
     merged_consts: dict[str, object] = {}
     merged_default: BaseToolPolicy = own.default_policy
     merged_admission: BaseToolPolicy | None = own.admission
-    merged_default_agent: BaseToolPolicy | None = own.default_agent_policy
 
     # Merge parents left-to-right (later parents override earlier). ``agents``
-    # merges by target name like ``tools`` does. The optional agent-level scalars
-    # (``admission`` / ``default_agent_policy``) only overwrite when a parent
-    # actually sets one, so a later mixin that omits them can't null out an
+    # merges by target name like ``tools`` does. ``admission`` only overwrites when
+    # a parent actually sets one, so a later mixin that omits it can't null out an
     # earlier parent's rule — dropping an agent gate silently would be fail-open.
     for parent_name in own.inherits:
         parent = _resolve_inheritance(parent_name, raw, chain + [name])
@@ -327,8 +325,6 @@ def _resolve_inheritance(
         merged_default = parent.default_policy
         if parent.admission is not None:
             merged_admission = parent.admission
-        if parent.default_agent_policy is not None:
-            merged_default_agent = parent.default_agent_policy
 
     # Self overrides everything from parents. Check ``model_fields_set`` rather
     # than comparing against ``BaseToolPolicy()``: a child that explicitly says
@@ -342,8 +338,6 @@ def _resolve_inheritance(
         merged_default = own.default_policy
     if "admission" in own.model_fields_set:
         merged_admission = own.admission
-    if "default_agent_policy" in own.model_fields_set:
-        merged_default_agent = own.default_agent_policy
 
     return AgentPolicy(
         version=own.version,
@@ -354,5 +348,4 @@ def _resolve_inheritance(
         consts=merged_consts,
         admission=merged_admission,
         agents=merged_agents,
-        default_agent_policy=merged_default_agent,
     )

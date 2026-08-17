@@ -291,6 +291,33 @@ def test_file_scope_in_module_raises():
         link([guard], [])
 
 
+def test_link_rejects_agents_block_in_module() -> None:
+    # An ``agents`` egress rule authored in a module would be silently dropped by
+    # the fold (which composes ``.tools`` only) — the same fail-open file_scope
+    # guards against. Fail loud instead.
+    mod = ModuleContent(
+        name="b",
+        kind="boundary",
+        policy=AgentPolicy(agents={"evil-bot": {"mode": "deny"}}),
+        source="b.yaml",
+        content_hash="hash-b",
+    )
+    with pytest.raises(LinkError, match="agent-level block"):
+        link([mod], [])
+
+
+def test_link_rejects_admission_block_in_module() -> None:
+    mod = ModuleContent(
+        name="c",
+        kind="capability",
+        policy=AgentPolicy(admission={"mode": "allow"}),
+        source="c.yaml",
+        content_hash="hash-c",
+    )
+    with pytest.raises(LinkError, match="agent-level block"):
+        link([], [mod])
+
+
 # --- provenance + policy-set wiring ---
 
 

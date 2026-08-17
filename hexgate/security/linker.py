@@ -171,6 +171,7 @@ def link(
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
     _reject_file_scope(boundaries, capabilities)
+    _reject_agent_blocks(boundaries, capabilities)
     _reject_default_policy_constraints(boundaries, capabilities)
     consts = _merge_consts(boundaries, capabilities)
 
@@ -269,6 +270,26 @@ def _reject_file_scope(
                     f"which module composition does not support yet — keep it in a "
                     f"single-file policy or drop file_scope ({module.source})"
                 )
+
+
+def _reject_agent_blocks(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject ``admission`` / ``agents`` in a module — composing them isn't supported yet.
+
+    Agent-level blocks lower into synthetic ``agent.*`` keys that the engines
+    enforce, but the module fold below only composes ``tools``. Silently dropping
+    an agent block would erase an ingress or egress rule an operator authored, the
+    same fail-open :func:`_reject_file_scope` guards against. Fail loud until module
+    composition understands agent blocks; author them in a single-file policy for
+    now."""
+    for module in (*boundaries, *capabilities):
+        if module.policy.admission is not None or module.policy.agents:
+            raise LinkError(
+                f"module {module.name!r} sets an agent-level block "
+                f"(admission/agents), which module composition does not support "
+                f"yet — keep it in a single-file policy ({module.source})"
+            )
 
 
 def _fold_tool(

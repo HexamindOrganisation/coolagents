@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from functools import cached_property
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from hexgate.security.constraints import parse_constraint
 
@@ -110,21 +111,22 @@ class AgentPolicy(BaseModel):
     ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
 
-    Agent-level gating (all optional):
+    Agent-level gating (both optional):
 
     * ``admission`` — ingress. May this role start or enter *this* agent at all?
     * ``agents`` — egress. Which *other* agents may this role reach, keyed by
       target name, each an :class:`AgentTargetPolicy`.
-    * ``default_agent_policy`` — the fallback for a target not named in ``agents``.
-      Consumed by the agent gate at the seam, not by the engines directly; when a
-      target's synthetic key is absent it already falls to ``default_policy``
-      (deny by default), so a listed-``agents`` policy is closed-world for free
-      unless ``default_policy`` is permissive.
 
-    ``admission`` and ``agents`` lower into synthetic tool keys via
-    :attr:`effective_tools`, which both policy engines read, so agent-level rules
-    evaluate through the identical decision path as tools with no engine change.
+    Both lower into synthetic tool keys via :attr:`effective_tools`, which both
+    policy engines read, so agent-level rules evaluate through the identical
+    decision path as tools with no engine change. A target not named in ``agents``
+    falls to ``default_policy`` (deny by default), so a listed-``agents`` policy is
+    closed-world for free; the runtime gate refines that fallback in a later PR.
     """
+
+    # cached_property is a plain descriptor, not a field — tell pydantic to leave
+    # it alone so ``effective_tools`` can memoize on the enforcement hot path.
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     version: int = 1
     inherits: list[str] = Field(default_factory=list)
@@ -134,7 +136,6 @@ class AgentPolicy(BaseModel):
     consts: dict[str, Any] = Field(default_factory=dict)
     admission: BaseToolPolicy | None = None
     agents: dict[str, AgentTargetPolicy] = Field(default_factory=dict)
-    default_agent_policy: BaseToolPolicy | None = None
 
     @field_validator("tools")
     @classmethod
@@ -173,13 +174,15 @@ class AgentPolicy(BaseModel):
                 lowered[agent_target_key(via, target)] = base
         return lowered
 
-    @property
+    @cached_property
     def effective_tools(self) -> dict[str, ToolPolicy]:
         """Authored ``tools`` plus the lowered agent-level entries.
 
         The single view both engines read (:func:`~hexgate.security.policy.get_tool_policy`
         and the Rego compiler), so a lowered ``agent.*`` key evaluates byte-for-byte
-        the same on the pydantic and WASM paths.
+        the same on the pydantic and WASM paths. Memoized: ``get_tool_policy`` reads
+        this on every decision, and policies are immutable after load (inheritance
+        builds fresh instances), so the merge runs once per policy, not per call.
         """
         lowered = self.lowered_agent_tools()
         if not lowered:
