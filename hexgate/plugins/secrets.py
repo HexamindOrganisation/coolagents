@@ -1,0 +1,226 @@
+"""Secret detection for the official guards.
+
+One detector, shared by ``secret_guard`` (refuse), ``secret_redactor`` (strip),
+and ``secret_watch`` (flag). It is deliberately conservative: a false positive on
+a before-guard blocks a real tool call, so the default leans on high-confidence
+provider prefixes (the gitleaks / trufflehog approach) and only falls back to a
+strict Shannon-entropy test for long, token-shaped strings.
+
+The detector never surfaces a matched value. A :class:`SecretHit` carries the
+category, the JSON path to the field, and a short SHA-256 ``fingerprint`` for
+audit correlation, so a ``Halt.reason`` / ``Modification.summary`` built from hits
+names *what* and *where*, never the secret itself.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any
+
+# ---------------------------------------------------------------------------
+# High-confidence provider patterns
+# ---------------------------------------------------------------------------
+
+# (category, compiled pattern). Anchored on the provider's own prefix + length,
+# so a match is a strong signal on its own — no entropy check needed. Ordered
+# most-specific first; every finditer match on a string leaf becomes a hit.
+_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}\b")),
+    ("github_fine_grained_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b")),
+    # anthropic before openai: `sk-ant-…` matches both `sk-…` patterns, and the
+    # first accepted span wins, so the more specific one must come first.
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
+    ("openai_key", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{24,}\b")),
+    ("hexgate_token", re.compile(r"\bfty_[A-Za-z0-9]{16,}\b")),
+    ("private_key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----")),
+]
+
+# ---------------------------------------------------------------------------
+# Entropy fallback (strict, to keep the before-guard false-positive rate low)
+# ---------------------------------------------------------------------------
+
+# A leaf must look like one contiguous token in this charset to be entropy-tested.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+# Chosen so a random ~40-char base64 token (~4.9 bits/char) trips it while a
+# 40-char git SHA, a UUID, and prose stay under. Hex and UUIDs are excluded
+# outright below because they are routinely legitimate arguments.
+_ENTROPY_MIN_LEN = 20
+_ENTROPY_THRESHOLD = 4.5
+
+
+def _shannon_entropy(s: str) -> float:
+    """Bits per character of ``s`` over its own symbol distribution."""
+    if not s:
+        return 0.0
+    counts: dict[str, int] = {}
+    for ch in s:
+        counts[ch] = counts.get(ch, 0) + 1
+    n = len(s)
+    return -sum((c / n) * math.log2(c / n) for c in counts.values())
+
+
+def _looks_high_entropy(s: str) -> bool:
+    """True for a long, token-shaped, high-entropy string that is not a plain
+    hex digest or a UUID (both common, non-secret arguments)."""
+    if len(s) < _ENTROPY_MIN_LEN or not _TOKEN_RE.match(s):
+        return False
+    if _HEX_RE.match(s) or _UUID_RE.match(s):
+        return False
+    return _shannon_entropy(s) >= _ENTROPY_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# Hit + string-level matching
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SecretHit:
+    """One detected secret, safe to log. ``field`` is the JSON path to the leaf
+    (``""`` for a bare string); ``fingerprint`` is ``sha256(value)[:12]`` so two
+    audit records can be correlated without either carrying the value."""
+
+    category: str
+    field: str
+    fingerprint: str
+
+
+def _fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+
+
+def _spans(s: str) -> list[tuple[int, int, str]]:
+    """Return non-overlapping ``(start, end, category)`` matches in ``s``.
+
+    Provider patterns first, in list order, so a match from an earlier (more
+    specific) pattern wins over a later one that overlaps it. Only if nothing
+    matched and the whole trimmed leaf is one high-entropy token is a single
+    ``high_entropy`` span added.
+    """
+    accepted: list[tuple[int, int, str]] = []
+    for category, pattern in _PATTERNS:
+        for m in pattern.finditer(s):
+            start, end = m.start(), m.end()
+            if not any(
+                start < a_end and a_start < end for a_start, a_end, _ in accepted
+            ):
+                accepted.append((start, end, category))
+    if not accepted and _looks_high_entropy(s.strip()):
+        start = s.find(s.strip())
+        accepted.append((start, start + len(s.strip()), "high_entropy"))
+    accepted.sort()
+    return accepted
+
+
+# ---------------------------------------------------------------------------
+# Public API: scan and redact any JSON-ish value
+# ---------------------------------------------------------------------------
+
+
+def _join(path: str, key: str) -> str:
+    return key if not path else f"{path}.{key}"
+
+
+def scan_secrets(value: Any, *, _path: str = "") -> list[SecretHit]:
+    """Walk a JSON-ish ``value`` (mapping / sequence / string) and return every
+    :class:`SecretHit`. Opaque (non-JSON) leaves are skipped — there is nothing
+    safe to match against. ``bytes`` are not decoded; only ``str`` is scanned."""
+    hits: list[SecretHit] = []
+    if isinstance(value, str):
+        for start, end, category in _spans(value):
+            hits.append(SecretHit(category, _path, _fingerprint(value[start:end])))
+    elif isinstance(value, Mapping):
+        for key, sub in value.items():
+            hits.extend(scan_secrets(sub, _path=_join(_path, str(key))))
+    elif isinstance(value, (list, tuple)):
+        for i, sub in enumerate(value):
+            hits.extend(scan_secrets(sub, _path=f"{_path}[{i}]"))
+    return hits
+
+
+def _redact_str(s: str) -> tuple[str, list[tuple[int, int, str]]]:
+    spans = _spans(s)
+    if not spans:
+        return s, []
+    out, cursor = [], 0
+    for start, end, category in spans:
+        out.append(s[cursor:start])
+        out.append(f"[REDACTED:{category}]")
+        cursor = end
+    out.append(s[cursor:])
+    return "".join(out), spans
+
+
+def redact_secrets(value: Any, *, _path: str = "") -> tuple[Any, list[SecretHit]]:
+    """Return a copy of ``value`` with every detected secret replaced by a
+    ``[REDACTED:<category>]`` marker, plus the hits. Rebuilds mappings and lists
+    structurally (JSON-ish only); the input is never mutated."""
+    if isinstance(value, str):
+        redacted, spans = _redact_str(value)
+        hits = [
+            SecretHit(cat, _path, _fingerprint(value[start:end]))
+            for start, end, cat in spans
+        ]
+        return redacted, hits
+    if isinstance(value, Mapping):
+        out: dict[Any, Any] = {}
+        hits = []
+        for key, sub in value.items():
+            new_sub, sub_hits = redact_secrets(sub, _path=_join(_path, str(key)))
+            out[key] = new_sub
+            hits.extend(sub_hits)
+        return out, hits
+    if isinstance(value, (list, tuple)):
+        out_seq: list[Any] = []
+        hits = []
+        for i, sub in enumerate(value):
+            new_sub, sub_hits = redact_secrets(sub, _path=f"{_path}[{i}]")
+            out_seq.append(new_sub)
+            hits.extend(sub_hits)
+        return out_seq, hits
+    return value, []
+
+
+# ---------------------------------------------------------------------------
+# Model-facing and operator-facing text (never the value)
+# ---------------------------------------------------------------------------
+
+
+def safe_reason(hits: Sequence[SecretHit]) -> str:
+    """The model-facing refusal: names the category and field, never the value,
+    and stays actionable so the model reworks the call rather than looping."""
+    cats = ", ".join(sorted({h.category for h in hits}))
+    fields = ", ".join(f"`{f or 'argument'}`" for f in sorted({h.field for h in hits}))
+    what = "a credential" if len(hits) == 1 else f"{len(hits)} credentials"
+    return (
+        f"Refused: {what} ({cats}) was found in the tool arguments "
+        f"({fields}) and was not sent. Remove it and resend without the secret."
+    )
+
+
+def safe_detail(hits: Sequence[SecretHit]) -> str:
+    """Operator-only detail for the audit / observer channel: category, field,
+    and fingerprint (a hash) per hit — still never the value."""
+    return "; ".join(f"{h.category}@{h.field or '.'}#{h.fingerprint}" for h in hits)
+
+
+__all__ = [
+    "SecretHit",
+    "redact_secrets",
+    "safe_detail",
+    "safe_reason",
+    "scan_secrets",
+]
