@@ -21,8 +21,8 @@ from langchain_core.tools.structured import StructuredTool
 from pydantic import ConfigDict
 
 from hexgate.approvals import ApprovalHandler
-from hexgate.hooks.runner import run_guarded_async, run_guarded_sync
-from hexgate.hooks.types import ToolPipeline
+from hexgate.guards.runner import run_guarded_async, run_guarded_sync
+from hexgate.guards.types import ToolPipeline
 from hexgate.security.decision import Decision
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.tools.decorators import TOOL_METADATA_ATTR
@@ -40,7 +40,7 @@ def _langchain_error(decision: Decision) -> dict[str, Any]:
     """Render a blocked decision as the LangChain tool-result error dict.
 
     The shared runner shapes every non-allow (policy deny, approval-required,
-    or a hook ``Halt``) into a :class:`Decision` and hands it here, so the LLM
+    or a guard ``Halt``) into a :class:`Decision` and hands it here, so the LLM
     sees governance failures as ``{"ok": False, ...}`` tool output.
     """
     return {"ok": False, "error": decision.as_error_payload()}
@@ -114,7 +114,7 @@ class GuardedTool(BaseTool):
         return _copy_tool_metadata(inner, guarded)
 
     def _guarded(self) -> bool:
-        """True when this tool has anything to run: an enforcer or hooks."""
+        """True when this tool has anything to run: an enforcer or guards."""
         return self.enforcer is not None or (
             self.pipeline is not None and not self.pipeline.is_empty
         )

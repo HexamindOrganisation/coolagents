@@ -1,4 +1,4 @@
-"""`HexgateAgent.enforce_policy(hooks=...)` wiring, including the guards-only
+"""`HexgateAgent.enforce_policy(guards=...)` wiring, including the guards-only
 path where no policy engine is passed.
 
 The LangChain graph build is stubbed (as tests/agents/test_factory.py does) so
@@ -15,8 +15,8 @@ from langchain_core.tools import tool
 from hexgate.adapters.langchain.tools import GuardedTool
 from hexgate.agents import factory
 from hexgate.agents.factory import HexgateAgent
-from hexgate.hooks import before_tool
-from hexgate.hooks.types import Halt
+from hexgate.guards import before_tool
+from hexgate.guards.types import Halt
 
 
 @tool
@@ -32,17 +32,17 @@ def _agent(monkeypatch: pytest.MonkeyPatch) -> HexgateAgent:
     )
 
 
-def _hooks() -> list:
+def _guards() -> list:
     return [before_tool(lambda call: Halt(reason="blocked"))]
 
 
-def test_enforce_policy_none_with_hooks_wraps_tools_guards_only(
+def test_enforce_policy_none_with_guards_wraps_tools_guards_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """policy=None + hooks still guards each tool via guards (no enforcer)."""
+    """policy=None + guards still guards each tool via guards (no enforcer)."""
     agent = _agent(monkeypatch)
 
-    guarded = agent.enforce_policy(None, hooks=_hooks())
+    guarded = agent.enforce_policy(None, guards=_guards())
 
     wrapped = guarded.tools[0]
     assert isinstance(wrapped, GuardedTool)
@@ -57,7 +57,7 @@ def test_guards_only_path_keeps_approval_handler(
     """A guard Halt(NEEDS_APPROVAL) must be approvable on the guards-only path."""
     agent = _agent(monkeypatch)
 
-    guarded = agent.enforce_policy(None, hooks=_hooks(), approval_handler=True)
+    guarded = agent.enforce_policy(None, guards=_guards(), approval_handler=True)
 
     wrapped = guarded.tools[0]
     assert isinstance(wrapped, GuardedTool)
@@ -65,7 +65,7 @@ def test_guards_only_path_keeps_approval_handler(
     assert wrapped.approval_handler is True
 
 
-def test_enforce_policy_none_without_hooks_stays_unguarded(
+def test_enforce_policy_none_without_guards_stays_unguarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _agent(monkeypatch)
@@ -73,15 +73,15 @@ def test_enforce_policy_none_without_hooks_stays_unguarded(
     assert not isinstance(rebuilt.tools[0], GuardedTool)
 
 
-def test_enforce_policy_none_empty_hooks_stays_unguarded(
+def test_enforce_policy_none_empty_guards_stays_unguarded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = _agent(monkeypatch)
-    rebuilt = agent.enforce_policy(None, hooks=[])
+    rebuilt = agent.enforce_policy(None, guards=[])
     assert not isinstance(rebuilt.tools[0], GuardedTool)
 
 
-def test_enforce_policy_with_policy_and_hooks_wraps_with_both(
+def test_enforce_policy_with_policy_and_guards_wraps_with_both(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hexgate.security import AgentPolicy, PolicySet
@@ -99,7 +99,7 @@ def test_enforce_policy_with_policy_and_hooks_wraps_with_both(
         }
     )
 
-    guarded = agent.enforce_policy(policy, hooks=_hooks())
+    guarded = agent.enforce_policy(policy, guards=_guards())
 
     wrapped = guarded.tools[0]
     assert isinstance(wrapped, GuardedTool)
@@ -112,14 +112,14 @@ def _stub_build(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(factory, "get_langfuse_handler", lambda **k: "handler")
 
 
-def test_create_agent_hooks_only_when_no_policy_binds(
+def test_create_agent_guards_only_when_no_policy_binds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """create_agent(hooks=..., bind_policy=False) still wraps tools with guards."""
+    """create_agent(guards=..., bind_policy=False) still wraps tools with guards."""
     _stub_build(monkeypatch)
 
     agent, _ = factory.create_agent(
-        model="m", tools=[echo], bind_policy=False, hooks=_hooks()
+        model="m", tools=[echo], bind_policy=False, guards=_guards()
     )
 
     wrapped = agent.tools[0]
@@ -128,7 +128,7 @@ def test_create_agent_hooks_only_when_no_policy_binds(
     assert wrapped.pipeline is not None
 
 
-def test_create_agent_binds_policy_and_hooks_together(
+def test_create_agent_binds_policy_and_guards_together(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """On the bind path, guards wrap the tools alongside the resolved policy."""
@@ -162,7 +162,7 @@ def test_create_agent_binds_policy_and_hooks_together(
     )
 
     agent, _ = factory.create_agent(
-        model="m", tools=[echo], name="bot", bind_policy=True, hooks=_hooks()
+        model="m", tools=[echo], name="bot", bind_policy=True, guards=_guards()
     )
 
     wrapped = agent.tools[0]

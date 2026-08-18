@@ -163,7 +163,7 @@ class PolicyEnforcer:
         """Emit ``decision`` to this enforcer's audit sender and decision
         observer, both isolated so a broken observer never breaks enforcement.
 
-        ``decide`` calls this on every verdict; the hook runner calls it for a
+        ``decide`` calls this on every verdict; the guard runner calls it for a
         guard halt, which builds its own :class:`Decision` and so does not go
         through ``decide``. Without it a guard-blocked call would leave no trail
         (pre-halt) or record only the tool's ALLOW (post-halt)."""

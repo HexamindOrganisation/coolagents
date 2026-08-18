@@ -1,7 +1,7 @@
-# R-HOOK-004: Guard halts are recorded to the audit trail, distinctly
+# R-GUARD-004: Guard halts are recorded to the audit trail, distinctly
 
 **Status:** Accepted · 2026-08-14
-**Applies to:** `hexgate/hooks/**`, `hexgate/security/enforcer.py`
+**Applies to:** `hexgate/guards/**`, `hexgate/security/enforcer.py`
 
 ## Decision
 
@@ -13,7 +13,7 @@ is recorded **in addition to** the tool's genuine ALLOW, not in place of it; a
 `decide` records a policy `NEEDS_APPROVAL` — the human sign-off on a privileged call
 is exactly the event worth keeping. A guard-denied halt MUST carry the
 `guard_denied` marker so it is distinguishable from a real policy denial. Emission is
-factored into `PolicyEnforcer.record`, which `decide` and the hook runner both call.
+factored into `PolicyEnforcer.record`, which `decide` and the guard runner both call.
 
 ## Why
 
@@ -32,7 +32,7 @@ to both the model and any trail consumer.
 
 ## Consequences
 
-- The guards-only path (`enforce_policy(None, hooks=...)`, no policy engine) has no
+- The guards-only path (`enforce_policy(None, guards=...)`, no policy engine) has no
   audit sender, so guard halts there are not recorded. Acceptable: no policy engine
   means no audit sink to record to.
 - The halt `Decision` carries `arguments` for the audit record, but
@@ -49,7 +49,7 @@ to both the model and any trail consumer.
 ## Verify
 
 ```
-pytest tests/hooks/test_runner.py -k "pre_halt_is_recorded or post_halt_records_both or approved_pre_halt_is_recorded"
+pytest tests/guards/test_runner.py -k "pre_halt_is_recorded or post_halt_records_both or approved_pre_halt_is_recorded"
 ```
 
 passes.

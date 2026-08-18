@@ -1,4 +1,4 @@
-"""Shared helpers for the tool-hook pipeline tests.
+"""Shared helpers for the tool-guard pipeline tests.
 
 The runner is exercised directly with a lightweight fake enforcer so the
 tests isolate pipeline behavior from the policy engine. End-to-end wiring

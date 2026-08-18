@@ -147,6 +147,16 @@ def test_constructor_uses_explicit_api_key() -> None:
     assert runner.api_key == "explicit-key"
 
 
+def test_run_hooks_rejects_a_guard_list_with_a_clear_error() -> None:
+    """A Hexgate guard list passed to run(hooks=) — the agents SDK RunHooks slot,
+    not the constructor's guards= — is rejected at the seam with a message that
+    points at the mistake, not deep in a lifecycle callback."""
+    runner = HexgateRunner(api_key="k")
+
+    with pytest.raises(TypeError, match="guards go on the constructor"):
+        runner._merge_hooks([lambda call: None])
+
+
 def test_constructor_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve the API key from HEXGATE_API_KEY when no explicit key is given."""
     monkeypatch.setenv("HEXGATE_API_KEY", "from-env")

@@ -1,6 +1,6 @@
 """End-to-end: guards wired through ``GuardedTool``.
 
-The runner behavior itself is covered in ``tests/hooks/test_runner.py``;
+The runner behavior itself is covered in ``tests/guards/test_runner.py``;
 here we prove the LangChain seam actually threads before/after guards and arg
 rewrites around a real tool invocation, and that guards work with no enforcer.
 """
@@ -11,8 +11,8 @@ import pytest
 from langchain_core.tools import BaseTool, tool
 
 from hexgate.adapters.langchain.tools import GuardedTool
-from hexgate.hooks import after_tool, before_tool, build_pipeline
-from hexgate.hooks.types import Halt, Proceed, ToolCall, ToolOutcome
+from hexgate.guards import after_tool, before_tool, build_pipeline
+from hexgate.guards.types import Halt, Proceed, ToolCall, ToolOutcome
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME

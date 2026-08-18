@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from hexgate.hooks import after_tool, before_tool, build_pipeline
-from hexgate.hooks.types import Hook, ToolPipeline
+from hexgate.guards import after_tool, before_tool, build_pipeline
+from hexgate.guards.types import Guard, ToolPipeline
 
 
 def _fn(call):  # noqa: ANN001, ANN202 - test stub
@@ -18,7 +18,7 @@ def _post(call, out):  # noqa: ANN001, ANN202 - test stub
 
 def test_before_tool_bare_defaults() -> None:
     h = before_tool(_fn)
-    assert isinstance(h, Hook)
+    assert isinstance(h, Guard)
     assert h.position == "pre"
     assert h.tool_names is None
     assert h.observe is False
@@ -76,7 +76,7 @@ def test_build_pipeline_keeps_an_observer_even_when_empty() -> None:
 
 
 def test_build_pipeline_none_and_empty_behave_the_same_with_an_observer() -> None:
-    """hooks=None must not silently drop an observer that hooks=[] would keep."""
+    """guards=None must not silently drop an observer that guards=[] would keep."""
     obs = lambda e: None  # noqa: E731
     assert build_pipeline(None, observer=obs) is not None
     assert build_pipeline([], observer=obs) is not None

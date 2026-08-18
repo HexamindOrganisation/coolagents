@@ -9,7 +9,9 @@ enforcer, so a refresh swap reaches every clone.
 
 import asyncio
 import warnings
+from collections.abc import Sequence
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import nest_asyncio
 from agents import (
@@ -37,6 +39,9 @@ from hexgate.runtime import HexgateContext
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+
+if TYPE_CHECKING:
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 class _CompositeRunHooks(RunHooks):
@@ -88,7 +93,13 @@ class HexgateRunner:
         api_key: str | None = None,
         *,
         approval_handler: ApprovalHandler | None = None,
+        guards: "Sequence[Guard] | None" = None,
+        guard_observer: "GuardObserver | None" = None,
     ):
+        # ``guards`` (not ``hooks``) on purpose: ``run*`` below already take a
+        # ``hooks=`` that means the agents SDK's ``RunHooks`` (we mirror the SDK
+        # Runner). Naming the guard list ``guards`` keeps the two from shadowing
+        # each other; ``_merge_hooks`` rejects a guard list passed to ``run``.
         self.api_key = resolve_api_key(api_key)
         if self.api_key is None:
             raise ValueError(
@@ -101,6 +112,10 @@ class HexgateRunner:
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
         self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
+        # Guards are fixed per runner; threaded into each per-call rewrap below,
+        # where wrap_openai_agent builds the pipeline (matching the other adapters).
+        self._guards = guards
+        self._guard_observer = guard_observer
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
         """Get-or-resolve the cached policy binding for ``agent``'s name.
@@ -159,6 +174,15 @@ class HexgateRunner:
         usage_hooks = HexgateUsageHooks(api_key=self.api_key)
         if hooks is None:
             return usage_hooks
+        if not isinstance(hooks, RunHooksBase):
+            # A Hexgate guard list passed to run(hooks=...) instead of the
+            # constructor would otherwise crash at the first lifecycle callback,
+            # far from the mistake. Name it here.
+            raise TypeError(
+                f"run(hooks=...) takes an agents RunHooks object, got "
+                f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
+                "HexgateRunner(guards=[...])."
+            )
         return _CompositeRunHooks([hooks, usage_hooks])
 
     async def run(
@@ -182,6 +206,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
         async with hexgate_context:
             with self._propagate(hexgate_context, agent.name):
@@ -214,6 +240,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
         with hexgate_context.sync_scope():
             with self._propagate(hexgate_context, agent.name):
@@ -281,6 +309,8 @@ class HexgateRunner:
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
 
         with hexgate_context.sync_scope():

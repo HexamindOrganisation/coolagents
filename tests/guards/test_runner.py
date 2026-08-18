@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from hexgate.hooks import after_tool, before_tool
-from hexgate.hooks.runner import run_guarded_async, run_guarded_sync
-from hexgate.hooks.types import (
+from hexgate.guards import after_tool, before_tool
+from hexgate.guards.runner import run_guarded_async, run_guarded_sync
+from hexgate.guards.types import (
     Halt,
-    Hook,
-    HookEvent,
+    Guard,
+    GuardEvent,
     Modification,
     Proceed,
     ToolCall,
@@ -23,14 +23,14 @@ from hexgate.hooks.types import (
     ToolPipeline,
 )
 from hexgate.security.decision import DecisionOutcome
-from tests.hooks.helpers import FakeEnforcer, RecordingInvoke, langchain_error
+from tests.guards.helpers import FakeEnforcer, RecordingInvoke, langchain_error
 
 
 def _pipe(pre=(), post=(), observer=None) -> ToolPipeline:
     """Build a pipeline, wrapping bare callables in the right decorator."""
     return ToolPipeline(
-        pre=[p if isinstance(p, Hook) else before_tool(p) for p in pre],
-        post=[q if isinstance(q, Hook) else after_tool(q) for q in post],
+        pre=[p if isinstance(p, Guard) else before_tool(p) for p in pre],
+        post=[q if isinstance(q, Guard) else after_tool(q) for q in post],
         observer=observer,
     )
 
@@ -87,7 +87,7 @@ async def test_pre_rewrite_is_what_decide_and_the_tool_see() -> None:
 
 @pytest.mark.asyncio
 async def test_pre_rewrite_records_a_modification_to_the_observer() -> None:
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke()
 
     def redact(call: ToolCall):
@@ -105,7 +105,7 @@ async def test_pre_rewrite_records_a_modification_to_the_observer() -> None:
 
 @pytest.mark.asyncio
 async def test_pre_rewrite_synthesizes_a_default_modification() -> None:
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Proceed(args={"x": 2})], observer=events.append)
     await _run(enf, pipe, {"x": 1}, invoke=inv)
@@ -114,7 +114,7 @@ async def test_pre_rewrite_synthesizes_a_default_modification() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_pre_hooks_run_in_order_and_compose() -> None:
+async def test_two_pre_guards_run_in_order_and_compose() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(
         pre=[
@@ -176,7 +176,7 @@ async def test_decide_deny_blocks_and_does_not_invoke() -> None:
 @pytest.mark.asyncio
 async def test_rewrite_then_deny_still_reports_the_modification() -> None:
     """A rewrite followed by a policy deny is the coercion-detection signal."""
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf = FakeEnforcer(DecisionOutcome.DENY)
     inv = RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Proceed(args={"x": 0})], observer=events.append)
@@ -247,7 +247,7 @@ def _boom(*_a):
 
 
 @pytest.mark.asyncio
-async def test_raising_pre_hook_fails_closed(caplog) -> None:
+async def test_raising_pre_guard_fails_closed(caplog) -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[_boom])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
@@ -256,7 +256,7 @@ async def test_raising_pre_hook_fails_closed(caplog) -> None:
 
 
 @pytest.mark.asyncio
-async def test_raising_post_hook_fails_closed_after_the_tool_ran() -> None:
+async def test_raising_post_guard_fails_closed_after_the_tool_ran() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(post=[_boom])
     out = await _run(enf, pipe, {"x": 1}, invoke=inv)
@@ -288,7 +288,7 @@ async def test_observe_guard_cannot_halt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bad_hook_return_type_raises() -> None:
+async def test_bad_guard_return_type_raises() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: "not-an-outcome"])
     with pytest.raises(TypeError, match="expected Proceed, Halt, or None"):
@@ -296,7 +296,7 @@ async def test_bad_hook_return_type_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pre_hook_result_rewrite_is_rejected_in_v1() -> None:
+async def test_pre_guard_result_rewrite_is_rejected_in_v1() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Proceed(result="x")])
     with pytest.raises(ValueError, match="result rewrite"):
@@ -304,7 +304,7 @@ async def test_pre_hook_result_rewrite_is_rejected_in_v1() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_hook_arg_rewrite_is_rejected() -> None:
+async def test_post_guard_arg_rewrite_is_rejected() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(post=[lambda call, out: Proceed(args={"x": 2})])
     with pytest.raises(ValueError, match="cannot rewrite args"):
@@ -312,7 +312,7 @@ async def test_post_hook_arg_rewrite_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_hook_result_rewrite_is_rejected() -> None:
+async def test_post_guard_result_rewrite_is_rejected() -> None:
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(post=[lambda call, out: Proceed(result="rewritten")])
     with pytest.raises(ValueError, match="result rewrite"):
@@ -335,7 +335,7 @@ async def test_tool_names_scopes_a_guard_to_some_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hooks_run_without_an_enforcer() -> None:
+async def test_guards_run_without_an_enforcer() -> None:
     inv = RecordingInvoke()
     seen: list[str] = []
     pipe = _pipe(pre=[lambda call: seen.append(call.tool_name) or None])
@@ -415,12 +415,12 @@ def test_sync_halt_blocks() -> None:
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-def test_sync_rejects_a_coroutine_returning_hook() -> None:
-    async def async_hook(call: ToolCall):
+def test_sync_rejects_a_coroutine_returning_guard() -> None:
+    async def async_guard(call: ToolCall):
         return None
 
     enf, inv = FakeEnforcer(), RecordingInvoke()
-    pipe = _pipe(pre=[async_hook])
+    pipe = _pipe(pre=[async_guard])
     with pytest.raises(RuntimeError, match="coroutine"):
         run_guarded_sync(
             "echo",
@@ -460,7 +460,7 @@ def test_sync_observe_guard_async_is_swallowed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_hook_observes_a_tool_that_raised() -> None:
+async def test_post_guard_observes_a_tool_that_raised() -> None:
     seen: list[ToolOutcome] = []
     enf = FakeEnforcer()
 
@@ -488,7 +488,7 @@ async def test_post_hook_observes_a_tool_that_raised() -> None:
 
 
 @pytest.mark.asyncio
-async def test_post_hook_can_halt_a_raising_tool_instead_of_propagating() -> None:
+async def test_post_guard_can_halt_a_raising_tool_instead_of_propagating() -> None:
     enf = FakeEnforcer()
 
     def scrub(call: ToolCall, out: ToolOutcome):
@@ -514,7 +514,7 @@ async def test_post_hook_can_halt_a_raising_tool_instead_of_propagating() -> Non
 
 
 @pytest.mark.asyncio
-async def test_tool_raise_without_post_hooks_propagates_unchanged() -> None:
+async def test_tool_raise_without_post_guards_propagates_unchanged() -> None:
     enf = FakeEnforcer()
 
     async def boom(_final):
@@ -539,17 +539,17 @@ async def test_tool_raise_without_post_hooks_propagates_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_observer_is_silent_on_a_clean_allow() -> None:
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: None], observer=events.append)
     await _run(enf, pipe, {"x": 1}, invoke=inv)
-    assert events == []  # no rewrite, no halt, no approval -> no HookEvent
+    assert events == []  # no rewrite, no halt, no approval -> no GuardEvent
 
 
 @pytest.mark.asyncio
 async def test_rewrite_plus_approved_halt_reports_the_modification_once() -> None:
     """A rewrite and an approved halt on one call must not double-count the mod."""
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
     pipe = _pipe(
         pre=[
@@ -569,8 +569,8 @@ async def test_rewrite_plus_approved_halt_reports_the_modification_once() -> Non
 
 
 @pytest.mark.asyncio
-async def test_approved_pre_halt_reports_a_hookevent() -> None:
-    events: list[HookEvent] = []
+async def test_approved_pre_halt_reports_a_guardevent() -> None:
+    events: list[GuardEvent] = []
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
     pipe = _pipe(
         pre=[
@@ -588,7 +588,7 @@ async def test_approved_pre_halt_reports_a_hookevent() -> None:
 @pytest.mark.asyncio
 async def test_approved_pre_halt_is_recorded_on_the_audit_trail() -> None:
     """A granted guard approval is audited, like a policy NEEDS_APPROVAL — not
-    left only on the observer channel (R-HOOK-004)."""
+    left only on the observer channel (R-GUARD-004)."""
     enf, inv = FakeEnforcer(), RecordingInvoke("ok")
     pipe = _pipe(
         pre=[
@@ -607,7 +607,7 @@ async def test_approved_pre_halt_is_recorded_on_the_audit_trail() -> None:
 async def test_rewrite_then_policy_deny_marks_the_event_blocked() -> None:
     """A pre-guard rewrite the policy then denies is reported ``blocked``, so a
     consumer never reads it as a rewrite that took effect."""
-    events: list[HookEvent] = []
+    events: list[GuardEvent] = []
     enf = FakeEnforcer(outcome=DecisionOutcome.DENY, reason="nope")
     inv = RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Proceed(args={"x": 2})], observer=events.append)

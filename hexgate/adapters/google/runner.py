@@ -4,8 +4,9 @@ active role. Langfuse propagation mirrors HexgateContext identity into spans.
 """
 
 import asyncio
+from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import Any, AsyncGenerator, Generator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator
 
 import nest_asyncio
 from google.adk.agents import BaseAgent
@@ -25,6 +26,9 @@ from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext
 from hexgate.security.bans import resolve_ban_gate
 
+if TYPE_CHECKING:
+    from hexgate.guards.types import Guard, GuardObserver
+
 
 class HexgateRunner:
     """Runner for Google ADK agents with Hexgate tool policy and observability."""
@@ -37,8 +41,13 @@ class HexgateRunner:
         session_service: BaseSessionService,
         api_key: str | None = None,
         approval_handler: ApprovalHandler | None = None,
+        guards: "Sequence[Guard] | None" = None,
+        guard_observer: "GuardObserver | None" = None,
         **runner_kwargs: Any,
     ):
+        # ``guards`` matches the OpenAI runner's constructor. ADK's ``run`` has
+        # no ``hooks=`` to collide with (it takes ``**runner_kwargs``), so the
+        # name is for cross-runner symmetry, not disambiguation.
         self.api_key = resolve_api_key(api_key)
         if self.api_key is None:
             raise ValueError(
@@ -53,6 +62,8 @@ class HexgateRunner:
             api_key=self.api_key,
             approval_handler=approval_handler,
             client=client,
+            guards=guards,
+            guard_observer=guard_observer,
         )
         plugins = list(runner_kwargs.pop("plugins", None) or [])
         plugins.append(HexgateUsagePlugin(api_key=self.api_key))
