@@ -544,14 +544,31 @@ def test_verify_schema_covers_ban_enforcement_too() -> None:
     assert exc.value.missing == {audit.BAN_ENFORCEMENT_TABLE: ["ban_id"]}
 
 
+def _server_error(code: int, text: str) -> DatabaseError:
+    """A DatabaseError shaped like clickhouse-connect's — the server code lives
+    in the message, which is the only place the driver exposes it."""
+    return DatabaseError(
+        f"Received ClickHouse exception, code: {code}, server response: "
+        f"Code: {code}. DB::Exception: {text}"
+    )
+
+
 def test_verify_schema_reports_an_absent_table_as_a_schema_gap() -> None:
     """A dropped table must give the actionable error, not a raw DatabaseError
     escaping the lifespan and crash-looping the whole control plane."""
     client = MagicMock()
-    client.query.side_effect = DatabaseError("Table does not exist")
+    client.query.side_effect = _server_error(60, "Table hexgate_audit.x does not exist")
     with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
         audit.verify_schema(client)
     assert exc.value.missing[audit.DECISION_TABLE] == sorted(audit._DECISION_COLUMNS)
+
+
+def test_verify_schema_degrades_when_the_schema_cannot_be_read() -> None:
+    """A scoped GRANT (code 497) is not evidence the schema is stale, and the
+    error we would otherwise raise tells the operator to wipe the volume."""
+    client = MagicMock()
+    client.query.side_effect = _server_error(497, "not enough privileges")
+    audit.verify_schema(client)  # no raise
 
 
 def test_verify_schema_degrades_when_clickhouse_is_unreachable() -> None:
@@ -797,6 +814,32 @@ def test_summarize_role_left_the_grouping_sets_scan() -> None:
     assert "role" not in main_sql
     assert "arrayJoin" not in main_sql
     assert "arrayJoin" in by_role_sql
+
+
+def test_summarize_role_filter_collapses_the_membership_scan() -> None:
+    """has(user_roles,'billing') keeps the row, then arrayJoin re-expands the
+    caller's co-roles into bars of their own — so filtering to billing would
+    also chart support. Every other dimension collapses; this must too."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24, role="billing")
+    by_role_sql = client.query.call_args_list[1].args[0]
+    assert "HAVING role = {role:String}" in by_role_sql
+    assert client.query.call_args_list[1].kwargs["parameters"]["role"] == "billing"
+
+
+def test_summarize_without_a_role_filter_keeps_every_membership_bucket() -> None:
+    """Unfiltered, multi-counting is the point of the panel."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24)
+    assert "HAVING" not in client.query.call_args_list[1].args[0]
+
+
+def test_summarize_no_role_drilldown_does_not_add_a_having() -> None:
+    """role="" is the "(none)" bucket: _scope already narrows it with
+    empty(user_roles), and those rows arrayJoin to exactly one '' key."""
+    client = _summary_result([], [])
+    summarize(client, project_id="p1", since_hours=24, role="")
+    assert "HAVING" not in client.query.call_args_list[1].args[0]
 
 
 def test_summarize_classifies_grouping_sets() -> None:

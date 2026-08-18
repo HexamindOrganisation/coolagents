@@ -311,9 +311,14 @@ class PolicyValidationError(BaseModel):
     ``role`` is set when the failure was inside a specific entry of a
     role-aware ``policy.yaml``'s ``roles:`` section; ``None`` for errors
     at the top level (e.g. invalid YAML, schema violation).
+
+    ``tool`` is the separate locus a lint can carry (``permissive-default``
+    names the over-granted tool). It has its own field because the two read
+    identically once rendered — a tool in the ``role`` slot looks like a role.
     """
 
     role: str | None = None
+    tool: str | None = None
     line: int | None = None
     message: str
 

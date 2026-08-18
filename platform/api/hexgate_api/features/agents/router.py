@@ -326,7 +326,9 @@ def _default_role_warnings(
         return []
 
     return [
-        PolicyValidationError(role=lint.tool, message=f"{lint.code}: {lint.message}")
+        PolicyValidationError(
+            role=lint.role, tool=lint.tool, message=f"{lint.code}: {lint.message}"
+        )
         for lint in check_default_role_exposure(policy_set)
     ]
 

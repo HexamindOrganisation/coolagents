@@ -133,15 +133,20 @@ export function PoliciesPage() {
 function DiagnosticList({ items }: { items: PolicyValidationError[] }) {
   return (
     <ul className="space-y-0.5 font-mono">
-      {items.map((d, i) => (
-        <li key={i}>
-          {d.role && <span className="text-foreground">{d.role}</span>}
-          {d.role && d.line ? ":" : ""}
-          {d.line ? d.line : ""}
-          {d.role || d.line ? " — " : ""}
-          {d.message}
-        </li>
-      ))}
+      {items.map((d, i) => {
+        // A bare name in this slot reads as a role, so a tool locus is
+        // prefixed rather than left to look like one.
+        const locus = d.role ?? (d.tool ? `tool ${d.tool}` : null);
+        return (
+          <li key={i}>
+            {locus && <span className="text-foreground">{locus}</span>}
+            {locus && d.line ? ":" : ""}
+            {d.line ? d.line : ""}
+            {locus || d.line ? " — " : ""}
+            {d.message}
+          </li>
+        );
+      })}
     </ul>
   );
 }

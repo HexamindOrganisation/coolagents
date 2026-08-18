@@ -198,6 +198,9 @@ export interface AgentManifestView {
 export interface PolicyValidationError {
   /** Role name when the failure was inside an inline-roles entry; null otherwise. */
   role: string | null;
+  /** Tool the lint is about (`permissive-default`); null otherwise. Separate
+   * from `role` because both render as a bare name in the same slot. */
+  tool: string | null;
   line: number | null;
   message: string;
 }

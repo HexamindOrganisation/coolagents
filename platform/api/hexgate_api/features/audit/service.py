@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from collections import deque
 
@@ -220,6 +221,16 @@ def insert_ban_enforcement(
 
 # --- Schema guard ------------------------------------------------------------
 
+_UNKNOWN_TABLE_CODE = 60
+# clickhouse-connect exposes the server-side code only in the message text;
+# DatabaseError carries no structured attribute for it.
+_SERVER_ERROR_CODE_RE = re.compile(r"code:\s*(\d+)")
+
+
+def _server_error_code(exc: DatabaseError) -> int | None:
+    match = _SERVER_ERROR_CODE_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
 
 def verify_schema(client: Client) -> None:
     """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
@@ -227,10 +238,12 @@ def verify_schema(client: Client) -> None:
     Extra server-side columns are fine — only gaps in what we write break
     inserts. Startup-only: changing this needs a deployment or manual DDL.
 
-    A table we can't DESCRIBE counts as every column missing: an absent table
-    breaks inserts exactly like an absent column, so it earns the same
-    actionable error rather than a raw driver traceback out of the lifespan.
-    Connectivity failures degrade to a warning — /ready owns that signal.
+    An absent table breaks inserts exactly like an absent column, so it earns
+    the same actionable error rather than a raw driver traceback out of the
+    lifespan. Every other failure degrades to a warning: being unable to read
+    the schema is not evidence that it is stale, and the error this would
+    otherwise raise tells the operator to destroy the volume. Degrading is
+    safe — a genuinely broken table makes inserts 503, which the SDK retries.
     """
     missing: dict[str, list[str]] = {}
     for table, columns in (
@@ -239,10 +252,16 @@ def verify_schema(client: Client) -> None:
     ):
         try:
             present = table_columns(client, table)
-        except OperationalError:
-            _log.warning("ClickHouse unreachable during %s schema check", table)
+        except OperationalError as exc:
+            _log.warning(
+                "ClickHouse unreachable during %s schema check: %s", table, exc
+            )
             return
-        except DatabaseError:
+        except DatabaseError as exc:
+            if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
+                # ACCESS_DENIED on a scoped grant, quota, metadata blip…
+                _log.warning("cannot verify the %s schema: %s", table, exc)
+                return
             present = set()
         gaps = sorted(set(columns) - present)
         if gaps:
@@ -365,7 +384,8 @@ def summarize(
 
     ``by_role`` counts role-set membership from its own scan, so a multi-role
     call lands in several buckets and ``sum(by_role[*].all) >= totals["all"]``.
-    Every other breakdown stays one row per decision."""
+    Every other breakdown stays one row per decision. Under a ``role`` filter
+    it collapses to that role alone, like every other dimension."""
     where, params = _scope(
         project_id,
         since_hours,
@@ -422,11 +442,17 @@ def summarize(
     # Second scan: role membership. Same where_sql AND params — the window is a
     # bound instant, not ``now()``, so both scans see one slice. Sharing only
     # the SQL text would not: ClickHouse re-evaluates now() per query.
-    role_result = client.query(
+    by_role_sql = (
         f"{_BY_ROLE_SELECT} FROM policy_decision WHERE {where_sql} "
-        "GROUP BY role, outcome",
-        parameters=params,
+        "GROUP BY role, outcome"
     )
+    if role:
+        # This is the only breakdown that unnests, so the WHERE alone doesn't
+        # narrow it: has(user_roles, 'billing') keeps the row, then arrayJoin
+        # re-expands the caller's *other* roles into bars of their own. Every
+        # other dimension collapses to the filtered value; match that.
+        by_role_sql += " HAVING role = {role:String}"
+    role_result = client.query(by_role_sql, parameters=params)
     for role_key, outcome, n in role_result.result_rows:
         _add(by_role, role_key, outcome, int(n))
 

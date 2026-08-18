@@ -271,8 +271,10 @@ export function BreakdownCard({
             </span>
           ))}
           {/* Stated inline, not in a tooltip: these bars legitimately sum
-              above the total decision count. */}
-          {dim === "role" && (
+              above the total decision count. Dropped once a role filter is
+              active — the server then collapses this to the filtered role, so
+              nothing multi-counts and the caveat would mislead. */}
+          {dim === "role" && !f[fkey] && (
             <span className="italic">
               counts role membership — a caller with several roles counts under
               each

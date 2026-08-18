@@ -319,6 +319,10 @@ def test_validate_warns_when_default_grants_what_no_named_role_grants(
     [warning] = body["warnings"]
     assert "permissive-default" in warning["message"]
     assert "refund_order" in warning["message"]
+    # The locus is a tool, not a role. Both render as a bare name in the same
+    # slot, so putting it in ``role`` would invent a role called refund_order.
+    assert warning["tool"] == "refund_order"
+    assert warning["role"] is None
 
 
 def test_validate_warning_does_not_block_ok(client: TestClient) -> None:
