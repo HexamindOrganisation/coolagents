@@ -198,6 +198,9 @@ export interface AgentManifestView {
 export interface PolicyValidationError {
   /** Role name when the failure was inside an inline-roles entry; null otherwise. */
   role: string | null;
+  /** Tool the lint is about (`permissive-default`); null otherwise. Separate
+   * from `role` because both render as a bare name in the same slot. */
+  tool: string | null;
   line: number | null;
   message: string;
 }
@@ -205,6 +208,8 @@ export interface PolicyValidationError {
 export interface ValidatePolicyResponse {
   ok: boolean;
   errors: PolicyValidationError[];
+  /** Authoring lints. Never affect `ok`, so they can't block a save. */
+  warnings: PolicyValidationError[];
 }
 
 // --- Audit dashboard (mirrors platform/api/schemas.py) ----------------------
@@ -220,7 +225,11 @@ export interface OutcomeCounts {
 }
 
 /** One agent/role/tool bucket; an empty role keeps its raw `""` key —
- * the dashboard maps it to the "(none)" display label locally. */
+ * the dashboard maps it to the "(none)" display label locally.
+ *
+ * `by_role` counts membership — a caller carrying `["billing", "support"]`
+ * lands in both — so it can sum to more than `totals`. Every other breakdown
+ * stays one row per decision. */
 export interface AuditBreakdownRow extends OutcomeCounts {
   key: string;
 }
@@ -251,7 +260,11 @@ export interface AuditDecisionRow {
   session_id: string;
   user_id: string;
   tool_name: string;
-  role: string;
+  /** Distinct roles the caller carried, in order. Always the full set: an
+   * SDK that sends the legacy scalar has it folded in at ingest. */
+  user_roles: string[];
+  /** Role whose policy granted or gated the call; `""` on a deny. */
+  deciding_role: string;
   outcome: AuditOutcome;
   error_type: string;
   reason: string;
@@ -269,7 +282,8 @@ export interface AuditDecisionPage {
 }
 
 /** Scope filters shared by summary/timeseries/list. `undefined` = no
- * filter; `role: ''` = the no-role bucket (sent as `role=`). */
+ * filter; `role: ''` = the no-role bucket (sent as `role=`). A non-empty
+ * `role` matches membership, so a multi-role call is returned under each. */
 export interface AuditScope {
   window?: AuditWindow;
   agent?: string;

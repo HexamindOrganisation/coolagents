@@ -4,7 +4,9 @@
 -- This init dir runs once on an empty volume; edits afterward are
 -- ignored. Don't add more files here — use a real migration runner
 -- instead. Until there is one: every edit below also needs a
--- hand-applied counterpart in ../migrations/ for existing volumes.
+-- hand-applied counterpart in ../migrations/ for existing volumes —
+-- unless no ALTER can restate pre-existing rows truthfully (the role
+-- set), in which case the volume is recreated and no migration ships.
 
 CREATE DATABASE IF NOT EXISTS hexgate_audit;
 
@@ -22,14 +24,20 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
 
     -- Decision-specific
     tool_name           LowCardinality(String),
-    role                LowCardinality(String) DEFAULT '',
     outcome             Enum8('allow' = 1, 'deny' = 2, 'needs_approval' = 3),
     error_type          LowCardinality(String) DEFAULT '',
     reason              String,
     violations          Array(String),
     hint                String CODEC(ZSTD(3)),
     arguments           String COMMENT 'SDK-truncated JSON snapshot; may be lossy' CODEC(ZSTD(3)),
-    attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3))
+    attributes          String COMMENT 'Caller ABAC bag (ctx.*); advisory + client-assertable; SDK-redacted and truncated' CODEC(ZSTD(3)),
+    -- The caller's roles are a set, stored only as a set — there is no legacy
+    -- scalar `role` column. An SDK predating multi-role sends one; it is folded
+    -- into user_roles at ingest (audit/service.py), so every row here is the
+    -- same shape whatever wrote it. No DEFAULT: these columns have existed
+    -- since the first CREATE, so nothing needs a read-time rescue.
+    user_roles          Array(LowCardinality(String)) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
+    deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied'
 )
 -- ReplacingMergeTree: SDK retries (same event_id) collapse on background
 -- merges — eventual dedup; exact counts use FINAL or count(DISTINCT event_id).

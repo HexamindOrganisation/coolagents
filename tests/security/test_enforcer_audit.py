@@ -67,9 +67,8 @@ async def test_sender_with_user_populates_envelope_from_user() -> None:
     ):
         decision = enforcer.decide("read_file", {})
     ev = sender.events[0]
-    # Legacy scalar view still reads the caller's first role.
     assert decision.user_roles == ("analyst",)
-    assert decision.role == "analyst"
+    assert ev.as_payload()["user_roles"] == ["analyst"]
     assert ev.user_id == "alice"
     assert ev.session_id == "sess_42"
     assert ev.decision is decision  # same Decision instance wrapped
@@ -166,6 +165,11 @@ async def test_audited_decision_carries_the_full_role_set_and_deciding_role() ->
     assert decision.user_roles == ("support", "billing")
     assert decision.deciding_role == "billing"
 
+    # ...and both reach the wire in caller order.
+    wire = sender.events[0].as_payload()
+    assert wire["user_roles"] == ["support", "billing"]
+    assert wire["deciding_role"] == "billing"
+
 
 async def test_audited_deny_records_no_deciding_role() -> None:
     sender = _CapturingSender()
@@ -175,3 +179,8 @@ async def test_audited_deny_records_no_deciding_role() -> None:
 
     assert decision.user_roles == ("support", "billing")
     assert decision.deciding_role is None
+
+    # None → "" on the wire: the platform column is a non-null String.
+    wire = sender.events[0].as_payload()
+    assert wire["deciding_role"] == ""
+    assert wire["user_roles"] == ["support", "billing"]

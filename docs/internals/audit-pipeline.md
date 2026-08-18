@@ -88,7 +88,7 @@ audit emission, and the no-audit path never constructs an event (so a
 
 The enforcer builds the `AuditEvent` immediately after the `Decision`, so
 `occurred_at` is decision time for practical purposes. The decision fields
-(`agent_name`, `tool_name`, `outcome`, `role`, `reason`, `error_type`,
+(`agent_name`, `tool_name`, `outcome`, `user_roles`, `deciding_role`, `reason`, `error_type`,
 `violations`, `hint`, `arguments`) are populated by `Decision.from_verdict()`
 from the policy engine's `Verdict` plus host context.
 
@@ -114,7 +114,8 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "agent_name":  "example_agent",
   "tool_name":   "read_file",
   "outcome":     "deny",
-  "role":        "analyst",        // "" when no role
+  "user_roles":    ["analyst", "billing"],  // every role evaluated, caller order; [] when none
+  "deciding_role": "",             // role that granted/gated it; "" on a deny
   "error_type":  "policy_denied",  // "" for allow
   "reason":      "denied for path",
   "violations":  ["v1", "v2"],     // tuple → list
@@ -137,8 +138,11 @@ Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
 
 `PolicyEnforcer.decide()` (`hexgate/security/enforcer.py`):
 
-1. Resolve `role` from the active `HexgateContext` contextvar.
-2. Ask the policy engine for a `Verdict`; lift it into a `Decision`.
+1. Resolve the caller's role *set* from the active `HexgateContext` contextvar
+   (deduped, capped at 32; `[None]` when unroled).
+2. Evaluate each role and fold the verdicts permissively (`ALLOW` >
+   `NEEDS_APPROVAL` > `DENY`), short-circuiting on the first allow; lift the
+   winner into a `Decision` carrying `user_roles` + `deciding_role`.
 3. If an `AuditSender` was injected into this enforcer, `emit()` an `AuditEvent`.
 4. Return the `Decision` to the adapter (synchronous, unaffected by step 3).
 
@@ -335,14 +339,18 @@ CREATE TABLE hexgate_audit.policy_decision
 
   -- Decision-specific
   tool_name           LowCardinality(String),
-  role                LowCardinality(String) DEFAULT '',
   outcome             Enum8('allow'=1, 'deny'=2, 'needs_approval'=3),
   error_type          LowCardinality(String) DEFAULT '',
   reason              String,
   violations          Array(String),
   hint                String CODEC(ZSTD(3)),
   arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
-  attributes          String CODEC(ZSTD(3))   -- caller ABAC bag (ctx.*); redacted + truncated
+  attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
+  -- Roles are stored only as a set — there is no legacy scalar `role` column.
+  -- An SDK predating multi-role sends one; the API folds it into user_roles
+  -- at ingest, so every stored row is the same shape whatever wrote it.
+  user_roles          Array(LowCardinality(String)),
+  deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
@@ -432,7 +440,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / role / tool (one `GROUPING SETS` query). |
+| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / tool / user (one `GROUPING SETS` query) and by role (a second scan over the same `WHERE`). |
 | `GET /v1/projects/{id}/audit/timeseries?window=` | Per-bucket outcome counts (`toStartOfInterval`); bucket size tracks the window. |
 | `GET /v1/projects/{id}/audit/decisions?window=&agent=&role=&outcome=&limit=&offset=` | Filterable detail rows, newest first, with `total` for pagination; `hint`/`arguments` decoded back to objects. |
 
@@ -441,6 +449,11 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
   selects the empty-role bucket; an absent `role` means "no filter". No
   sentinel string is reserved on the wire — the dashboard's "(none)" is a
   display label only.
+- **`role` filters on membership** (`has(user_roles, …)`), so one call by
+  `["billing","support"]` is returned under either name, subsuming the old
+  `role = X` equality. `by_role` therefore counts *memberships* and
+  `sum(by_role[*].all) >= totals.all` — hence its own scan, since an
+  `arrayJoin` in the `GROUPING SETS` query would inflate every breakdown.
 - **Concurrency.** A client firing several of these reads at once (e.g. a
   dashboard loading summary + timeseries + decisions together) would otherwise
   hit "concurrent queries within the same session". The shared, process-global
@@ -492,10 +505,13 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 4. **Sync agents emit nothing** — `emit()` requires a running loop; sync entry
    points silently produce no audit.
 5. **Schema evolution** — `init/schema.sql` runs once; there is no migration
-   runner wired up yet. Interim convention: every DDL change also lands a
+   runner wired up yet. Interim convention: a DDL change also lands a
    hand-applied statement in `platform/clickhouse/migrations/`, run in filename
    order via `make clickhouse-cli` **before** deploying the API that references
-   the new column.
+   the new column. Exception: when no `ALTER` can restate pre-existing rows
+   truthfully — the multi-role columns — no migration ships and the volume is
+   recreated instead (`make clickhouse-reset`), which is what
+   `AuditSchemaOutOfDate` tells the operator.
 6. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.

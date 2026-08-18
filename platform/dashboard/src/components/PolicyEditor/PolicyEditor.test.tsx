@@ -30,7 +30,7 @@ describe("PolicyEditor", () => {
       <PolicyEditor
         value={"a: 1\n"}
         onChange={() => {}}
-        diagnostics={[{ line: 1, role: null, message: "bad" }]}
+        diagnostics={[{ line: 1, role: null, tool: null, message: "bad" }]}
       />,
     );
     // `.cm-gutter-lint` is the gutter class that `lintGutter()` adds.

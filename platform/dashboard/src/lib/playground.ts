@@ -72,7 +72,10 @@ export interface ApprovalRequestEvent {
   arguments: Record<string, unknown>;
   reason: string | null;
   agent_name: string;
+  /** The *deciding* role — whose policy gated this call. Null when none did. */
   role: string | null;
+  /** Every role the caller carried. Absent from an older `hexgate serve`. */
+  roles?: string[];
   expires_at: string; // ISO
 }
 
@@ -346,14 +349,13 @@ export function usePlayground({ projectId }: Options) {
   }, [hasPending]);
 
   /**
-   * Send a chat message, optionally scoped to a role.
+   * Send a chat message, optionally scoped to one or more roles.
    *
-   * When `role` is set, the platform forwards a `user_attenuation` block to
-   * the dev's local `hexgate serve` process, which attenuates its parent
-   * Hexgate token to carry `user("playground"), role("<role>")` for this
-   * turn. The role's policy bundle then drives tool authorization.
+   * A non-empty `roles` sends a `user_attenuation` block, which makes the dev's
+   * `hexgate serve` attenuate its token to carry one `role()` fact per name for
+   * this turn. The most permissive outcome wins, so adding a role only widens.
    */
-  function sendChat(message: string, opts?: { role?: string | null }) {
+  function sendChat(message: string, opts?: { roles?: string[] }) {
     const ws = activeSocket;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const turnId = randomId();
@@ -379,10 +381,14 @@ export function usePlayground({ projectId }: Options) {
       ],
     }));
     const frame: Record<string, unknown> = { type: "chat", message };
-    if (opts?.role) {
+    const roles = (opts?.roles ?? []).filter(Boolean);
+    if (roles.length) {
       frame.user_attenuation = {
         user: "playground",
-        role: opts.role,
+        roles,
+        // Singular kept for one release: a pinned older `hexgate serve` reads
+        // only `role`. The current one prefers `roles`.
+        role: roles[0],
         ttl_seconds: 300,
       };
     }

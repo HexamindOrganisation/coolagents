@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timedelta
 from collections import deque
 
 from clickhouse_connect.driver.client import Client
+from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
+from hexgate_api.core.clickhouse import table_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -37,6 +40,27 @@ class AuditPayloadTooLarge(Exception):
         super().__init__(f"{field} exceeds {limit} bytes")
         self.field = field
         self.limit = limit
+
+
+class AuditSchemaOutOfDate(Exception):
+    """An audit table is missing a column the ingest writes."""
+
+    def __init__(self, missing: dict[str, list[str]]) -> None:
+        detail = "; ".join(
+            f"{table}: {', '.join(columns)}"
+            for table, columns in sorted(missing.items())
+        )
+        super().__init__(
+            f"ClickHouse schema is behind this build ({detail}). "
+            "Recreate the volume so init/schema.sql runs (`make clickhouse-reset` "
+            "locally) before starting the API. The multi-role columns ship no "
+            "migration: no ALTER can restate pre-existing rows truthfully."
+        )
+        self.missing = missing
+
+
+DECISION_TABLE = "policy_decision"
+BAN_ENFORCEMENT_TABLE = "ban_enforcement"
 
 
 MAX_ARGS_BYTES = 8 * 1024
@@ -60,7 +84,6 @@ _DECISION_COLUMNS = [
     "session_id",
     "user_id",
     "tool_name",
-    "role",
     "outcome",
     "error_type",
     "reason",
@@ -68,6 +91,8 @@ _DECISION_COLUMNS = [
     "hint",
     "arguments",
     "attributes",
+    "user_roles",
+    "deciding_role",
 ]
 
 # async_insert batches small inserts; wait_for_async_insert=1 blocks until flush
@@ -112,6 +137,15 @@ def insert_decision(
     if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
         raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
+    # ``role`` is an ingest-only compatibility shim, the single place the legacy
+    # scalar still exists anywhere in the system. An SDK released before
+    # multi-role (<= 0.2.11) sends only ``role``; folding it into user_roles
+    # here keeps those callers in the by_role breakdown, which reads the list.
+    # Nothing downstream stores or reads the scalar — there is no ``role``
+    # column — so from here on an old event is indistinguishable from a new one.
+    # This survives any database recreation, because the SDK is pip-installed.
+    user_roles = list(event.user_roles) or ([event.role] if event.role else [])
+
     row = [
         event.event_id,
         event.occurred_at,
@@ -121,7 +155,6 @@ def insert_decision(
         event.session_id,
         event.user_id,
         event.tool_name,
-        event.role,
         event.outcome,
         event.error_type,
         event.reason,
@@ -129,9 +162,11 @@ def insert_decision(
         hint_json,
         args_json,
         attributes_json,
+        user_roles,
+        event.deciding_role,
     ]
     clickhouse_client.insert(
-        "policy_decision",
+        DECISION_TABLE,
         [row],
         column_names=_DECISION_COLUMNS,
         settings=_DECISION_INSERT_SETTINGS,
@@ -176,12 +211,63 @@ def insert_ban_enforcement(
         event.reason,
     ]
     clickhouse_client.insert(
-        "ban_enforcement",
+        BAN_ENFORCEMENT_TABLE,
         [row],
         column_names=_BAN_ENFORCEMENT_COLUMNS,
         # Same async-insert-and-block semantics as decisions.
         settings=_DECISION_INSERT_SETTINGS,
     )
+
+
+# --- Schema guard ------------------------------------------------------------
+
+_UNKNOWN_TABLE_CODE = 60
+# clickhouse-connect exposes the server-side code only in the message text;
+# DatabaseError carries no structured attribute for it.
+_SERVER_ERROR_CODE_RE = re.compile(r"code:\s*(\d+)")
+
+
+def _server_error_code(exc: DatabaseError) -> int | None:
+    match = _SERVER_ERROR_CODE_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def verify_schema(client: Client) -> None:
+    """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
+
+    Extra server-side columns are fine — only gaps in what we write break
+    inserts. Startup-only: changing this needs a deployment or manual DDL.
+
+    An absent table breaks inserts exactly like an absent column, so it earns
+    the same actionable error rather than a raw driver traceback out of the
+    lifespan. Every other failure degrades to a warning: being unable to read
+    the schema is not evidence that it is stale, and the error this would
+    otherwise raise tells the operator to destroy the volume. Degrading is
+    safe — a genuinely broken table makes inserts 503, which the SDK retries.
+    """
+    missing: dict[str, list[str]] = {}
+    for table, columns in (
+        (DECISION_TABLE, _DECISION_COLUMNS),
+        (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
+    ):
+        try:
+            present = table_columns(client, table)
+        except OperationalError as exc:
+            _log.warning(
+                "ClickHouse unreachable during %s schema check: %s", table, exc
+            )
+            return
+        except DatabaseError as exc:
+            if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
+                # ACCESS_DENIED on a scoped grant, quota, metadata blip…
+                _log.warning("cannot verify the %s schema: %s", table, exc)
+                return
+            present = set()
+        gaps = sorted(set(columns) - present)
+        if gaps:
+            missing[table] = gaps
+    if missing:
+        raise AuditSchemaOutOfDate(missing)
 
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------
@@ -224,13 +310,20 @@ def _scope(
     end_date: datetime | None = None,
 ) -> tuple[list[str], dict[str, object]]:
     """Shared WHERE + params for the scope filters (project/window/agent/role/
-    tool) that all reads narrow by. Pass role="" for the no-role bucket."""
+    tool) that all reads narrow by. Pass role="" for the no-role bucket.
+
+    ``role`` matches membership in the caller's role set, so a call by
+    ["billing", "support"] is returned under either."""
     where, params = scope_filters(
         project_id, since_hours, agent=agent, start_date=start_date, end_date=end_date
     )
     if role is not None:
-        where.append("role = {role:String}")
-        params["role"] = role
+        # Not ``if role``: role="" is the "(none)" drill-down, not "no filter".
+        if role:
+            where.append("has(user_roles, {role:String})")
+            params["role"] = role
+        else:
+            where.append("empty(user_roles)")
     if tool:
         where.append("tool_name = {tool:String}")
         params["tool"] = tool
@@ -240,26 +333,35 @@ def _scope(
     return where, params
 
 
-# Grand total + per-outcome + per-(agent|role|tool, outcome) in one scan.
+# Grand total + per-outcome + per-(agent|tool|user, outcome) in one scan.
 # Rows are classified by their GROUPING() flags (1 = column rolled up); only the
 # () set rolls up outcome, so g_outcome=1 marks the grand-total row.
+#
+# ``role`` is excluded: unnesting user_roles needs an arrayJoin, which would
+# multiply rows before grouping and inflate every other breakdown. It gets its
+# own scan below.
 _GROUPING_SETS = (
     "GROUPING SETS ((), (outcome), (agent_name, outcome), "
-    "(role, outcome), (tool_name, outcome), (user_id, outcome))"
+    "(tool_name, outcome), (user_id, outcome))"
 )
 _SELECT_COLS = [
     "agent_name",
-    "role",
     "tool_name",
     "user_id",
     "outcome",
     "GROUPING(agent_name) AS g_agent",
-    "GROUPING(role) AS g_role",
     "GROUPING(tool_name) AS g_tool",
     "GROUPING(user_id) AS g_user",
     "GROUPING(outcome) AS g_outcome",
     "count() AS n",
 ]
+
+# Membership breakdown, own scan over the same WHERE; an empty set keeps the ''
+# bucket the dashboard labels "(none)".
+_BY_ROLE_SELECT = (
+    "SELECT arrayJoin(if(empty(user_roles), [''], user_roles)) AS role, "
+    "outcome, count() AS n"
+)
 
 
 def summarize(
@@ -275,10 +377,15 @@ def summarize(
     end_date: datetime | None = None,
 ) -> dict:
     """Totals + breakdowns for the scoped slice. Returns ``{totals, by_agent,
-    by_role, by_tool}``; each breakdown is ``{key, all, allow, deny,
+    by_role, by_tool, by_user}``; each breakdown is ``{key, all, allow, deny,
     needs_approval}`` sorted by ``all`` desc. An empty role keeps its raw
     ``""`` key — labelling it ("(none)") is the dashboard's concern, so no
-    string is reserved on the wire."""
+    string is reserved on the wire.
+
+    ``by_role`` counts role-set membership from its own scan, so a multi-role
+    call lands in several buckets and ``sum(by_role[*].all) >= totals["all"]``.
+    Every other breakdown stays one row per decision. Under a ``role`` filter
+    it collapses to that role alone, like every other dimension."""
     where, params = _scope(
         project_id,
         since_hours,
@@ -310,12 +417,10 @@ def summarize(
 
     for (
         agent,
-        role,
         tool,
         user,
         outcome,
         g_agent,
-        g_role,
         g_tool,
         g_user,
         g_outcome,
@@ -324,17 +429,32 @@ def summarize(
         n = int(n)
         if g_outcome:  # only the () grand-total set rolls up outcome
             totals["all"] = n
-        elif g_agent and g_role and g_tool and g_user:  # (outcome) set
+        elif g_agent and g_tool and g_user:  # (outcome) set
             if outcome in totals:
                 totals[outcome] = n
         elif not g_agent:  # (agent_name, outcome)
             _add(by_agent, agent, outcome, n)
-        elif not g_role:  # (role, outcome)
-            _add(by_role, role, outcome, n)
         elif not g_tool:  # (tool_name, outcome)
             _add(by_tool, tool, outcome, n)
         else:  # (user_id, outcome)
             _add(by_user, user, outcome, n)
+
+    # Second scan: role membership. Same where_sql AND params — the window is a
+    # bound instant, not ``now()``, so both scans see one slice. Sharing only
+    # the SQL text would not: ClickHouse re-evaluates now() per query.
+    by_role_sql = (
+        f"{_BY_ROLE_SELECT} FROM policy_decision WHERE {where_sql} "
+        "GROUP BY role, outcome"
+    )
+    if role:
+        # This is the only breakdown that unnests, so the WHERE alone doesn't
+        # narrow it: has(user_roles, 'billing') keeps the row, then arrayJoin
+        # re-expands the caller's *other* roles into bars of their own. Every
+        # other dimension collapses to the filtered value; match that.
+        by_role_sql += " HAVING role = {role:String}"
+    role_result = client.query(by_role_sql, parameters=params)
+    for role_key, outcome, n in role_result.result_rows:
+        _add(by_role, role_key, outcome, int(n))
 
     def _ranked(store: dict[str, dict[str, int]]) -> list[dict]:
         return sorted(
@@ -410,8 +530,8 @@ def _decode_json_column(raw: str) -> object:
 
 _LIST_COLUMNS = (
     "event_id, occurred_at, received_at, agent_name, agent_version_id, "
-    "session_id, user_id, tool_name, role, outcome, error_type, "
-    "reason, violations, hint, arguments, attributes"
+    "session_id, user_id, tool_name, user_roles, deciding_role, "
+    "outcome, error_type, reason, violations, hint, arguments, attributes"
 )
 
 
@@ -452,10 +572,8 @@ def list_decisions(
         params["session_id"] = session_id
     where_sql = " AND ".join(where)
 
-    # One scan yields the page and its ``total`` together: a separate ``count()``
-    # would re-evaluate ``now()`` and could disagree with the page as rows arrive.
-    # ``count() OVER ()`` is computed before LIMIT, so it carries the full match
-    # count on every returned row.
+    # ``count() OVER ()`` is computed before LIMIT, so one scan yields the page
+    # and its full match count together.
     page_params = {**params, "lim": limit, "off": offset}
     result = client.query(
         f"SELECT {_LIST_COLUMNS}, count() OVER () AS total_matches "
@@ -469,6 +587,7 @@ def list_decisions(
         row = dict(zip(result.column_names, raw))
         total = int(row.pop("total_matches"))
         row["violations"] = list(row.get("violations") or [])
+        row["user_roles"] = list(row.get("user_roles") or [])
         row["hint"] = _decode_json_column(row.get("hint") or "")
         row["arguments"] = _decode_json_column(row.get("arguments") or "")
         row["attributes"] = _decode_json_column(row.get("attributes") or "")

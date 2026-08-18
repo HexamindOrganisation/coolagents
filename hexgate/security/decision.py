@@ -235,16 +235,6 @@ class Decision:
     def allowed(self) -> bool:
         return self.outcome is DecisionOutcome.ALLOW
 
-    @property
-    def role(self) -> str | None:
-        """The caller's first role — an arbitrary pick over a set.
-
-        Sole consumer is the audit wire's like-named column, whose meaning
-        predates multi-role and stays "the caller's role". Enforcement reads
-        ``user_roles``; provenance reads ``deciding_role``.
-        """
-        return self.user_roles[0] if self.user_roles else None
-
     def as_error_payload(self) -> dict[str, Any]:
         """Default LLM-facing dict rendering. Adapters can build their own.
 

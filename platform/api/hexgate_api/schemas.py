@@ -311,9 +311,14 @@ class PolicyValidationError(BaseModel):
     ``role`` is set when the failure was inside a specific entry of a
     role-aware ``policy.yaml``'s ``roles:`` section; ``None`` for errors
     at the top level (e.g. invalid YAML, schema violation).
+
+    ``tool`` is the separate locus a lint can carry (``permissive-default``
+    names the over-granted tool). It has its own field because the two read
+    identically once rendered — a tool in the ``role`` slot looks like a role.
     """
 
     role: str | None = None
+    tool: str | None = None
     line: int | None = None
     message: str
 
@@ -334,10 +339,15 @@ class ValidatePolicyResponse(BaseModel):
 
     ``ok`` is True when the document and every nested role parsed cleanly.
     ``errors`` carries per-issue diagnostics.
+
+    ``warnings`` carries authoring lints and never affects ``ok``: a
+    single-role agent's flat policy.yaml *is* the ``default`` role, so failing
+    it would be wrong. CI opts in with ``--max-severity warning``.
     """
 
     ok: bool
     errors: list[PolicyValidationError] = Field(default_factory=list)
+    warnings: list[PolicyValidationError] = Field(default_factory=list)
 
 
 # --- Multi-module policy store (see docs/adr/R-POL-001) ----------------------
@@ -495,7 +505,20 @@ class DecisionEvent(AuditEnvelope):
 
     tool_name: str = Field(min_length=1, max_length=256)
     outcome: AuditOutcome
+    # Ingest-only compatibility shim for SDKs released before multi-role
+    # (<= 0.2.11), which send this instead of ``user_roles``. Folded into
+    # ``user_roles`` by insert_decision and never stored on its own — there
+    # is no ``role`` column. Accepted, never emitted: current SDKs omit it.
     role: str = Field(default="", max_length=256)
+    # Distinct roles the SDK evaluated, in caller order. Advisory +
+    # client-assertable like ``role`` / ``user_id``. Caps mirror ``violations``;
+    # the list cap matches the SDK's MAX_EVALUATED_ROLES.
+    user_roles: list[Annotated[str, StringConstraints(max_length=256)]] = Field(
+        default_factory=list, max_length=32
+    )
+    # Role whose policy granted (or gated) the call; "" on a full deny, or from
+    # an older SDK.
+    deciding_role: str = Field(default="", max_length=256)
     error_type: str = Field(default="", max_length=64)
     reason: str = Field(default="", max_length=4096)
     # Per-item cap so 64 unbounded strings can't smuggle a multi-MB body.
@@ -565,7 +588,11 @@ class OutcomeCounts(BaseModel):
 class AuditBreakdownRow(OutcomeCounts):
     """One agent/role/tool bucket; an empty role keeps its raw ``""`` key
     (the dashboard renders the "(none)" label — nothing is reserved on
-    the wire)."""
+    the wire).
+
+    ``by_role`` counts membership — a caller carrying ``["billing", "support"]``
+    lands in both — so its sums can exceed ``totals``. Every other breakdown
+    stays one row per decision."""
 
     key: str
 
@@ -624,7 +651,10 @@ class AuditDecisionRow(BaseModel):
     session_id: str = ""
     user_id: str = ""
     tool_name: str
-    role: str = ""
+    # No legacy ``role``: an SDK that sends one has it folded into ``user_roles``
+    # at ingest, so every stored row speaks the same shape.
+    user_roles: list[str] = Field(default_factory=list)
+    deciding_role: str = ""
     outcome: AuditOutcome
     error_type: str = ""
     reason: str = ""

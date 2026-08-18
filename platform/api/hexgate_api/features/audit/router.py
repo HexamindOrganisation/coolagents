@@ -4,7 +4,11 @@ import asyncio
 import logging
 from datetime import datetime
 
-from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
+from clickhouse_connect.driver.exceptions import (
+    ClickHouseError,
+    OperationalError,
+    ProgrammingError,
+)
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -95,6 +99,13 @@ async def ingest_decision(
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("audit insert failed (transient): %s", exc)
         raise _audit_unavailable()
+    except ProgrammingError as exc:
+        # Schema behind this build: the driver rejects our column names before
+        # sending. 503, not 422 — the event is fine, and 422 would make the SDK
+        # discard a record the migration would let through. Startup normally
+        # catches this (service.verify_schema).
+        _log.error("audit insert impossible against current schema: %s", exc)
+        raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
         _log.error("audit insert rejected by ClickHouse: %s", exc)
         raise HTTPException(status_code=422, detail="audit event rejected by storage")
@@ -136,6 +147,9 @@ async def ingest_ban_enforcement(
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("ban-enforcement insert failed (transient): %s", exc)
         raise _audit_unavailable()
+    except ProgrammingError as exc:  # schema drift — see the decision handler
+        _log.error("ban-enforcement insert impossible against current schema: %s", exc)
+        raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
         _log.error("ban-enforcement insert rejected by ClickHouse: %s", exc)
         raise HTTPException(
@@ -151,6 +165,9 @@ async def ingest_ban_enforcement(
 # ``role`` filter semantics: absent = no filter; ``role=`` (empty value) =
 # the no-role bucket. No sentinel string is reserved on the wire — the
 # dashboard renders "(none)" purely as a display label.
+#
+# It matches membership in the caller's role set, so one call by
+# ["billing", "support"] is returned by role=billing and role=support alike.
 
 
 @router.get(

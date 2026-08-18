@@ -12,6 +12,7 @@ from hexgate.audit import (
     MAX_HINT_BYTES,
     AuditEvent,
 )
+from hexgate.runtime import MAX_EVALUATED_ROLES
 from hexgate.security.decision import Decision, DecisionOutcome
 
 
@@ -40,7 +41,7 @@ def test_as_payload_full_payload() -> None:
     assert wire["agent_name"] == "example_agent"
     assert wire["tool_name"] == "read_file"
     assert wire["outcome"] == "deny"
-    assert wire["role"] == "analyst"
+    assert "role" not in wire  # legacy scalar dropped from the wire
     assert wire["error_type"] == "policy_denied"
     assert wire["reason"] == "denied for path"
     assert wire["violations"] == ["v1", "v2"]
@@ -62,11 +63,60 @@ def test_as_payload_server_resolved_fields_absent() -> None:
 def test_as_payload_none_normalizes_to_empty_string() -> None:
     d = _decision(user_roles=(), error_type=None)
     wire = AuditEvent(decision=d).as_payload()  # user_id/session_id default to ""
-    # No roles on the Decision → the legacy scalar ``role`` field goes out empty.
-    assert wire["role"] == ""
+    assert wire["user_roles"] == []
     assert wire["error_type"] == ""
     assert wire["user_id"] == ""
     assert wire["session_id"] == ""
+
+
+def test_as_payload_carries_the_evaluated_role_set_in_order() -> None:
+    """Caller order decides which role is credited with an allow."""
+    d = _decision(user_roles=("billing", "support"), deciding_role="billing")
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["user_roles"] == ["billing", "support"]
+
+
+def test_as_payload_user_roles_tuple_serializes_as_list() -> None:
+    """Decision.user_roles is a tuple; JSON needs a list."""
+    wire = AuditEvent(decision=_decision(user_roles=("a", "b"))).as_payload()
+    assert wire["user_roles"] == ["a", "b"]
+    assert isinstance(wire["user_roles"], list)
+
+
+def test_as_payload_deciding_role_need_not_be_the_first_role() -> None:
+    """Independent fields: role = who called, deciding_role = who granted."""
+    d = _decision(
+        outcome=DecisionOutcome.ALLOW,
+        user_roles=("billing", "support"),
+        deciding_role="support",
+    )
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["user_roles"] == ["billing", "support"]
+    assert wire["deciding_role"] == "support"
+
+
+def test_as_payload_deciding_role_empty_on_a_deny() -> None:
+    """No role granted the call, so naming one would misdirect the reader."""
+    d = _decision(user_roles=("billing", "support"), deciding_role=None)
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["deciding_role"] == ""
+    assert wire["user_roles"] == ["billing", "support"]
+
+
+def test_as_payload_no_roles_sends_an_empty_list() -> None:
+    """[''] would be indistinguishable from a role literally named ''."""
+    wire = AuditEvent(decision=_decision(user_roles=())).as_payload()
+    assert wire["user_roles"] == []
+    assert wire["deciding_role"] == ""
+
+
+def test_as_payload_does_not_redact_role_names() -> None:
+    """Role names are policy identifiers, not caller payloads — the argument
+    and attribute redactors must not reach them."""
+    d = _decision(user_roles=("token", "api_key"), deciding_role="token")
+    wire = AuditEvent(decision=d).as_payload()
+    assert wire["user_roles"] == ["token", "api_key"]
+    assert wire["deciding_role"] == "token"
 
 
 def test_as_payload_violations_tuple_serializes_as_list() -> None:
@@ -292,3 +342,17 @@ def test_decision_keeps_every_violation_for_the_host() -> None:
 
     assert len(d.violations) == 72
     assert len(d.as_error_payload()["violations"]) == 72
+
+
+def test_a_full_role_set_goes_out_whole() -> None:
+    """No cap of its own: the enforcer already bounds the set at
+    MAX_EVALUATED_ROLES. That it stays <= the platform's list cap is asserted
+    platform-side; here, only that a full set reaches the wire intact.
+    """
+    roles = tuple(f"role_{i}" for i in range(MAX_EVALUATED_ROLES))
+    d = _decision(user_roles=roles, deciding_role=roles[-1])
+
+    wire = AuditEvent(decision=d).as_payload()
+
+    assert wire["user_roles"] == list(roles)
+    assert wire["deciding_role"] == roles[-1]

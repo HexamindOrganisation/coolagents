@@ -302,7 +302,8 @@ def test_user_roles_are_stored_verbatim_in_caller_order() -> None:
 
 def test_context_has_no_primary_role_helper() -> None:
     """Gone because a new reader would silently re-introduce single-role
-    enforcement; ``Decision.role`` covers the legacy renderers."""
+    enforcement. ``user_roles[0]`` remains available to anyone who genuinely
+    wants the first role."""
     assert not hasattr(
         HexgateContext(user_id="a", user_roles=["billing"]), "primary_role"
     )

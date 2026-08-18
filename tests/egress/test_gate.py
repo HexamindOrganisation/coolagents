@@ -63,8 +63,8 @@ async def test_binds_identity_and_emits_to_observer() -> None:
     await gate.check(connect_to_args("anything.example.com", 443))
     assert len(seen) == 1
     # sync_scope bound the run's user inside the handler task, so the enforcer
-    # attributed the decision to role "agent" (not None).
-    assert seen[0].role == "agent"
+    # attributed the decision to role "agent" (not an empty set).
+    assert seen[0].user_roles == ("agent",)
     assert seen[0].tool_name == "net.http_request"
 
 
