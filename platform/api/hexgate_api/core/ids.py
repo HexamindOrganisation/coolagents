@@ -2,7 +2,15 @@
 
 import secrets
 
-from hexgate_api.models import Agent, AgentVersion, Ban, DevToken, Tool
+from hexgate_api.models import (
+    Agent,
+    AgentVersion,
+    Ban,
+    DevToken,
+    PolicyModule,
+    RoleBinding,
+    Tool,
+)
 
 # Class-keyed so a typo is a NameError at import, not a runtime bug. Centralized
 # so entropy / format changes happen in one place.
@@ -12,6 +20,8 @@ _ID_PREFIXES: dict[type, str] = {
     Tool: "tol",
     DevToken: "tok",
     Ban: "ban",
+    PolicyModule: "pmd",
+    RoleBinding: "rbd",
 }
 
 

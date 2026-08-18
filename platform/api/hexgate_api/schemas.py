@@ -340,6 +340,58 @@ class ValidatePolicyResponse(BaseModel):
     errors: list[PolicyValidationError] = Field(default_factory=list)
 
 
+# --- Multi-module policy store (see docs/adr/R-POL-001) ----------------------
+
+
+class PolicyModuleRead(BaseModel):
+    tier: str  # "boundary" | "capability"
+    path: str
+    content: str
+    content_hash: str
+    updated_at: datetime
+
+
+class PolicyModuleWrite(BaseModel):
+    """Body for upserting a module. The tier + path come from the URL."""
+
+    content: str
+
+
+class RoleBindingsRead(BaseModel):
+    """A project's role bindings: role name -> the capability names it imports."""
+
+    roles: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class RoleBindingsWrite(BaseModel):
+    roles: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ResolvedPolicyResponse(BaseModel):
+    """The composed effective policy per role. Each value is an AgentPolicy dump."""
+
+    roles: dict[str, dict] = Field(default_factory=dict)
+
+
+class PolicyLintOut(BaseModel):
+    """One analyzer lint, tagged with the role it fired in (None if project-wide)."""
+
+    code: str
+    severity: str
+    message: str
+    source: str | None = None
+    tier: str | None = None
+    tool: str | None = None
+    role: str | None = None
+
+
+class PolicyCheckResponse(BaseModel):
+    """Lints over the resolved project, diagnostics-as-data (always 200)."""
+
+    ok: bool
+    lints: list[PolicyLintOut] = Field(default_factory=list)
+
+
 # --- Agent manifest registration ---------------------------------------------
 # These mirror hexgate/manifest/models.py so SDK and platform stay in sync.
 
