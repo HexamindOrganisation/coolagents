@@ -40,14 +40,20 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("slack_token", re.compile(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{24,}\b")),
-    ("hexgate_token", re.compile(r"\bfty_[A-Za-z0-9]{16,}\b")),
-    # The whole block, not just the header, so redaction strips the key material
-    # too (non-greedy to the END line; header-only if no END is present).
+    # fty_<env>_<project>_<biscuit_b64>, env in {test, live} (hexgate/cloud/
+    # biscuit.py). The body carries `_`/`-` (url-safe base64), so the charset
+    # after the env must include them — a plain [A-Za-z0-9] run stops at the
+    # first `_` and never matches a real token.
+    ("hexgate_token", re.compile(r"\bfty_(?:test|live)_[A-Za-z0-9_-]{24,}")),
+    # Match the whole block so redaction strips the key material, not just the
+    # header: to the END line when present, else (a truncated block) to the next
+    # blank line or end of string. `(?: BLOCK)?` covers the PGP variant.
     (
         "private_key",
         re.compile(
-            r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
-            r"(?:[\s\S]*?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----)?"
+            r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY(?: BLOCK)?-----"
+            r"(?:[\s\S]*?-----END (?:[A-Z0-9]+ )?PRIVATE KEY(?: BLOCK)?-----"
+            r"|[\s\S]*?(?=\n[ \t]*\n|\Z))"
         ),
     ),
 ]
@@ -97,17 +103,42 @@ def _join(path: str, key: str) -> str:
     return key if not path else f"{path}.{key}"
 
 
+# A dict key is model-controlled and ends up in the field path, which is
+# interpolated into safe_reason / safe_detail. Drop anything outside this tight
+# allowlist so a crafted key can't inject text (newlines, quotes) into the
+# model-facing refusal; `[REDACTED:x]` stays intact so a secret key still shows
+# redacted, not verbatim.
+_SEGMENT_DISALLOWED = re.compile(r"[^A-Za-z0-9_.:\[\]-]")
+
+
+def _safe_segment(key: str) -> str:
+    """A field-path segment safe to show: any secret in the key redacted, then
+    allowlisted and length-bounded."""
+    redacted, _ = _redact_str(key)
+    return _SEGMENT_DISALLOWED.sub("", redacted)[:64]
+
+
 def scan_secrets(value: Any, *, _path: str = "") -> list[SecretHit]:
     """Walk a JSON-ish ``value`` (mapping / sequence / string) and return every
-    :class:`SecretHit`. Opaque (non-JSON) leaves are skipped — there is nothing
-    safe to match against. ``bytes`` are not decoded; only ``str`` is scanned."""
+    :class:`SecretHit`. Mapping keys are scanned as leaves too (a key can be a
+    secret), and every path segment is sanitized (:func:`_safe_segment`) so an
+    untrusted key never reaches the model-facing text raw. Opaque (non-JSON)
+    leaves are skipped; ``bytes`` are not decoded, only ``str`` is scanned."""
     hits: list[SecretHit] = []
     if isinstance(value, str):
         for start, end, category in _spans(value):
             hits.append(SecretHit(category, _path, _fingerprint(value[start:end])))
     elif isinstance(value, Mapping):
         for key, sub in value.items():
-            hits.extend(scan_secrets(sub, _path=_join(_path, str(key))))
+            key_str = str(key)
+            seg = _safe_segment(key_str)
+            for start, end, category in _spans(key_str):
+                hits.append(
+                    SecretHit(
+                        category, _join(_path, seg), _fingerprint(key_str[start:end])
+                    )
+                )
+            hits.extend(scan_secrets(sub, _path=_join(_path, seg)))
     elif isinstance(value, (list, tuple)):
         for i, sub in enumerate(value):
             hits.extend(scan_secrets(sub, _path=f"{_path}[{i}]"))
@@ -142,8 +173,18 @@ def redact_secrets(value: Any, *, _path: str = "") -> tuple[Any, list[SecretHit]
         out: dict[Any, Any] = {}
         hits = []
         for key, sub in value.items():
-            new_sub, sub_hits = redact_secrets(sub, _path=_join(_path, str(key)))
-            out[key] = new_sub
+            key_str = str(key)
+            seg = _safe_segment(key_str)
+            new_key, key_spans = _redact_str(key_str)
+            # keep the original key object when it held no secret (preserves
+            # non-str keys); use the redacted string only when we changed it.
+            out_key = new_key if key_spans else key
+            for start, end, cat in key_spans:
+                hits.append(
+                    SecretHit(cat, _join(_path, seg), _fingerprint(key_str[start:end]))
+                )
+            new_sub, sub_hits = redact_secrets(sub, _path=_join(_path, seg))
+            out[out_key] = new_sub
             hits.extend(sub_hits)
         return out, hits
     if isinstance(value, (list, tuple)):
