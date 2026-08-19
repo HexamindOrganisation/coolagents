@@ -224,6 +224,8 @@ class Project(SQLModel, table=True):
 
 
 class ApiKey(SQLModel, table=True):
+    __tablename__ = "devtoken"  # historical name; renaming needs a migration
+
     id: str = Field(primary_key=True)
     project_id: str = Field(foreign_key="project.id", index=True)
     name: str
