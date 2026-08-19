@@ -222,7 +222,7 @@ export function KpiCard({
 const DIMS = [
   { id: "tool" as const, label: "Tools", fkey: "tool" as const },
   { id: "agent" as const, label: "Agents", fkey: "agent" as const },
-  { id: "role" as const, label: "Roles", fkey: "role" as const },
+  { id: "role" as const, label: "Caller roles", fkey: "role" as const },
 ];
 
 export function BreakdownCard({
@@ -270,6 +270,16 @@ export function BreakdownCard({
               {s.label}
             </span>
           ))}
+          {/* Stated inline, not in a tooltip: these bars legitimately sum
+              above the total decision count. Dropped once a role filter is
+              active — the server then collapses this to the filtered role, so
+              nothing multi-counts and the caveat would mislead. */}
+          {dim === "role" && !f[fkey] && (
+            <span className="italic">
+              counts role membership — a caller with several roles counts under
+              each
+            </span>
+          )}
         </>
       }
       rows={data}
@@ -285,6 +295,22 @@ export function BreakdownCard({
         />
       )}
     />
+  );
+}
+
+/**
+ * One row's caller roles on a single line: first name plus `+N`. The column
+ * stays narrow; the full set is on hover, and in the drawer.
+ */
+function RolesCell({ roles }: { roles: string[] }) {
+  if (!roles.length) return <>—</>;
+  return (
+    <span title={roles.join(", ")}>
+      {roles[0]}
+      {roles.length > 1 && (
+        <span className="ml-1 text-muted-foreground">+{roles.length - 1}</span>
+      )}
+    </span>
   );
 }
 
@@ -348,8 +374,10 @@ export function EventsTable({
                 <TableCell className="font-mono text-[12.5px]">
                   {e.agent_name}
                 </TableCell>
-                <TableCell className={e.role ? "" : "text-muted-foreground"}>
-                  {e.role || "—"}
+                <TableCell
+                  className={e.user_roles.length ? "" : "text-muted-foreground"}
+                >
+                  <RolesCell roles={e.user_roles} />
                 </TableCell>
                 <TableCell className="font-mono text-[12.5px]">
                   {e.tool_name}

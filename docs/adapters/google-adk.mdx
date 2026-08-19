@@ -28,7 +28,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.google import HexgateRunner
 
 INSTRUCTION = (
@@ -64,13 +64,13 @@ async def main():
         tools=[read_logs, restart_service, scale_deployment],
     )
 
-    user = User(user_id="engineer_1", session_id="session_1", role="operator")
+    hexgate_context = HexgateContext(user_id="engineer_1", session_id="session_1", user_roles=["operator"])
 
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name="devops_demo",
-        user_id=user.user_id,
-        session_id=user.session_id,
+        user_id=hexgate_context.user_id,
+        session_id=hexgate_context.session_id,
     )
 
     runner = HexgateRunner(
@@ -84,7 +84,7 @@ async def main():
         parts=[types.Part(text="Scale the checkout service to 5 replicas in staging.")],
     )
 
-    async for event in runner.run_async(new_message=user_msg, user=user):
+    async for event in runner.run_async(new_message=user_msg, hexgate_context=hexgate_context):
         if event.is_final_response():
             print(event.content.parts[0].text)
 
@@ -103,14 +103,14 @@ if __name__ == "__main__":
   `FunctionTool` (matching what ADK does internally) so the guard has a stable
   `BaseTool` surface. Each tool is then `copy.copy`'d and its `run_async` replaced
   with an enforcer-gated version.
-- Each `run` / `run_async` call opens a `User` scope (`user.sync_scope()` /
-  `async with user:`) and dispatches to the cached underlying `Runner`. On
+- Each `run` / `run_async` call opens a `HexgateContext` scope (`hexgate_context.sync_scope()` /
+  `async with hexgate_context:`) and dispatches to the cached underlying `Runner`. On
   non-allow, the guard returns `decision.as_error_message()` so the ADK runtime
   forwards it to the model as the tool output instead of aborting the run.
 - Observability is set up lazily on each call: `GoogleADKInstrumentor().instrument()`
   plus `nest_asyncio.apply()` (ADK's runner spins its own loop), and the run
   executes inside `propagate_attributes(user_id=..., session_id=...,
-  metadata={"user_role": ...}, tags=["google.runner.run.<agent_name>"])`.
+  metadata={"user_roles": ...}, tags=["google.runner.run.<agent_name>"])`.
 
 ## Runnable example
 

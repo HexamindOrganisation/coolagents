@@ -56,7 +56,7 @@ def reset_current_tool_use_context(token: Token[ToolUseContext | None]) -> None:
     _CURRENT_TOOL_USE_CONTEXT.reset(token)
 
 
-AttrValue = str | int | bool | list[str]
+ContextAttributeValue = str | int | bool | list[str]
 
 
 class HexgateContext(BaseModel):
@@ -65,15 +65,19 @@ class HexgateContext(BaseModel):
     Binds an agent invocation to a caller for the duration of a block. The
     runtime checks for an active context on each invocation, lazily mints a
     per-request Biscuit (signed by the platform-bound
-    :class:`~hexgate.cloud.HexgateClient`), and selects a policy from
-    ``primary_role``. The policy's per-tool ``constraints`` then evaluate
+    :class:`~hexgate.cloud.HexgateClient`), and selects a policy per role in
+    ``user_roles``. The policy's per-tool ``constraints`` then evaluate
     against each call's arguments. Four distinct jobs live here, deliberately
     named:
 
     * identity / audit    -> ``user_id`` / ``session_id``
-    * policy selection     -> ``user_roles`` (only ``primary_role`` used today)
+    * policy selection     -> ``user_roles`` (every role is evaluated; access is
+      granted iff any of them grants it)
     * token lifetime       -> ``ttl_seconds`` (feeds attenuation, never policy)
-    * ABAC filter surface  -> ``attributes`` (INERT until wired; advisory-only)
+    * ABAC filter surface  -> ``attributes`` (feeds the ``ctx.*`` constraint
+      namespace; untrusted/spoofable — same trust tier as ``user_roles``, since
+      both are read from this contextvar rather than a verified token. A future
+      signed tier will let declared keys be token-verified.)
 
     Two invocation styles, same machinery underneath:
 
@@ -101,25 +105,26 @@ class HexgateContext(BaseModel):
     user_id: str
     user_roles: list[str] = Field(
         default_factory=list,
-        description="The roles of the end user invoking the agent.",
+        description=(
+            "The roles of the end user invoking the agent. Every role is "
+            "evaluated and the most permissive outcome wins. Empty selects the "
+            "default policy."
+        ),
     )
     session_id: str | None = None
     ttl_seconds: int | None = None
-    attributes: dict[str, AttrValue] = Field(
+    attributes: dict[str, ContextAttributeValue] = Field(
         default_factory=dict,
-        description="Advisory caller attributes for ABAC policy filtering.",
+        description=(
+            "Caller attributes for ABAC ctx.* filtering. Untrusted (spoofable, "
+            "same tier as user_roles) until the signed tier verifies them."
+        ),
     )
 
     # Stack of shadowed values (supports nested scopes). We save/restore via
     # set() rather than reset(token): async-generator finalizers run __aexit__
     # in a different Context, where a token reset would raise — set() doesn't.
     _saved: list["HexgateContext | None"] = PrivateAttr(default_factory=list)
-
-    @property
-    def primary_role(self) -> str | None:
-        """Single role used for policy selection today. Multi-role widens the
-        *selector* later; callers read this, never ``user_roles[0]`` directly."""
-        return self.user_roles[0] if self.user_roles else None
 
     async def __aenter__(self) -> "HexgateContext":
         self._saved.append(_CURRENT_CONTEXT.get())

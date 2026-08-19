@@ -52,8 +52,8 @@ async def _probe(policy, target: tuple[str, int]) -> None:
         agent_name="tcp-demo",
         decision_observer=_print_decision,
     )
-    user = HexgateContext(user_id="demo", user_roles=["agent"])
-    async with tcp_egress_guard(enforcer, user, target=target) as proxy:
+    context = HexgateContext(user_id="demo", user_roles=["agent"])
+    async with tcp_egress_guard(enforcer, context, target=target) as proxy:
         try:
             reader, writer = await asyncio.open_connection(proxy.host, proxy.port)
             writer.write(b"SELECT 1")

@@ -188,7 +188,9 @@ def test_bind_policy_true_overrides_hexgate_local_mode(
     monkeypatch.setattr(
         factory,
         "_bind_policy",
-        lambda agent, name, approval_handler: agent.with_tools(["bound-sentinel"]),
+        lambda agent, name, approval_handler, **kwargs: agent.with_tools(
+            ["bound-sentinel"]
+        ),
     )
 
     agent, _ = factory.create_agent(

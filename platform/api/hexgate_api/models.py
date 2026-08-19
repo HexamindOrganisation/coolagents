@@ -332,3 +332,56 @@ class Ban(SQLModel, table=True):
         default=None, sa_type=DateTime(timezone=True)
     )
     revoked_by_user_id: Optional[str] = Field(default=None, foreign_key="user.id")
+
+
+# ---------------------------------------------------------------------------
+# Multi-module policy (see docs/adr/R-POL-001). A project's policy is composed
+# from small modules in two tiers plus a role->capabilities binding, instead of
+# one policy_yaml per agent. Both tables are project-scoped and purely additive
+# (no change to Agent), so create_all picks them up with no migration.
+# ---------------------------------------------------------------------------
+
+
+class PolicyModule(SQLModel, table=True):
+    """One boundary or capability module in a project's policy library.
+
+    ``tier`` is the security tier (a string, per the no-migration convention),
+    ``path`` the module name (e.g. ``read_only``, ``team_a/payments``). Unique
+    per ``(project_id, tier, path)`` — the folder-plus-name identity the local
+    loader uses, made explicit here since there is no folder on the platform.
+    """
+
+    __tablename__ = "policy_module"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tier", "path", name="uq_policy_module_scope"),
+    )
+
+    id: str = Field(primary_key=True)  # new_id(PolicyModule) -> "pmd_…"
+    project_id: str = Field(foreign_key="project.id", index=True)
+    tier: str = Field(index=True)  # "boundary" | "capability"
+    path: str
+    content: str  # the module's YAML text
+    content_hash: str  # sha256 of content, the module's stable identity
+    updated_at: datetime = Field(
+        default_factory=utcnow, sa_type=DateTime(timezone=True)
+    )
+
+
+class RoleBinding(SQLModel, table=True):
+    """A project role: a named list of capability names it imports.
+
+    A role is a binding, not a policy (see R-POL-001) — boundaries apply to
+    every role and are never listed here. One row per ``(project_id, role)``.
+    """
+
+    __tablename__ = "role_binding"
+    __table_args__ = (
+        UniqueConstraint("project_id", "role", name="uq_role_binding_project_role"),
+    )
+
+    id: str = Field(primary_key=True)  # new_id(RoleBinding) -> "rbd_…"
+    project_id: str = Field(foreign_key="project.id", index=True)
+    role: str = Field(index=True)
+    capabilities: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON, nullable=False)
+    )

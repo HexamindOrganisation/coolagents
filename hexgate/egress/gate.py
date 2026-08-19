@@ -50,13 +50,13 @@ class Gate:
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: HexgateContext,
+        context: HexgateContext,
         *,
         tool: str = NET_TOOL,
         approval_handler: ApprovalHandler | None = None,
     ) -> None:
         self._enforcer = enforcer
-        self._user = user
+        self._context = context
         self._tool = tool
         self._approval_handler = approval_handler
 
@@ -66,10 +66,10 @@ class Gate:
         The caller identity lives in a contextvar the enforcer reads on
         ``decide()``. Connection handlers run in their own asyncio task, which
         does not inherit the agent's ``async with HexgateContext(...)`` scope, so we
-        re-bind the run's user in *this* task via ``sync_scope()`` for the
+        re-bind the run's context in *this* task via ``sync_scope()`` for the
         duration of the synchronous decide call.
         """
-        with self._user.sync_scope():
+        with self._context.sync_scope():
             decision = self._enforcer.decide(self._tool, args)
 
         if decision.allowed:

@@ -1,16 +1,17 @@
 """Attenuate a verified Hexgate token with user-scoped facts and checks.
 
-In production the dev's backend calls :func:`attenuate_for_user` on each
-inbound request, taking the project-wide token from ``HEXGATE_API_KEY`` and
-appending a per-user block before forwarding to the agent runner. The
-new envelope still chains to the platform's root public key — biscuit's
-``append`` protocol handles the signature linkage with an ephemeral
-keypair, so the dev never holds the platform's private key.
+An internal seam, not a call-site API: the runtime mints the per-request token
+itself from the active :class:`~hexgate.runtime.context.HexgateContext` (see
+``agents/factory.py``), taking the project-wide token from ``HEXGATE_API_KEY``
+and appending a per-user block before invoking the agent. The new envelope still
+chains to the platform's root public key — biscuit's ``append`` protocol handles
+the signature linkage with an ephemeral keypair, so the dev never holds the
+platform's private key.
 
-For the Playground demo, the dev's local ``hexgate --serve`` process plays
-the same role: it receives the "act as alice" metadata over the WebSocket
-from the dashboard and runs the attenuation in-process before invoking
-the agent. Same code path, same chain, different trigger.
+The Playground demo drives the same code path from the dev's local
+``hexgate --serve`` process: it receives the "act as alice" metadata over the
+WebSocket from the dashboard and attenuates in-process. Same chain, different
+trigger.
 """
 
 from __future__ import annotations
@@ -49,8 +50,12 @@ def attenuate_for_user(
     appends a Biscuit block carrying:
 
     * ``user("...")`` — the authenticated user id.
-    * ``role("...")`` — the user's role (when supplied), used by the agent
-      runtime to pick the matching role policy file.
+    * ``role("...")`` — the user's role, when supplied.
+
+      Single-valued for now: the enforcer evaluates every role in
+      ``user_roles``, so a multi-role caller has only their first role attested.
+      Closing that gap is its own change (the enforcer would also have to
+      *prefer* the verified facts over the contextvar, which it does not yet).
     * ``check if time($t), $t < <now+ttl_seconds>`` when ``ttl_seconds`` is
       set, narrowing the parent's TTL (or adding one if the parent had none).
 
@@ -63,7 +68,7 @@ def attenuate_for_user(
     policies carry rules.
 
     Raises:
-        TokenError: malformed envelope, malformed role string, or non-positive
+        TokenError: malformed envelope, a malformed role string, or non-positive
             ``ttl_seconds``.
         TokenSignatureError: malformed public key, or parent biscuit fails
             to verify (tampered / wrong key / corrupt payload).

@@ -44,15 +44,15 @@ async def main() -> None:
         tools=[read_logs, restart_service, scale_deployment],
     )
 
-    user = HexgateContext(
+    hexgate_context = HexgateContext(
         user_id="engineer_1", session_id="session_1", user_roles=["operator"]
     )
 
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=_APP_NAME,
-        user_id=user.user_id,
-        session_id=user.session_id,
+        user_id=hexgate_context.user_id,
+        session_id=hexgate_context.session_id,
     )
 
     runner = HexgateRunner(
@@ -66,7 +66,9 @@ async def main() -> None:
         parts=[types.Part(text="Scale the checkout service to 5 replicas in staging.")],
     )
 
-    async for event in runner.run_async(new_message=message, user=user):
+    async for event in runner.run_async(
+        new_message=message, hexgate_context=hexgate_context
+    ):
         if event.is_final_response() and event.content and event.content.parts:
             print(event.content.parts[0].text)
 

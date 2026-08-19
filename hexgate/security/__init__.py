@@ -62,6 +62,7 @@ from hexgate.security.decision import (
     DecisionOutcome,
     PolicyEngine,
     Verdict,
+    combine_role_verdicts,
 )
 from hexgate.security.policy import (
     authorize_tool_call,
@@ -86,11 +87,23 @@ from hexgate.security.modules import (
     LinkError,
     LinkResult,
     ModuleContent,
+    ProjectLinkResult,
     Provenance,
     RuleTrace,
 )
-from hexgate.security.linker import link, link_policy_set
-from hexgate.security.module_loader import ModuleLoader, load_local_modules
+from hexgate.security.linker import link, link_policy_set, resolve_for_project
+from hexgate.security.analyzer import (
+    PolicyLint,
+    analyze,
+    analyze_project,
+    check,
+    check_project,
+)
+from hexgate.security.module_loader import (
+    ModuleLoader,
+    load_local_modules,
+    load_roles,
+)
 from hexgate.security.rego import compile_default_only, compile_to_rego
 from hexgate.security.rego_wasm import (
     DEFAULT_ENTRYPOINTS,
@@ -127,11 +140,19 @@ __all__ = [
     "LinkResult",
     "ModuleContent",
     "ModuleLoader",
+    "PolicyLint",
+    "ProjectLinkResult",
     "Provenance",
     "RuleTrace",
+    "analyze",
+    "analyze_project",
+    "check",
+    "check_project",
     "link",
     "link_policy_set",
     "load_local_modules",
+    "load_roles",
+    "resolve_for_project",
     "EMPTY_BAN_SET",
     "BanContentError",
     "BanEnforcementEvent",
@@ -191,6 +212,7 @@ __all__ = [
     "Verdict",
     "authorize_tool_call",
     "authorize_tool_call_wasm",
+    "combine_role_verdicts",
     "evaluate_tool_call",
     "evaluate_tool_call_wasm",
     "verdict_from_rego",

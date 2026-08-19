@@ -165,6 +165,23 @@ def test_wrap_enforces_the_resolved_policy_not_allow_all(
     assert result["error"]["type"] == "policy_denied"
 
 
+def test_wrap_threads_guards_to_the_tools(resolved: dict[str, Any]) -> None:
+    """Guards passed to wrap_langchain_agent run on the wrapped tools."""
+    from hexgate.guards import before_tool
+    from hexgate.guards.types import Halt
+
+    tools = [_make_tool("a")]
+    guard = before_tool(lambda call: Halt(reason="blocked by guard"))
+
+    wrap_langchain_agent(
+        agent=_FakeCompiledGraph(), tools=tools, api_key="k", guards=[guard]
+    )
+
+    result = tools[0].func(text="hi")  # policy allows "a"; the guard halts it
+    assert result["ok"] is False
+    assert result["error"]["message"] == "blocked by guard"
+
+
 def test_wrap_is_idempotent_on_already_wrapped_tools(
     resolved: dict[str, Any],
 ) -> None:
@@ -258,8 +275,8 @@ def test_invoke_refreshes_binding_first() -> None:
         binding=binding,  # type: ignore[arg-type]
     )
 
-    proxy.invoke({"messages": []}, user=_user())
-    proxy.invoke({"messages": []}, user=_user())
+    proxy.invoke({"messages": []}, hexgate_context=_user())
+    proxy.invoke({"messages": []}, hexgate_context=_user())
 
     assert binding.refreshes == 2
 
@@ -274,7 +291,7 @@ async def test_ainvoke_refreshes_binding_first() -> None:
         binding=binding,  # type: ignore[arg-type]
     )
 
-    await proxy.ainvoke({"messages": []}, user=_user())
+    await proxy.ainvoke({"messages": []}, hexgate_context=_user())
 
     assert binding.refreshes == 1
 
@@ -283,4 +300,4 @@ def test_proxy_without_binding_runs_fine() -> None:
     """Back-compat: a binding-less proxy (direct construction) still works."""
     proxy = HexgateLangchainAgent(agent=_RunnableGraph(), api_key="k", tool_names=[])
 
-    assert proxy.invoke({"messages": []}, user=_user()) == {"ok": True}
+    assert proxy.invoke({"messages": []}, hexgate_context=_user()) == {"ok": True}

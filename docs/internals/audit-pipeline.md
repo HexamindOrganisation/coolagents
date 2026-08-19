@@ -88,7 +88,7 @@ audit emission, and the no-audit path never constructs an event (so a
 
 The enforcer builds the `AuditEvent` immediately after the `Decision`, so
 `occurred_at` is decision time for practical purposes. The decision fields
-(`agent_name`, `tool_name`, `outcome`, `role`, `reason`, `error_type`,
+(`agent_name`, `tool_name`, `outcome`, `user_roles`, `deciding_role`, `reason`, `error_type`,
 `violations`, `hint`, `arguments`) are populated by `Decision.from_verdict()`
 from the policy engine's `Verdict` plus host context.
 
@@ -104,7 +104,7 @@ NEEDS_APPROVAL    "needs_approval"  "approval_required"
 ### 2.3 Wire payload — `AuditEvent.as_payload()`
 
 `hexgate/audit.py` — `AuditEvent` wraps a `Decision` plus the caller identity
-read from the active `User` scope (`user_id`, `session_id`). `as_payload()`
+read from the active `HexgateContext` scope (`user_id`, `session_id`). `as_payload()`
 produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
 
 ```json
@@ -114,13 +114,15 @@ produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
   "agent_name":  "example_agent",
   "tool_name":   "read_file",
   "outcome":     "deny",
-  "role":        "analyst",        // "" when no role
+  "user_roles":    ["analyst", "billing"],  // every role evaluated, caller order; [] when none
+  "deciding_role": "",             // role that granted/gated it; "" on a deny
   "error_type":  "policy_denied",  // "" for allow
   "reason":      "denied for path",
   "violations":  ["v1", "v2"],     // tuple → list
   "hint":        {"glob": "/x/**"},// or null
   "arguments":   {"path": "/etc/passwd"},  // or null; may be truncated upstream
-  "user_id":     "alice",          // "" when no User scope
+  "attributes":  {"department": "finance"},// caller ABAC bag (ctx.*); or null
+  "user_id":     "alice",          // "" when no request context
   "session_id":  "sess_1"          // "" when unset
 }
 ```
@@ -136,8 +138,11 @@ Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
 
 `PolicyEnforcer.decide()` (`hexgate/security/enforcer.py`):
 
-1. Resolve `role` from the active `User` contextvar.
-2. Ask the policy engine for a `Verdict`; lift it into a `Decision`.
+1. Resolve the caller's role *set* from the active `HexgateContext` contextvar
+   (deduped, capped at 32; `[None]` when unroled).
+2. Evaluate each role and fold the verdicts permissively (`ALLOW` >
+   `NEEDS_APPROVAL` > `DENY`), short-circuiting on the first allow; lift the
+   winner into a `Decision` carrying `user_roles` + `deciding_role`.
 3. If an `AuditSender` was injected into this enforcer, `emit()` an `AuditEvent`.
 4. Return the `Decision` to the adapter (synchronous, unaffected by step 3).
 
@@ -296,7 +301,7 @@ client does not flush anything.
 | **202 Accepted** | Row written. Body: `{"event_id": "<uuid>"}`. (Sync write, see §5.2 — 202 reflects "queued/durable" semantics but the insert has actually completed.) |
 | **400** | `occurred_at` outside the accepted time window. |
 | **401** | Missing/malformed/invalid/revoked bearer key. |
-| **413** | `arguments` > 8 KiB or `hint` > 4 KiB after JSON serialization. |
+| **413** | `arguments` > 8 KiB, or `hint` / `attributes` > 4 KiB each, after JSON serialization. |
 | **422** | Body failed schema validation, **or** ClickHouse rejected the row (non-transient — retry won't help). |
 | **503** | ClickHouse unreachable or transient insert failure (`OperationalError`). Retryable; carries `Retry-After`. |
 
@@ -334,13 +339,18 @@ CREATE TABLE hexgate_audit.policy_decision
 
   -- Decision-specific
   tool_name           LowCardinality(String),
-  role                LowCardinality(String) DEFAULT '',
   outcome             Enum8('allow'=1, 'deny'=2, 'needs_approval'=3),
   error_type          LowCardinality(String) DEFAULT '',
   reason              String,
   violations          Array(String),
   hint                String CODEC(ZSTD(3)),
-  arguments           String CODEC(ZSTD(3))  -- SDK-truncated JSON; may be lossy
+  arguments           String CODEC(ZSTD(3)),  -- SDK-truncated JSON; may be lossy
+  attributes          String CODEC(ZSTD(3)),  -- caller ABAC bag (ctx.*); redacted + truncated
+  -- Roles are stored only as a set — there is no legacy scalar `role` column.
+  -- An SDK predating multi-role sends one; the API folds it into user_roles
+  -- at ingest, so every stored row is the same shape whatever wrote it.
+  user_roles          Array(LowCardinality(String)),
+  deciding_role       LowCardinality(String) DEFAULT ''       -- '' when every role denied
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(occurred_at)
@@ -365,7 +375,8 @@ SETTINGS index_granularity = 8192;
 `platform/api/audit.py` — `insert_decision`:
 
 - **Byte caps before write:** `arguments` JSON ≤ 8 KiB, `hint` JSON ≤ 4 KiB,
-  else `AuditPayloadTooLarge` → 413. `None` serializes to `""`.
+  `attributes` JSON ≤ 4 KiB — each checked independently, else
+  `AuditPayloadTooLarge` → 413. `None` serializes to `""`.
 - **Insert settings:** `async_insert=1`, `wait_for_async_insert=1`,
   `async_insert_deduplicate=1`. Small inserts are batched server-side, but the
   call **blocks until the batch flushes**, so a write failure surfaces
@@ -391,13 +402,29 @@ SETTINGS index_granularity = 8192;
   strings, email bodies, free text — are captured verbatim. Operators whose
   tools carry such data need their own redaction before relying on this in
   production.
+- **`attributes` redaction is anchored to the whole key**
+  (`_SENSITIVE_ATTR_KEY_RE`), where `arguments` uses the substring rule above.
+  The bag holds policy facts rather than caller payloads: blanking
+  `authorization_tier` or `access_token_scope` would leave the `ctx.*`-driven
+  deny they caused unexplainable, defeating the reason the bag is persisted at
+  all. A key named exactly `token` still reads as a secret and is blanked.
 - **SDK truncation at the platform cap.** `as_payload()` measures `arguments`
   as the platform does (JSON, `default=str`); over 8 KiB it replaces the dict
   with `{"_truncated": true, "original_bytes": N, "preview": <JSON prefix>}`
   sized to fit the cap. Lossy, but the event is stored — the platform
   **rejects** (413) oversize payloads, so an untrimmed over-cap decision would
-  not be stored at all. `hint` (4 KiB cap) is policy-engine-generated and is
-  *not* SDK-trimmed.
+  not be stored at all. `attributes` (4 KiB) and `hint` (4 KiB) go through the
+  same `_truncate_json(payload, cap=...)` helper. Only the audit copy is
+  trimmed: the `Decision` the host holds — and `as_error_payload()`, which the
+  model sees — keeps the full `hint`.
+- **`attributes` carries the caller ABAC bag** (the `ctx.*` namespace the
+  decision was evaluated against): stored for 90 days and rendered verbatim in
+  the dashboard's audit detail drawer for anyone with project read access. It
+  goes through the same key-name redactor as `arguments`, with the same
+  seatbelt-not-a-guarantee caveat, so content-sensitive values (emails,
+  customer identifiers) pass through. `docs/concepts/user-scope.mdx` warns
+  callers to filter on the coarsest value the policy needs. Never rendered into
+  `as_error_payload` — the model must not see it.
 
 ---
 
@@ -413,7 +440,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / role / tool (one `GROUPING SETS` query). |
+| `GET /v1/projects/{id}/audit/summary?window=` | Totals + denial counts, plus breakdowns by agent / tool / user (one `GROUPING SETS` query) and by role (a second scan over the same `WHERE`). |
 | `GET /v1/projects/{id}/audit/timeseries?window=` | Per-bucket outcome counts (`toStartOfInterval`); bucket size tracks the window. |
 | `GET /v1/projects/{id}/audit/decisions?window=&agent=&role=&outcome=&limit=&offset=` | Filterable detail rows, newest first, with `total` for pagination; `hint`/`arguments` decoded back to objects. |
 
@@ -422,6 +449,11 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
   selects the empty-role bucket; an absent `role` means "no filter". No
   sentinel string is reserved on the wire — the dashboard's "(none)" is a
   display label only.
+- **`role` filters on membership** (`has(user_roles, …)`), so one call by
+  `["billing","support"]` is returned under either name, subsuming the old
+  `role = X` equality. `by_role` therefore counts *memberships* and
+  `sum(by_role[*].all) >= totals.all` — hence its own scan, since an
+  `arrayJoin` in the `GROUPING SETS` query would inflate every breakdown.
 - **Concurrency.** A client firing several of these reads at once (e.g. a
   dashboard loading summary + timeseries + decisions together) would otherwise
   hit "concurrent queries within the same session". The shared, process-global
@@ -454,7 +486,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 | ClickHouse unreachable | 503 + `Retry-After` (startup logs a warning, does not crash) |
 | Transient insert error | 503 + `Retry-After` |
 | Storage rejects row | 422 (retry won't help) |
-| Oversize args/hint | 413 |
+| Oversize args/hint/attributes | 413 |
 | Bad/missing bearer | 401 |
 | occurred_at out of window | 400 |
 
@@ -464,15 +496,22 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 1. **Read path auth & scoping** — `GET /v1/audit/decisions` is unauthenticated
    and cross-project (POC). Needs `read_audit` scope + `project_id` filter.
-2. **`arguments` redaction is key-name-only** — the default redactor strips
-   sensitive-keyed values, but content-sensitive values (SQL, email bodies)
-   pass through; no per-tool allow/deny lists or `redact` callable yet.
+2. **`arguments`/`attributes` redaction is key-name-only** — the default
+   redactor strips sensitive-keyed values, but content-sensitive values (SQL,
+   email bodies, identifiers in the ABAC bag) pass through; no per-tool
+   allow/deny lists, no `ctx.*` allowlist, no `redact` callable yet.
 3. **Default transport is plaintext HTTP** — safe only for localhost; require
    TLS via `HEXGATE_API_URL` elsewhere.
 4. **Sync agents emit nothing** — `emit()` requires a running loop; sync entry
    points silently produce no audit.
 5. **Schema evolution** — `init/schema.sql` runs once; there is no migration
-   runner wired up yet.
+   runner wired up yet. Interim convention: a DDL change also lands a
+   hand-applied statement in `platform/clickhouse/migrations/`, run in filename
+   order via `make clickhouse-cli` **before** deploying the API that references
+   the new column. Exception: when no `ALTER` can restate pre-existing rows
+   truthfully — the multi-role columns — no migration ships and the volume is
+   recreated instead (`make clickhouse-reset`), which is what
+   `AuditSchemaOutOfDate` tells the operator.
 6. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.

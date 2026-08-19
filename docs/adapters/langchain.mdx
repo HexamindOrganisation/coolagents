@@ -18,8 +18,8 @@ in that table — check the deepagents row, not the langchain one.
 `wrap_langchain_agent` builds a `PolicyEnforcer` once and installs it on each tool
 in place (`install_enforcer_on_tool`) so the same instances inside the compiled
 graph become policy-gated. It returns a `HexgateLangchainAgent` proxy that opens a
-`User` scope and injects a Langfuse callback into every `invoke` / `ainvoke` /
-`stream` / `astream` / `astream_events` call. The `user` is supplied **per call**,
+`HexgateContext` scope and injects a Langfuse callback into every `invoke` / `ainvoke` /
+`stream` / `astream` / `astream_events` call. The `hexgate_context` is supplied **per call**,
 so a single wrapped agent can serve many users concurrently — role resolution
 happens at call time from the contextvar.
 
@@ -30,7 +30,7 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.langchain import wrap_langchain_agent
 
 INSTRUCTION = (
@@ -77,7 +77,7 @@ async def main():
     result = await agent.ainvoke(
         {"messages": [{"role": "user",
                        "content": "Scale the checkout service to 5 replicas in staging."}]},
-        user=User(user_id="engineer_1", role="operator", session_id="session_1"),
+        hexgate_context=HexgateContext(user_id="engineer_1", user_roles=["operator"], session_id="session_1"),
     )
     print(result)
 
@@ -94,9 +94,9 @@ if __name__ == "__main__":
   `coroutine` with enforcer-gated closures. `handle_tool_error` is forced to
   `True`. Installation is idempotent — re-installing rebinds the captured
   originals to the new enforcer without stacking gates.
-- Each invocation method on `HexgateLangchainAgent` takes `user=` and opens an
-  `async with user:` (or `user.sync_scope()` for sync) around the delegated
-  `CompiledStateGraph` call. The active `User` is pushed onto a contextvar; the
+- Each invocation method on `HexgateLangchainAgent` takes `hexgate_context=` and opens an
+  `async with hexgate_context:` (or `hexgate_context.sync_scope()` for sync) around the delegated
+  `CompiledStateGraph` call. The active context is pushed onto a contextvar; the
   guards read it at tool-call time to resolve the matching role's policy.
 - A non-allow `Decision` is rendered as `{"ok": False, "error":
   decision.as_error_payload()}` so the LangChain runtime surfaces the structured

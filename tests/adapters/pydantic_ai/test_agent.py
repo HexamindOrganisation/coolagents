@@ -175,15 +175,15 @@ async def test_run_opens_user_scope_and_delegates(
         api_key="k",
         agent_name="recording-agent",
     )
-    user = _user()
+    context = _user()
 
     assert get_current_context() is None
 
-    result = await proxy.run("hello", user=user)
+    result = await proxy.run("hello", hexgate_context=context)
 
     assert result.value == "run-ok"
     [call] = inner.run_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert call["args"] == ("hello",)
     assert get_current_context() is None
 
@@ -201,13 +201,13 @@ def test_run_sync_opens_user_scope_and_delegates(
         api_key="k",
         agent_name="recording-agent",
     )
-    user = _user()
+    context = _user()
 
-    result = proxy.run_sync("hello", user=user)
+    result = proxy.run_sync("hello", hexgate_context=context)
 
     assert result.value == "run-sync-ok"
     [call] = inner.run_sync_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert get_current_context() is None
 
 
@@ -225,15 +225,15 @@ async def test_run_stream_opens_user_scope_and_yields_result(
         api_key="k",
         agent_name="recording-agent",
     )
-    user = _user()
+    context = _user()
 
-    async with proxy.run_stream("hello", user=user) as result:
+    async with proxy.run_stream("hello", hexgate_context=context) as result:
         assert result.value == "stream-result"
         # Scope is live during the body.
-        assert get_current_context() is user
+        assert get_current_context() is context
 
     [call] = inner.run_stream_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert get_current_context() is None
 
 
@@ -251,14 +251,14 @@ async def test_iter_opens_user_scope_and_yields_run(
         api_key="k",
         agent_name="recording-agent",
     )
-    user = _user()
+    context = _user()
 
-    async with proxy.iter("hello", user=user) as run:
+    async with proxy.iter("hello", hexgate_context=context) as run:
         assert run.value == "iter-result"
-        assert get_current_context() is user
+        assert get_current_context() is context
 
     [call] = inner.iter_calls
-    assert call["user"] is user
+    assert call["user"] is context
     assert get_current_context() is None
 
 
@@ -281,7 +281,7 @@ def test_user_scope_is_unwound_when_run_sync_raises(
     )
 
     with pytest.raises(RuntimeError, match="boom"):
-        proxy.run_sync("hi", user=_user())
+        proxy.run_sync("hi", hexgate_context=_user())
 
     assert get_current_context() is None
 
@@ -313,7 +313,7 @@ async def test_run_refused_before_agent_runs_when_banned(
     proxy = _banned_proxy(monkeypatch, inner)
 
     with pytest.raises(AgentBannedError) as exc:
-        await proxy.run("hi", user=_user())
+        await proxy.run("hi", hexgate_context=_user())
 
     assert exc.value.code == "agent_banned"
     assert inner.run_calls == []
@@ -328,7 +328,7 @@ async def test_run_stream_raises_before_first_chunk_when_banned(
     proxy = _banned_proxy(monkeypatch, inner)
 
     with pytest.raises(AgentBannedError):
-        async with proxy.run_stream("hi", user=_user()) as _r:
+        async with proxy.run_stream("hi", hexgate_context=_user()) as _r:
             pass
     assert inner.run_stream_calls == []
 
@@ -346,7 +346,7 @@ async def test_not_banned_passes_through(monkeypatch: pytest.MonkeyPatch) -> Non
         ban_gate=_agent_ban_gate(inner.name, banned="some-other-agent"),
     )
 
-    result = await proxy.run("hi", user=_user())
+    result = await proxy.run("hi", hexgate_context=_user())
 
     assert result.value == "run-ok"
     assert len(inner.run_calls) == 1
@@ -406,8 +406,8 @@ def _proxy_with_counting_binding() -> tuple[HexgatePydanticAgent, _CountingBindi
 async def test_run_refreshes_binding_per_call() -> None:
     proxy, binding = _proxy_with_counting_binding()
 
-    await proxy.run("one", user=_user())
-    await proxy.run("two", user=_user())
+    await proxy.run("one", hexgate_context=_user())
+    await proxy.run("two", hexgate_context=_user())
 
     assert binding.refreshes == 2
 
@@ -415,7 +415,7 @@ async def test_run_refreshes_binding_per_call() -> None:
 def test_run_sync_refreshes_binding_per_call() -> None:
     proxy, binding = _proxy_with_counting_binding()
 
-    proxy.run_sync("one", user=_user())
+    proxy.run_sync("one", hexgate_context=_user())
 
     assert binding.refreshes == 1
 
@@ -424,7 +424,7 @@ def test_run_sync_refreshes_binding_per_call() -> None:
 async def test_run_stream_refreshes_binding_per_call() -> None:
     proxy, binding = _proxy_with_counting_binding()
 
-    async with proxy.run_stream("one", user=_user()) as result:
+    async with proxy.run_stream("one", hexgate_context=_user()) as result:
         assert result.value == "stream-result"
 
     assert binding.refreshes == 1
@@ -434,7 +434,7 @@ async def test_run_stream_refreshes_binding_per_call() -> None:
 async def test_iter_refreshes_binding_per_call() -> None:
     proxy, binding = _proxy_with_counting_binding()
 
-    async with proxy.iter("one", user=_user()):
+    async with proxy.iter("one", hexgate_context=_user()):
         pass
 
     assert binding.refreshes == 1
@@ -448,7 +448,7 @@ def test_proxy_without_binding_runs_fine() -> None:
         agent_name="recording-agent",
     )
 
-    assert proxy.run_sync("one", user=_user()).value == "run-sync-ok"
+    assert proxy.run_sync("one", hexgate_context=_user()).value == "run-sync-ok"
 
 
 # ---------------------------------------------------------------------------
@@ -486,9 +486,9 @@ async def test_usage_emit_context_propagates_through_run(
         api_key="k",
         agent_name="my-agent",
     )
-    user = _user()
+    context = _user()
 
-    await proxy.run("hello", user=user)
+    await proxy.run("hello", hexgate_context=context)
 
     [event] = fake_sender.events
     assert event.agent_name == "my-agent"
@@ -517,9 +517,9 @@ async def test_usage_emit_context_propagates_through_run_stream(
         api_key="k",
         agent_name="my-agent",
     )
-    user = _user()
+    context = _user()
 
-    async with proxy.run_stream("hello", user=user) as result:
+    async with proxy.run_stream("hello", hexgate_context=context) as result:
         assert result.value == "stream-result"
         assert fake_sender.events == []  # not emitted until the block exits
 
@@ -559,7 +559,7 @@ async def test_run_stream_does_not_emit_usage_when_caller_exits_early(
         agent_name="my-agent",
     )
 
-    async with proxy.run_stream("hello", user=_user()):
+    async with proxy.run_stream("hello", hexgate_context=_user()):
         pass
 
     assert fake_sender.events == []
@@ -591,7 +591,7 @@ async def test_iter_emits_usage_when_run_completes(
         agent_name="my-agent",
     )
 
-    async with proxy.iter("hello", user=_user()):
+    async with proxy.iter("hello", hexgate_context=_user()):
         pass
 
     [event] = fake_sender.events
@@ -624,7 +624,7 @@ async def test_iter_does_not_emit_usage_when_caller_exits_early(
         agent_name="my-agent",
     )
 
-    async with proxy.iter("hello", user=_user()):
+    async with proxy.iter("hello", hexgate_context=_user()):
         pass
 
     assert fake_sender.events == []

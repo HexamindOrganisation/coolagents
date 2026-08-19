@@ -85,7 +85,7 @@ export function GraphPage() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Roles, agents, and tools for this project. Read-only — edit in{" "}
-            <span className="font-mono text-foreground">/agents</span>.
+            <span className="font-mono text-foreground">/policies</span>.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">

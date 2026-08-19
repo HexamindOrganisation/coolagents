@@ -30,11 +30,15 @@ from hexgate.security.rego import compile_to_rego
 pytestmark = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on PATH")
 
 
-def _py_outcome(policy: dict, role: str | None, tool: str, args: dict) -> str:
+def _py_outcome(
+    policy: dict, role: str | None, tool: str, args: dict, attributes: dict | None
+) -> str:
     ps = load_policy_set_from_dict(policy)
     # Route through PolicySet.evaluate (the real engine entry) so role/tool are
     # threaded into the constraint context, matching what the runtime does.
-    return ps.evaluate(role=role, tool=tool, args=args).outcome.value
+    return ps.evaluate(
+        role=role, tool=tool, args=args, attributes=attributes
+    ).outcome.value
 
 
 @functools.lru_cache(maxsize=None)
@@ -42,9 +46,13 @@ def _wasm_bytes(rego: str) -> bytes:
     return compile_to_wasm(rego).wasm
 
 
-def _wasm_outcome(policy: dict, role: str | None, tool: str, args: dict) -> str:
+def _wasm_outcome(
+    policy: dict, role: str | None, tool: str, args: dict, attributes: dict | None
+) -> str:
     wasm = _wasm_bytes(compile_to_rego(policy))
-    d = WasmPolicy.from_bytes(wasm).decide(role=role, tool=tool, args=args)
+    d = WasmPolicy.from_bytes(wasm).decide(
+        role=role, tool=tool, args=args, ctx=attributes
+    )
     if d.allow:
         return "allow"
     if d.requires_approval:
@@ -53,10 +61,16 @@ def _wasm_outcome(policy: dict, role: str | None, tool: str, args: dict) -> str:
 
 
 def _assert_parity(
-    policy: dict, role: str | None, tool: str, args: dict, expect: str
+    policy: dict,
+    role: str | None,
+    tool: str,
+    args: dict,
+    expect: str,
+    *,
+    attributes: dict | None = None,
 ) -> None:
-    py = _py_outcome(policy, role, tool, args)
-    wasm = _wasm_outcome(policy, role, tool, args)
+    py = _py_outcome(policy, role, tool, args, attributes)
+    wasm = _wasm_outcome(policy, role, tool, args, attributes)
     assert py == wasm, f"engine divergence {role}/{tool}/{args}: py={py} wasm={wasm}"
     assert py == expect, f"wrong outcome {role}/{tool}/{args}: {py} (want {expect})"
 
@@ -412,6 +426,81 @@ def test_role_tool_fact_parity(role: str, tool: str, args: dict, expect: str) ->
 
 
 # ---------------------------------------------------------------------------
+# ctx.* — ABAC attribute filtering. Every operator + the missing-attribute
+# fail-closed case must decide identically on pydantic and opa->wasmtime.
+# ---------------------------------------------------------------------------
+
+_ATTR_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "default_policy": {"mode": "deny"},
+            "tools": {
+                "eq": {
+                    "mode": "allow",
+                    "constraints": ['ctx.department == "finance"'],
+                },
+                "in_list": {
+                    "mode": "allow",
+                    "constraints": ['ctx.region in ["EU", "UK"]'],
+                },
+                "not_in_list": {
+                    "mode": "allow",
+                    "constraints": ['ctx.region not in ["US"]'],
+                },
+                "ordered": {
+                    "mode": "allow",
+                    "constraints": ["ctx.clearance_level >= 3"],
+                },
+                "boolean": {
+                    "mode": "allow",
+                    "constraints": ["ctx.confirmed == true"],
+                },
+            },
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "attributes", "expect"),
+    [
+        # string equality
+        ("eq", {"department": "finance"}, "allow"),
+        ("eq", {"department": "sales"}, "deny"),
+        ("eq", {}, "deny"),  # missing attr → fail closed on BOTH engines
+        # membership against a literal list
+        ("in_list", {"region": "EU"}, "allow"),
+        ("in_list", {"region": "US"}, "deny"),
+        ("in_list", {}, "deny"),  # missing → fail closed
+        # negated membership
+        ("not_in_list", {"region": "EU"}, "allow"),
+        ("not_in_list", {"region": "US"}, "deny"),
+        # missing → pydantic resolves _MISSING to False; Rego's inline
+        # `not <undefined> in [...]` is undefined, so `allow` never fires.
+        # Both deny — the case a change to negated-membership rendering
+        # would silently break.
+        ("not_in_list", {}, "deny"),
+        # ordered comparison + cross-type guard
+        ("ordered", {"clearance_level": 3}, "allow"),
+        ("ordered", {"clearance_level": 2}, "deny"),
+        ("ordered", {"clearance_level": "3"}, "deny"),  # str vs num → fail closed
+        ("ordered", {}, "deny"),  # missing → fail closed
+        # boolean equality
+        ("boolean", {"confirmed": True}, "allow"),
+        ("boolean", {"confirmed": False}, "deny"),
+    ],
+)
+def test_ctx_attribute_parity(tool: str, attributes: dict, expect: str) -> None:
+    _assert_parity(_ATTR_POLICY, "default", tool, {}, expect, attributes=attributes)
+
+
+def test_ctx_none_bag_fails_closed_both_engines() -> None:
+    """No attributes at all → every ctx.* ref misses and denies, both engines."""
+    _assert_parity(_ATTR_POLICY, "default", "eq", {}, "deny", attributes=None)
+
+
+# ---------------------------------------------------------------------------
 # Named constants (2f) — consts.<name>, incl. shared via a mixin
 # ---------------------------------------------------------------------------
 
@@ -626,12 +715,14 @@ class _WasmEngine:
     def __init__(self, wasm_bytes: bytes) -> None:
         self._w = WasmPolicy.from_bytes(wasm_bytes)
 
-    def evaluate(self, *, role, tool, args):
+    def evaluate(self, *, role, tool, args, attributes=None):
         from hexgate.security.policy import verdict_from_rego
 
         role_ = role or "default"
         return verdict_from_rego(
-            self._w.decide(role=role_, tool=tool, args=dict(args)),
+            self._w.decide(
+                role=role_, tool=tool, args=dict(args), ctx=dict(attributes or {})
+            ),
             tool_name=tool,
             role=role_,
         )
@@ -669,3 +760,107 @@ def test_enforcer_parity_complex(role: str, tool: str, args: dict, expect: str) 
 
     assert py == wf, f"enforcer divergence {role}/{tool}/{args}: py={py} wasm={wf}"
     assert py == expect
+
+
+# ---------------------------------------------------------------------------
+# Multi-role permissive union — the acceptance gate. The same role set through
+# the same fold over two different engines must agree on outcome AND deciding
+# role.
+# ---------------------------------------------------------------------------
+
+_MULTI_ROLE_POLICY = {
+    "version": 1,
+    "roles": {
+        # Least-privilege default: unrecognised role names contribute nothing.
+        "default": {"default_policy": {"mode": "deny"}},
+        "support": {
+            "default_policy": {"mode": "deny"},
+            "tools": {"read_file": {"mode": "allow"}},
+        },
+        "billing": {
+            "default_policy": {"mode": "deny"},
+            "tools": {
+                "refund": {"mode": "allow", "constraints": ['role == "billing"']},
+                "read_file": {"mode": "approval_required"},
+            },
+        },
+        "auditor": {
+            "default_policy": {"mode": "deny"},
+            "tools": {"refund": {"mode": "approval_required"}},
+        },
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("roles", "tool", "args", "expect", "deciding"),
+    [
+        # The union grants what no single role would.
+        (["support", "billing"], "refund", {"amount": 1}, "allow", "billing"),
+        (["billing", "support"], "refund", {"amount": 1}, "allow", "billing"),
+        # Nobody grants it -> deny, no credited role.
+        (["support", "auditor"], "write_file", {}, "deny", None),
+        # ALLOW beats NEEDS_APPROVAL regardless of order (D2).
+        (["billing", "support"], "read_file", {}, "allow", "support"),
+        (["support", "billing"], "read_file", {}, "allow", "support"),
+        # Approval only when no role allows outright.
+        (["auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
+        (["support", "auditor"], "refund", {"amount": 1}, "needs_approval", "auditor"),
+        # The role fact binds per role, so it still grants inside a union.
+        (["auditor", "billing"], "refund", {"amount": 1}, "allow", "billing"),
+        # Unrecognised names resolve to the least-privilege default (D13).
+        (["zzz", "support"], "read_file", {}, "allow", "support"),
+        (["zzz", "yyy"], "read_file", {}, "deny", None),
+        # No roles -> the default policy.
+        ([], "read_file", {}, "deny", None),
+    ],
+)
+def test_multi_role_union_parity(
+    roles: list[str], tool: str, args: dict, expect: str, deciding: str | None
+) -> None:
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.enforcer import PolicyEnforcer
+
+    ps = load_policy_set_from_dict(_MULTI_ROLE_POLICY)
+    wasm = _WasmEngine(_wasm_bytes(compile_to_rego(_MULTI_ROLE_POLICY)))
+
+    py_enforcer = PolicyEnforcer(ps, agent_name="a")
+    wasm_enforcer = PolicyEnforcer(wasm, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=roles).sync_scope():
+        py = py_enforcer.decide(tool, args)
+        wf = wasm_enforcer.decide(tool, args)
+
+    assert py.outcome.value == wf.outcome.value, (
+        f"union divergence {roles}/{tool}/{args}: "
+        f"py={py.outcome.value} wasm={wf.outcome.value}"
+    )
+    assert py.deciding_role == wf.deciding_role, (
+        f"deciding-role divergence {roles}/{tool}/{args}: "
+        f"py={py.deciding_role} wasm={wf.deciding_role}"
+    )
+    assert py.outcome.value == expect
+    assert py.deciding_role == deciding
+
+
+@pytest.mark.parametrize("role", ["support", "billing", "zzz"])
+def test_single_role_union_matches_direct_evaluation_on_both_engines(
+    role: str,
+) -> None:
+    """D12 across engines: wrapping one role in the union changes nothing."""
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.enforcer import PolicyEnforcer
+
+    ps = load_policy_set_from_dict(_MULTI_ROLE_POLICY)
+    wasm = _WasmEngine(_wasm_bytes(compile_to_rego(_MULTI_ROLE_POLICY)))
+
+    for engine in (ps, wasm):
+        direct = engine.evaluate(role=role, tool="read_file", args={})
+        with HexgateContext(user_id="u", user_roles=[role]).sync_scope():
+            through_union = PolicyEnforcer(engine, agent_name="a").decide(
+                "read_file", {}
+            )
+        assert through_union.outcome is direct.outcome
+        assert through_union.reason == direct.reason
+        assert through_union.violations == direct.violations
+        assert through_union.hint == direct.hint

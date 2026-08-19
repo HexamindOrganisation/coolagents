@@ -341,11 +341,26 @@ async def test_user_role_selects_matching_role_policy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_error_payload_carries_role_when_user_scope_is_active() -> None:
-    """The rendered error includes the role the decision was made against."""
-    guarded = GuardedTool.wrap(_make_async_tool(), enforcer=_deny_enforcer())
+async def test_error_payload_carries_the_granting_role_on_approval() -> None:
+    """``role`` in the LLM-facing payload is the role that would grant the call."""
+    guarded = GuardedTool.wrap(
+        _make_async_tool("echo_async"), enforcer=_approval_enforcer("echo_async")
+    )
 
     async with HexgateContext(user_id="u-1", user_roles=["billing"]):
         result = await guarded._arun(text="hi")
 
     assert result["error"]["role"] == "billing"
+
+
+@pytest.mark.asyncio
+async def test_error_payload_omits_role_on_deny() -> None:
+    """A deny has no granting role, so none is named — the caller's roles are
+    not disclosed to the model (same minimisation as ``attributes``)."""
+    guarded = GuardedTool.wrap(_make_async_tool(), enforcer=_deny_enforcer())
+
+    async with HexgateContext(user_id="u-1", user_roles=["billing", "support"]):
+        result = await guarded._arun(text="hi")
+
+    assert "role" not in result["error"]
+    assert "user_roles" not in result["error"]

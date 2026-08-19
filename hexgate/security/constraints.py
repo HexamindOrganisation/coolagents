@@ -38,9 +38,12 @@ as a ref to an absent field. ``matches`` is an RE2 regex and is
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
 
-Besides ``args.*``, two call-scope facts are in scope: ``role`` (the caller's
-role) and ``tool`` (the tool being invoked) — mirroring Rego's ``input.role``
-/ ``input.tool``. E.g. ``role == "admin"`` or ``tool == "refund_order"``.
+Besides ``args.*``, three caller-scope fact families are in scope: ``role``
+(the caller's role) and ``tool`` (the tool being invoked) — mirroring Rego's
+``input.role`` / ``input.tool`` — and ``ctx.<key>``, the caller's ABAC
+attributes (``input.ctx`` in Rego). E.g. ``role == "admin"``,
+``tool == "refund_order"``, or ``ctx.department == "finance"``. A missing
+``ctx.<key>`` fails closed like any absent ref.
 
 Concrete examples (all of these parse and evaluate today):
 
@@ -75,6 +78,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -535,6 +539,39 @@ def iter_const_refs(node: Node):
         yield from iter_const_refs(node.inner)
 
 
+def iter_arg_refs(node: Node):
+    """Yield every field-reference path (a :class:`Ref`'s dotted tuple) in a node.
+
+    Mirrors :func:`iter_const_refs` but for field paths (``args.amount`` →
+    ``("args", "amount")``, ``role`` → ``("role",)``). Used by the analyzer to
+    check a constraint's ``args.*`` paths against a tool's input schema. Element
+    refs (``.`` inside a quantifier) bind to a collection element, not a named
+    field, so they're skipped.
+    """
+
+    def _operand(op):
+        if isinstance(op, Ref):
+            yield op.path
+        elif isinstance(op, Count) and isinstance(op.ref, Ref):
+            yield op.ref.path
+
+    if isinstance(node, Cmp):
+        yield from _operand(node.left)
+        yield from _operand(node.right)
+    elif isinstance(node, Call):
+        if isinstance(node.arg, Ref):
+            yield node.arg.path
+    elif isinstance(node, Quant):
+        if isinstance(node.ref, Ref):
+            yield node.ref.path
+        yield from iter_arg_refs(node.body)
+    elif isinstance(node, (And, Or)):
+        for part in node.parts:
+            yield from iter_arg_refs(part)
+    elif isinstance(node, Not):
+        yield from iter_arg_refs(node.inner)
+
+
 def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
     """Raise if an element ref (``.`` / ``.field``) appears outside a quantifier.
 
@@ -835,6 +872,7 @@ def check_constraints(
     *,
     role: str | None = None,
     consts: dict[str, Any] | None = None,
+    attributes: Mapping[str, Any] | None = None,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
@@ -845,6 +883,9 @@ def check_constraints(
     ``role`` and the tool name are exposed to constraints as top-level
     ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
     ``consts`` supplies the policy's named constants for ``consts.<name>``.
+    ``attributes`` are the caller's ABAC bag, exposed under the ``ctx.<key>``
+    namespace and mirroring Rego's ``input.ctx``. A missing ``ctx.<key>``
+    resolves to ``_MISSING`` and fails closed, exactly like any other ref.
     """
     if not constraints:
         return
@@ -852,6 +893,7 @@ def check_constraints(
         "args": dict(arguments or {}),
         "role": role,
         "tool": tool_name,
+        "ctx": dict(attributes or {}),
         _CONSTS_KEY: consts or {},
     }
     for entry in constraints:

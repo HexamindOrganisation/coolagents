@@ -51,6 +51,51 @@ services:
       timeout: 3s
       retries: 10
 
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: hexgate-redpanda
+    ports:
+      # Not offset like postgres/clickhouse above — nothing commonly binds
+      # 9092 locally, and the PLAINTEXT advertised address below must
+      # match this port exactly or host-side clients get redirected to
+      # the wrong port on reconnect.
+      - "127.0.0.1:9092:9092"
+    command:
+      - redpanda
+      - start
+      # dev-container bundles --overprovisioned, --reserve-memory 0M,
+      # --check=false, --unsafe-bypass-fsync — the single-node local-dev
+      # tuning Kafka needed several separate flags for.
+      - --mode
+      - dev-container
+      # Two client-facing listeners, both PLAINTEXT, for two different
+      # audiences — same reason docker-compose.deploy.yml points
+      # HEXGATE_CLICKHOUSE_HOST at the service name "clickhouse" rather
+      # than localhost: a hostname only means "this container" from
+      # inside that same container.
+      #   - PLAINTEXT (9092, published above): for host-machine clients
+      #     (this repo's own CLI tools, a dev running the future
+      #     Collector natively). Advertised as localhost:9092.
+      #   - DOCKER (29092, NOT published): for other containers on this
+      #     compose network. Advertised as redpanda:29092 — the compose
+      #     service name, resolvable from any sibling container.
+      # A client that bootstraps via one and gets advertised the other
+      # would try to reconnect to an address that doesn't reach the
+      # broker from where it's sitting, so both must stay in sync with
+      # how each audience actually connects.
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:9092,DOCKER://0.0.0.0:29092
+      - --advertise-kafka-addr
+      - PLAINTEXT://localhost:9092,DOCKER://redpanda:29092
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
 volumes:
   clickhouse-data:
   postgres-data:
+  redpanda-data:

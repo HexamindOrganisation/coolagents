@@ -139,7 +139,8 @@ demo-override: ## Build a deny-everything bundle + chat with HEXGATE_LOCAL_POLIC
 # First `make clickhouse-up` on an empty volume runs the init scripts in
 # platform/clickhouse/init/ and creates the policy_decision table.
 # Subsequent schema changes don't auto-apply — use `make clickhouse-reset`
-# (wipes data) or apply by hand via `make clickhouse-cli`.
+# (wipes data) or apply platform/clickhouse/migrations/*.sql by hand via
+# `make clickhouse-cli`, in filename order.
 
 COMPOSE := docker compose -f platform/docker-compose.yml
 
@@ -149,7 +150,7 @@ clickhouse-up: ## Start the local ClickHouse server (creates schema on first run
 
 .PHONY: clickhouse-down
 clickhouse-down: ## Stop ClickHouse (keeps the data volume)
-	$(COMPOSE) down
+	$(COMPOSE) stop clickhouse
 
 .PHONY: clickhouse-logs
 clickhouse-logs: ## Tail ClickHouse server logs
@@ -161,15 +162,14 @@ clickhouse-cli: ## Open an interactive SQL shell against the local ClickHouse
 	    --user hexgate --password hexgate-dev-password --database hexgate_audit
 
 .PHONY: clickhouse-reset
-clickhouse-reset: ## Wipe the data volume and re-run init scripts
-	$(COMPOSE) down -v
+clickhouse-reset: ## Wipe ONLY the ClickHouse data volume and re-run init scripts
+	$(COMPOSE) rm -sf clickhouse
+	-docker volume rm platform_clickhouse-data
 	$(COMPOSE) up -d clickhouse
 
 # -------- Platform infra (Postgres control-plane DB) --------
 #
-# Control-plane DB (service in platform/docker-compose.yml). NOTE:
-# `clickhouse-down`/`clickhouse-reset` run `down` on the whole compose and so
-# also stop Postgres — use the `postgres-*` targets below to avoid that.
+# Control-plane DB (service in platform/docker-compose.yml).
 
 # DSN matching the postgres service (host port 5433, committed dev creds).
 POSTGRES_DSN ?= postgresql+asyncpg://hexgate:hexgate-dev-password@localhost:5433/hexgate
@@ -192,6 +192,36 @@ postgres-reset: ## Wipe ONLY the Postgres data volume and restart
 	-docker volume rm platform_postgres-data
 	$(COMPOSE) up -d --wait postgres
 
+# -------- Platform infra (Redpanda — OTLP ingestion buffer) --------
+#
+# Single-node dev broker, Kafka-wire-protocol-compatible. Topics aren't
+# auto-created on first boot — run `make redpanda-topics` once after
+# `make redpanda-up`.
+
+.PHONY: redpanda-up
+redpanda-up: ## Start local Redpanda and wait until healthy
+	$(COMPOSE) up -d --wait redpanda
+
+.PHONY: redpanda-stop
+redpanda-stop: ## Stop Redpanda (keeps the data volume)
+	$(COMPOSE) stop redpanda
+
+.PHONY: redpanda-topics
+redpanda-topics: redpanda-up ## Create the hexgate.otlp.raw / hexgate.otlp.dlq topics (idempotent)
+	docker cp platform/redpanda/init/create-topics.sh hexgate-redpanda:/tmp/create-topics.sh
+	docker exec hexgate-redpanda bash /tmp/create-topics.sh
+
+.PHONY: redpanda-list-topics
+redpanda-list-topics: ## List topics on the local Redpanda broker
+	docker exec hexgate-redpanda rpk topic list --brokers localhost:9092
+
+.PHONY: redpanda-reset
+redpanda-reset: ## Wipe ONLY the Redpanda data volume, restart, and recreate topics
+	$(COMPOSE) rm -sf redpanda
+	-docker volume rm platform_redpanda-data
+	$(COMPOSE) up -d --wait redpanda
+	$(MAKE) redpanda-topics
+
 # -------- OTLP ingestion Collector (Go) --------
 #
 # platform/collector/builder-config.yaml is an ocb (OpenTelemetry
@@ -212,7 +242,7 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 	cd platform/collector && builder --config=builder-config.yaml
 
 .PHONY: collector-run
-collector-run: ## Run the collector binary against config.yaml (needs `make redpanda-up` first)
+collector-run: redpanda-topics ## Run the collector binary against config.yaml (needs `make redpanda-topics` first)
 	cd platform/collector && ./hexgate-collector --config=config.yaml
 
 # -------- Platform API (FastAPI control plane) --------

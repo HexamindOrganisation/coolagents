@@ -170,7 +170,7 @@ async def test_binds_identity_and_records_tcp_tool() -> None:
         await echo.wait_closed()
     assert len(seen) == 1
     assert seen[0].tool_name == "net.tcp_connect"
-    assert seen[0].role == "agent"
+    assert seen[0].user_roles == ("agent",)
     assert seen[0].arguments == {
         "host": "127.0.0.1",
         "port": echo_port,

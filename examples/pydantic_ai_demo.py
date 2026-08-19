@@ -25,7 +25,7 @@ async def main():
 
     result = await agent.run(
         "What is the weather in Tokyo?",
-        user=HexgateContext(
+        hexgate_context=HexgateContext(
             user_id="pydantic_ai_user_1",
             user_roles=["member"],
             session_id="pydantic_ai_session_1",

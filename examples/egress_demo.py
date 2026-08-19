@@ -44,11 +44,11 @@ async def main() -> None:
         agent_name="egress-demo",
         decision_observer=_print_decision,
     )
-    user = HexgateContext(user_id="demo", user_roles=["agent"])
+    context = HexgateContext(user_id="demo", user_roles=["agent"])
 
     # no_proxy would include the Hexgate control-plane host if audit were on,
     # so audit POSTs bypass the proxy. This demo runs without an API key.
-    async with egress_guard(enforcer, user):
+    async with egress_guard(enforcer, context):
         async with httpx.AsyncClient(timeout=10) as client:
             for url in ("https://api.github.com/zen", "https://example.com/"):
                 print(f"\nGET {url}")

@@ -122,6 +122,8 @@ function DetailDrawer({
   const e = event;
   const argStr =
     e.arguments == null ? "—" : JSON.stringify(e.arguments, null, 2);
+  const attrStr =
+    e.attributes == null ? null : JSON.stringify(e.attributes, null, 2);
   const hintStr =
     typeof e.hint === "string"
       ? e.hint
@@ -207,8 +209,30 @@ function DetailDrawer({
             <KV k="tool_name" mono>
               {e.tool_name}
             </KV>
-            <KV k="role">
-              {e.role || <span className="text-muted-foreground">∅ none</span>}
+            {/* Two rows, not three: the legacy scalar `role` would say almost
+                the same thing as "roles evaluated". */}
+            <KV k="roles evaluated">
+              {e.user_roles.length ? (
+                e.user_roles.join(", ")
+              ) : (
+                <span className="text-muted-foreground">∅ none</span>
+              )}
+            </KV>
+            {/* An empty deciding_role means three different things on the wire:
+                every role denied, no roles evaluated at all (the enforcer ran
+                without a HexgateContext, so `default` decided), or a pre-multi-
+                role SDK that only sent the scalar. outcome + user_roles tell
+                them apart — without this branch an allow reads as a denial. */}
+            <KV k="granted by">
+              {e.deciding_role || (
+                <span className="text-muted-foreground">
+                  {e.outcome === "deny"
+                    ? "∅ none — no role granted it"
+                    : e.user_roles.length === 0
+                      ? "default policy — no roles evaluated"
+                      : "not recorded (legacy event)"}
+                </span>
+              )}
             </KV>
             {e.error_type && (
               <KV k="error_type" mono>
@@ -222,6 +246,14 @@ function DetailDrawer({
               {argStr}
             </pre>
           </DrawerSection>
+
+          {attrStr && (
+            <DrawerSection label="Context attributes">
+              <pre className="m-0 whitespace-pre-wrap rounded-lg border border-border bg-muted p-3 font-mono text-[11.5px] leading-relaxed text-foreground">
+                {attrStr}
+              </pre>
+            </DrawerSection>
+          )}
 
           <DrawerSection label="Envelope">
             <KV k="occurred_at" mono>

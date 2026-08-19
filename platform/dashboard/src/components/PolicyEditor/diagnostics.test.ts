@@ -9,7 +9,7 @@ describe("toCodemirrorDiagnostics", () => {
   it("maps a line-anchored error onto the correct character range", () => {
     const state = stateFor("a: 1\nb: 2\nc: 3");
     const diagnostics = toCodemirrorDiagnostics(state, [
-      { line: 2, role: null, message: "bad value" },
+      { line: 2, role: null, tool: null, message: "bad value" },
     ]);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]).toMatchObject({
@@ -23,7 +23,12 @@ describe("toCodemirrorDiagnostics", () => {
   it("prefixes role-scoped errors with the role name", () => {
     const state = stateFor("roles:\n  support: {}\n");
     const [d] = toCodemirrorDiagnostics(state, [
-      { line: 2, role: "support", message: "must have at least one tool" },
+      {
+        line: 2,
+        role: "support",
+        tool: null,
+        message: "must have at least one tool",
+      },
     ]);
     expect(d.message).toBe("support: must have at least one tool");
   });
@@ -31,8 +36,13 @@ describe("toCodemirrorDiagnostics", () => {
   it("drops errors without a line number (role-level / whole-document)", () => {
     const state = stateFor("a: 1");
     const diagnostics = toCodemirrorDiagnostics(state, [
-      { line: null, role: "support", message: "role not referenced" },
-      { line: null, role: null, message: "missing default_policy" },
+      {
+        line: null,
+        role: "support",
+        tool: null,
+        message: "role not referenced",
+      },
+      { line: null, role: null, tool: null, message: "missing default_policy" },
     ]);
     expect(diagnostics).toEqual([]);
   });
@@ -44,7 +54,7 @@ describe("toCodemirrorDiagnostics", () => {
     // a non-empty line we can assert range-of-text on.
     const state = stateFor("only one line");
     const [d] = toCodemirrorDiagnostics(state, [
-      { line: 99, role: null, message: "phantom" },
+      { line: 99, role: null, tool: null, message: "phantom" },
     ]);
     expect(d.from).toBe(0);
     expect(d.to).toBe("only one line".length);
@@ -53,7 +63,7 @@ describe("toCodemirrorDiagnostics", () => {
   it("ignores errors with line=0 (1-indexed lines per server contract)", () => {
     const state = stateFor("a: 1\n");
     const diagnostics = toCodemirrorDiagnostics(state, [
-      { line: 0, role: null, message: "should not happen" },
+      { line: 0, role: null, tool: null, message: "should not happen" },
     ]);
     expect(diagnostics).toEqual([]);
   });

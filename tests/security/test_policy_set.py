@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from hexgate.security import (
     AgentPolicy,
@@ -250,3 +251,53 @@ def test_load_policy_map_only_mixins_raises() -> None:
     mixin = AgentPolicy(is_mixin=True, tools={"view": BaseToolPolicy(mode="allow")})
     with pytest.raises(PolicySetError, match="only mixins"):
         load_policy_map({"read_only": mixin})
+
+
+def test_inferred_default_matches_across_load_paths(tmp_path: Path) -> None:
+    """The same role set must resolve undefined names to the same policy whether
+    it came from a directory or an inline dict — the pick is alphabetical in both."""
+    roles = {
+        "support": {"tools": {"lookup": {"mode": "allow"}}},
+        "billing": {"tools": {"refund": {"mode": "allow"}}},
+    }
+    policies = tmp_path / "policies"
+    policies.mkdir()
+    for name, spec in roles.items():
+        (policies / f"{name}.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
+
+    from_dir = load_policy_set(policies)
+    # ``support`` first, so insertion order would have picked it over ``billing``.
+    from_map = load_policy_map(
+        {name: AgentPolicy.model_validate(spec) for name, spec in roles.items()}
+    )
+
+    assert from_dir.aliased_default == from_map.aliased_default == "billing"
+    assert (
+        from_dir.policy_for("undefined").tools.keys()
+        == from_map.policy_for("undefined").tools.keys()
+    )
+
+
+def test_inferred_default_is_alphabetical_not_insertion_order() -> None:
+    ps = load_policy_map(
+        {
+            "support": AgentPolicy.model_validate({"tools": {"a": {"mode": "allow"}}}),
+            "billing": AgentPolicy.model_validate({"tools": {"b": {"mode": "allow"}}}),
+        }
+    )
+
+    assert ps.aliased_default == "billing"
+    assert "b" in ps.policy_for(None).tools
+
+
+def test_explicit_default_argument_overrides_the_alphabetical_pick() -> None:
+    ps = load_policy_map(
+        {
+            "support": AgentPolicy.model_validate({"tools": {"a": {"mode": "allow"}}}),
+            "billing": AgentPolicy.model_validate({"tools": {"b": {"mode": "allow"}}}),
+        },
+        default="support",
+    )
+
+    assert ps.aliased_default is None  # deliberate, not inferred
+    assert "a" in ps.policy_for(None).tools

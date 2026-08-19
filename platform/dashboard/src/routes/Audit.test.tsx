@@ -59,13 +59,15 @@ const ROW: AuditDecisionRow = {
   session_id: "sess-1",
   user_id: "u1",
   tool_name: "read_file",
-  role: "",
+  user_roles: [],
+  deciding_role: "",
   outcome: "deny",
   error_type: "policy_denied",
   reason: "blocked by policy",
   violations: ["no-secrets"],
   hint: null,
   arguments: { path: "/etc/passwd" },
+  attributes: { department: "finance" },
 };
 
 const ANOMALY: AuditAnomaly = {
@@ -87,6 +89,23 @@ const SIBLING: AuditDecisionRow = {
   outcome: "allow",
   reason: "",
   violations: [],
+  // A multi-role caller granted by its *second* role — the case the legacy
+  // scalar `role` could not express.
+  user_roles: ["support", "billing"],
+  deciding_role: "billing",
+  // No ABAC bag — the drawer must omit the section rather than show an empty box.
+  attributes: null,
+};
+
+/** An agent enforcing without a HexgateContext: `default` granted the call, so
+ * the wire carries no roles and an empty deciding_role — same encoding as a
+ * deny, and the drawer must not read it as one. */
+const UNROLED_ALLOW: AuditDecisionRow = {
+  ...SIBLING,
+  event_id: "evt-3",
+  tool_name: "list_files",
+  user_roles: [],
+  deciding_role: "",
 };
 
 /**
@@ -136,8 +155,8 @@ function stubFetch(anomalies: AuditAnomaly[] = [], role = "owner"): string[] {
           // The drawer's session drill-down vs the main table.
           if (url.searchParams.get("session_id") === "sess-1") {
             return json({
-              rows: [ROW, SIBLING],
-              total: 2,
+              rows: [ROW, SIBLING, UNROLED_ALLOW],
+              total: 3,
               limit: 12,
               offset: 0,
             });
@@ -317,6 +336,83 @@ describe("AuditPage", () => {
     await waitFor(() => {
       expect(screen.queryByText("evt-1")).not.toBeInTheDocument();
     });
+  });
+
+  it("drawer renders the context attributes bag that drove the decision", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    expect(screen.getByText("Context attributes")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, el) =>
+          el?.tagName === "PRE" &&
+          (el.textContent ?? "").includes('"department": "finance"'),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("drawer omits the context attributes section when there is no bag", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    // Drill to the sibling, whose attributes are null.
+    const sibling = await screen.findByText("send_email");
+    await user.click(sibling);
+    await screen.findByText("evt-2");
+
+    expect(screen.queryByText("Context attributes")).not.toBeInTheDocument();
+  });
+
+  it("drawer names the roles evaluated and the role that granted the call", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    const sibling = await screen.findByText("send_email");
+    await user.click(sibling);
+    await screen.findByText("evt-2");
+
+    expect(screen.getByText("roles evaluated")).toBeInTheDocument();
+    expect(screen.getByText("support, billing")).toBeInTheDocument();
+    // The granting role is the second one — reading `role` would have said
+    // "support" and misattributed the grant.
+    expect(screen.getByText("granted by")).toBeInTheDocument();
+    expect(screen.getByText("billing")).toBeInTheDocument();
+  });
+
+  it("drawer marks a deny as granted by no role", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    // ROW is a deny with no roles recorded at all.
+    await openDrawer(user);
+    expect(screen.getByText("∅ none")).toBeInTheDocument();
+    expect(screen.getByText("∅ none — no role granted it")).toBeInTheDocument();
+  });
+
+  it("drawer credits the default policy on an allow with no roles", async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWithProviders(<AuditPage />);
+
+    await openDrawer(user);
+    await user.click(await screen.findByText("list_files"));
+    await screen.findByText("evt-3");
+
+    // Same empty deciding_role as the deny above; the opposite meaning.
+    expect(
+      screen.getByText("default policy — no roles evaluated"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("∅ none — no role granted it"),
+    ).not.toBeInTheDocument();
   });
 
   it("same-session list drills into the sibling event", async () => {
