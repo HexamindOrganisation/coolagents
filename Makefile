@@ -246,9 +246,10 @@ collector-run: redpanda-topics ## Run the collector binary against config.yaml (
 	cd platform/collector && ./hexgate-collector --config=config.yaml
 
 .PHONY: collector-check
-collector-check: ## Vet + build the collector (no ocb regeneration)
+collector-check: ## Vet + build the collector, validate config.yaml (no ocb regeneration)
 	cd platform/collector && go vet ./...
 	cd platform/collector && go build -o hexgate-collector ./...
+	cd platform/collector && ./hexgate-collector validate --config=config.yaml
 
 # -------- Platform API (FastAPI control plane) --------
 #
