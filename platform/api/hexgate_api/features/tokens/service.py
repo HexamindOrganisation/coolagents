@@ -33,6 +33,9 @@ async def mint_api_key(
     the operator copies out of the dashboard — shown once, never stored
     in the row outside of the ``secret`` column for revocation lookup).
     """
+    # Same id for the row's primary key and for the token_id fact signed into
+    # the biscuit below. The OTLP Collector looks a token up in its cache by
+    # that fact, so it has to be the row id.
     token_id = new_id(ApiKey)
     biscuit_b64 = mint_token(
         signing_key_bytes,
@@ -49,7 +52,7 @@ async def mint_api_key(
     full_token = make_envelope(env, project_id, biscuit_b64)
 
     token = ApiKey(
-        id=new_id(ApiKey),
+        id=token_id,
         project_id=project_id,
         name=name,
         prefix=prefix,
