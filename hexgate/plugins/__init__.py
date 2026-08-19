@@ -95,6 +95,11 @@ def secret_watch(call: ToolCall, outcome: ToolOutcome) -> None:
     on the operator channel and leaves the result untouched. Scans JSON-ish results
     only; an opaque return object is skipped. It becomes a scrubber once result
     rewrite lands (a later phase).
+
+    It walks the full result on every call, so for a high-throughput tool that
+    returns large payloads, register a scoped variant rather than this global one::
+
+        after_tool(tool_names=["search"], observe=True)(secret_watch.fn)
     """
     if not outcome.ok:
         return None

@@ -2,9 +2,11 @@
 
 One detector, shared by ``secret_guard`` (refuse), ``secret_redactor`` (strip),
 and ``secret_watch`` (flag). It is deliberately conservative: a false positive on
-a before-guard blocks a real tool call, so the default leans on high-confidence
-provider prefixes (the gitleaks / trufflehog approach) and only falls back to a
-strict Shannon-entropy test for long, token-shaped strings.
+a before-guard blocks a real tool call, so v1 matches only high-confidence
+provider prefixes (the gitleaks / trufflehog approach). Catching unprefixed
+secrets by entropy is deferred (see ``docs/adr/R-GUARD-005``): a per-string
+entropy test cannot tell a base64 secret from a base64 hash, so on a fail-closed
+guard it blocks legitimate calls.
 
 The detector never surfaces a matched value. A :class:`SecretHit` carries the
 category, the JSON path to the field, and a short SHA-256 ``fingerprint`` for
@@ -15,7 +17,6 @@ names *what* and *where*, never the secret itself.
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -40,47 +41,16 @@ _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{24,}\b")),
     ("hexgate_token", re.compile(r"\bfty_[A-Za-z0-9]{16,}\b")),
-    ("private_key", re.compile(r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----")),
+    # The whole block, not just the header, so redaction strips the key material
+    # too (non-greedy to the END line; header-only if no END is present).
+    (
+        "private_key",
+        re.compile(
+            r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
+            r"(?:[\s\S]*?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----)?"
+        ),
+    ),
 ]
-
-# ---------------------------------------------------------------------------
-# Entropy fallback (strict, to keep the before-guard false-positive rate low)
-# ---------------------------------------------------------------------------
-
-# A leaf must look like one contiguous token in this charset to be entropy-tested.
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
-_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
-_UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
-    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
-# Chosen so a random ~40-char base64 token (~4.9 bits/char) trips it while a
-# 40-char git SHA, a UUID, and prose stay under. Hex and UUIDs are excluded
-# outright below because they are routinely legitimate arguments.
-_ENTROPY_MIN_LEN = 20
-_ENTROPY_THRESHOLD = 4.5
-
-
-def _shannon_entropy(s: str) -> float:
-    """Bits per character of ``s`` over its own symbol distribution."""
-    if not s:
-        return 0.0
-    counts: dict[str, int] = {}
-    for ch in s:
-        counts[ch] = counts.get(ch, 0) + 1
-    n = len(s)
-    return -sum((c / n) * math.log2(c / n) for c in counts.values())
-
-
-def _looks_high_entropy(s: str) -> bool:
-    """True for a long, token-shaped, high-entropy string that is not a plain
-    hex digest or a UUID (both common, non-secret arguments)."""
-    if len(s) < _ENTROPY_MIN_LEN or not _TOKEN_RE.match(s):
-        return False
-    if _HEX_RE.match(s) or _UUID_RE.match(s):
-        return False
-    return _shannon_entropy(s) >= _ENTROPY_THRESHOLD
-
 
 # ---------------------------------------------------------------------------
 # Hit + string-level matching
@@ -103,13 +73,9 @@ def _fingerprint(value: str) -> str:
 
 
 def _spans(s: str) -> list[tuple[int, int, str]]:
-    """Return non-overlapping ``(start, end, category)`` matches in ``s``.
-
-    Provider patterns first, in list order, so a match from an earlier (more
-    specific) pattern wins over a later one that overlaps it. Only if nothing
-    matched and the whole trimmed leaf is one high-entropy token is a single
-    ``high_entropy`` span added.
-    """
+    """Return non-overlapping ``(start, end, category)`` provider-pattern matches
+    in ``s``, in list order — a match from an earlier (more specific) pattern
+    wins over a later one that overlaps it."""
     accepted: list[tuple[int, int, str]] = []
     for category, pattern in _PATTERNS:
         for m in pattern.finditer(s):
@@ -118,9 +84,6 @@ def _spans(s: str) -> list[tuple[int, int, str]]:
                 start < a_end and a_start < end for a_start, a_end, _ in accepted
             ):
                 accepted.append((start, end, category))
-    if not accepted and _looks_high_entropy(s.strip()):
-        start = s.find(s.strip())
-        accepted.append((start, start + len(s.strip()), "high_entropy"))
     accepted.sort()
     return accepted
 

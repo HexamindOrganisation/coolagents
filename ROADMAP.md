@@ -24,11 +24,11 @@ tracks can be added as their own sections.
 - **PR2: the other three adapters.** Point OpenAI, Google ADK, and Pydantic AI at
   the shared `run_guarded` so all four frameworks share one guard path. Mostly
   deleting duplicated decide-then-invoke.
-- **PR3: official plugins (up as a PR).** `hexgate.plugins`: one prefix-first,
-  entropy-strict secret detector (`scan_secrets` / `redact_secrets`, value-free
-  `SecretHit`s) exposed as `secret_guard` (halt), `secret_redactor` (pre rewrite),
-  and `secret_watch` (post observe), plus a safe-`reason` builder. Detector policy
-  in `docs/adr/R-GUARD-005`.
+- **PR3: official plugins (up as a PR).** `hexgate.plugins`: one prefix-only
+  secret detector (`scan_secrets` / `redact_secrets`, value-free `SecretHit`s)
+  exposed as `secret_guard` (halt), `secret_redactor` (pre rewrite), and
+  `secret_watch` (post observe), plus a safe-`reason` builder. Detector policy in
+  `docs/adr/R-GUARD-005`; gated entropy detection is a later item.
 
 ## Later
 

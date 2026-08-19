@@ -6,8 +6,6 @@ from __future__ import annotations
 import pytest
 
 from hexgate.plugins.secrets import (
-    _looks_high_entropy,
-    _shannon_entropy,
     redact_secrets,
     safe_detail,
     safe_reason,
@@ -28,17 +26,16 @@ PROVIDER_SAMPLES = {
     "hexgate_token": "fty_" + "A" * 16,
 }
 
-# High-entropy, token-shaped, not hex, not a UUID -> caught by the fallback.
-HIGH_ENTROPY = "xQ7bN2kR9wL4mP1vZ8cT5yA3jF6hD0sU7gE2iO9nB"
-
-# Things that are long and random-ish but routinely legitimate arguments.
+# Long, random-looking, but routinely legitimate arguments. None match a
+# provider prefix, so a prefix-only detector flags none of them (the base64
+# digest is the class that a per-string entropy test would wrongly block).
 FALSE_POSITIVE_CORPUS = [
     "356a192b7913b04c54574d18c28d46e6395428ab",  # 40-char git sha (hex)
     "550e8400-e29b-41d4-a716-446655440000",  # UUID
+    "k3Jd9fL2mNp0qRsTuVwXyZ1aB4cD6eF8gH0iJ2kL3m=",  # base64 content hash
     "the quick brown fox jumps over the lazy dog",  # prose (spaces)
     "/usr/local/lib/python3.13/site-packages",  # a file path
     "https://example.com/orders/12345/refund",  # a URL
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",  # long but zero entropy
     "order_12345",  # short id
     "2026-08-18T14:30:00Z",  # a timestamp
 ]
@@ -50,25 +47,24 @@ def test_each_provider_prefix_is_detected(category: str, sample: str) -> None:
     assert [h.category for h in hits] == [category]
 
 
-def test_private_key_header_is_detected() -> None:
-    pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1r...\n"
+def test_private_key_block_is_detected_and_fully_redacted() -> None:
+    # The whole block must be redacted, not just the header — otherwise the key
+    # body would be forwarded to the tool.
+    pem = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAA\n"
+        "AAAABAAABlwAAAAdzc2gtcnNhAAAAAwEAAQ\n"
+        "-----END OPENSSH PRIVATE KEY-----"
+    )
     assert [h.category for h in scan_secrets(pem)] == ["private_key"]
-
-
-def test_high_entropy_token_is_detected() -> None:
-    assert _looks_high_entropy(HIGH_ENTROPY)
-    assert [h.category for h in scan_secrets(HIGH_ENTROPY)] == ["high_entropy"]
+    cleaned, _ = redact_secrets(pem)
+    assert cleaned == "[REDACTED:private_key]"
+    assert "b3BlbnNz" not in cleaned  # key body is gone, not just the header
 
 
 @pytest.mark.parametrize("value", FALSE_POSITIVE_CORPUS)
 def test_false_positive_corpus_is_clean(value: str) -> None:
     assert scan_secrets(value) == []
-
-
-def test_entropy_is_bits_per_char() -> None:
-    assert _shannon_entropy("") == 0.0
-    assert _shannon_entropy("aaaa") == 0.0
-    assert _shannon_entropy("ab") == 1.0  # two equally likely symbols
 
 
 def test_sk_ant_prefers_the_specific_anthropic_category() -> None:
