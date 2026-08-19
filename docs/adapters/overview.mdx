@@ -16,7 +16,7 @@ logic:
    marker the model sees as tool output (or, for pydantic_ai, a `ModelRetry`)
    rather than aborting the run, so the agent can recover.
 2. **User-aware observability.** Every run is traced through Langfuse with the
-   active [`User`](/concepts/user-scope)'s identity (user id, session id, role)
+   active [`HexgateContext`](/concepts/user-scope)'s identity (user id, session id, role)
    propagated onto the spans.
 
 The four integrations differ in shape because the underlying SDKs do:
@@ -27,9 +27,9 @@ The four integrations differ in shape because the underlying SDKs do:
 | Tool wrapping | Copies each `FunctionTool`, replaces `on_invoke_tool` | Mutates each `BaseTool` in place (`install_enforcer_on_tool`), sets `handle_tool_error=True` | Copies each `BaseTool` (normalizing bare callables to `FunctionTool`), replaces `run_async` | Copies each `Tool` and overrides `function_schema.call` |
 | Denial behavior | Returns `decision.as_error_message()` as tool output | Returns `{"ok": False, "error": decision.as_error_payload()}` | Returns `decision.as_error_message()` as tool output | Raises `ModelRetry(decision.as_error_message())` |
 | Tracing | `OpenAIAgentsInstrumentor` + `propagate_attributes` | Langfuse `CallbackHandler` in each `RunnableConfig` + `propagate_attributes` | `GoogleADKInstrumentor` + `propagate_attributes` | `Agent.instrument_all()` + `propagate_attributes` |
-| Per-call identity | `user: User` on `run` / `run_sync` / `run_streamed` | `user: User` on `invoke` / `ainvoke` / `stream` / `astream` / `astream_events` | `user: User` on `run` / `run_async` | `user: User` on `run` / `run_sync` / `run_stream` / `iter` |
+| Per-call identity | `hexgate_context: HexgateContext` on `run` / `run_sync` / `run_streamed` | `hexgate_context: HexgateContext` on `invoke` / `ainvoke` / `stream` / `astream` / `astream_events` | `hexgate_context: HexgateContext` on `run` / `run_async` | `hexgate_context: HexgateContext` on `run` / `run_sync` / `run_stream` / `iter` |
 
-Role resolution happens **at call time** from the active `User` contextvar — one
+Role resolution happens **at call time** from the active `HexgateContext` contextvar — one
 wrapped agent serves many users concurrently because the scope is per-call. All
 adapters resolve the API key the same way: from the explicit `api_key=` argument,
 falling back to the `HEXGATE_API_KEY` environment variable.

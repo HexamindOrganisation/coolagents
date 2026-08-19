@@ -46,7 +46,7 @@ async def main():
 
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": "What is the weather in Tokyo?"}]},
-        user=HexgateContext(
+        hexgate_context=HexgateContext(
             user_id="deepagent_user_1",
             user_roles=["member"],
             session_id="deepagent_session_1",

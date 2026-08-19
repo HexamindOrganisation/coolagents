@@ -22,7 +22,7 @@ from hexgate import (
     load_registered_agent,
     load_hexgate_agent,
     register_agent_factory,
-    User,
+    HexgateContext,
 )
 ```
 
@@ -64,7 +64,7 @@ from hexgate import (
 
 | Symbol | What it does |
 |---|---|
-| `User(user_id, role=…, session_id=…, ttl_seconds=…)` | Per-request scope context manager — its `role` is the decision input. See [user scope](/concepts/user-scope). |
+| `HexgateContext(user_id, user_roles=[…], session_id=…, ttl_seconds=…, attributes={…})` | Per-request scope context manager — every role in `user_roles` is a decision input (most permissive wins). See [user scope](/concepts/user-scope). |
 
 ## Built-in tools
 

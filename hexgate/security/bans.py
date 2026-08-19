@@ -253,15 +253,15 @@ class BanGate:
         # that avoids enforcement depending on which gate polled first.
         return EMPTY_BAN_SET if self._source is None else self._source.fetch()
 
-    def _decide(self, bans: BanSet, user: HexgateContext | None) -> None:
+    def _decide(self, bans: BanSet, context: HexgateContext | None) -> None:
         # Agent ban checked first so a coincident agent+user ban emits a
         # deterministic ban_type/ban_id.
         hit = bans.agent_ban(self._agent_name)
-        if hit is None and user is not None:
-            hit = bans.user_ban(user.user_id)
+        if hit is None and context is not None:
+            hit = bans.user_ban(context.user_id)
         if hit is None:
             return
-        self._emit(hit, user)
+        self._emit(hit, context)
         target = (
             hit.target_agent_name if hit.ban_type == "agent" else hit.target_user_id
         )
@@ -272,11 +272,11 @@ class BanGate:
             reason=hit.reason,
         )
 
-    def check(self, user: HexgateContext | None) -> None:
+    def check(self, context: HexgateContext | None) -> None:
         """Raise :class:`AgentBannedError` if this agent or user is banned."""
-        self._decide(self._current(), user)
+        self._decide(self._current(), context)
 
-    async def check_async(self, user: HexgateContext | None) -> None:
+    async def check_async(self, context: HexgateContext | None) -> None:
         """Async check: fetch off-loop, decide + emit + raise on the loop.
 
         The emit must stay on the loop — the fire-and-forget ``AuditSender``
@@ -284,9 +284,9 @@ class BanGate:
         ``to_thread`` worker would drop the event.
         """
         bans = await asyncio.to_thread(self._current)
-        self._decide(bans, user)
+        self._decide(bans, context)
 
-    def _emit(self, hit: BanEntry, user: HexgateContext | None) -> None:
+    def _emit(self, hit: BanEntry, context: HexgateContext | None) -> None:
         # Best-effort: on sync entrypoints with no running loop, a sink built
         # off-loop drops the event (shared AuditSender limitation, not
         # ban-specific). The refusal itself is unaffected.
@@ -298,8 +298,8 @@ class BanGate:
                 ban_id=hit.ban_id,
                 reason=hit.reason,
                 agent_name=self._agent_name,
-                user_id=user.user_id if user else "",
-                session_id=(user.session_id or "") if user else "",
+                user_id=context.user_id if context else "",
+                session_id=(context.session_id or "") if context else "",
             )
         )
 

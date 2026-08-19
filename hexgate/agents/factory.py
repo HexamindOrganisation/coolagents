@@ -14,9 +14,10 @@ if TYPE_CHECKING:
     # TYPE_CHECKING to avoid the runtime cycle (security.* and cloud.* both
     # eventually import from this module).
     from hexgate.cloud.client import HexgateClient
+    from hexgate.guards.types import Guard, GuardObserver
     from hexgate.security.bans import BanGate
     from hexgate.security.binding import PolicyBinding
-    from hexgate.security.enforcer import DecisionObserver
+    from hexgate.security.enforcer import DecisionObserver, PolicyEnforcer
     from hexgate.security.source import PolicySource
 
 from langchain.agents import create_agent as create_langchain_agent
@@ -256,7 +257,10 @@ def _resolve_user_facts(agent: HexgateAgent) -> dict[str, list[str | int]] | Non
             client.config.api_key,
             pub,
             user=context.user_id,
-            role=context.primary_role,
+            # Only the first role is attested; the enforcer evaluates them all.
+            # See attenuate_for_user's docstring for why closing that is its own
+            # change.
+            role=context.user_roles[0] if context.user_roles else None,
             ttl_seconds=context.ttl_seconds,
         )
         _, _, biscuit_b64 = parse_envelope(child_envelope)
@@ -476,6 +480,8 @@ class HexgateAgent:
         approval_handler: ApprovalHandler | None = None,
         source: PolicySource | None = None,
         decision_observer: "DecisionObserver | None" = None,
+        guards: "Sequence[Guard] | None" = None,
+        guard_observer: "GuardObserver | None" = None,
     ) -> Self:
         """Return a new agent with Gate 1 policy enforcement applied.
 
@@ -495,6 +501,15 @@ class HexgateAgent:
         after it's built — ``hexgate chat`` uses it to render denies /
         approvals inline; default ``None`` is silent.
 
+        ``guards`` is a flat list of guards authored with ``@before_tool`` /
+        ``@after_tool``; they run around each guarded tool call (before-guards
+        observe, rewrite args, or halt before ``decide``; after-guards observe
+        or halt). The list is split into pre/post internally, order preserved
+        within each. Guards ride the same ``GuardedTool`` the enforcer does, so
+        they survive hot reload with the tools. ``guard_observer`` receives a
+        provenance :class:`~hexgate.guards.types.GuardEvent` when a guard acts.
+        Default ``None`` runs no guards.
+
         The ``(policy, source)`` matrix:
 
           * ``(engine, source)`` → enforce + attach the refresh source.
@@ -508,11 +523,16 @@ class HexgateAgent:
         from langchain_core.tools import BaseTool
 
         from hexgate.adapters.langchain.tools import GuardedTool
+        from hexgate.guards.types import build_pipeline
         from hexgate.security.binding import PolicyBinding
         from hexgate.security.bundle import PolicyBundle
         from hexgate.security.enforcer import build_enforcer
         from hexgate.security.policy_set import PolicySet, load_policy_set
 
+        # Split the flat guard list into the internal pre/post pipeline once.
+        pipeline = build_pipeline(guards, observer=guard_observer)
+
+        enforcer: PolicyEnforcer | None
         if policy is None:
             if source is not None:
                 raise ValueError(
@@ -520,18 +540,26 @@ class HexgateAgent:
                     "with no policy to enforce — the agent would be left "
                     "unguarded. Pass a policy, or drop the source."
                 )
-            return self.with_tools(list(self.tools))
-
-        if isinstance(policy, (PolicyBundle, PolicySet)):
-            engine = policy
+            if pipeline is None or pipeline.is_empty:
+                # Nothing to enforce and no guards to run (an observer-only
+                # pipeline can't fire without guards): return unguarded.
+                return self.with_tools(list(self.tools))
+            enforcer = None  # guards-only gating, no policy engine
         else:
-            engine = load_policy_set(policy)
-        enforcer = build_enforcer(
-            engine,
-            agent_name=self.name or "default",
-            decision_observer=decision_observer,
-        )
+            if isinstance(policy, (PolicyBundle, PolicySet)):
+                engine = policy
+            else:
+                engine = load_policy_set(policy)
+            enforcer = build_enforcer(
+                engine,
+                agent_name=self.name or "default",
+                decision_observer=decision_observer,
+            )
 
+        # One wrap loop for both paths, so the guards-only path can't drift from
+        # the policy path (e.g. silently dropping approval_handler): a
+        # GuardedTool with enforcer=None gates via guards alone and still honors
+        # a guard Halt(NEEDS_APPROVAL).
         wrapped: list[ToolSpec] = []
         for tool_spec in self.tools:
             if isinstance(tool_spec, BaseTool):
@@ -540,14 +568,16 @@ class HexgateAgent:
                         tool_spec,
                         enforcer=enforcer,
                         approval_handler=approval_handler,
+                        pipeline=pipeline,
                     )
                 )
             else:
                 wrapped.append(tool_spec)
         rebuilt = self.with_tools(wrapped)
-        # The binding pairs the enforcer the tools just closed over with the
-        # refresh source, so refresh_policy() can swap the policy in place.
-        rebuilt._binding = PolicyBinding(enforcer, source)
+        if enforcer is not None:
+            # The binding pairs the enforcer the tools just closed over with the
+            # refresh source, so refresh_policy() can swap the policy in place.
+            rebuilt._binding = PolicyBinding(enforcer, source)
         return rebuilt
 
     def refresh_policy(self) -> None:
@@ -571,6 +601,8 @@ def enforce_policy(
     approval_handler: ApprovalHandler | None = None,
     source: PolicySource | None = None,
     decision_observer: "DecisionObserver | None" = None,
+    guards: "Sequence[Guard] | None" = None,
+    guard_observer: "GuardObserver | None" = None,
 ) -> AgentGraph:
     """Functional alias for :meth:`HexgateAgent.enforce_policy`."""
     return agent.enforce_policy(
@@ -578,6 +610,8 @@ def enforce_policy(
         approval_handler=approval_handler,
         source=source,
         decision_observer=decision_observer,
+        guards=guards,
+        guard_observer=guard_observer,
     )
 
 
@@ -604,6 +638,8 @@ def create_agent(
     workspace: Workspace | None = None,
     bind_policy: bool | None = None,
     approval_handler: ApprovalHandler | None = None,
+    guards: "Sequence[Guard] | None" = None,
+    guard_observer: "GuardObserver | None" = None,
 ) -> tuple[AgentGraph, CallbackHandler]:
     """Create a hexgate agent as a thin wrapper over LangChain.
 
@@ -614,6 +650,12 @@ def create_agent(
     for another agent can't surprise-404 an unregistered prototype at
     construction). Binding gates the tools and attaches a refresh source, like
     ``load_hexgate_agent``. ``approval_handler`` applies on that path.
+
+    ``guards`` is a flat list of guards authored with ``@before_tool`` /
+    ``@after_tool`` (see :meth:`HexgateAgent.enforce_policy`). They wrap each
+    tool whether or not a policy binds — with the resolved policy when it does,
+    guards-only when it does not. ``guard_observer`` receives a provenance
+    ``GuardEvent`` when a guard acts.
     """
     # Validate at the public boundary, before the (relatively expensive) graph
     # build, so the error lands at the call site rather than deep in dispatch.
@@ -662,7 +704,17 @@ def create_agent(
         workspace=workspace,
     )
     if _should_bind_policy(bind_policy, name):
-        agent = _bind_policy(agent, name, approval_handler)  # type: ignore[arg-type]
+        agent = _bind_policy(  # type: ignore[arg-type]
+            agent, name, approval_handler, guards=guards, guard_observer=guard_observer
+        )
+    elif guards:
+        # No policy binding, but guards still wrap each tool (guards-only).
+        agent = agent.enforce_policy(
+            None,
+            guards=guards,
+            guard_observer=guard_observer,
+            approval_handler=approval_handler,
+        )
 
     handler = get_langfuse_handler(
         session_id=session_id,
@@ -720,12 +772,16 @@ def _bind_policy(
     agent: HexgateAgent,
     name: str,
     approval_handler: ApprovalHandler | None,
+    *,
+    guards: "Sequence[Guard] | None" = None,
+    guard_observer: "GuardObserver | None" = None,
 ) -> HexgateAgent:
     """Resolve the policy for ``name`` and enforce it on ``agent``.
 
     Mirrors ``load_hexgate_agent``: resolve → enforce → attach the
     refresh source. Fail-loud — an unregistered agent (platform 404)
-    raises; register it first with ``hexgate register``.
+    raises; register it first with ``hexgate register``. ``guards`` ride the
+    same enforcement so guards wrap the tools alongside the policy.
     """
     from hexgate.security.binding import resolve_policy
 
@@ -737,7 +793,11 @@ def _bind_policy(
 
     resolved = resolve_policy(name, client=client)
     enforced = agent.enforce_policy(
-        resolved.engine, approval_handler=approval_handler, source=resolved.source
+        resolved.engine,
+        approval_handler=approval_handler,
+        source=resolved.source,
+        guards=guards,
+        guard_observer=guard_observer,
     )
     enforced.hexgate_client = client
     return enforced

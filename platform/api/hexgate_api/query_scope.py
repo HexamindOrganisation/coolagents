@@ -85,7 +85,10 @@ def scope_filters(
     window (an explicit date range when valid, else a rolling since_hours),
     and agent. Table-specific filters (role/tool, user, model, ...) are
     appended by each feature's own ``_scope()`` wrapper, in whatever order
-    that feature's dashboard needs."""
+    that feature's dashboard needs.
+
+    Both branches bind a fixed instant, so the returned pair is a snapshot —
+    callers issuing several queries from one scope depend on that."""
     where = ["project_id = {pid:String}"]
     params: dict[str, object] = {"pid": project_id}
     if _date_range_valid(start_date, end_date):
@@ -95,8 +98,11 @@ def scope_filters(
         params["start_date"] = start_date
         params["end_date"] = end_date
     else:
-        params["hrs"] = since_hours
-        where.append("occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR")
+        # NOT ``now() - INTERVAL {hrs} HOUR``: ClickHouse evaluates now() per
+        # query, so two scans from one scope would share the SQL text but not
+        # the window, and a row inserted between them would land in only one.
+        where.append("occurred_at >= {since:DateTime}")
+        params["since"] = datetime.now(timezone.utc) - timedelta(hours=since_hours)
     if agent:
         where.append("agent_name = {agent:String}")
         params["agent"] = agent

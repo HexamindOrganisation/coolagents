@@ -57,7 +57,7 @@ def _make_get_weather_tool():
     (see `platform/api/hexgate_api/features/agents/compiler.py`'s
     `_READ_PATTERNS`), so a freshly-registered agent's starter policy puts
     it in the `read_only` mixin at `mode: allow` for every role — including
-    the `default` role that an unrecognized `HexgateContext.primary_role` falls back to.
+    the `default` role that an unrecognized `user_roles` entry falls back to.
     That makes the expected `policy_decision` outcome deterministic
     ('allow'), not something this test needs to special-case per role.
 
@@ -129,14 +129,14 @@ async def test_agent_run_lands_policy_decision_and_llm_usage_events(
         agent=raw_agent, tools=tools, api_key=hexgate_platform_env.api_key
     )
 
-    user = HexgateContext(
+    context = HexgateContext(
         user_id=f"{USER_ID_PREFIX}langchain",
         session_id=session_id,
         user_roles=["tester"],
     )
     result = await wrapped.ainvoke(
         {"messages": [{"role": "user", "content": "What's the weather in Paris?"}]},
-        user=user,
+        hexgate_context=context,
     )
     assert result["messages"][-1].content
 

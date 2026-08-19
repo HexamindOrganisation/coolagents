@@ -19,7 +19,7 @@ Usage::
     async with MCPToolset(slack) as mcp:
         agent = Agent("openai:gpt-5.4", tools=[*wrap_mcp_toolset(mcp), *native])
         proxy = wrap_pydantic_agent(agent=agent)
-        await proxy.run("…", user=user)
+        await proxy.run("…", hexgate_context=context)
 """
 
 from __future__ import annotations

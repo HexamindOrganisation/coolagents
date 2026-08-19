@@ -30,6 +30,8 @@ against the live grammar.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from hexgate.security.constraints import parse_constraint
 from hexgate.security.models import (
     AgentPolicy,
@@ -38,15 +40,15 @@ from hexgate.security.models import (
     ToolPolicy,
 )
 from hexgate.security.modules import (
+    GRANT_MODES,
     LinkError,
     LinkResult,
     ModuleContent,
+    ProjectLinkResult,
     Provenance,
     RuleTrace,
 )
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySet
-
-_GRANT_MODES = ("allow", "approval_required")
 
 
 def link_policy_set(
@@ -70,11 +72,106 @@ def link_policy_set(
     )
 
 
+def resolve_role_map(
+    roles: Mapping[str, Sequence[str]] | None, library: list[ModuleContent]
+) -> dict[str, list[ModuleContent]]:
+    """Expand a role binding into ``{role: [capability modules]}``.
+
+    The one place that defines role expansion, shared by the resolver and the
+    analyzer so they can never lint a different role set than what compiles.
+
+    ``roles is None`` (no ``roles.yaml``) means a single ``default`` importing
+    every capability — the all-compose back-compat default. An **empty** binding
+    (``{}``, a present-but-empty or typo'd ``roles.yaml``) is not the same: it
+    yields a fail-closed empty ``default``, so a mistake can't silently widen
+    access. A ``default`` bucket is always present. An unknown capability name is
+    a :class:`LinkError` (same contract from both callers).
+    """
+    index: dict[str, ModuleContent] = {cap.name: cap for cap in library}
+    if roles is None:
+        names_by_role: dict[str, list[str]] = {
+            DEFAULT_ROLE_NAME: [cap.name for cap in library]
+        }
+    else:
+        names_by_role = {name: list(sel) for name, sel in roles.items()}
+    names_by_role.setdefault(DEFAULT_ROLE_NAME, [])
+
+    resolved: dict[str, list[ModuleContent]] = {}
+    for role, cap_names in names_by_role.items():
+        caps: list[ModuleContent] = []
+        for name in cap_names:
+            cap = index.get(name)
+            if cap is None:
+                raise LinkError(
+                    f"role {role!r} imports unknown capability {name!r} "
+                    f"(known capabilities: {sorted(index)!r})"
+                )
+            caps.append(cap)
+        resolved[role] = caps
+    return resolved
+
+
+def resolve_for_project(
+    boundaries: list[ModuleContent],
+    library: list[ModuleContent],
+    roles: Mapping[str, Sequence[str]] | None,
+    *,
+    agent_leaf: Sequence[ModuleContent] = (),
+    agent_boundaries: Sequence[ModuleContent] = (),
+) -> ProjectLinkResult:
+    """Resolve a project into one role-keyed :class:`PolicySet`.
+
+    Boundaries are role-independent: every role is folded against the same
+    ``boundaries + agent_boundaries``, so a role can only ever narrow, never
+    widen, its ceiling. A role names the **capabilities** it imports; the fold
+    (:func:`link`) is reused unchanged, once per role.
+
+    ``roles`` maps a role name to the capability *names* it selects (a name is a
+    :attr:`ModuleContent.name`). ``None`` (no binding at all) means a single
+    ``default`` role importing every capability — the all-compose back-compat
+    path. A ``default`` role is always present, so unroled callers get
+    fail-closed deny rather than a missing bucket.
+
+    Every capability in the library is validated up front (:func:`_reject_capability_denies`),
+    not just the ones a role imports, so a malformed but unbound module fails
+    loudly instead of lurking until someone binds it.
+    """
+    _reject_capability_denies([*library, *agent_leaf])
+    resolved = resolve_role_map(roles, library)
+    fences = [*boundaries, *agent_boundaries]
+    by_role: dict[str, LinkResult] = {}
+    effective: dict[str, AgentPolicy] = {}
+    for role, caps in resolved.items():
+        result = link_policy_set(fences, [*caps, *agent_leaf])
+        by_role[role] = result
+        effective[role] = result.effective[DEFAULT_ROLE_NAME]
+
+    return ProjectLinkResult(policy_set=PolicySet(effective), by_role=by_role)
+
+
+def _reject_capability_denies(capabilities: Sequence[ModuleContent]) -> None:
+    """A capability that denies is a config error, checked over the WHOLE library.
+
+    The per-tool guard in :func:`_fold_tool` only runs for capabilities a role
+    imports, so an unbound malformed module would slip through resolution. This
+    is a per-module property (a capability tool with ``mode: deny``), so it is
+    hoisted here and run over every capability, bound or not.
+    """
+    for cap in capabilities:
+        for tool, tp in cap.policy.tools.items():
+            if tp.mode == "deny":
+                raise LinkError(
+                    f"capability {cap.name!r} denies {tool!r}; capabilities may "
+                    f"only grant — move the deny to a boundary ({cap.source})"
+                )
+
+
 def link(
     boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
     _reject_file_scope(boundaries, capabilities)
+    _reject_default_policy_constraints(boundaries, capabilities)
     consts = _merge_consts(boundaries, capabilities)
 
     trace = RuleTrace()
@@ -133,6 +230,28 @@ def _merge_consts(
     return merged
 
 
+def _reject_default_policy_constraints(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject ``default_policy.constraints`` in a module.
+
+    The fold reads a boundary's ``default_policy.mode`` (to tell a ceiling from a
+    floor) but the effective default is always fail-closed ``deny``, so any
+    constraints on a module's ``default_policy`` would be silently dropped. The
+    pydantic engine does enforce them in a single-file policy, so dropping them
+    on a migration would quietly lose a fence. Fail loud instead; put the rule on
+    a named tool.
+    """
+    for module in (*boundaries, *capabilities):
+        if module.policy.default_policy.constraints:
+            raise LinkError(
+                f"module {module.name!r} sets default_policy constraints, which "
+                f"module composition does not support (the effective default is "
+                f"fail-closed deny); move the rule onto a named tool "
+                f"({module.source})"
+            )
+
+
 def _reject_file_scope(
     boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> None:
@@ -187,10 +306,10 @@ def _fold_tool(
     for g in boundaries:
         tp = g.policy.tools.get(tool)
         is_ceiling = g.policy.default_policy.mode == "deny"
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             ceiling_constraints.extend(tp.constraints)  # fences intersect (AND)
             contributors.append(_prov(g))
-        elif is_ceiling and (tp is None or tp.mode not in _GRANT_MODES):
+        elif is_ceiling and (tp is None or tp.mode not in GRANT_MODES):
             # A ceiling only permits tools it explicitly allows/approves. If it
             # doesn't (unlisted, or mentioned only via a conditional deny), the
             # tool is ineligible — a capability grant can't make it eligible.
@@ -201,7 +320,7 @@ def _fold_tool(
     grants: list[tuple[ModuleContent, ToolPolicy]] = []
     for cap in capabilities:
         tp = cap.policy.tools.get(tool)
-        if tp is not None and tp.mode in _GRANT_MODES:
+        if tp is not None and tp.mode in GRANT_MODES:
             grants.append((cap, tp))
     if not grants:
         return None

@@ -26,7 +26,12 @@ class _StubEngine:
         self._verdict = verdict
 
     def evaluate(
-        self, *, role: str | None, tool: str, args: Mapping[str, Any]
+        self,
+        *,
+        role: str | None,
+        tool: str,
+        args: Mapping[str, Any],
+        attributes: Mapping[str, Any] | None = None,
     ) -> Verdict:
         return self._verdict
 
@@ -76,16 +81,36 @@ def test_observer_sees_all_three_outcomes() -> None:
 
 
 async def test_observer_sees_role_and_args_from_user_scope() -> None:
-    """The Decision the observer sees carries role from the active HexgateContext
-    scope and the (deep-copied) arguments snapshot from the call site."""
+    """The Decision the observer sees carries the role set from the active
+    HexgateContext scope and the (deep-copied) arguments snapshot from the
+    call site."""
     captured: list[Decision] = []
     engine = _StubEngine(Verdict(outcome=DecisionOutcome.DENY))
     enforcer = PolicyEnforcer(engine, agent_name="r", decision_observer=captured.append)
     async with HexgateContext(user_id="alice", user_roles=["analyst"]):
         enforcer.decide("read_file", {"path": "/etc/passwd"})
 
-    assert captured[0].role == "analyst"
+    assert captured[0].user_roles == ("analyst",)
     assert captured[0].arguments == {"path": "/etc/passwd"}
+
+
+async def test_observer_attribute_snapshot_survives_later_bag_mutation() -> None:
+    """``attributes`` is deep-copied on the same condition as ``args``: a
+    ``list[str]`` value lives on a contextvar that outlives the call, so
+    mutating it afterwards must not rewrite what a retained Decision says
+    was decided."""
+    captured: list[Decision] = []
+    engine = _StubEngine(Verdict(outcome=DecisionOutcome.DENY))
+    enforcer = PolicyEnforcer(engine, agent_name="r", decision_observer=captured.append)
+    async with HexgateContext(user_id="alice", attributes={"tags": ["eu"]}) as ctx:
+        enforcer.decide("read_file", {})
+        tags = ctx.attributes["tags"]
+        assert isinstance(
+            tags, list
+        )  # narrow ContextAttributeValue for the mutation below
+        tags.append("us")
+
+    assert captured[0].attributes == {"tags": ["eu"]}
 
 
 # ---------------------------------------------------------------------------
@@ -164,3 +189,32 @@ def test_audit_and_observer_both_fire_independently() -> None:
     assert len(sender.events) == 1
     # Both saw the same Decision; the AuditEvent wraps it.
     assert sender.events[0].decision is captured[0]
+
+
+async def test_observer_sees_the_whole_role_set_and_the_deciding_role() -> None:
+    """The chat panel renders both the caller's roles and which one decided."""
+
+    class _ApprovalForBilling:
+        def evaluate(
+            self,
+            *,
+            role: str | None,
+            tool: str,
+            args: Mapping[str, Any],
+            attributes: Mapping[str, Any] | None = None,
+        ) -> Verdict:
+            if role == "billing":
+                return Verdict(
+                    outcome=DecisionOutcome.NEEDS_APPROVAL, reason="approve?"
+                )
+            return Verdict(outcome=DecisionOutcome.DENY, reason="no")
+
+    captured: list[Decision] = []
+    enforcer = PolicyEnforcer(
+        _ApprovalForBilling(), agent_name="r", decision_observer=captured.append
+    )
+    async with HexgateContext(user_id="alice", user_roles=["support", "billing"]):
+        enforcer.decide("refund", {})
+
+    assert captured[0].user_roles == ("support", "billing")
+    assert captured[0].deciding_role == "billing"

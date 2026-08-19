@@ -23,6 +23,10 @@ if TYPE_CHECKING:  # avoid an import cycle — policy_set imports models, not th
 
 LayerKind = Literal["boundary", "capability"]
 
+# The modes that grant a tool (as opposed to deny). Shared by the linker's fold
+# and the analyzer's lints so they can't drift out of lockstep.
+GRANT_MODES: tuple[str, ...] = ("allow", "approval_required")
+
 
 class LinkError(ValueError):
     """Raised when a bundle of modules can't be composed.
@@ -100,3 +104,18 @@ class LinkResult:
     effective: dict[str, AgentPolicy]
     layers: list[Provenance]
     trace: RuleTrace
+
+
+@dataclass(frozen=True)
+class ProjectLinkResult:
+    """A whole project resolved into one role-keyed :class:`PolicySet`.
+
+    ``policy_set`` folds every role and feeds ``compile_to_rego`` unchanged.
+    ``by_role`` keeps each role's single-role :class:`LinkResult` (effective +
+    layers + trace), so the analyzer and editor can attribute a lint to the role
+    it fired in. Boundaries apply to every role; only the capability selection
+    differs, so a grant dead in one role can be alive in another.
+    """
+
+    policy_set: "PolicySet"
+    by_role: dict[str, LinkResult]

@@ -220,6 +220,10 @@ async def api_validate_policy(
     Returns a flat list of ``{role, line, message}`` diagnostics. ``role``
     is ``None`` for top-level YAML / schema errors; populated when the
     failure lives inside a specific role's section.
+
+    ``warnings`` carries authoring lints — grants reachable only through the
+    ``default`` fallback, i.e. by any caller carrying an undefined role name.
+    They never set ``ok`` to False.
     """
     import yaml
     from pydantic import ValidationError
@@ -288,7 +292,45 @@ async def api_validate_policy(
             )
         _check_policy(policy, None)
 
-    return ValidatePolicyResponse(ok=not errors, errors=errors)
+    return ValidatePolicyResponse(
+        ok=not errors, errors=errors, warnings=_default_role_warnings(parsed, errors)
+    )
+
+
+def _default_role_warnings(
+    parsed: dict, errors: list[PolicyValidationError]
+) -> list[PolicyValidationError]:
+    """Authoring lints over the document as a whole (no-op if it didn't parse).
+
+    Needs a fully loaded :class:`PolicySet` — inheritance and mixins resolved —
+    which the per-role checks above don't build, validating roles in isolation.
+    """
+    if errors:
+        return []
+
+    from pydantic import ValidationError
+
+    from hexgate.security.analyzer import check_default_role_exposure
+    from hexgate.security.policy_set import (
+        PolicySetError,
+        load_policy_set_from_dict,
+    )
+
+    try:
+        policy_set = load_policy_set_from_dict(parsed)
+    except (PolicySetError, ValidationError):
+        # Inheritance/mixin failures the per-role checks don't cover. Surfacing
+        # them here would widen this endpoint's error contract, and dropping the
+        # lint can't make a broken document look clean — `ok` comes from
+        # `errors`, and the CLI and platform build both still reject these.
+        return []
+
+    return [
+        PolicyValidationError(
+            role=lint.role, tool=lint.tool, message=f"{lint.code}: {lint.message}"
+        )
+        for lint in check_default_role_exposure(policy_set)
+    ]
 
 
 @router.post("/agents", response_model=RegisterAgentResponse)

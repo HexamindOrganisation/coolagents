@@ -120,14 +120,16 @@ def test_wrapped_run_pulls_policy_and_lands_decision_and_usage_events(
         api_key=hexgate_platform_env.api_key,
         auto_create_session=True,
     )
-    user = HexgateContext(
+    context = HexgateContext(
         user_id=f"{USER_ID_PREFIX}google", session_id=session_id, user_roles=["tester"]
     )
     new_message = types.Content(
         role="user", parts=[types.Part(text="What's the weather in Paris?")]
     )
 
-    events: list[Any] = list(runner.run(new_message=new_message, user=user))
+    events: list[Any] = list(
+        runner.run(new_message=new_message, hexgate_context=context)
+    )
     assert events  # the scripted model produced at least the final turn
 
     # Both sends are fire-and-forget (background thread / task) — poll

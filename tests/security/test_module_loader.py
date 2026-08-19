@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hexgate.security import load_local_modules
+from hexgate.security import load_local_modules, load_roles
 
 
 def _write(root: Path, rel: str, body: str) -> None:
@@ -108,3 +108,70 @@ def test_nested_same_stem_modules_stay_distinct(tmp_path):
     )
     _, capabilities = load_local_modules(tmp_path)
     assert sorted(c.name for c in capabilities) == ["team_a/refunds", "team_b/refunds"]
+
+
+# --- load_roles: the role-binding file (outside policies/) -----------------
+
+
+def test_load_roles_reads_bindings(tmp_path):
+    _write(
+        tmp_path,
+        "roles.yaml",
+        "version: 1\nroles:\n  default: [read_only]\n  billing: [read_only, payments]\n",
+    )
+    assert load_roles(tmp_path) == {
+        "default": ["read_only"],
+        "billing": ["read_only", "payments"],
+    }
+
+
+def test_load_roles_missing_file_is_none(tmp_path):
+    # No roles.yaml -> None (the all-compose signal), distinct from an empty
+    # binding, and not an error.
+    assert load_roles(tmp_path) is None
+
+
+def test_load_roles_lives_outside_policies(tmp_path):
+    # A roles.yaml placed under policies/ is NOT the binding file — discovery
+    # only looks at the repo root, so this reads as "absent" (None).
+    _write(tmp_path, "policies/roles.yaml", "roles:\n  default: [x]\n")
+    assert load_roles(tmp_path) is None
+
+
+def test_load_roles_present_but_empty_is_a_dict_not_none(tmp_path):
+    # File exists but binds nothing -> {} (fail-closed), NOT None (all-compose).
+    # A one-character typo must not silently widen access.
+    _write(tmp_path, "roles.yaml", "version: 1\nroles: {}\n")
+    assert load_roles(tmp_path) == {}
+
+
+def test_load_roles_rejects_unknown_top_level_key(tmp_path):
+    # A typo'd `role:` (instead of `roles:`) is a loud error, not a silent empty.
+    _write(tmp_path, "roles.yaml", "role:\n  default: [x]\n")
+    with pytest.raises(ValueError, match="unknown top-level key"):
+        load_roles(tmp_path)
+
+
+def test_load_roles_rejects_non_mapping_document(tmp_path):
+    _write(tmp_path, "roles.yaml", "- default\n- billing\n")
+    with pytest.raises(ValueError, match="top level must be a mapping"):
+        load_roles(tmp_path)
+
+
+def test_load_roles_rejects_non_list_value(tmp_path):
+    _write(tmp_path, "roles.yaml", "roles:\n  default: read_only\n")
+    with pytest.raises(ValueError, match="list of capability names"):
+        load_roles(tmp_path)
+
+
+def test_duplicate_module_name_across_extensions_is_rejected(tmp_path):
+    # dup.yaml + dup.yml both resolve to name "dup" -> one would silently shadow
+    # the other and drop its grants. Reject at load instead.
+    _write(
+        tmp_path, "policies/capabilities/dup.yaml", "tools:\n  view: { mode: allow }\n"
+    )
+    _write(
+        tmp_path, "policies/capabilities/dup.yml", "tools:\n  refund: { mode: allow }\n"
+    )
+    with pytest.raises(ValueError, match="duplicate module name 'dup'"):
+        load_local_modules(tmp_path)

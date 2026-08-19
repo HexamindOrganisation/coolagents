@@ -14,7 +14,7 @@ There are exactly two ban types, both scoped to a single project:
 | **Agent ban** | one agent | all users |
 | **User ban** | one `user_id` | all agents in the project |
 
-A user ban matches the `user_id` from the [`User` scope](/concepts/user-scope) your integration supplies at runtime. If a run has no `User`, only the agent dimension is evaluated.
+A user ban matches the `user_id` from the [request context](/concepts/user-scope) your integration supplies at runtime. If a run has no `HexgateContext`, only the agent dimension is evaluated.
 
 ## Ban vs. policy
 
@@ -117,6 +117,6 @@ Bans require the platform. In fully local modes (`HEXGATE_LOCAL_MODE`, `HEXGATE_
 
 ## Where to next
 
-- [User scope](/concepts/user-scope) — how `user_id` reaches the runtime, the basis for user bans.
+- [Request context](/concepts/user-scope) — how `user_id` reaches the runtime, the basis for user bans.
 - [Policy decision](/concepts/policy-decision) — the per-tool-call decisions a ban sits in front of.
 - [Audit trail](/concepts/audit-trail) — the decision telemetry that runs alongside blocked-attempt reporting.

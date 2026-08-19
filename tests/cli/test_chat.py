@@ -174,7 +174,8 @@ def test_prompt_for_approval_asks_user_with_tool_arguments() -> None:
         outcome=DecisionOutcome.NEEDS_APPROVAL,
         agent_name="test-agent",
         tool_name="write_file",
-        role="support",
+        user_roles=("support",),
+        deciding_role="support",
         reason='Policy requires approval for tool "write_file"',
         error_type="approval_required",
         arguments={
@@ -189,7 +190,8 @@ def test_prompt_for_approval_asks_user_with_tool_arguments() -> None:
 
     assert approved is True
     assert "Approval required for write_file" in rendered
-    assert "role: support" in rendered
+    assert "roles: support" in rendered
+    assert "granted by: support" in rendered
     assert "file_path: napoleon.md" in rendered
     assert "content: new section" in rendered
     assert "Type y to approve or n to deny, then press Enter." in rendered
@@ -244,7 +246,8 @@ def _decision(
         outcome=outcome,
         agent_name="r",
         tool_name="read_file",
-        role=role,
+        user_roles=(role,) if role is not None else (),
+        deciding_role=role if outcome is DecisionOutcome.NEEDS_APPROVAL else None,
         reason=reason,
         error_type=error_type,
         violations=violations,

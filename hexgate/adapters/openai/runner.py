@@ -9,7 +9,9 @@ enforcer, so a refresh swap reaches every clone.
 
 import asyncio
 import warnings
+from collections.abc import Sequence
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import nest_asyncio
 from agents import (
@@ -37,6 +39,9 @@ from hexgate.runtime import HexgateContext
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+
+if TYPE_CHECKING:
+    from hexgate.guards.types import Guard, GuardObserver
 
 
 class _CompositeRunHooks(RunHooks):
@@ -88,7 +93,13 @@ class HexgateRunner:
         api_key: str | None = None,
         *,
         approval_handler: ApprovalHandler | None = None,
+        guards: "Sequence[Guard] | None" = None,
+        guard_observer: "GuardObserver | None" = None,
     ):
+        # ``guards`` (not ``hooks``) on purpose: ``run*`` below already take a
+        # ``hooks=`` that means the agents SDK's ``RunHooks`` (we mirror the SDK
+        # Runner). Naming the guard list ``guards`` keeps the two from shadowing
+        # each other; ``_merge_hooks`` rejects a guard list passed to ``run``.
         self.api_key = resolve_api_key(api_key)
         if self.api_key is None:
             raise ValueError(
@@ -101,6 +112,10 @@ class HexgateRunner:
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
         self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
+        # Guards are fixed per runner; threaded into each per-call rewrap below,
+        # where wrap_openai_agent builds the pipeline (matching the other adapters).
+        self._guards = guards
+        self._guard_observer = guard_observer
 
     def _binding_for(self, agent: Agent) -> PolicyBinding:
         """Get-or-resolve the cached policy binding for ``agent``'s name.
@@ -146,10 +161,10 @@ class HexgateRunner:
         OpenAIAgentsInstrumentor().instrument()
 
     @contextmanager
-    def _propagate(self, user: HexgateContext, agent_name: str):
+    def _propagate(self, context: HexgateContext, agent_name: str):
         """Propagate HexgateContext identity into Langfuse spans for the block."""
         with propagate_attributes(
-            **langfuse_propagate_kwargs(user, f"openai.runner.run.{agent_name}")
+            **langfuse_propagate_kwargs(context, f"openai.runner.run.{agent_name}")
         ):
             yield
 
@@ -159,13 +174,23 @@ class HexgateRunner:
         usage_hooks = HexgateUsageHooks(api_key=self.api_key)
         if hooks is None:
             return usage_hooks
+        if not isinstance(hooks, RunHooksBase):
+            # A Hexgate guard list passed to run(hooks=...) instead of the
+            # constructor would otherwise crash at the first lifecycle callback,
+            # far from the mistake. Name it here.
+            raise TypeError(
+                f"run(hooks=...) takes an agents RunHooks object, got "
+                f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
+                "HexgateRunner(guards=[...])."
+            )
         return _CompositeRunHooks([hooks, usage_hooks])
 
     async def run(
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        *,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -176,14 +201,16 @@ class HexgateRunner:
         await binding.refresh_async()  # per-run policy pull; 304 when unchanged
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
-            await ban_gate.check_async(user)
+            await ban_gate.check_async(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
-        async with user:
-            with self._propagate(user, agent.name):
+        async with hexgate_context:
+            with self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
                     input,
@@ -196,7 +223,8 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        *,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -207,14 +235,16 @@ class HexgateRunner:
         binding.refresh()  # per-run policy pull; 304 when unchanged
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
-            ban_gate.check(user)
+            ban_gate.check(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
-        with user.sync_scope():
-            with self._propagate(user, agent.name):
+        with hexgate_context.sync_scope():
+            with self._propagate(hexgate_context, agent.name):
                 try:
                     return Runner.run_sync(
                         wrapped_agent,
@@ -254,7 +284,8 @@ class HexgateRunner:
         self,
         agent: Agent,
         input: str | list[TResponseInputItem] | RunState[TContext],
-        user: HexgateContext,
+        *,
+        hexgate_context: HexgateContext,
         run_config: RunConfig | None = None,
         hooks: RunHooks | None = None,
         **kwargs,
@@ -273,15 +304,17 @@ class HexgateRunner:
         ban_gate = self._ban_gate_for(agent)
         if ban_gate is not None:
             # Before run_streamed spawns its task, so a banned run yields nothing.
-            ban_gate.check(user)
+            ban_gate.check(hexgate_context)
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
             approval_handler=self._approval_handler,
+            guards=self._guards,
+            guard_observer=self._guard_observer,
         )
 
-        with user.sync_scope():
-            with self._propagate(user, agent.name):
+        with hexgate_context.sync_scope():
+            with self._propagate(hexgate_context, agent.name):
                 result = Runner.run_streamed(
                     wrapped_agent,
                     input,
@@ -293,8 +326,8 @@ class HexgateRunner:
         original_stream_events = result.stream_events
 
         async def _stream_events_with_scope():
-            async with user:
-                with self._propagate(user, agent.name):
+            async with hexgate_context:
+                with self._propagate(hexgate_context, agent.name):
                     async for event in original_stream_events():
                         yield event
 

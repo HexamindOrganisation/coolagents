@@ -25,6 +25,7 @@ from hexgate.security import (
     evaluate_tool_call,
     link,
     link_policy_set,
+    resolve_for_project,
 )
 
 _OPA_AVAILABLE = shutil.which("opa") is not None
@@ -355,3 +356,89 @@ def test_resolved_policy_parity_pydantic_vs_wasm(floor_bundle):
             role="default",
         )
         assert pyd.outcome is wsm.outcome, (tool, args)
+
+
+# --- resolve_for_project: roles as capability bindings ---------------------
+
+
+def test_resolve_folds_each_role_independently():
+    # Floor boundary caps refund at <= 100 for every role.
+    org = _mod("org", "boundary", {"refund": _allow(["args.amount <= 100"])})
+    read_only = _mod("read_only", "capability", {"view": _allow()})
+    payments = _mod("payments", "capability", {"refund": _allow()})
+
+    result = resolve_for_project(
+        [org],
+        [read_only, payments],
+        {"default": ["read_only"], "billing": ["read_only", "payments"]},
+    )
+
+    assert set(result.by_role) == {"default", "billing"}
+    default_pol = result.policy_set.policy_for("default")
+    billing_pol = result.policy_set.policy_for("billing")
+    # default imports read_only only -> no refund grant.
+    assert "view" in default_pol.tools
+    assert "refund" not in default_pol.tools
+    # billing imports payments too -> refund granted, capped by the boundary.
+    assert billing_pol.tools["refund"].mode == "allow"
+    assert "args.amount <= 100" in billing_pol.tools["refund"].constraints
+
+
+def test_boundary_applies_to_every_role():
+    # An unconditional boundary deny wins in every role, regardless of imports.
+    org = _mod("org", "boundary", {"delete": _deny()})
+    cap = _mod("c", "capability", {"delete": _allow(), "x": _allow()})
+
+    result = resolve_for_project([org], [cap], {"r1": ["c"], "r2": ["c"]})
+
+    for role in ("r1", "r2"):
+        assert result.policy_set.policy_for(role).tools["delete"].mode == "deny"
+
+
+def test_unknown_capability_in_a_role_raises_link_error():
+    cap = _mod("c", "capability", {"x": _allow()})
+    with pytest.raises(LinkError, match="unknown capability"):
+        resolve_for_project([], [cap], {"r": ["missing"]})
+
+
+def test_none_roles_means_one_default_importing_everything():
+    # None == "no roles.yaml" -> all-compose back-compat.
+    caps = [
+        _mod("a", "capability", {"x": _allow()}),
+        _mod("b", "capability", {"y": _allow()}),
+    ]
+    result = resolve_for_project([], caps, None)
+
+    assert result.policy_set.roles == ["default"]
+    tools = result.policy_set.policy_for("default").tools
+    assert {"x", "y"} <= set(tools)
+
+
+def test_empty_roles_is_fail_closed_not_all_compose():
+    # {} == "roles.yaml present but binds nothing" -> fail-closed empty default,
+    # NOT all-compose. This is the fix for a typo'd roles: key widening access.
+    caps = [_mod("a", "capability", {"x": _allow()})]
+    result = resolve_for_project([], caps, {})
+
+    assert result.policy_set.roles == ["default"]
+    assert result.policy_set.policy_for("default").tools == {}
+
+
+def test_unbound_capability_deny_is_rejected():
+    # A capability that denies must fail even when no role imports it — validated
+    # over the whole library, not just the folded-in modules.
+    good = _mod("good", "capability", {"x": _allow()})
+    bad = _mod("bad", "capability", {"refund": _deny()})
+    with pytest.raises(LinkError, match="capabilities may only grant"):
+        resolve_for_project([], [good, bad], {"r": ["good"]})
+
+
+def test_default_role_synthesised_when_absent_is_deny_all():
+    # roles.yaml with no `default` -> an empty default so unroled callers get
+    # fail-closed deny, not a missing bucket.
+    cap = _mod("c", "capability", {"x": _allow()})
+    result = resolve_for_project([], [cap], {"billing": ["c"]})
+
+    assert "default" in result.by_role
+    assert result.policy_set.policy_for("default").tools == {}
+    assert "x" in result.policy_set.policy_for("billing").tools

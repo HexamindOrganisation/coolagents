@@ -84,6 +84,59 @@ function pastIso(secondsAgo: number): string {
 // Receiving approval requests
 // ---------------------------------------------------------------------
 
+describe("sendChat role attenuation", () => {
+  async function connected() {
+    const hook = renderHook(() => usePlayground({ projectId: "p1" }));
+    await act(async () => {
+      await Promise.resolve(); // let queueMicrotask fire the open handler
+    });
+    return { hook, ws: MockSocket.instances[0] };
+  }
+
+  /** The last frame the hook pushed onto the socket. */
+  const lastFrame = (ws: MockSocket) =>
+    JSON.parse(ws.sent[ws.sent.length - 1]) as Record<string, unknown>;
+
+  it("sends every selected role, in order", async () => {
+    const { hook, ws } = await connected();
+    act(() =>
+      hook.result.current.sendChat("hi", { roles: ["support", "billing"] }),
+    );
+
+    const frame = lastFrame(ws);
+    expect(frame.type).toBe("chat");
+    expect(frame.user_attenuation).toMatchObject({
+      user: "playground",
+      roles: ["support", "billing"],
+      ttl_seconds: 300,
+    });
+  });
+
+  it("keeps the singular key alongside the plural for one release", async () => {
+    // A dev's pinned older `hexgate serve` reads only `role`; the current one
+    // prefers `roles`. Neither side may require the other's key.
+    const { hook, ws } = await connected();
+    act(() =>
+      hook.result.current.sendChat("hi", { roles: ["support", "billing"] }),
+    );
+
+    expect(
+      (lastFrame(ws).user_attenuation as Record<string, unknown>).role,
+    ).toBe("support");
+  });
+
+  it("omits the attenuation block entirely when no role is selected", async () => {
+    // An empty block would attenuate the token to a caller with no roles,
+    // which is not the same as not attenuating at all.
+    const { hook, ws } = await connected();
+    act(() => hook.result.current.sendChat("hi", { roles: [] }));
+    expect(lastFrame(ws).user_attenuation).toBeUndefined();
+
+    act(() => hook.result.current.sendChat("hi"));
+    expect(lastFrame(ws).user_attenuation).toBeUndefined();
+  });
+});
+
 describe("approval requests over the WS", () => {
   it("renders a received approval.request into pendingApprovals", async () => {
     const { result } = renderHook(() => usePlayground({ projectId: "p1" }));

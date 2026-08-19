@@ -8,12 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from hexgate_api import health
 from hexgate_api.seeds.defaults import ensure_default_project
+from hexgate_api.core.clickhouse import get_clickhouse
 from hexgate_api.core.clickhouse import ping as clickhouse_ping
 from hexgate_api.core.db import async_session_factory, init_db
 from hexgate_api.core.keystore import keystore
 from hexgate_api.features.agents.router import router as agents_router
 from hexgate_api.features.agents.service import backfill_bundles
 from hexgate_api.features.audit.router import router as audit_router
+from hexgate_api.features.audit.service import verify_schema as verify_audit_schema
 from hexgate_api.features.auth.router import include_auth_routers, mount_oauth_routers
 from hexgate_api.features.bans.router import router as bans_router
 from hexgate_api.features.chat.router import router as chat_router
@@ -21,6 +23,7 @@ from hexgate_api.features.invitations.router import router as invitations_router
 from hexgate_api.features.llm_invocations.router import router as llm_invocations_router
 from hexgate_api.features.members.router import router as members_router
 from hexgate_api.features.orgs.router import router as orgs_router
+from hexgate_api.features.policy_modules.router import router as policy_modules_router
 from hexgate_api.features.projects.router import router as projects_router
 from hexgate_api.features.tokens.router import router as tokens_router
 
@@ -116,6 +119,7 @@ def _build_v1_router() -> APIRouter:
     v1.include_router(members_router)
     v1.include_router(invitations_router)
     v1.include_router(projects_router)
+    v1.include_router(policy_modules_router)
     v1.include_router(bans_router)
     include_auth_routers(v1)
     return v1
@@ -152,6 +156,11 @@ async def lifespan(app_: FastAPI):
         _log.warning(
             "ClickHouse unreachable at startup; audit endpoints will 503 until reachable"
         )
+    else:
+        # Behind this build, every insert is rejected and dropped by the SDK —
+        # silently, from this side. Refuse to boot so the previous deployment
+        # keeps serving.
+        verify_audit_schema(get_clickhouse())
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
     from hexgate_api.features.auth.service import _cookie_secure, _dashboard_url

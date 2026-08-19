@@ -994,7 +994,7 @@ wheels = [
 
 [[package]]
 name = "hexgate"
-version = "0.2.8"
+version = "0.2.11"
 source = { editable = "../../" }
 dependencies = [
     { name = "bashlex" },
@@ -1033,15 +1033,15 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "ipykernel", marker = "extra == 'dev'" },
     { name = "jupyter", marker = "extra == 'dev'" },
-    { name = "langchain" },
+    { name = "langchain", specifier = ">=1.2.15" },
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langfuse" },
-    { name = "langgraph", specifier = ">=0.2" },
+    { name = "langgraph", specifier = ">=1.1.10" },
     { name = "litellm", specifier = ">=1.50" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "nest-asyncio", specifier = ">=1.6" },
-    { name = "openai-agents", specifier = ">=0.0.10" },
+    { name = "openai-agents", specifier = ">=0.8.0" },
     { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.11" },
     { name = "openinference-instrumentation-openai-agents", specifier = ">=0.1" },
     { name = "pydantic", specifier = ">=2.12.4" },

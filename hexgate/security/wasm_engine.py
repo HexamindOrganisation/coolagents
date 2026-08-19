@@ -210,14 +210,25 @@ class WasmPolicy:
             raise WasmEvalError(f"no such file: {p}")
         return cls.from_bytes(p.read_bytes(), entrypoint=entrypoint)
 
-    def decide(self, *, role: str, tool: str, args: dict[str, Any]) -> RegoVerdict:
+    def decide(
+        self,
+        *,
+        role: str,
+        tool: str,
+        args: dict[str, Any],
+        ctx: dict[str, Any] | None = None,
+    ) -> RegoVerdict:
         """Evaluate one tool-call decision.
 
-        Composes ``input = {role, tool, args}``, runs the entrypoint, and
-        returns the parsed ``RegoVerdict``. The eval is hermetic — heap is
-        reset before the call so repeated decisions don't accumulate state.
+        Composes ``input = {role, tool, args, ctx}``, runs the entrypoint, and
+        returns the parsed ``RegoVerdict``. ``ctx`` is the caller's ABAC bag,
+        read by compiled ``input.ctx.*`` conditions; it mirrors the pydantic
+        engine's ``ctx`` context key. The eval is hermetic — heap is reset
+        before the call so repeated decisions don't accumulate state.
         """
-        return self.evaluate({"role": role, "tool": tool, "args": args})
+        return self.evaluate(
+            {"role": role, "tool": tool, "args": args, "ctx": ctx or {}}
+        )
 
     def evaluate(self, input_obj: dict[str, Any]) -> RegoVerdict:
         """Lower-level: evaluate with an arbitrary input dict.

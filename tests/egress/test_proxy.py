@@ -137,13 +137,13 @@ async def test_http_forward_preserves_query() -> None:
 
 async def test_egress_guard_reentrancy_raises() -> None:
     enforcer = _enforcer("127.0.0.1")
-    user = HexgateContext(user_id="u", user_roles=["agent"])
-    async with egress_guard(enforcer, user):
+    context = HexgateContext(user_id="u", user_roles=["agent"])
+    async with egress_guard(enforcer, context):
         with pytest.raises(RuntimeError, match="already active"):
-            async with egress_guard(enforcer, user):
+            async with egress_guard(enforcer, context):
                 pass
     # The guard flag is released after the outer exits — a fresh guard works.
-    async with egress_guard(enforcer, user):
+    async with egress_guard(enforcer, context):
         pass
 
 

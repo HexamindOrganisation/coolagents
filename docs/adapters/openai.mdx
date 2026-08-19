@@ -17,7 +17,7 @@ table](/adapters/overview#compatible-framework-versions) for the verified
 ## `HexgateRunner`
 
 `HexgateRunner` is a drop-in replacement for `agents.Runner`. It wraps the
-agent's tools with a `PolicyEnforcer` at construction time and opens a `User`
+agent's tools with a `PolicyEnforcer` at construction time and opens a `HexgateContext`
 scope around each `Runner.run` / `run_sync` / `run_streamed` call so role
 resolution happens at call time.
 
@@ -26,7 +26,7 @@ import asyncio
 from agents import Agent, function_tool
 from dotenv import load_dotenv
 
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 from hexgate.adapters.openai import HexgateRunner
 
 INSTRUCTION = (
@@ -69,7 +69,7 @@ async def main():
     result = await runner.run(
         agent,
         "Scale the checkout service to 5 replicas in staging.",
-        user=User(user_id="engineer_1", session_id="session_1", role="operator"),
+        hexgate_context=HexgateContext(user_id="engineer_1", session_id="session_1", user_roles=["operator"]),
     )
     print(result.final_output)
 
@@ -84,13 +84,13 @@ if __name__ == "__main__":
   `(api_key, agent.name, tool_names)`, constructs one `PolicyEnforcer`, and returns
   a `dataclasses.replace`'d copy of the agent with policy-gated tool copies — your
   original `agent` is untouched.
-- The runner opens an `async with user:` scope around the underlying `Runner.run*`
+- The runner opens an `async with hexgate_context:` scope around the underlying `Runner.run*`
   call. When the model calls a tool, the guard asks `enforcer.decide(...)` for a
   `Decision`. On non-allow, it returns `decision.as_error_message()` — a
   `[policy_denied]` or `[approval_required]` markered string the model can
   interpret and recover from.
 - The run executes inside `propagate_attributes(user_id=..., session_id=...,
-  metadata={"user_role": ...})`, so Langfuse spans carry the caller identity.
+  metadata={"user_roles": ...})`, so Langfuse spans carry the caller identity.
 
 `run_sync` and `run_streamed` work the same way.
 

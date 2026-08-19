@@ -39,8 +39,8 @@ _log = logging.getLogger(__name__)
 class TcpEgressProxy(ProxyServer):
     """An asyncio TCP proxy that authorizes each connection to one target.
 
-    One proxy forwards one ``(host, port)`` target; the ``user`` fixes the
-    identity every decision is attributed to. Start it, point a client at
+    One proxy forwards one ``(host, port)`` target; the ``hexgate_context``
+    fixes the identity every decision is attributed to. Start it, point a client at
     ``proxy.host:proxy.port``, and each accepted connection is gated on
     ``net.tcp_connect`` before it is tunnelled to the target. Socket lifecycle
     (bind / accept / teardown) is inherited from :class:`ProxyServer`.
@@ -49,7 +49,7 @@ class TcpEgressProxy(ProxyServer):
     def __init__(
         self,
         enforcer: PolicyEnforcer,
-        user: HexgateContext,
+        hexgate_context: HexgateContext,
         *,
         target: tuple[str, int],
         host: str = "127.0.0.1",
@@ -58,7 +58,10 @@ class TcpEgressProxy(ProxyServer):
     ) -> None:
         super().__init__(host=host, port=port)
         self._gate = Gate(
-            enforcer, user, tool=NET_TCP_CONNECT, approval_handler=approval_handler
+            enforcer,
+            hexgate_context,
+            tool=NET_TCP_CONNECT,
+            approval_handler=approval_handler,
         )
         self._target = target
 
@@ -96,7 +99,7 @@ class TcpEgressProxy(ProxyServer):
 @contextlib.asynccontextmanager
 async def tcp_egress_guard(
     enforcer: PolicyEnforcer,
-    user: HexgateContext,
+    hexgate_context: HexgateContext,
     *,
     target: tuple[str, int],
     host: str = "127.0.0.1",
@@ -110,13 +113,13 @@ async def tcp_egress_guard(
     ``proxy.host`` / ``proxy.port`` from the yielded proxy and points its
     connection string there.
 
-        async with tcp_egress_guard(enforcer, user, target=("db.internal", 5432)) as p:
+        async with tcp_egress_guard(enforcer, hexgate_context, target=("db.internal", 5432)) as p:
             dsn = f"postgresql://user@{p.host}:{p.port}/app"
             ...
     """
     proxy = TcpEgressProxy(
         enforcer,
-        user,
+        hexgate_context,
         target=target,
         host=host,
         port=port,

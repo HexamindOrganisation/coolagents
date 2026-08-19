@@ -19,10 +19,20 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import Tool
 
-from hexgate.agents.approvals import resolve_approval_async
 from hexgate.approvals import ApprovalHandler
-from hexgate.security.decision import DecisionOutcome
+from hexgate.guards.runner import run_guarded_async
+from hexgate.guards.types import ToolPipeline
 from hexgate.security.enforcer import PolicyEnforcer
+
+
+def _raise_model_retry(decision: Any) -> Any:
+    """pydantic_ai renders a blocked decision by raising ``ModelRetry``.
+
+    The shared runner returns ``render_error``'s value; a closure that raises
+    instead propagates the exception out of ``run_guarded_async``, which is the
+    pydantic_ai idiom for feeding a tool failure back to the model.
+    """
+    raise ModelRetry(decision.as_error_message())
 
 
 def wrap_tool(
@@ -30,8 +40,13 @@ def wrap_tool(
     enforcer: PolicyEnforcer,
     *,
     approval_handler: ApprovalHandler | None = None,
+    pipeline: ToolPipeline | None = None,
 ) -> Tool:
-    """Return a copy of ``tool`` with ``function_schema.call`` gated by ``enforcer``."""
+    """Return a copy of ``tool`` with ``function_schema.call`` gated by ``enforcer``.
+
+    Routes through the shared :func:`run_guarded_async`, so before/after
+    guards run around the policy check exactly as on the other adapters.
+    """
     name = tool.name
     tool_copy = copy.copy(tool)
     tool_copy.function_schema = copy.copy(tool.function_schema)
@@ -39,16 +54,15 @@ def wrap_tool(
 
     @functools.wraps(original_call)
     async def guarded_call(args_dict: dict[str, Any], context: RunContext[Any]) -> Any:
-        decision = enforcer.decide(name, args_dict or {})
-        if decision.allowed:
-            return await original_call(args_dict, context)
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and approval_handler is not None
-            and await resolve_approval_async(approval_handler, decision)
-        ):
-            return await original_call(args_dict, context)
-        raise ModelRetry(decision.as_error_message())
+        return await run_guarded_async(
+            name,
+            args_dict or {},
+            enforcer=enforcer,
+            pipeline=pipeline,
+            approval_handler=approval_handler,
+            invoke=lambda final: original_call(final, context),
+            render_error=_raise_model_retry,
+        )
 
     tool_copy.function_schema.call = guarded_call
     return tool_copy
@@ -59,6 +73,10 @@ def wrap_tools(
     enforcer: PolicyEnforcer,
     *,
     approval_handler: ApprovalHandler | None = None,
+    pipeline: ToolPipeline | None = None,
 ) -> list[Tool]:
     """Return a fresh list of policy-gated copies."""
-    return [wrap_tool(t, enforcer, approval_handler=approval_handler) for t in tools]
+    return [
+        wrap_tool(t, enforcer, approval_handler=approval_handler, pipeline=pipeline)
+        for t in tools
+    ]

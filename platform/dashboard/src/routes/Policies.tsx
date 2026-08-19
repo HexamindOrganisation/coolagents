@@ -15,7 +15,11 @@ import {
   BackgroundVariant,
   Controls,
 } from "@xyflow/react";
-import { api, type PolicyValidationError } from "@/lib/api";
+import {
+  api,
+  type PolicyValidationError,
+  type ValidatePolicyResponse,
+} from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -124,6 +128,29 @@ export function PoliciesPage() {
   );
 }
 
+/** Shared renderer for the validate banner's error and warning lists — same
+ * `{role, line, message}` shape either way, so the two can't drift apart. */
+function DiagnosticList({ items }: { items: PolicyValidationError[] }) {
+  return (
+    <ul className="space-y-0.5 font-mono">
+      {items.map((d, i) => {
+        // A bare name in this slot reads as a role, so a tool locus is
+        // prefixed rather than left to look like one.
+        const locus = d.role ?? (d.tool ? `tool ${d.tool}` : null);
+        return (
+          <li key={i}>
+            {locus && <span className="text-foreground">{locus}</span>}
+            {locus && d.line ? ":" : ""}
+            {d.line ? d.line : ""}
+            {locus || d.line ? " — " : ""}
+            {d.message}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /**
  * Lightweight tab strip used in /policies. Two tabs today (YAML, Graph);
  * the M2 Rego adapter will land a third here without restructuring.
@@ -215,14 +242,18 @@ function YamlEditor({
 
   const [draft, setDraft] = useState<string>("");
   const [dirty, setDirty] = useState(false);
-  const [errors, setErrors] = useState<PolicyValidationError[] | null>(null);
+  // The whole response, not just the errors: warnings render alongside them
+  // but never block a save.
+  const [result, setResult] = useState<ValidatePolicyResponse | null>(null);
+  const errors = result?.errors ?? null;
+  const warnings = result?.warnings ?? [];
 
   // Re-sync the draft when we switch agents or the server copy refreshes.
   useEffect(() => {
     if (!agent.data) return;
     setDraft(agent.data.policy_yaml);
     setDirty(false);
-    setErrors(null);
+    setResult(null);
   }, [agent.data]);
 
   const saveMutation = useMutation({
@@ -237,7 +268,7 @@ function YamlEditor({
 
   const validateMutation = useMutation({
     mutationFn: () => api.validatePolicy(agentName, draft, projectId),
-    onSuccess: (resp) => setErrors(resp.errors),
+    onSuccess: setResult,
   });
 
   const originalSource = agent.data?.policy_yaml ?? "";
@@ -249,7 +280,7 @@ function YamlEditor({
     (next: string) => {
       setDraft(next);
       setDirty(next !== originalSource);
-      setErrors((prev) => (prev ? null : prev));
+      setResult((prev) => (prev ? null : prev));
     },
     [originalSource],
   );
@@ -288,27 +319,31 @@ function YamlEditor({
         <div
           className={cn(
             "px-6 py-2 text-xs border-b",
-            errors.length === 0
-              ? "bg-allow/5 border-allow/30 text-allow"
-              : "bg-deny/5 border-deny/30 text-deny",
+            errors.length > 0
+              ? "bg-deny/5 border-deny/30 text-deny"
+              : warnings.length > 0
+                ? "bg-approval/5 border-approval/30 text-approval"
+                : "bg-allow/5 border-allow/30 text-allow",
           )}
         >
-          {errors.length === 0 ? (
-            <span>Policy parses cleanly.</span>
+          {errors.length > 0 ? (
+            <DiagnosticList items={errors} />
+          ) : warnings.length > 0 ? (
+            <>
+              {/* "parses", not "parses cleanly" — the lints are about
+                  exposure, not syntax. */}
+              <div className="mb-1 flex items-center gap-1.5">
+                <AlertTriangle className="size-3.5 shrink-0" />
+                <span>
+                  Policy parses. {warnings.length} lint{" "}
+                  {warnings.length === 1 ? "warning" : "warnings"} — saving is
+                  not blocked.
+                </span>
+              </div>
+              <DiagnosticList items={warnings} />
+            </>
           ) : (
-            <ul className="space-y-0.5 font-mono">
-              {errors.map((err, i) => (
-                <li key={i}>
-                  {err.role && (
-                    <span className="text-foreground">{err.role}</span>
-                  )}
-                  {err.role && err.line ? ":" : ""}
-                  {err.line ? err.line : ""}
-                  {err.role || err.line ? " — " : ""}
-                  {err.message}
-                </li>
-              ))}
-            </ul>
+            <span>Policy parses cleanly.</span>
           )}
         </div>
       )}

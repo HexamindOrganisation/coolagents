@@ -51,6 +51,10 @@ allow if {
     input.args.confirmed == true
     is_number(input.args.payment.amount)
     input.args.payment.amount <= 100
+    input.ctx.department == "finance"
+    is_number(input.ctx.clearance_level)
+    input.ctx.clearance_level >= 3
+    input.ctx.region in ["EU", "UK"]
 }
 
 violations contains `args.amount <= 500` if {
@@ -89,6 +93,24 @@ violations contains `args.payment.amount <= 100` if {
     not _p_ee4b81b8b6
 }
 
+violations contains `ctx.department == "finance"` if {
+    input.role == "billing"
+    input.tool == "refund_order"
+    not _p_3420c2e5f0
+}
+
+violations contains `ctx.clearance_level >= 3` if {
+    input.role == "billing"
+    input.tool == "refund_order"
+    not _p_e401e5cd56
+}
+
+violations contains `ctx.region in ["EU", "UK"]` if {
+    input.role == "billing"
+    input.tool == "refund_order"
+    not _p_b7b1e13455
+}
+
 # ---- role: default -----------------------------------------------------
 allow if {
     not input.role in {"billing", "support"}
@@ -123,6 +145,10 @@ _p_066518c099 if {
     input.args.template in ["a", "b"]
 }
 
+_p_3420c2e5f0 if {
+    input.ctx.department == "finance"
+}
+
 _p_8bcb53951e if {
     input.args.currency == "USD"
 }
@@ -132,8 +158,17 @@ _p_b182706c06 if {
     input.args.amount <= 500
 }
 
+_p_b7b1e13455 if {
+    input.ctx.region in ["EU", "UK"]
+}
+
 _p_ce25e566f4 if {
     input.args.confirmed == true
+}
+
+_p_e401e5cd56 if {
+    is_number(input.ctx.clearance_level)
+    input.ctx.clearance_level >= 3
 }
 
 _p_e5bd576175 if {

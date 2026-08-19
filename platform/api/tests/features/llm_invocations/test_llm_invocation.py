@@ -221,14 +221,20 @@ def test_when_clickhouse_rejects_the_row_then_422_is_returned(
 
 _BASE_WHERE = [
     "project_id = {pid:String}",
-    "occurred_at >= now() - INTERVAL {hrs:UInt32} HOUR",
+    "occurred_at >= {since:DateTime}",
 ]
+
+
+# The window is a wall-clock instant, so compare the bag without it.
+def _params_besides_window(params: dict) -> dict:
+    assert "since" in params
+    return {k: v for k, v in params.items() if k != "since"}
 
 
 def test_scope_no_filters() -> None:
     where, params = llm_invocations._scope("p1", 24)
     assert where == _BASE_WHERE
-    assert params == {"pid": "p1", "hrs": 24}
+    assert _params_besides_window(params) == {"pid": "p1"}
 
 
 def test_scope_all_filters() -> None:
@@ -240,9 +246,8 @@ def test_scope_all_filters() -> None:
         "user_id = {user:String}",
         "model = {model:String}",
     ]
-    assert params == {
+    assert _params_besides_window(params) == {
         "pid": "p1",
-        "hrs": 24,
         "agent": "researcher",
         "user": "u_1",
         "model": "gpt-4o",
@@ -436,7 +441,9 @@ def test_llm_summary_passes_filters_to_clickhouse_query(
     assert params["agent"] == "researcher"
     assert params["user"] == "u_1"
     assert params["model"] == "gpt-4o"
-    assert params["hrs"] == 24 * 7
+    # window=7d arrives as a bound cutoff, not an hour count.
+    expected_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    assert abs(params["since"] - expected_cutoff) < timedelta(seconds=5)
 
 
 # ---------------------------------------------------------------------------

@@ -31,20 +31,20 @@ it once and you're done:
 
 ```python
 from hexgate.adapters.openai import HexgateRunner   # or .langchain.wrap_langchain_agent, .google.HexgateRunner, .pydantic_ai.wrap_pydantic_agent
-from hexgate.runtime import User
+from hexgate.runtime import HexgateContext
 
 runner = HexgateRunner()                            # picks up HEXGATE_API_KEY from env
 await runner.run(
     my_agent,
     "refund 30",
-    user=User(user_id="alice", role="billing"),     # per-call scope
+    hexgate_context=HexgateContext(user_id="alice", user_roles=["billing"]),     # per-call scope
 )
 ```
 
 That's it. You get:
 
 - Tool-call enforcement at every tool boundary (`PolicyEnforcer.decide()`)
-- Role resolution from the active `User.role` at call time
+- Role resolution from the active context's `user_roles` at call time (every role evaluated, most permissive wins)
 - Per-request biscuit attenuation
 - Langfuse traces tagged with the caller's identity
 
@@ -78,10 +78,10 @@ only verifies against the platform instance that minted it.
 
 ## Two carve-outs worth knowing
 
-1. **Per-call identity stays explicit.** `User` is the one piece the adapter
+1. **Per-call identity stays explicit.** `HexgateContext` is the one piece the adapter
    can't infer from env, because it's per-request, not per-process. One line
-   wrapping each call (`user=User(...)` kwarg on adapters, `async with User(...)`
-   for native). See [User scope](/concepts/user-scope).
+   wrapping each call (`hexgate_context=HexgateContext(...)` kwarg on adapters, `async with HexgateContext(...)`
+   for native). See [Request context](/concepts/user-scope).
 2. **`approval_required` tools.** If the policy uses that mode, dev decides what
    happens — pass `approval_handler=` (True / False / callable) when wrapping.
    The CLI default is `ask` for both commands: `hexgate chat` prompts the TTY,

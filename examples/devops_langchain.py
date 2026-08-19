@@ -54,7 +54,7 @@ async def main() -> None:
                 }
             ]
         },
-        user=HexgateContext(
+        hexgate_context=HexgateContext(
             user_id="engineer_1", session_id="session_1", user_roles=["operator"]
         ),
     )

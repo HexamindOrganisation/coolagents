@@ -74,7 +74,7 @@ def emit_llm_usage(
         sender = configure_usage_sender(api_key)
         if sender is None:
             return
-        user = get_current_context()
+        context = get_current_context()
         sender.emit(
             LlmUsageEvent(
                 agent_name=agent_name,
@@ -83,10 +83,10 @@ def emit_llm_usage(
                 output_tokens=output_tokens,
                 latency_ms=latency_ms,
                 status=status,
-                session_id=user.session_id
-                if (user is not None and user.session_id)
+                session_id=context.session_id
+                if (context is not None and context.session_id)
                 else "",
-                user_id=user.user_id if user is not None else "",
+                user_id=context.user_id if context is not None else "",
                 error_code=error_code,
             )
         )

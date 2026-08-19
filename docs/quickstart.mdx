@@ -66,11 +66,11 @@ description: "Watch a role + arguments decide a tool call — first offline, the
   <Step title="Enforce it in a live agent">
     Now put the same policy in front of a real agent. Build one with
     `create_agent`, apply the policy with `enforce_policy`, and run the **same
-    request** under two roles — the role comes from the `User` scope:
+    request** under two roles — the role comes from the `HexgateContext` scope:
 
     ```python
     import asyncio
-    from hexgate import agent_tool, create_agent, enforce_policy, stream_agent, User
+    from hexgate import agent_tool, create_agent, enforce_policy, stream_agent, HexgateContext
 
 
     @agent_tool(name="refund_order")
@@ -87,7 +87,7 @@ description: "Watch a role + arguments decide a tool call — first offline, the
 
     async def refund_as(role: str):
         print(f"\n[{role}]")
-        async with User(user_id="u-1", role=role):
+        async with HexgateContext(user_id="u-1", user_roles=[role]):
             async for event in stream_agent(agent, handler, "Refund $400 on order O-42"):
                 ...  # render events however you like
 
@@ -103,7 +103,7 @@ description: "Watch a role + arguments decide a tool call — first offline, the
     Same agent, same request — under `support` the model's `refund_order($400)`
     call is **blocked** by the policy (over the $50 cap) and it receives a
     `[policy_denied]` marker it can recover from; under `billing` it goes through.
-    That's `enforce_policy` + the per-call `User` doing the work — no platform, no
+    That's `enforce_policy` + the per-call `HexgateContext` doing the work — no platform, no
     extra services.
 
     <Note>
@@ -124,7 +124,7 @@ description: "Watch a role + arguments decide a tool call — first offline, the
   <Card title="Author a policy" icon="shield" href="/policy/yaml-shape">
     Roles, tools, modes, argument constraints, inheritance — the full spec.
   </Card>
-  <Card title="User scope + roles" icon="user" href="/concepts/user-scope">
+  <Card title="Request context + roles" icon="user" href="/concepts/user-scope">
     How the end user's identity + role reach the decision at call time.
   </Card>
   <Card title="Try the terminal REPL" icon="terminal" href="/cli/chat">
