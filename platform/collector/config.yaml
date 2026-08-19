@@ -48,7 +48,7 @@ exporters:
     # localhost, not the redpanda:29092 container-network listener — this
     # binary is meant to run natively on the host for local dev, same
     # convention as `make platform-api`. See platform/docker-compose.yml.
-    brokers: [localhost:9092]
+    brokers: [${env:HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}]
     traces:
       topic: hexgate.otlp.raw
       encoding: otlp_proto
