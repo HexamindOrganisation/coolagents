@@ -1,0 +1,90 @@
+# Runtime config for the hexgate-collector binary (built via
+# `make collector-generate`, or run directly via `make collector-run`).
+# Dev-only defaults throughout — not load-tested, not the real auth.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+        auth:
+          authenticator: bearertokenauth
+        # Required for message_key_from_metadata_key (see the kafka
+        # exporter below) to see project_id at all — client metadata
+        # isn't propagated to downstream consumers by default.
+        include_metadata: true
+      http:
+        endpoint: 127.0.0.1:4318
+        auth:
+          authenticator: bearertokenauth
+        include_metadata: true
+
+processors:
+  # Values are reasonable dev defaults, not load-tested.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Resource-level (whole batch) provenance tag — a real, common use of
+  # this processor, not just a placeholder. Where a real deployment would
+  # also stamp deployment.environment, service.instance.id, etc.
+  resource:
+    attributes:
+      - key: collector.name
+        value: hexgate-collector
+        action: upsert
+
+  # Span-level placeholder — proves the wiring point exists. No real
+  # per-span transformation decided yet: the design doc assigns
+  # redaction/byte-capping to the enrichment job downstream, not this
+  # Collector, so this processor doesn't have a real job yet either.
+  attributes:
+    actions:
+      - key: collector.stage
+        value: ingest
+        action: upsert
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    # Without this, the batch processor rebuilds its export context from
+    # scratch and drops all incoming client metadata — the kafka
+    # exporter's message_key_from_metadata_key: project_id below would
+    # silently never resolve, with no startup error.
+    metadata_keys: [project_id]
+
+exporters:
+  kafka:
+    # localhost, not the redpanda:29092 container-network listener — this
+    # binary is meant to run natively on the host for local dev, same
+    # convention as `make platform-api`. See platform/docker-compose.yml.
+    brokers: ["${env:HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"]
+    traces:
+      topic: hexgate.otlp.raw
+      encoding: otlp_proto
+      # Real value once the Biscuit auth extension (separate PR) sets
+      # "project_id" in the request's client metadata — bearertokenauth
+      # below doesn't. Until then this key is simply absent and every
+      # span falls back to random partition assignment.
+      message_key_from_metadata_key: project_id
+    record_partitioner:
+      # Hashes whatever message_key_from_metadata_key resolves to, so
+      # the same project_id always lands on the same partition.
+      sticky_key:
+        hasher: murmur2
+
+extensions:
+  bearertokenauth:
+    # Placeholder auth for this scaffold — accepts one token, nothing like
+    # real Biscuit verification. Env-overridable with a committed dev
+    # default, same pattern as the Redpanda/Postgres/ClickHouse creds in
+    # platform/docker-compose.yml.
+    token: ${env:HEXGATE_COLLECTOR_TOKEN:-hexgate-scaffold-stub-token}
+
+service:
+  extensions: [bearertokenauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, attributes, batch]
+      exporters: [kafka]

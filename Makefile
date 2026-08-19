@@ -92,7 +92,7 @@ fmt-check: ## Check formatting without writing changes
 check: lint fmt-check test ## Python CI parity: lint + fmt-check + test (no coverage overhead)
 
 .PHONY: check-all
-check-all: lint fmt-check coverage platform-api-check dashboard-lint dashboard-typecheck dashboard-fmt-check ## Full stack: lint + fmt + tests with coverage on all three surfaces
+check-all: lint fmt-check coverage platform-api-check dashboard-lint dashboard-typecheck dashboard-fmt-check collector-check ## Full stack: lint + fmt + tests with coverage on all four surfaces
 	# Dashboard tests via the coverage script (vitest --coverage); same
 	# entry point CI uses so a green `check-all` proves the surfaces
 	# Codecov sees are the same surfaces a contributor saw locally.
@@ -221,6 +221,35 @@ redpanda-reset: ## Wipe ONLY the Redpanda data volume, restart, and recreate top
 	-docker volume rm platform_redpanda-data
 	$(COMPOSE) up -d --wait redpanda
 	$(MAKE) redpanda-topics
+
+# -------- OTLP ingestion Collector (Go) --------
+#
+# platform/collector/builder-config.yaml is an ocb (OpenTelemetry
+# Collector Builder) manifest — collector-generate regenerates the Go
+# source + go.mod/go.sum from it (and compiles by default; ocb doesn't
+# separate those two steps). Runs natively on the host for local dev,
+# same convention as `make platform-api` — see platform/collector/config.yaml
+# for why it points at localhost, not the redpanda:29092 container listener.
+
+COLLECTOR_BUILDER_VERSION := v0.158.0
+
+.PHONY: collector-install-builder
+collector-install-builder: ## One-time: install the ocb builder tool ($GOBIN)
+	go install go.opentelemetry.io/collector/cmd/builder@$(COLLECTOR_BUILDER_VERSION)
+
+.PHONY: collector-generate
+collector-generate: ## Regenerate + compile the collector from builder-config.yaml
+	cd platform/collector && builder --config=builder-config.yaml
+
+.PHONY: collector-run
+collector-run: redpanda-topics ## Run the collector binary against config.yaml (needs `make redpanda-topics` first)
+	cd platform/collector && ./hexgate-collector --config=config.yaml
+
+.PHONY: collector-check
+collector-check: ## Vet + build the collector, validate config.yaml (no ocb regeneration)
+	cd platform/collector && go vet ./...
+	cd platform/collector && go build -o hexgate-collector ./...
+	cd platform/collector && ./hexgate-collector validate --config=config.yaml
 
 # -------- Platform API (FastAPI control plane) --------
 #
