@@ -1,4 +1,4 @@
-"""Dev-token CRUD, key introspection, and the signing-key JWKS endpoint.
+"""API-key CRUD, key introspection, and the signing-key JWKS endpoint.
 
 The signing keystore is read lazily from :mod:`hexgate_api.main` at call time
 (the platform's shared singleton; see :mod:`hexgate_api.deps.tokens`).
@@ -18,11 +18,11 @@ from hexgate_api.schemas import (
     TokenMintResponse,
 )
 from hexgate_api.features.tokens.service import (
-    delete_dev_token,
+    delete_api_key,
     find_token_by_secret,
-    list_dev_tokens,
+    list_api_keys,
     mask_secret,
-    mint_dev_token,
+    mint_api_key,
 )
 from hexgate_api.seeds.defaults import ensure_default_project
 
@@ -62,7 +62,7 @@ async def well_known_keys() -> dict[str, object]:
 async def list_tokens(
     project_id: str, session: AsyncSession = Depends(get_session)
 ) -> list[TokenListItem]:
-    tokens = await list_dev_tokens(session, project_id)
+    tokens = await list_api_keys(session, project_id)
     return [
         TokenListItem(
             id=t.id,
@@ -92,7 +92,7 @@ async def mint_token(
     await ensure_default_project(
         session
     )  # POC: lazy-create so single project works out of the box
-    token, full = await mint_dev_token(
+    token, full = await mint_api_key(
         session,
         project_id=project_id,
         name=body.name,
@@ -120,7 +120,7 @@ async def revoke_token(
     token_id: str,
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    ok = await delete_dev_token(session, project_id, token_id)
+    ok = await delete_api_key(session, project_id, token_id)
     if not ok:
         raise HTTPException(status_code=404, detail="token not found")
 

@@ -21,7 +21,7 @@ from hexgate_api.features.tokens.service import find_token_by_secret
 async def _validate_sdk_token(authorization: str, session: AsyncSession) -> None:
     """Validate an ``Authorization: Bearer <hexgate_key>`` biscuit envelope.
 
-    Used by :func:`optional_dev_token` (allows a missing header) and
+    Used by :func:`optional_api_key` (allows a missing header) and
     indirectly by :func:`require_project` / :func:`ws_require_project`
     (the bearer-implicit SDK routes). Raises 401 on signature or
     revocation failure; returns None on success.
@@ -49,7 +49,7 @@ async def _validate_sdk_token(authorization: str, session: AsyncSession) -> None
         raise HTTPException(status_code=401, detail="unknown or revoked hexgate key")
 
 
-async def optional_dev_token(
+async def optional_api_key(
     authorization: str | None = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ) -> None:
@@ -60,7 +60,7 @@ async def optional_dev_token(
     1. **Signature verification** — parse the envelope, decode the Biscuit,
        check it chains to the platform's root public key.
     2. **Revocation lookup** — confirm the exact secret is still in the
-       ``DevToken`` table and update ``last_used_at``.
+       ``ApiKey`` table and update ``last_used_at``.
 
     POC behaviour: the header itself remains optional so the dashboard
     (no user-session concept yet) can keep calling these endpoints
@@ -86,17 +86,17 @@ async def require_project(
     has only an API key, not a project id in the URL.
 
     Two gates run in order, matching :func:`ws_require_project` and
-    :func:`optional_dev_token` so all three bearer-auth surfaces agree
+    :func:`optional_api_key` so all three bearer-auth surfaces agree
     on what counts as a valid token:
 
       1. **Signature verification** via :func:`_validate_sdk_token` —
          parse the envelope, verify the biscuit chains to the platform's
          root public key. A revocation lookup runs inside the helper.
-      2. **Project resolution** — read ``DevToken.project_id`` for the
+      2. **Project resolution** — read ``ApiKey.project_id`` for the
          already-validated secret.
 
     The signature gate was missing before — a forged biscuit whose
-    secret string happened to match a stored ``DevToken.secret`` would
+    secret string happened to match a stored ``ApiKey.secret`` would
     have been accepted. Defense-in-depth + consistency with the WS
     bearer path.
     """

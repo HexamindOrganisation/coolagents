@@ -1,4 +1,4 @@
-"""Dev-token persistence: mint (Biscuit-signed), list, revoke, lookup, mask."""
+"""API-key persistence: mint (Biscuit-signed), list, revoke, lookup, mask."""
 
 from datetime import datetime, timezone
 
@@ -7,10 +7,10 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.biscuits import MintRequest, make_envelope, mint_token
 from hexgate_api.core.ids import new_id
-from hexgate_api.models import DevToken
+from hexgate_api.models import ApiKey
 
 
-async def mint_dev_token(
+async def mint_api_key(
     session: AsyncSession,
     project_id: str,
     name: str,
@@ -18,8 +18,8 @@ async def mint_dev_token(
     env: str,
     *,
     signing_key_bytes: bytes,
-) -> tuple[DevToken, str]:
-    """Create a new dev token, signed as a Biscuit by the platform's root key.
+) -> tuple[ApiKey, str]:
+    """Create a new API key, signed as a Biscuit by the platform's root key.
 
     The wire format stays human-readable: ``fty_<env>_<project>_<biscuit_b64>``.
     Project id is duplicated in the prefix (for grep / GitHub-secret-scanning)
@@ -33,7 +33,7 @@ async def mint_dev_token(
     the operator copies out of the dashboard — shown once, never stored
     in the row outside of the ``secret`` column for revocation lookup).
     """
-    token_id = new_id(DevToken)
+    token_id = new_id(ApiKey)
     biscuit_b64 = mint_token(
         signing_key_bytes,
         MintRequest(
@@ -42,14 +42,14 @@ async def mint_dev_token(
             name=name,
             scopes=scopes,
             env=env,
-            ttl_seconds=None,  # dev tokens don't expire by default; revoke explicitly.
+            ttl_seconds=None,  # API keys don't expire by default; revoke explicitly.
         ),
     )
     prefix = f"fty_{env}"
     full_token = make_envelope(env, project_id, biscuit_b64)
 
-    token = DevToken(
-        id=new_id(DevToken),
+    token = ApiKey(
+        id=new_id(ApiKey),
         project_id=project_id,
         name=name,
         prefix=prefix,
@@ -62,18 +62,18 @@ async def mint_dev_token(
     return token, full_token
 
 
-async def list_dev_tokens(session: AsyncSession, project_id: str) -> list[DevToken]:
+async def list_api_keys(session: AsyncSession, project_id: str) -> list[ApiKey]:
     stmt = (
-        select(DevToken)
-        .where(DevToken.project_id == project_id)
-        .order_by(DevToken.created_at.desc())
+        select(ApiKey)
+        .where(ApiKey.project_id == project_id)
+        .order_by(ApiKey.created_at.desc())
     )  # type: ignore[attr-defined]
     return list((await session.exec(stmt)).all())
 
 
-async def find_token_by_secret(session: AsyncSession, secret: str) -> DevToken | None:
+async def find_token_by_secret(session: AsyncSession, secret: str) -> ApiKey | None:
     """Look up a token by its full secret value. Updates last_used_at on hit."""
-    stmt = select(DevToken).where(DevToken.secret == secret)
+    stmt = select(ApiKey).where(ApiKey.secret == secret)
     token = (await session.exec(stmt)).first()
     if token is not None:
         token.last_used_at = datetime.now(timezone.utc)
@@ -82,10 +82,8 @@ async def find_token_by_secret(session: AsyncSession, secret: str) -> DevToken |
     return token
 
 
-async def delete_dev_token(
-    session: AsyncSession, project_id: str, token_id: str
-) -> bool:
-    token = await session.get(DevToken, token_id)
+async def delete_api_key(session: AsyncSession, project_id: str, token_id: str) -> bool:
+    token = await session.get(ApiKey, token_id)
     if token is None or token.project_id != project_id:
         return False
     await session.delete(token)

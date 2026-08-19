@@ -37,7 +37,10 @@ async def _seed_gdocs_agent() -> None:
     """
     # NOTE: stdout is the token channel (see __main__) — log to stderr only.
     if not _GDOCS_POLICY.is_file():
-        print(f"[provision] {_GDOCS_POLICY} missing — skipping docs_agent seed", file=sys.stderr)
+        print(
+            f"[provision] {_GDOCS_POLICY} missing — skipping docs_agent seed",
+            file=sys.stderr,
+        )
         return
 
     from hexgate_api.constants import DEFAULT_PROJECT_ID
@@ -67,21 +70,24 @@ async def _seed_gdocs_agent() -> None:
             )
         )
         await session.commit()
-    print(f"[provision] seeded {_GDOCS_AGENT_NAME} policy for the dashboard", file=sys.stderr)
+    print(
+        f"[provision] seeded {_GDOCS_AGENT_NAME} policy for the dashboard",
+        file=sys.stderr,
+    )
 
 
 async def _mint() -> str:
     from hexgate_api.constants import DEFAULT_PROJECT_ID
     from hexgate_api.core.db import async_session_factory, init_db
     from hexgate_api.core.keystore import keystore  # same singleton the API uses
-    from hexgate_api.features.tokens.service import mint_dev_token
+    from hexgate_api.features.tokens.service import mint_api_key
     from hexgate_api.seeds.defaults import ensure_default_seed
 
     await init_db()
     keystore.ensure_keypair()
     async with async_session_factory() as session:
         await ensure_default_seed(session)
-        _, full_token = await mint_dev_token(
+        _, full_token = await mint_api_key(
             session,
             DEFAULT_PROJECT_ID,
             name="demo-serve",

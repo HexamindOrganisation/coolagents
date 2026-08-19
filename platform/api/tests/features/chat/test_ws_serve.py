@@ -35,7 +35,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hexgate_api.core import keystore as keystore_mod
 from hexgate_api.main import app
-from hexgate_api.features.tokens.service import mint_dev_token
+from hexgate_api.features.tokens.service import mint_api_key
 from hexgate_api.seeds.defaults import ensure_default_project
 from hexgate_api.constants import DEFAULT_PROJECT_ID
 
@@ -85,13 +85,13 @@ async def client(session_factory, tmp_path) -> TestClient:
 
 @pytest_asyncio.fixture
 async def fresh_token(session_factory) -> str:
-    """Mint a real biscuit-backed dev token for the default project.
+    """Mint a real biscuit-backed API key for the default project.
 
     Returns the full ``fty_<env>_<project>_<biscuit>`` envelope ready
     to drop into the ``bearer.<...>`` subprotocol.
     """
     async with session_factory() as session:
-        _row, full = await mint_dev_token(
+        _row, full = await mint_api_key(
             session,
             DEFAULT_PROJECT_ID,
             name="ws-test-key",
@@ -156,22 +156,20 @@ def test_ws_serve_rejects_when_bearer_is_garbage(client: TestClient) -> None:
 def test_ws_serve_rejects_unknown_or_revoked_secret(
     client: TestClient, fresh_token: str, session_factory
 ) -> None:
-    """Bearer parses cleanly but isn't in the DevToken table → 4401.
+    """Bearer parses cleanly but isn't in the ApiKey table → 4401.
 
     Synthesises this by minting a token, then deleting the row before
     the connection attempt — same shape as a revoke + reuse race.
     """
     import asyncio
 
-    from hexgate_api.models import DevToken
+    from hexgate_api.models import ApiKey
     from sqlmodel import select
 
     async def _delete_token():
         async with session_factory() as session:
             row = (
-                await session.exec(
-                    select(DevToken).where(DevToken.secret == fresh_token)
-                )
+                await session.exec(select(ApiKey).where(ApiKey.secret == fresh_token))
             ).first()
             assert row is not None
             await session.delete(row)
