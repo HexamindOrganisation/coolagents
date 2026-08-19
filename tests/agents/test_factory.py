@@ -384,6 +384,73 @@ async def test_hexgate_agent_astream_raises_before_first_event_when_banned() -> 
             async for _ in agent.astream_events({}, {}, version="v2"):
                 pass
 
+
+def _admission_gate(mode: str):
+    """An admission gate whose policy admits/denies with the given mode."""
+    from hexgate.security import AgentPolicy, BaseToolPolicy
+    from hexgate.security.agent_gate import resolve_agent_gate
+    from hexgate.security.enforcer import PolicyEnforcer
+    from hexgate.security.policy_set import load_policy_set
+
+    policy = AgentPolicy(
+        default_policy=BaseToolPolicy(mode="deny"),
+        admission=BaseToolPolicy(mode=mode),
+    )
+    return resolve_agent_gate(PolicyEnforcer(load_policy_set(policy), agent_name="bot"))
+
+
+def _agent_with_admission(graph: FakeAgent, gate) -> factory.HexgateAgent:
+    return factory.HexgateAgent(
+        graph=graph,
+        model="m",
+        tools=[],
+        system_prompt=None,
+        name="bot",
+        agent_gate=gate,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_ainvoke_refused_before_graph_when_not_admitted() -> None:
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.agent_gate import AgentNotAdmittedError
+
+    graph = FakeAgent()
+    agent = _agent_with_admission(graph, _admission_gate("deny"))
+
+    async with HexgateContext(user_id="u1", user_roles=["support"]):
+        with pytest.raises(AgentNotAdmittedError):
+            await agent.ainvoke({}, {})
+
+    assert graph.ainvoke_calls == []  # graph never ran
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_ainvoke_runs_when_admitted() -> None:
+    from hexgate.runtime import HexgateContext
+
+    graph = FakeAgent()
+    agent = _agent_with_admission(graph, _admission_gate("allow"))
+
+    async with HexgateContext(user_id="u1", user_roles=["support"]):
+        await agent.ainvoke({}, {})
+
+    assert len(graph.ainvoke_calls) == 1  # admission allowed → graph ran
+
+
+@pytest.mark.asyncio
+async def test_hexgate_agent_astream_refused_when_not_admitted() -> None:
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.agent_gate import AgentNotAdmittedError
+
+    graph = FakeAgent()
+    agent = _agent_with_admission(graph, _admission_gate("deny"))
+
+    async with HexgateContext(user_id="u1", user_roles=["support"]):
+        with pytest.raises(AgentNotAdmittedError):
+            async for _ in agent.astream_events({}, {}, version="v2"):
+                pass
+
     assert graph.astream_event_calls == []
 
 
