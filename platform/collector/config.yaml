@@ -8,10 +8,15 @@ receivers:
         endpoint: 127.0.0.1:4317
         auth:
           authenticator: bearertokenauth
+        # Required for message_key_from_metadata_key (see the kafka
+        # exporter below) to see project_id at all — client metadata
+        # isn't propagated to downstream consumers by default.
+        include_metadata: true
       http:
         endpoint: 127.0.0.1:4318
         auth:
           authenticator: bearertokenauth
+        include_metadata: true
 
 processors:
   # Values are reasonable dev defaults, not load-tested.
@@ -42,13 +47,18 @@ processors:
   batch:
     timeout: 5s
     send_batch_size: 512
+    # Without this, the batch processor rebuilds its export context from
+    # scratch and drops all incoming client metadata — the kafka
+    # exporter's message_key_from_metadata_key: project_id below would
+    # silently never resolve, with no startup error.
+    metadata_keys: [project_id]
 
 exporters:
   kafka:
     # localhost, not the redpanda:29092 container-network listener — this
     # binary is meant to run natively on the host for local dev, same
     # convention as `make platform-api`. See platform/docker-compose.yml.
-    brokers: [${env:HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}]
+    brokers: ["${env:HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"]
     traces:
       topic: hexgate.otlp.raw
       encoding: otlp_proto
