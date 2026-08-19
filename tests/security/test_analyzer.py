@@ -270,6 +270,26 @@ def test_permissive_default_flags_a_grant_no_named_role_has() -> None:
     assert lints[0].tool == "delete_everything"
 
 
+def test_permissive_default_flags_an_agent_grant_no_named_role_has() -> None:
+    """An admission/agents grant on `default` is reachable by any undefined role
+    name too, so it must lint via the lowered `agent.*` keys, not just `tools`."""
+    lints = check_default_role_exposure(
+        _policy_set(
+            {
+                "default": {"agents": {"admin-bot": {"mode": "allow"}}},
+                "support": {"tools": {"read_file": {"mode": "allow"}}},
+            }
+        )
+    )
+
+    codes = [lint.code for lint in lints]
+    assert codes == ["permissive-default", "permissive-default"]  # tool + handoff
+    assert {lint.tool for lint in lints} == {
+        "agent.tool:admin-bot",
+        "agent.handoff:admin-bot",
+    }
+
+
 def test_permissive_default_is_quiet_when_a_named_role_also_grants_it() -> None:
     """A shared grant is intentional (typically a mixin), not exposure."""
     lints = check_default_role_exposure(

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from functools import cached_property
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -69,11 +69,11 @@ def agent_target_key(via: AgentVia, target: str) -> str:
 
 
 def _is_reserved_agent_key(name: str) -> bool:
-    return (
-        name == AGENT_RUN_TOOL
-        or name.startswith("agent.tool:")
-        or name.startswith("agent.handoff:")
-    )
+    # Derive the reserved prefixes from AgentVia (via agent_target_key's shape),
+    # so a new via mode cannot be added without this guard covering it too.
+    if name == AGENT_RUN_TOOL:
+        return True
+    return any(name.startswith(f"agent.{via}:") for via in get_args(AgentVia))
 
 
 class AgentTargetPolicy(BaseToolPolicy):
@@ -124,9 +124,11 @@ class AgentPolicy(BaseModel):
     closed-world for free; the runtime gate refines that fallback in a later PR.
     """
 
-    # cached_property is a plain descriptor, not a field — tell pydantic to leave
-    # it alone so ``effective_tools`` can memoize on the enforcement hot path.
-    model_config = ConfigDict(ignored_types=(cached_property,))
+    # frozen: policies are immutable after load (inheritance builds fresh
+    # instances, nothing reassigns a field), which is what makes memoizing
+    # effective_tools safe. cached_property is a plain descriptor, not a field,
+    # so pydantic must leave it alone.
+    model_config = ConfigDict(frozen=True, ignored_types=(cached_property,))
 
     version: int = 1
     inherits: list[str] = Field(default_factory=list)
@@ -167,11 +169,11 @@ class AgentPolicy(BaseModel):
         if self.admission is not None:
             lowered[AGENT_RUN_TOOL] = self.admission
         for target, target_policy in self.agents.items():
-            base = BaseToolPolicy(
-                mode=target_policy.mode, constraints=target_policy.constraints
-            )
+            # Use the AgentTargetPolicy directly (it is a BaseToolPolicy): a bare
+            # rebuild would silently drop any field later added to BaseToolPolicy.
+            # via is an extra field the engines ignore.
             for via in target_policy.via:
-                lowered[agent_target_key(via, target)] = base
+                lowered[agent_target_key(via, target)] = target_policy
         return lowered
 
     @cached_property

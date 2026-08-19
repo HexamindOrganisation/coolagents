@@ -302,7 +302,7 @@ def test_link_rejects_agents_block_in_module() -> None:
         source="b.yaml",
         content_hash="hash-b",
     )
-    with pytest.raises(LinkError, match="agent-level block"):
+    with pytest.raises(LinkError, match=r"\['agents'\]"):
         link([mod], [])
 
 
@@ -314,7 +314,7 @@ def test_link_rejects_admission_block_in_module() -> None:
         source="c.yaml",
         content_hash="hash-c",
     )
-    with pytest.raises(LinkError, match="agent-level block"):
+    with pytest.raises(LinkError, match=r"\['admission'\]"):
         link([], [mod])
 
 

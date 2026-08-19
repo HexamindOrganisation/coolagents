@@ -226,3 +226,57 @@ def test_const_ref_in_agent_constraint_validated() -> None:
     }
     with pytest.raises(PolicySetError):
         load_policy_set_from_dict(payload)
+
+
+def test_child_narrowing_an_inherited_via_is_rejected() -> None:
+    # A child dropping a via the parent listed would silently un-list that mode
+    # (fail-open under a permissive default). Reject it loudly.
+    payload = {
+        "roles": {
+            "base": {
+                "is_mixin": True,
+                "agents": {"admin-bot": {"mode": "deny", "via": ["tool", "handoff"]}},
+            },
+            "support": {
+                "inherits": ["base"],
+                "default_policy": {"mode": "allow"},
+                "agents": {"admin-bot": {"mode": "allow", "via": ["tool"]}},
+            },
+        }
+    }
+    with pytest.raises(PolicySetError, match="narrows agent target"):
+        load_policy_set_from_dict(payload)
+
+
+def test_child_may_redeclare_target_with_the_full_via_set() -> None:
+    # Re-declaring with the same (or wider) via set is a clean override; the
+    # child's mode wins for every via.
+    payload = {
+        "roles": {
+            "base": {
+                "is_mixin": True,
+                "agents": {"admin-bot": {"mode": "deny", "via": ["tool", "handoff"]}},
+            },
+            "support": {
+                "inherits": ["base"],
+                "agents": {
+                    "admin-bot": {
+                        "mode": "approval_required",
+                        "via": ["tool", "handoff"],
+                    }
+                },
+            },
+        }
+    }
+    policy_set = load_policy_set_from_dict(payload)
+    assert_needs_approval(
+        policy_set, agent_target_key("handoff", "admin-bot"), role="support"
+    )
+
+
+def test_agent_policy_is_frozen() -> None:
+    # Immutability is what makes memoizing effective_tools safe; enforce it so
+    # the invariant the cache relies on is real, not just documented.
+    policy = AgentPolicy(tools={"t": BaseToolPolicy(mode="allow")})
+    with pytest.raises(ValidationError):
+        policy.tools = {}
