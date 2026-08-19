@@ -228,9 +228,10 @@ def test_const_ref_in_agent_constraint_validated() -> None:
         load_policy_set_from_dict(payload)
 
 
-def test_child_narrowing_an_inherited_via_is_rejected() -> None:
-    # A child dropping a via the parent listed would silently un-list that mode
-    # (fail-open under a permissive default). Reject it loudly.
+def test_narrowing_that_loosens_a_deny_under_permissive_default_is_rejected() -> None:
+    # Parent denies both vias; child drops handoff under an allow-default, so
+    # handoff would fall through to allow and lose the parent's deny. Fail-open,
+    # so reject.
     payload = {
         "roles": {
             "base": {
@@ -244,8 +245,36 @@ def test_child_narrowing_an_inherited_via_is_rejected() -> None:
             },
         }
     }
-    with pytest.raises(PolicySetError, match="narrows agent target"):
+    with pytest.raises(PolicySetError, match="silently loosen"):
         load_policy_set_from_dict(payload)
+
+
+def test_narrowing_via_under_deny_default_is_allowed() -> None:
+    # Victor's case: inherit the mixin's grants, keep billing-bot callable as a
+    # tool, but never hand off. Under deny-by-default the dropped handoff via
+    # tightens to deny, which is exactly the intent, so this must NOT raise.
+    payload = {
+        "roles": {
+            "base": {
+                "is_mixin": True,
+                "tools": {"search_kb": {"mode": "allow"}},
+                "agents": {
+                    "billing-bot": {"mode": "allow", "via": ["tool", "handoff"]}
+                },
+            },
+            "support": {  # deny-by-default (no default_policy set)
+                "inherits": ["base"],
+                "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
+            },
+        }
+    }
+    policy_set = load_policy_set_from_dict(payload)
+    assert_allows(policy_set, "search_kb", role="support")
+    assert_allows(policy_set, agent_target_key("tool", "billing-bot"), role="support")
+    # handoff dropped → falls to support's deny-by-default → denied, as intended.
+    assert_denies(
+        policy_set, agent_target_key("handoff", "billing-bot"), role="support"
+    )
 
 
 def test_child_may_redeclare_target_with_the_full_via_set() -> None:

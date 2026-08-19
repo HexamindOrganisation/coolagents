@@ -332,28 +332,14 @@ def _resolve_inheritance(
     # user's intent is to override, and silently inheriting an ``allow`` from a
     # parent would be fail-open.
     merged_tools.update(own.tools)
-    # A per-target override replaces the parent's rule wholesale, so a child that
-    # DROPS a via the parent listed would silently un-list that mode (it falls
-    # through to default_policy, fail-open under a permissive default). One
-    # AgentTargetPolicy carries a single mode across its vias, so the parent's
-    # mode for the dropped via cannot be preserved in the merged entry; reject the
-    # narrowing loudly instead, the same stance as the admission merge above.
-    for target, own_rule in own.agents.items():
-        parent_rule = merged_agents.get(target)
-        if parent_rule is None:
-            continue
-        dropped = [via for via in parent_rule.via if via not in own_rule.via]
-        if dropped:
-            raise PolicySetError(
-                f"role {name!r} narrows agent target {target!r} to vias "
-                f"{own_rule.via}, dropping {dropped} that an inherited rule lists. "
-                "A child agent rule cannot silently un-list an inherited via mode. "
-                "Re-declare the full via set for this target."
-            )
-    merged_agents.update(own.agents)
-    merged_consts.update(own.consts)
+    # Finalise the effective default before the narrowing guard: a dropped via
+    # resolves to *this* role's default_policy, so the guard must see the child's
+    # override, not the parent's.
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy
+    _reject_fail_open_narrowing(name, own, merged_agents, merged_default)
+    merged_agents.update(own.agents)
+    merged_consts.update(own.consts)
     if "admission" in own.model_fields_set:
         merged_admission = own.admission
 
@@ -367,3 +353,40 @@ def _resolve_inheritance(
         admission=merged_admission,
         agents=merged_agents,
     )
+
+
+# How much access each mode grants, low to high.
+_PERMISSIVENESS = {"deny": 0, "approval_required": 1, "allow": 2}
+
+
+def _reject_fail_open_narrowing(
+    role: str,
+    own: AgentPolicy,
+    parent_agents: Mapping[str, AgentTargetPolicy],
+    effective_default: BaseToolPolicy,
+) -> None:
+    """Reject a child that drops an inherited via *and* thereby loosens it.
+
+    A per-target override replaces the parent's rule wholesale, and one
+    :class:`AgentTargetPolicy` carries a single mode across its vias, so the
+    parent's mode for a dropped via cannot be preserved in the merged entry. The
+    dropped via falls through to ``default_policy``. That is only a problem when the
+    default is MORE permissive than the parent's mode (e.g. parent ``deny``, child
+    default ``allow``): it silently loosens a restriction. Under a deny-by-default
+    child, dropping a via only tightens it, a common and safe intent (inherit a tool
+    grant, but never hand off), so it is allowed.
+    """
+    default_rank = _PERMISSIVENESS[effective_default.mode]
+    for target, own_rule in own.agents.items():
+        parent_rule = parent_agents.get(target)
+        if parent_rule is None:
+            continue
+        dropped = [via for via in parent_rule.via if via not in own_rule.via]
+        if dropped and default_rank > _PERMISSIVENESS[parent_rule.mode]:
+            raise PolicySetError(
+                f"role {role!r} drops via {dropped} from inherited agent target "
+                f"{target!r} (parent mode {parent_rule.mode!r}) under a more "
+                f"permissive default_policy ({effective_default.mode!r}), which "
+                "would silently loosen the parent's rule for that mode. Re-declare "
+                "the full via set, or tighten default_policy."
+            )
