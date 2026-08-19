@@ -92,7 +92,7 @@ fmt-check: ## Check formatting without writing changes
 check: lint fmt-check test ## Python CI parity: lint + fmt-check + test (no coverage overhead)
 
 .PHONY: check-all
-check-all: lint fmt-check coverage platform-api-check dashboard-lint dashboard-typecheck dashboard-fmt-check ## Full stack: lint + fmt + tests with coverage on all three surfaces
+check-all: lint fmt-check coverage platform-api-check dashboard-lint dashboard-typecheck dashboard-fmt-check collector-check ## Full stack: lint + fmt + tests with coverage on all four surfaces
 	# Dashboard tests via the coverage script (vitest --coverage); same
 	# entry point CI uses so a green `check-all` proves the surfaces
 	# Codecov sees are the same surfaces a contributor saw locally.
@@ -244,6 +244,11 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 .PHONY: collector-run
 collector-run: redpanda-topics ## Run the collector binary against config.yaml (needs `make redpanda-topics` first)
 	cd platform/collector && ./hexgate-collector --config=config.yaml
+
+.PHONY: collector-check
+collector-check: ## Vet + build the collector (no ocb regeneration)
+	cd platform/collector && go vet ./...
+	cd platform/collector && go build -o hexgate-collector ./...
 
 # -------- Platform API (FastAPI control plane) --------
 #
