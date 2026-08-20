@@ -277,6 +277,57 @@ def test_narrowing_via_under_deny_default_is_allowed() -> None:
     )
 
 
+def test_narrowing_that_drops_a_parent_constraint_is_rejected() -> None:
+    # Modes tie (both allow) but the parent's handoff rule carries a constraint the
+    # allow-default lacks; the dropped via would fall through to an *unconstrained*
+    # allow, silently losing the cap. Reject.
+    payload = {
+        "roles": {
+            "base": {
+                "is_mixin": True,
+                "agents": {
+                    "billing-bot": {
+                        "mode": "allow",
+                        "via": ["tool", "handoff"],
+                        "constraints": ["args.amount <= 100"],
+                    }
+                },
+            },
+            "support": {
+                "inherits": ["base"],
+                "default_policy": {"mode": "allow"},
+                "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
+            },
+        }
+    }
+    with pytest.raises(PolicySetError, match="silently loosen"):
+        load_policy_set_from_dict(payload)
+
+
+def test_narrowing_under_matching_unconstrained_allow_is_fine() -> None:
+    # Same shape but the parent rule has no constraint, so falling through to the
+    # allow-default loosens nothing. No error.
+    payload = {
+        "roles": {
+            "base": {
+                "is_mixin": True,
+                "agents": {
+                    "billing-bot": {"mode": "allow", "via": ["tool", "handoff"]}
+                },
+            },
+            "support": {
+                "inherits": ["base"],
+                "default_policy": {"mode": "allow"},
+                "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
+            },
+        }
+    }
+    policy_set = load_policy_set_from_dict(payload)
+    assert_allows(
+        policy_set, agent_target_key("handoff", "billing-bot"), role="support"
+    )
+
+
 def test_child_may_redeclare_target_with_the_full_via_set() -> None:
     # Re-declaring with the same (or wider) via set is a clean override; the
     # child's mode wins for every via.

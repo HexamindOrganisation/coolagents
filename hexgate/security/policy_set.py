@@ -369,24 +369,44 @@ def _reject_fail_open_narrowing(
 
     A per-target override replaces the parent's rule wholesale, and one
     :class:`AgentTargetPolicy` carries a single mode across its vias, so the
-    parent's mode for a dropped via cannot be preserved in the merged entry. The
-    dropped via falls through to ``default_policy``. That is only a problem when the
-    default is MORE permissive than the parent's mode (e.g. parent ``deny``, child
-    default ``allow``): it silently loosens a restriction. Under a deny-by-default
-    child, dropping a via only tightens it, a common and safe intent (inherit a tool
-    grant, but never hand off), so it is allowed.
+    parent's rule for a dropped via cannot be preserved in the merged entry. The
+    dropped via falls through to ``default_policy``, which is a problem only when
+    the default is looser than the parent's rule for that via:
+
+    * a more permissive mode (e.g. parent ``deny``, child default ``allow``), or
+    * the same granting mode but *fewer constraints* (e.g. parent ``allow`` with
+      ``args.amount <= 100``, child default a bare ``allow`` — the cap vanishes).
+
+    Under a deny-by-default child, dropping a via only tightens it, a common and
+    safe intent (inherit a tool grant, but never hand off), so it is allowed.
     """
-    default_rank = _PERMISSIVENESS[effective_default.mode]
     for target, own_rule in own.agents.items():
         parent_rule = parent_agents.get(target)
         if parent_rule is None:
             continue
         dropped = [via for via in parent_rule.via if via not in own_rule.via]
-        if dropped and default_rank > _PERMISSIVENESS[parent_rule.mode]:
+        if dropped and _default_loosens(effective_default, parent_rule):
             raise PolicySetError(
                 f"role {role!r} drops via {dropped} from inherited agent target "
-                f"{target!r} (parent mode {parent_rule.mode!r}) under a more "
-                f"permissive default_policy ({effective_default.mode!r}), which "
-                "would silently loosen the parent's rule for that mode. Re-declare "
-                "the full via set, or tighten default_policy."
+                f"{target!r} (parent {parent_rule.mode!r}"
+                f"{' with constraints' if parent_rule.constraints else ''}) under a "
+                f"looser default_policy ({effective_default.mode!r}), which would "
+                "silently loosen the parent's rule for that mode. Re-declare the "
+                "full via set, or tighten default_policy."
             )
+
+
+def _default_loosens(default: BaseToolPolicy, parent_rule: AgentTargetPolicy) -> bool:
+    """True if falling through to ``default`` is looser than ``parent_rule``.
+
+    Looser means a more permissive mode, or the same granting mode with a parent
+    constraint the default drops. ``deny`` ignores constraints, so a same-rank
+    ``deny`` tie is never looser."""
+    default_rank = _PERMISSIVENESS[default.mode]
+    parent_rank = _PERMISSIVENESS[parent_rule.mode]
+    if default_rank != parent_rank:
+        return default_rank > parent_rank
+    if parent_rule.mode == "deny":
+        return False
+    # Same granting mode: the default loosens if it drops any parent constraint.
+    return bool(set(parent_rule.constraints) - set(default.constraints))
