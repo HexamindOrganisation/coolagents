@@ -1,0 +1,189 @@
+---
+title: "Guards"
+description: "Functions that run before and after a tool call to observe it, rewrite its arguments, or refuse it — plus the official secret-detection plugins."
+---
+
+Every tool call in Hexgate already passes one check: `decide`, the policy verdict
+that answers allow / deny / needs-approval. **Guards** are the open extension point
+next to it — small functions you attach before and after a tool call to do
+everything a yes/no rule was never meant to express: strip a secret out of the
+arguments, rate-limit a tool per user, watch a result before the model reads it,
+add metrics.
+
+A tool call runs through four steps:
+
+```
+  the agent wants to call a tool
+            │
+  1. before-guards   look at the arguments; tweak them, or refuse
+            │
+  2. decide          the allow / deny / needs-approval check (unchanged)
+            │
+  3. run the tool
+            │
+  4. after-guards    look at the result; refuse to pass it back
+            │
+  the model sees the result (or the refusal)
+```
+
+## What a guard can do
+
+- **Observe.** Just look — log it, count it, emit a metric. Change nothing.
+- **Rewrite the arguments** (before-guards only). Strip a credential so the tool
+  never receives it; the cleaned call is what runs.
+- **Halt.** Refuse the call and hand the model a short, safe reason instead.
+
+A before-guard sees the [`ToolCall`](#what-a-guard-receives); an after-guard also
+sees the [`ToolOutcome`](#what-a-guard-receives) (the return value, or a raised
+error). Result **rewrite** is not in v1 — after-guards observe or halt.
+
+## The one rule that is a security property
+
+Before-guards run **before** `decide`, so `decide` always authorizes the exact
+arguments that will execute. If a guard cleans the arguments, the policy checks the
+cleaned version. A guard can only ever *narrow* a call — tweak it or refuse it — it
+can never slip something past the policy, because `decide` still runs on whatever
+the guard produced.
+
+## Authoring
+
+Write a guard with `@before_tool` or `@after_tool`, then hand the agent one flat
+`guards` list — each guard already knows whether it runs before or after, so the
+list stays flat.
+
+```python
+from hexgate import before_tool, after_tool, create_agent
+from hexgate.guards import Halt, Proceed
+
+@before_tool                                # every tool
+def block_secrets(call):
+    if looks_like_a_secret(call.args):
+        return Halt(reason="Refused: remove the credential and resend.")
+    return None                             # None means "carry on"
+
+@before_tool(tool_names=["refund_order"])   # scoped to one tool
+def cap_refund(call):
+    if call.args.get("amount", 0) > 1000:
+        return Halt(reason="Refunds over 1000 need a manager. Lower it or escalate.")
+    return None
+
+@after_tool(observe=True)                   # fail-open watcher
+def log_result(call, outcome):
+    log(call.tool_name, ok=outcome.ok)
+
+agent, _ = create_agent(model="gpt-5.4", tools=[...],
+                        guards=[block_secrets, cap_refund, log_result])
+```
+
+The decorators are dual-form — bare (`@before_tool`) or called
+(`@before_tool(tool_names=..., observe=...)`) — and double as inline wrappers
+(`guards=[before_tool(lambda call: ...)]`). Position is the decorator, reach is
+`tool_names` (a name or list; default every tool), and `observe=True` marks a
+fail-open watcher.
+
+### What a guard returns
+
+| Return | Meaning |
+| --- | --- |
+| `None` or `Proceed()` | carry on unchanged |
+| `Proceed(args=new_args)` | continue with rewritten arguments (before-guards) |
+| `Halt(reason=...)` | refuse; the model sees a safe error instead of a result |
+| `Halt(reason=..., outcome=NEEDS_APPROVAL)` | consult the [approval handler](/concepts/approval-required), exactly like a policy `needs_approval` |
+
+### What a guard receives
+
+`ToolCall` — `tool_name`, `args` (a read-only JSON mapping), `agent_name`,
+`context` (the active [`HexgateContext`](/concepts/user-scope)), and `scratch` (a
+per-call dict shared from a before-guard to an after-guard). `ToolOutcome` (after
+only) — `ok`, `value` (the return), and `error` (the stringified exception when the
+tool raised, so a watcher sees a failure the same way it sees a result).
+
+## The halt message: safe by construction
+
+`Halt.reason` is the **only** field the model sees. Name the rule and category,
+never the offending input — a leaked value both exposes the secret and hands the
+model a substring to obfuscate and resend in a loop. `Halt.detail` carries the
+specifics on the operator/audit channel only, and the rendered refusal is marked
+`retryable: false`. Pick guards whose reason names a fix ("remove the credential")
+over dead walls ("this is blocked") so the model reworks the call in one step.
+
+## Error tiers: fail-closed, or observe
+
+A guard that can rewrite or halt is a security control, so it **fails closed**: if
+it raises, the call is denied — a crash inside the trust boundary must not become a
+silent allow. An `observe` guard **fails open**: a raise is swallowed and logged,
+and in exchange it may neither rewrite nor halt. Safe by default; loose only when
+you say so.
+
+## Guards across frameworks
+
+The same guards attach wherever your agent lives — the guard itself never changes,
+only the one call that installs it. Guards run through the same shared pipeline on
+every framework, so behavior is identical; only how a refusal reaches the model
+differs (a tool-result string on most, a `ModelRetry` on Pydantic AI), and Hexgate
+handles that. See the [adapters overview](/adapters/overview) for each wrapper.
+
+| Surface | Install guards with |
+| --- | --- |
+| Native (`create_agent`, `enforce_policy`) | `guards=[...]`, `guard_observer=` |
+| LangChain (`wrap_langchain_agent`) | `guards=[...]`, `guard_observer=` |
+| Pydantic AI (`wrap_pydantic_agent`) | `guards=[...]`, `guard_observer=` |
+| OpenAI / Google (`HexgateRunner`) | `HexgateRunner(guards=[...], guard_observer=)` |
+
+<Note>
+`guards=` is always Hexgate's argument. The only `hooks=` on the surface is the
+OpenAI/Google `HexgateRunner.run(hooks=...)`, which is the framework SDK's own
+run-lifecycle `RunHooks` — a different thing. Rule of thumb: if it says `guards`,
+it's Hexgate's; if `hooks`, it's the framework's.
+</Note>
+
+## Official plugins
+
+`hexgate.plugins` ships ready-to-use guards built on one shared secret detector, so
+you can drop credential protection in without writing the matcher yourself.
+
+| Plugin | Kind | What it does |
+| --- | --- | --- |
+| `secret_guard` | before / halt | refuses a call whose arguments carry a credential |
+| `secret_redactor` | before / rewrite | strips the credential from the arguments and lets the cleaned call run |
+| `secret_watch` | after / observe | logs a warning when a credential leaks into a tool's result |
+
+```python
+from hexgate import create_agent
+from hexgate.plugins import secret_guard, secret_watch
+
+agent, _ = create_agent(model="gpt-5.4", tools=[...],
+                        guards=[secret_guard, secret_watch])
+```
+
+`secret_guard` and `secret_redactor` are the two halves of the outbound case: pick
+per tool by whether a secret's presence means the call is wrong (guard) or merely
+incidental and safe to strip (redactor) — don't put both on the same tool, since
+the redactor would clean the arguments before the guard ever saw them.
+
+The refusal and the redaction record name the credential's **category and field**,
+never the value:
+
+```
+[guard_denied] Tool 'send_email' is denied by the agent policy: Refused: a
+credential (aws_access_key) was found in the tool arguments (`auth.token`) and was
+not sent. Remove it and resend without the secret. The tool was not executed.
+```
+
+### What the detector matches
+
+The detector is **prefix-only** in v1: high-confidence provider patterns (AWS,
+GitHub, OpenAI/Anthropic, Slack, Google, Stripe, Hexgate `fty_`, and PEM private
+keys). It does not guess at unrecognized secrets by entropy — a random-looking
+value is as likely to be a content hash or opaque ID as a secret, and a false
+positive on the fail-closed `secret_guard` would block a real call. That tradeoff
+(precision over recall for v1) is recorded in ADR `R-GUARD-005`.
+
+The detector primitives are exported too — `scan_secrets`, `redact_secrets`,
+`safe_reason`, `SecretHit` — for building a custom, scoped guard when you need one.
+
+## Related
+
+- [Approval-required](/concepts/approval-required) — `Halt(outcome=NEEDS_APPROVAL)` reuses the same handler.
+- [Audit trail](/concepts/audit-trail) — a guard halt is recorded like a policy denial.
+- [Adapters overview](/adapters/overview) — how each framework installs guards.

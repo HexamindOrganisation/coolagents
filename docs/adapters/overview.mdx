@@ -19,6 +19,10 @@ logic:
    active [`HexgateContext`](/concepts/user-scope)'s identity (user id, session id, role)
    propagated onto the spans.
 
+Every wrapper also takes [`guards`](/concepts/guards) — before/after-tool functions
+that observe, rewrite arguments, or refuse a call — installed with `guards=[...]`
+(or `HexgateRunner(guards=[...])` on the OpenAI and Google runners).
+
 The four integrations differ in shape because the underlying SDKs do:
 
 | | OpenAI Agents SDK | LangChain / LangGraph | Google ADK | Pydantic AI |

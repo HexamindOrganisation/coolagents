@@ -26,6 +26,7 @@
             "group": "Concepts",
             "pages": [
               "concepts/policy-decision",
+              "concepts/guards",
               "concepts/user-scope",
               "concepts/signed-bundles",
               "concepts/audit-trail",
