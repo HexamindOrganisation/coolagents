@@ -52,6 +52,15 @@ processors:
     # exporter's message_key_from_metadata_key: project_id below would
     # silently never resolve, with no startup error.
     metadata_keys: [project_id]
+    # Each distinct project_id gets its own batcher, in a map that NEVER
+    # evicts — deleted and revoked projects count forever. Once this many
+    # combinations have been seen since process start, spans for new
+    # projects are rejected with a permanent, non-retryable error even
+    # though their key authenticated. So this is a hard ceiling on lifetime
+    # projects per process run, not a tuning knob; the upstream default
+    # (1000) is low enough to hit quietly, hence the explicit value.
+    # Revisit before real multi-tenant scale.
+    metadata_cardinality_limit: 10000
 
 exporters:
   kafka:
@@ -83,6 +92,12 @@ extensions:
     # Use `public_key` instead to paste the key inline: that field takes the
     # exact base64 string GET /v1/.well-known/keys publishes as keys[0].x,
     # for a Collector with no shared filesystem with the control plane.
+    #
+    # The relative default resolves against the process working directory,
+    # not this file's directory — `make collector-run` starts the binary from
+    # platform/collector/, which is what makes it work. From any other cwd,
+    # set the env var to an absolute path. Note `validate` never reads the
+    # file, so a wrong path only surfaces as a refusal at Start().
     public_key_file: ${env:HEXGATE_COLLECTOR_PUBLIC_KEY_FILE:-../api/data/hexgate.pub}
 
     revocation:

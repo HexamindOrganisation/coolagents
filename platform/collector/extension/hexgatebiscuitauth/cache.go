@@ -28,6 +28,15 @@ import (
 // key, thousands across the whole platform rather than millions.
 const apiKeyQuery = `SELECT id, project_id FROM devtoken`
 
+// loadTimeout bounds a single read of the key table. Without it, a connection
+// that black-holes packets (network partition, an LB holding the socket open)
+// would block refresh() forever — and refresh runs inline in the poller's only
+// goroutine, so ticks would be dropped while it hangs and polling would never
+// recover, even after the database did. Past max_staleness that means every
+// request is rejected until a restart. The same bound covers the synchronous
+// first load, which would otherwise hang startup.
+const loadTimeout = 10 * time.Second
+
 var (
 	// errUnknownAPIKey means a validly-signed token's id matches no row —
 	// it was revoked, or it predates PR #126 and its signed token_id was
@@ -91,6 +100,8 @@ type revocationCache struct {
 	logger *zap.Logger
 	cfg    RevocationConfig
 	now    func() time.Time
+	// loadTimeout is the constant above; a field so tests can shrink it.
+	loadTimeout time.Duration
 
 	mu      sync.RWMutex
 	current snapshot
@@ -100,7 +111,7 @@ type revocationCache struct {
 }
 
 func newRevocationCache(source keySource, cfg RevocationConfig, logger *zap.Logger) *revocationCache {
-	return &revocationCache{source: source, cfg: cfg, logger: logger, now: time.Now}
+	return &revocationCache{source: source, cfg: cfg, logger: logger, now: time.Now, loadTimeout: loadTimeout}
 }
 
 // lookup resolves a verified token_id to the project that currently owns it.
@@ -173,6 +184,9 @@ func (c *revocationCache) poll(ctx context.Context) {
 }
 
 func (c *revocationCache) refresh(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, c.loadTimeout)
+	defer cancel()
+
 	keys, err := c.source.load(ctx)
 	if err != nil {
 		return err

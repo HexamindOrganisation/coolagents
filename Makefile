@@ -250,7 +250,14 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 	cd platform/collector && builder --config=builder-config.yaml
 
 .PHONY: collector-run
-collector-run: redpanda-topics ## Run the collector binary against config.yaml (needs `make redpanda-topics` first)
+# The authenticator makes boot fatal without Postgres, the devtoken schema,
+# and the root public key, so this target now provides the first two and
+# checks for the third — the pre-auth collector booted on Redpanda alone.
+collector-run: postgres-up redpanda-topics ## Run the collector binary against config.yaml
+	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -c \
+		"import asyncio; from hexgate_api.core.db import init_db; asyncio.run(init_db())"
+	@test -f platform/api/data/hexgate.pub \
+		|| { echo "platform/api/data/hexgate.pub is missing — run 'make platform-api' once to generate the root keypair, or set HEXGATE_COLLECTOR_PUBLIC_KEY_FILE"; exit 1; }
 	cd platform/collector && ./hexgate-collector --config=config.yaml
 
 .PHONY: collector-test

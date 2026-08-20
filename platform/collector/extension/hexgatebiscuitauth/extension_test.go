@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/client"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -213,6 +214,26 @@ func TestAuthenticate_when_revocation_snapshot_is_stale_then_the_request_is_refu
 	s, ok := status.FromError(err)
 	require.True(t, ok, "errUnavailable must carry a gRPC status")
 	assert.Equal(t, codes.Unavailable, s.Code())
+}
+
+// The outage log must not scale with request volume: at ingest rates a
+// per-request Error would flood the log during the very incident it describes.
+func TestAuthenticate_when_the_cache_stays_stale_then_the_outage_is_logged_once(t *testing.T) {
+	core, observed := observer.New(zap.ErrorLevel)
+	pub, priv := newTestKeypair(t)
+	opts := defaultMintOptions()
+	auth := newTestAuth(t, pub, map[string]string{opts.tokenID: opts.projectID})
+	auth.logger = zap.New(core)
+	now := time.Now()
+	auth.cache = newLoadedCache(map[string]string{opts.tokenID: opts.projectID}, now.Add(-time.Hour), now)
+	sources := httpSources("Bearer " + envelopeFor(mintToken(t, priv, opts)))
+
+	for range 5 {
+		_, err := auth.Authenticate(context.Background(), sources)
+		require.ErrorIs(t, err, errUnavailable)
+	}
+
+	assert.Equal(t, 1, observed.Len(), "five rejected requests must produce one Error, not five")
 }
 
 // The trust boundary: the row is live state, the signed fact is a mint-time

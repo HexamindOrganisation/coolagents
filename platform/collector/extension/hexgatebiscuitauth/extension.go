@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -72,6 +73,12 @@ type biscuitAuth struct {
 
 	rootPub ed25519.PublicKey
 	cache   *revocationCache
+
+	// unavailable tracks whether we are inside a cannot-verify outage, so the
+	// Error is logged once per outage rather than once per request — at ingest
+	// volume a per-request Error would flood the log during the very incident
+	// it describes. The cache already logs each failed refresh.
+	unavailable atomic.Bool
 }
 
 var (
@@ -185,12 +192,18 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 	case errors.Is(err, errCacheStale), errors.Is(err, errCacheNotLoaded):
 		// Not the caller's fault, and not their business either — the detail
 		// goes to the log, the caller gets "try again".
-		a.logger.Error("refusing traffic because the revocation list cannot be trusted",
-			zap.Error(err))
+		if a.unavailable.CompareAndSwap(false, true) {
+			a.logger.Error("refusing traffic because the revocation list cannot be trusted; "+
+				"this logs once per outage, not per rejected request", zap.Error(err))
+		}
 		return "", errUnavailable
 	case err != nil:
 		a.logger.Error("unexpected failure resolving an API key", zap.Error(err))
 		return "", errUnavailable
+	}
+
+	if a.unavailable.CompareAndSwap(true, false) {
+		a.logger.Info("the revocation list is trusted again; resuming traffic")
 	}
 
 	// Signed fact vs. live row. The signature rules out tampering, so a

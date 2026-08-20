@@ -46,6 +46,17 @@ func (f *fakeKeySource) callCount() int {
 	return f.calls
 }
 
+// hangingKeySource blocks until its context dies — a stand-in for a connection
+// that black-holes packets instead of failing.
+type hangingKeySource struct{}
+
+func (hangingKeySource) load(ctx context.Context) (map[string]string, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (hangingKeySource) close() {}
+
 func testRevocationConfig() RevocationConfig {
 	return RevocationConfig{
 		Enabled:      true,
@@ -194,6 +205,25 @@ func TestRevocationCachePoll_when_a_refresh_fails_then_polling_continues(t *test
 		projectID, err := cache.lookup("tok_abc")
 		return err == nil && projectID == "moved-project"
 	}, 2*time.Second, 5*time.Millisecond)
+}
+
+// refresh runs inline in the poller's only goroutine, so a load that never
+// returns would end all future polling — the outage would then outlive the
+// database's recovery, until a restart. The per-load timeout is what stops
+// that; the same bound protects the synchronous first load at startup.
+func TestRevocationCacheRefresh_when_the_source_hangs_then_the_load_times_out(t *testing.T) {
+	cache := newRevocationCache(hangingKeySource{}, testRevocationConfig(), zap.NewNop())
+	cache.loadTimeout = 50 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() { done <- cache.refresh(context.Background()) }()
+
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(5 * time.Second):
+		t.Fatal("refresh never returned: a hung load must time out, not block the poller forever")
+	}
 }
 
 // A failed refresh keeps the previous snapshot rather than emptying it, so

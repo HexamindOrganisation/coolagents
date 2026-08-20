@@ -11,6 +11,46 @@ import (
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
 )
 
+// The Datalog the authenticator runs is byte-identical on every request, so it
+// is parsed exactly once here rather than per request on the hot auth path.
+// The panic shape is deliberate: these strings are compile-time constants, so
+// a parse failure is a programmer error that any test run catches at init.
+var (
+	// allowAllPolicy: the token's own checks are the policy; this Collector
+	// adds no authorization rules of its own, so anything that satisfies them
+	// is allowed through. Scope enforcement, if it ever applies to ingestion,
+	// belongs in a later block of policy, not in a bare allow.
+	allowAllPolicy = mustParseAuthorizer(`allow if true;`)
+
+	// identityQueries maps each authority-fact predicate to its query rule.
+	// The head predicate is arbitrary; a hexgate_ prefix keeps it from
+	// colliding with any fact a token might carry.
+	identityQueries = map[string]biscuit.Rule{
+		"token_id":  mustParseQuery("token_id"),
+		"project":   mustParseQuery("project"),
+		"env":       mustParseQuery("env"),
+		"name":      mustParseQuery("name"),
+		"scope":     mustParseQuery("scope"),
+		"issued_at": mustParseQuery("issued_at"),
+	}
+)
+
+func mustParseAuthorizer(source string) biscuit.ParsedAuthorizer {
+	parsed, err := parser.FromStringAuthorizer(source)
+	if err != nil {
+		panic(fmt.Sprintf("parse constant authorizer policy %q: %v", source, err))
+	}
+	return parsed
+}
+
+func mustParseQuery(predicate string) biscuit.Rule {
+	rule, err := parser.FromStringRule(fmt.Sprintf("hexgate_extracted($v) <- %s($v)", predicate))
+	if err != nil {
+		panic(fmt.Sprintf("parse constant %s query: %v", predicate, err))
+	}
+	return rule
+}
+
 // maxAppendedBlocks caps how many attenuation blocks a token may carry.
 //
 // Authorizer() verifies one Ed25519 signature per block and Authorize() runs
@@ -83,15 +123,7 @@ func verifyBiscuit(rootPub ed25519.PublicKey, biscuitB64 string, now time.Time) 
 		IDs:  []biscuit.Term{biscuit.Date(now)},
 	}})
 
-	// The token's own checks are the policy here; this Collector adds no
-	// authorization rules of its own, so anything that satisfies its checks
-	// is allowed through. Scope enforcement, if it ever applies to ingestion,
-	// belongs in a later block of policy, not in a bare allow.
-	policy, err := parser.FromStringAuthorizer(`allow if true;`)
-	if err != nil {
-		return nil, fmt.Errorf("build authorizer policy: %w", err)
-	}
-	authorizer.AddAuthorizer(policy)
+	authorizer.AddAuthorizer(allowAllPolicy)
 
 	// Authorize() enforces the embedded checks (a TTL caveat rejects here),
 	// and it is also what loads the authority block's facts into the world
@@ -151,11 +183,9 @@ func readIdentity(authorizer biscuit.Authorizer) (*identity, error) {
 // queryStrings returns every string-valued single-argument fact under the given
 // predicate name.
 func queryStrings(authorizer biscuit.Authorizer, predicate string) ([]string, error) {
-	// The head predicate is arbitrary; a hexgate_ prefix keeps it from
-	// colliding with any fact a token might carry.
-	rule, err := parser.FromStringRule(fmt.Sprintf("hexgate_extracted($v) <- %s($v)", predicate))
-	if err != nil {
-		return nil, fmt.Errorf("build %s query: %w", predicate, err)
+	rule, ok := identityQueries[predicate]
+	if !ok {
+		return nil, fmt.Errorf("no precompiled query for predicate %s", predicate)
 	}
 	facts, err := authorizer.Query(rule)
 	if err != nil {
@@ -196,9 +226,9 @@ func queryOptionalString(authorizer biscuit.Authorizer, predicate string) (strin
 // queryOptionalDate is queryOptionalString for a Datalog date term. Returns the
 // zero time when absent; issued_at is informational, so absence is tolerated.
 func queryOptionalDate(authorizer biscuit.Authorizer, predicate string) (time.Time, error) {
-	rule, err := parser.FromStringRule(fmt.Sprintf("hexgate_extracted($v) <- %s($v)", predicate))
-	if err != nil {
-		return time.Time{}, fmt.Errorf("build %s query: %w", predicate, err)
+	rule, ok := identityQueries[predicate]
+	if !ok {
+		return time.Time{}, fmt.Errorf("no precompiled query for predicate %s", predicate)
 	}
 	facts, err := authorizer.Query(rule)
 	if err != nil {
