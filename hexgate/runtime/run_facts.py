@@ -11,11 +11,10 @@ It records only what has happened — no limits, no thresholds, no pricing.
 Those live in ``policy_yaml`` and on the platform, which is what keeps
 ``PolicyEngine.evaluate`` a pure predicate over its inputs.
 
-Every field is monotone non-decreasing within a run: counters only increment,
-the tool set only grows, elapsed comes off a monotonic clock. A ``<``
-predicate over a non-decreasing value therefore *latches* — once a cap
-denies it keeps denying, which is what makes it a circuit breaker rather than
-a flapping gate.
+Every counter is monotone non-decreasing within a run, and elapsed comes off a
+monotonic clock. A ``<`` predicate over a non-decreasing value therefore
+*latches* — once a cap denies it keeps denying, which is what makes it a
+circuit breaker rather than a flapping gate.
 
 The contextvar distributes a *reference*, not a value. Sub-tasks that copy the
 context share one :class:`RunFacts`, so their writes reach the run that
@@ -36,27 +35,31 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 from uuid import uuid4
 
-# The single source of truth for what ``run.*`` exposes to a policy. Drives
-# :meth:`RunFacts.as_namespace` and, from the next change, the load-time
-# linter — so a path cannot be readable-but-unlintable or lintable-but-absent.
+# Every ``run.*`` path a policy may reference. One source of truth, shared by
+# :meth:`RunFacts.as_namespace` — which returns exactly these — and, from the
+# next change, the load-time linter that rejects anything else.
 #
-# A path is added here in the same change that makes it truthful, never
-# earlier. A registered path with no writer reads a permanent zero, and
-# ``run.tool_calls < 20`` against a permanent zero never fires: a silently
-# fail-open cap, shipped as a working feature. The counters below are computed
-# by ``as_namespace`` already but stay unregistered until their write sites
-# land, so the only edit needed then is to this tuple.
-SCALAR_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_s"})
-LIST_PATHS: Final[frozenset[str]] = frozenset()
-KNOWN_RUN_PATHS: Final[frozenset[str]] = SCALAR_PATHS | LIST_PATHS
+# A path is registered in the same change that starts *projecting* it, never
+# earlier. A registered path with no value behind it resolves to a permanent
+# zero, and ``run.tool_calls < 20`` against a permanent zero never fires: a
+# silently fail-open cap, shipped as a working feature. So the counters this
+# record already accumulates are deliberately absent below; each joins the
+# registry and the projection together, in the change that wires its writer.
+KNOWN_RUN_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_s"})
 
 
 @dataclass(slots=True)
 class RunFacts:
-    """Mutable, single-writer accumulator for one agent invocation.
+    """Mutable accumulator for one agent invocation.
 
-    Read through :meth:`as_namespace`; mutate only through the ``record_*``
-    methods. Assigning a counter directly bypasses the lock.
+    Monotone by discipline, not by construction: the ``record_*`` methods are
+    the only monotone-preserving way in, and assigning a field directly
+    bypasses both the lock and the detached guard. Read through
+    :meth:`as_namespace`.
+
+    Not single-writer. Parallel tool calls run as separate asyncio tasks that
+    copy the context and therefore share one instance by reference, so several
+    writers are expected — that is what ``_lock`` is for.
     """
 
     id: str
@@ -70,9 +73,13 @@ class RunFacts:
     #
     # Wrapped in a lambda rather than passed as ``default_factory=
     # time.monotonic``: the bare reference binds this function object at class
-    # definition, while ``as_namespace`` resolves ``time.monotonic`` at call
-    # time. The origin and the elapsed would then read different clocks
+    # definition, while :meth:`as_namespace` resolves ``time.monotonic`` at
+    # call time. The origin and the elapsed would then read different clocks
     # whenever one is substituted, yielding a negative elapsed.
+    #
+    # Deliberately still an ``__init__`` parameter, unlike the internals below:
+    # it is the seam a caller substitutes to control the clock, so only the
+    # default is hard-wired.
     _started_monotonic: float = field(default_factory=lambda: time.monotonic())
 
     tool_calls: int = 0
@@ -83,20 +90,23 @@ class RunFacts:
     input_tokens: int = 0
     output_tokens: int = 0
 
-    # Backs ``calls_of_this_tool``. Private: its keys are tool names, which may
-    # not be legal policy-path identifiers (MCP tool names are hyphenated), so
-    # exposing ``run.calls_by_tool.<name>`` needs a sanitisation scheme first.
-    _calls_by_tool: dict[str, int] = field(default_factory=dict)
-    # First-use-ordered set. A dict rather than a set because "first-use order"
-    # is the documented semantic for ``run.tools_used``.
-    _tools_used: dict[str, None] = field(default_factory=dict)
+    # Per-tool call counts, which also give the first-use-ordered set of tools
+    # used: a dict preserves insertion order and an update to an existing key
+    # does not reorder it, so ``list(_calls_by_tool)`` is that set. Private
+    # because its keys are tool names, which may not be legal policy-path
+    # identifiers (MCP tool names are hyphenated), so exposing
+    # ``run.calls_by_tool.<name>`` needs a sanitisation scheme first.
+    #
+    # ``init=False`` here and on the lock: neither has a legitimate
+    # caller-supplied value, and a dataclass would otherwise expose them as
+    # constructor parameters — injectable by accident, which is worse than not
+    # being injectable. It keeps ``__init__`` a designed surface: identity, the
+    # detached flag, the clock origin, and the counters.
+    _calls_by_tool: dict[str, int] = field(default_factory=dict, init=False)
     # threading.Lock, not asyncio.Lock: the mutators are called from sync paths
     # (``run_guarded_sync``, LangChain's sync callback handler) as well as
     # async ones, and every critical section is a few integer increments.
-    # Parallel tool calls run as separate asyncio tasks that copy the context
-    # and therefore share this object by reference — which is why a lock is
-    # needed at all.
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def record_execution(self, tool_name: str) -> None:
         """Count one tool call that actually executed.
@@ -109,7 +119,6 @@ class RunFacts:
         with self._lock:
             self.tool_calls += 1
             self._calls_by_tool[tool_name] = self._calls_by_tool.get(tool_name, 0) + 1
-            self._tools_used.setdefault(tool_name)
 
     def record_error(self) -> None:
         """Count one tool that raised."""
@@ -154,47 +163,34 @@ class RunFacts:
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
 
-    def as_namespace(self, tool_name: str) -> dict[str, Any]:
+    def as_namespace(self) -> dict[str, Any]:
         """Build the ``run`` mapping the policy grammar evaluates against.
 
-        ``tool_name`` is the tool being decided: ``calls_of_this_tool`` is a
-        per-decision view of the private per-tool map, not a counter, so it is
-        the one value here that is not monotone across a run.
+        Its keys are exactly :data:`KNOWN_RUN_PATHS`, so a policy can only
+        reference something this record actually projects — never a permanent
+        zero. ``test_as_namespace_returns_only_registered_paths`` keeps the two
+        in step.
 
-        Only paths in :data:`KNOWN_RUN_PATHS` are returned, so a path a policy
-        can reference is always one this SDK maintains. That makes the filter
-        and the load-time linter two independent guards against a cap reading
-        a permanently-zero field.
-
-        Takes the lock for the read: without it a concurrent
-        :meth:`record_llm_usage` could be observed half-applied, and
-        ``total_tokens`` would not equal its own parts.
+        Read under the lock, even though none of the three values below can be
+        touched by a recorder and the lock is therefore inert today. The next
+        change projects the counters, and a reader that already holds the lock
+        cannot forget to acquire it: the grammar permits cross-field
+        comparison (``run.a < run.b`` parses), so an unsynchronised read could
+        evaluate a pair of counters that never coexisted.
         """
         with self._lock:
-            facts: dict[str, Any] = {
+            return {
                 "id": self.id,
                 "agent": self.agent,
-                "tool_calls": self.tool_calls,
-                "calls_of_this_tool": self._calls_by_tool.get(tool_name, 0),
-                "llm_calls": self.llm_calls,
-                "denials": self.denials,
-                "approvals": self.approvals,
-                "errors": self.errors,
-                "input_tokens": self.input_tokens,
-                "output_tokens": self.output_tokens,
-                # Derived, never stored: the grammar has no arithmetic, so a
-                # policy cannot sum the parts itself.
-                "total_tokens": self.input_tokens + self.output_tokens,
-                # Zero when detached, not process uptime: DETACHED's origin is
-                # set at import, so a live subtraction would make
-                # ``run.elapsed_s < 300`` start denying every out-of-scope
-                # call once the process had been up five minutes.
+                # Derived, not stored: the grammar has no time functions.
+                # Zero when detached rather than process uptime — DETACHED's
+                # origin is set at import, so a live subtraction would make
+                # ``run.elapsed_s < 300`` deny every out-of-scope call once
+                # the process had been up five minutes.
                 "elapsed_s": (
                     0.0 if self.detached else time.monotonic() - self._started_monotonic
                 ),
-                "tools_used": list(self._tools_used),
             }
-        return {path: value for path, value in facts.items() if path in KNOWN_RUN_PATHS}
 
 
 # The ContextVar default, and therefore shared process-wide: ``get()`` hands
@@ -229,8 +225,14 @@ def get_run_facts() -> RunFacts:
 
 
 @contextmanager
-def _install(facts: RunFacts) -> Iterator[RunFacts]:
-    """Bind ``facts`` for the duration of the block.
+def use_run_facts(facts: RunFacts) -> Iterator[RunFacts]:
+    """Bind ``facts`` for the duration of the block, minting nothing.
+
+    The primitive :func:`run_scope` is built from. Call it directly to join a
+    run already in flight: ``Runner.run_streamed`` (OpenAI Agents) spawns the
+    agent loop as a background task that snapshots the contextvars at creation
+    and then returns, so the consumer-side iterator has to re-bind the same
+    object — minting there would split one invocation across two runs.
 
     Saves and restores by ``set()`` rather than ``reset(token)``, matching
     :class:`~hexgate.runtime.context.HexgateContext`: async-generator
@@ -255,19 +257,5 @@ def run_scope(agent: str) -> Iterator[RunFacts]:
     and *not* in ``HexgateContext.__aenter__``: that scope is request-shaped
     and may wrap several invocations.
     """
-    with _install(RunFacts(id=str(uuid4()), agent=agent)) as facts:
+    with use_run_facts(RunFacts(id=str(uuid4()), agent=agent)) as facts:
         yield facts
-
-
-@contextmanager
-def use_run_facts(facts: RunFacts) -> Iterator[RunFacts]:
-    """Join a run already in flight — bind ``facts``, minting nothing.
-
-    For a context that must see an existing run rather than start one.
-    ``Runner.run_streamed`` (OpenAI Agents) spawns the agent loop as a
-    background task that snapshots the contextvars at creation and then
-    returns, so the consumer-side iterator has to re-bind the same object;
-    minting there would split one invocation's facts across two runs.
-    """
-    with _install(facts) as bound:
-        yield bound

@@ -19,10 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
+import dataclasses
+import inspect
 import random
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from typing import Any
 
 import pytest
@@ -30,8 +35,6 @@ import pytest
 from hexgate.runtime.run_facts import (
     DETACHED,
     KNOWN_RUN_PATHS,
-    LIST_PATHS,
-    SCALAR_PATHS,
     RunFacts,
     get_run_facts,
     run_scope,
@@ -45,18 +48,57 @@ _WRITES_EACH = 500
 _FUZZ_STEPS = 200
 _FUZZ_SEED = 20260820
 _FAR_FUTURE_MONOTONIC = 1_000_000.0
+_RECORDER_PREFIX = "record_"
+_DETACHED_GUARD = "if self.detached:"
+_AN_INT = 1
+# Identity, the clock origin and the lock are not counters; a recorder that
+# changed one would be a different bug than the one _mutable_state guards.
+_NOT_MUTABLE_STATE = frozenset(
+    {"id", "agent", "detached", "_started_monotonic", "_lock"}
+)
 
 
-def _recorders(facts: RunFacts) -> list[Any]:
-    """Every mutator, as zero-argument callables."""
-    return [
-        lambda: facts.record_execution(_ANY_TOOL),
-        lambda: facts.record_execution(_OTHER_TOOL),
-        facts.record_error,
-        facts.record_denial,
-        facts.record_approval,
-        lambda: facts.record_llm_usage(10, 3),
+def _recorder_names() -> list[str]:
+    """Every ``record_*`` method, discovered rather than listed.
+
+    Reflective on purpose. A recorder added without the detached guard would
+    accumulate on the process-wide DETACHED singleton — the exact bug this
+    module's design exists to prevent — and a hand-written list would not
+    notice the new method.
+    """
+    return sorted(name for name in dir(RunFacts) if name.startswith(_RECORDER_PREFIX))
+
+
+def _invoke(recorder: Callable[..., None]) -> None:
+    """Call a recorder with a plausible argument per parameter, from its
+    signature — so a new recorder needs no test-side wiring."""
+    arguments = [
+        _ANY_TOOL if parameter.annotation in (str, "str") else _AN_INT
+        for parameter in inspect.signature(recorder).parameters.values()
     ]
+    recorder(*arguments)
+
+
+def _recorders(facts: RunFacts) -> list[Callable[[], None]]:
+    """Every mutator as a zero-argument callable.
+
+    Includes a second ``record_execution`` bound to a different tool, which
+    reflection cannot infer, so the per-tool map is exercised too.
+    """
+    discovered: list[Callable[[], None]] = [
+        partial(_invoke, getattr(facts, name)) for name in _recorder_names()
+    ]
+    return [*discovered, lambda: facts.record_execution(_OTHER_TOOL)]
+
+
+def _mutable_state(facts: RunFacts) -> dict[str, Any]:
+    """Every field a recorder could touch, discovered from the dataclass so a
+    counter added later is covered without editing this helper."""
+    return {
+        f.name: copy.deepcopy(getattr(facts, f.name))
+        for f in dataclasses.fields(facts)
+        if f.name not in _NOT_MUTABLE_STATE
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -77,22 +119,43 @@ def test_detached_default_drops_writes() -> None:
     it would accumulate for the process lifetime until the counters exceeded
     every cap, and then every tool call in the process would deny."""
     facts = get_run_facts()
+    before = _mutable_state(facts)
+
     for _ in range(100):
         for record in _recorders(facts):
             record()
 
-    assert facts.tool_calls == 0
-    assert facts.llm_calls == 0
-    assert facts.errors == 0
-    assert facts.denials == 0
-    assert facts.approvals == 0
-    assert facts.input_tokens == 0
-    assert facts.output_tokens == 0
+    assert _mutable_state(facts) == before
 
     # A fresh context must observe the same untouched object.
     observed = contextvars.copy_context().run(get_run_facts)
     assert observed is DETACHED
-    assert observed.as_namespace(_ANY_TOOL)["id"] == ""
+    assert observed.as_namespace()["id"] == ""
+
+
+def test_every_recorder_has_the_detached_guard() -> None:
+    """The structural half of the guarantee above.
+
+    ``test_detached_default_drops_writes`` only proves the fields it snapshots
+    stayed put. This proves each recorder is *written* to return early, so one
+    that mutated something outside the dataclass still fails here.
+    """
+    unguarded = [
+        name
+        for name in _recorder_names()
+        if _DETACHED_GUARD not in inspect.getsource(getattr(RunFacts, name))
+    ]
+    assert not unguarded, (
+        f"{unguarded} lack the detached guard: they would accumulate on the "
+        "process-wide DETACHED singleton, which never resets, until the "
+        "counters exceeded every cap and the process denied every tool call."
+    )
+
+
+def test_recorder_discovery_is_not_vacuous() -> None:
+    """Guards the guard: a typo in the prefix would make the two tests above
+    pass by iterating nothing."""
+    assert len(_recorder_names()) >= 5
 
 
 def test_detached_elapsed_is_zero_not_uptime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,7 +163,7 @@ def test_detached_elapsed_is_zero_not_uptime(monkeypatch: pytest.MonkeyPatch) ->
     would report process uptime — and ``run.elapsed_s < 300`` would start
     denying every out-of-scope call once the process had been up 5 minutes."""
     monkeypatch.setattr(time, "monotonic", lambda: _FAR_FUTURE_MONOTONIC)
-    assert DETACHED.as_namespace(_ANY_TOOL)["elapsed_s"] == 0.0
+    assert DETACHED.as_namespace()["elapsed_s"] == 0.0
 
 
 def test_get_run_facts_is_never_none() -> None:
@@ -183,7 +246,7 @@ def test_facts_outlive_their_scope_when_referenced() -> None:
 
 @pytest.mark.asyncio
 async def test_scope_survives_async_generator_finalizer() -> None:
-    """``_install`` restores by ``set()`` rather than ``reset(token)``: an
+    """``use_run_facts`` restores by ``set()`` rather than ``reset(token)``: an
     async-generator finalizer runs in a different Context, where a token reset
     raises ValueError. Three run entry points are async generators."""
 
@@ -259,7 +322,7 @@ def test_raw_thread_is_detached() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_record_execution_updates_calls_and_tool_set() -> None:
+def test_record_execution_counts_per_tool() -> None:
     with run_scope("a") as facts:
         facts.record_execution(_ANY_TOOL)
         facts.record_execution(_OTHER_TOOL)
@@ -267,14 +330,17 @@ def test_record_execution_updates_calls_and_tool_set() -> None:
 
         assert facts.tool_calls == 3
         assert facts._calls_by_tool == {_ANY_TOOL: 2, _OTHER_TOOL: 1}
-        assert list(facts._tools_used) == [_ANY_TOOL, _OTHER_TOOL]
 
 
-def test_tools_used_is_first_use_order_deduplicated() -> None:
+def test_calls_by_tool_is_the_first_use_ordered_tool_set() -> None:
+    """Why there is no separate ``tools_used`` field: a dict preserves
+    insertion order and an update to an existing key does not reorder it, so
+    the keys already are the deduplicated first-use sequence ``run.tools_used``
+    will project."""
     with run_scope("a") as facts:
         for tool in (_OTHER_TOOL, _ANY_TOOL, _OTHER_TOOL):
             facts.record_execution(tool)
-        assert list(facts._tools_used) == [_OTHER_TOOL, _ANY_TOOL]
+        assert list(facts._calls_by_tool) == [_OTHER_TOOL, _ANY_TOOL]
 
 
 def test_each_recorder_touches_only_its_own_counter() -> None:
@@ -301,17 +367,26 @@ def test_each_recorder_touches_only_its_own_counter() -> None:
 
 
 def test_counters_are_monotone_under_random_recording() -> None:
-    """Every scalar is non-decreasing within a run — the property that makes a
-    ``<`` predicate latch instead of flapping."""
+    """Every counter is non-decreasing within a run — the property that makes a
+    ``<`` predicate latch instead of flapping.
+
+    Asserted on the fields rather than the projection: the counters are not
+    projected yet, and the field is where the invariant actually lives. Both
+    the field set and the recorder set are discovered, so a counter added later
+    is covered without editing this test.
+    """
     rng = random.Random(_FUZZ_SEED)
     with run_scope("a") as facts:
-        previous = facts.as_namespace(_ANY_TOOL)
+        previous = _mutable_state(facts)
         for _ in range(_FUZZ_STEPS):
             rng.choice(_recorders(facts))()
-            current = facts.as_namespace(_ANY_TOOL)
-            for path in SCALAR_PATHS:
-                if isinstance(current[path], (int, float)):
-                    assert current[path] >= previous[path], path
+            current = _mutable_state(facts)
+            for name, value in current.items():
+                if isinstance(value, int):
+                    assert value >= previous[name], name
+                elif isinstance(value, dict):
+                    for key, count in value.items():
+                        assert count >= previous[name].get(key, 0), f"{name}.{key}"
             previous = current
 
 
@@ -319,18 +394,13 @@ def test_as_namespace_returns_only_registered_paths() -> None:
     """The structural half of the release gate: a path a policy can reference
     is always one this SDK maintains, independent of the load-time linter."""
     with run_scope("a") as facts:
-        assert set(facts.as_namespace(_ANY_TOOL)) == KNOWN_RUN_PATHS
-    assert set(DETACHED.as_namespace(_ANY_TOOL)) == KNOWN_RUN_PATHS
-
-
-def test_registry_is_scalars_plus_lists() -> None:
-    assert KNOWN_RUN_PATHS == SCALAR_PATHS | LIST_PATHS
-    assert not SCALAR_PATHS & LIST_PATHS
+        assert set(facts.as_namespace()) == KNOWN_RUN_PATHS
+    assert set(DETACHED.as_namespace()) == KNOWN_RUN_PATHS
 
 
 def test_as_namespace_exposes_identity_and_elapsed() -> None:
     with run_scope("billing") as facts:
-        namespace = facts.as_namespace(_ANY_TOOL)
+        namespace = facts.as_namespace()
         assert namespace["id"] == facts.id
         assert namespace["agent"] == "billing"
         assert namespace["elapsed_s"] >= 0.0
@@ -345,7 +415,7 @@ def test_elapsed_derives_from_the_monotonic_clock(
     monkeypatch.setattr(time, "monotonic", lambda: next(clock))
 
     with run_scope("a") as facts:  # consumes 100.0 as the origin
-        assert facts.as_namespace(_ANY_TOOL)["elapsed_s"] == pytest.approx(42.5)
+        assert facts.as_namespace()["elapsed_s"] == pytest.approx(42.5)
 
 
 # ---------------------------------------------------------------------------
@@ -374,11 +444,11 @@ def test_parallel_recorders_do_not_lose_increments() -> None:
         assert facts._calls_by_tool[_ANY_TOOL] == _WRITERS * _WRITES_EACH
 
 
-def test_as_namespace_snapshot_is_internally_consistent() -> None:
-    """Why the read takes the lock: without it a concurrent
-    ``record_llm_usage`` is observable half-applied and ``total_tokens`` would
-    not equal its own parts. Asserted on the full fact dict, since the derived
-    total is not a registered path yet."""
+def test_llm_usage_is_applied_atomically() -> None:
+    """Both token counters move together or not at all.
+
+    This is the invariant that will make the projected ``total_tokens`` equal
+    its own parts, and the reason :meth:`as_namespace` reads under the lock."""
     with run_scope("a") as facts:
         stop = threading.Event()
 
