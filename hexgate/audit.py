@@ -141,6 +141,15 @@ def _truncate_json(payload: dict[str, Any], *, cap: int) -> dict[str, Any]:
         preview_bytes //= 2
 
 
+# Public aliases so server-side ingestion can import this pipeline instead of
+# keeping its own copy.
+redact = _redact
+truncate_json = _truncate_json
+bounded_violations = _bounded_violations
+SENSITIVE_ARG_KEY_RE = _SENSITIVE_ARG_KEY_RE
+SENSITIVE_ATTR_KEY_RE = _SENSITIVE_ATTR_KEY_RE
+
+
 @dataclass(frozen=True, slots=True)
 class AuditEvent:
     """Decision plus caller identity from the active HexgateContext scope.
