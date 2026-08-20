@@ -232,12 +232,14 @@ redpanda-reset: ## Wipe ONLY the Redpanda data volume, restart, and recreate top
 # for why it points at localhost, not the redpanda:29092 container listener.
 #
 # The Biscuit auth extension under platform/collector/extension/ is its own Go
-# module, wired in by builder-config.yaml's `replaces`. Nested modules are
-# invisible to `./...` from platform/collector, so its own vet/test runs are
-# separate steps below.
+# module, wired in by builder-config.yaml's `replaces`, and the integration
+# suite under platform/collector/integration/ is another. Nested modules are
+# invisible to `./...` from platform/collector, so both get their own steps
+# below.
 
 COLLECTOR_BUILDER_VERSION := v0.158.0
 COLLECTOR_EXT_BISCUITAUTH := platform/collector/extension/hexgatebiscuitauth
+COLLECTOR_EXT_INTEGRATION := platform/collector/integration
 
 .PHONY: collector-install-builder
 collector-install-builder: ## One-time: install the ocb builder tool ($GOBIN)
@@ -255,11 +257,24 @@ collector-run: redpanda-topics ## Run the collector binary against config.yaml (
 collector-test: ## Unit tests for the collector's own Go modules
 	cd $(COLLECTOR_EXT_BISCUITAUTH) && go test -race ./...
 
+# Opt-in, like the Python side's `pytest -m integration`: these drive the real
+# binary against a real Postgres and Redpanda, so they are kept out of
+# collector-check. The schema belongs to platform-api, so it is created here
+# rather than by the Go tests.
+.PHONY: collector-test-integration
+collector-test-integration: postgres-up redpanda-topics ## Collector integration tests (real Postgres + Redpanda)
+	cd platform/collector && go build -o hexgate-collector ./...
+	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -c \
+		"import asyncio; from hexgate_api.core.db import init_db; asyncio.run(init_db())"
+	cd $(COLLECTOR_EXT_INTEGRATION) && go test -tags integration -count=1 ./...
+
 .PHONY: collector-check
 collector-check: ## Vet + test + build the collector, validate config.yaml (no ocb regeneration)
 	cd $(COLLECTOR_EXT_BISCUITAUTH) && gofmt -l . | (! grep .)
 	cd $(COLLECTOR_EXT_BISCUITAUTH) && go vet ./...
 	cd $(COLLECTOR_EXT_BISCUITAUTH) && go test -race ./...
+	cd $(COLLECTOR_EXT_INTEGRATION) && gofmt -l . | (! grep .)
+	cd $(COLLECTOR_EXT_INTEGRATION) && go vet -tags integration ./...
 	cd platform/collector && go vet ./...
 	cd platform/collector && go build -o hexgate-collector ./...
 	cd platform/collector && ./hexgate-collector validate --config=config.yaml
