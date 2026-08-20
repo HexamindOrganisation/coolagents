@@ -29,6 +29,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -274,7 +275,17 @@ func expectNoRecord(t *testing.T, topic string, within time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), within)
 	defer cancel()
 
+	// This assertion is only meaningful if consuming actually works: an
+	// unreachable broker also yields zero records, which would pass a
+	// regression where rejected spans DO reach Kafka. Prove reachability
+	// first, and treat any non-deadline consume error the same way.
+	require.NoError(t, client.Ping(ctx),
+		"cannot reach the broker, so seeing no records would prove nothing")
+
 	fetches := client.PollRecords(ctx, 1)
+	if err := fetches.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("consuming from %s failed, so seeing no records proves nothing: %v", topic, err)
+	}
 	if records := fetches.Records(); len(records) > 0 {
 		t.Fatalf("expected no records on %s, got %d (first key=%q)",
 			topic, len(records), string(records[0].Key))
@@ -342,9 +353,12 @@ func startCollector(t *testing.T, opts collectorOptions) runningCollector {
 	require.NoError(t, cmd.Start(), "start the collector")
 
 	// One owner for Wait(): calling it from both here and the cleanup would
-	// race.
+	// race. Closed after the single send so every receive past the first
+	// returns immediately — waitUntilReady may have consumed the value on a
+	// startup failure, and the cleanup below would otherwise block forever on
+	// a channel that will never be sent to again.
 	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
+	go func() { exited <- cmd.Wait(); close(exited) }()
 
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
@@ -460,29 +474,49 @@ func waitUntilReady(t *testing.T, collector runningCollector) {
 	t.Fatalf("collector never became ready on %s: %v", collector.httpEndpoint, lastErr)
 }
 
+// postClient bounds each span post; http.DefaultClient has no timeout.
+var postClient = &http.Client{Timeout: 10 * time.Second}
+
 // postSpans sends one OTLP/HTTP JSON trace request and returns the status code
-// and body.
+// and body, failing the test on a transport error. Inside a require.Eventually
+// condition use tryPostSpans instead: its FailNow would run on the condition
+// goroutine, which is documented as unreliable and kills the retry loop that
+// Eventually exists to provide.
 func postSpans(t *testing.T, collector runningCollector, credential string) (int, string) {
 	t.Helper()
 
+	status, body, err := tryPostSpans(collector, credential)
+	require.NoError(t, err)
+	return status, body
+}
+
+// tryPostSpans is postSpans without test assertions: transport problems come
+// back as an error for the caller to treat as a retry or a failure.
+func tryPostSpans(collector runningCollector, credential string) (int, string, error) {
 	request, err := http.NewRequest(http.MethodPost,
 		"http://"+collector.httpEndpoint+"/v1/traces",
 		strings.NewReader(spanPayload))
-	require.NoError(t, err)
+	if err != nil {
+		return 0, "", err
+	}
 	request.Header.Set("Content-Type", "application/json")
 	if credential != "" {
 		request.Header.Set("Authorization", "Bearer "+credential)
 	}
 
-	response, err := http.DefaultClient.Do(request)
-	require.NoError(t, err)
+	response, err := postClient.Do(request)
+	if err != nil {
+		return 0, "", err
+	}
 	defer response.Body.Close()
 
 	// io.ReadAll, not a single Read: a Read is allowed to return early, and
 	// callers assert.Contains against this body.
 	body, err := io.ReadAll(response.Body)
-	require.NoError(t, err)
-	return response.StatusCode, string(body)
+	if err != nil {
+		return 0, "", err
+	}
+	return response.StatusCode, string(body), nil
 }
 
 // spanPayload is a minimal, valid OTLP/HTTP JSON trace request. Hand-built on

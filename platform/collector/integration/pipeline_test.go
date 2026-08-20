@@ -68,9 +68,12 @@ func TestCollectorPipeline_when_api_key_is_revoked_then_spans_are_rejected_after
 
 	// Poll rather than sleeping for exactly one interval: the refresh lands
 	// somewhere inside the next tick, not at a predictable offset from here.
+	// tryPostSpans, not postSpans: a FailNow from Eventually's condition
+	// goroutine is unreliable, and a transient transport blip should be a
+	// retry here, not a test death.
 	require.Eventually(t, func() bool {
-		status, _ := postSpans(t, collector, envelope)
-		return status == http.StatusUnauthorized
+		status, _, err := tryPostSpans(collector, envelope)
+		return err == nil && status == http.StatusUnauthorized
 	}, 10*testPollInterval, testPollInterval/4,
 		"a revoked key must stop being accepted once the revocation cache refreshes")
 }
