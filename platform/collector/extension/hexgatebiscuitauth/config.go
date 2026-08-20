@@ -35,8 +35,10 @@ package hexgatebiscuitauth
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/collector/config/configopaque"
 )
 
@@ -46,6 +48,14 @@ const (
 	defaultPollInterval = 20 * time.Second
 	defaultMaxStaleness = 2 * time.Minute
 )
+
+// devPostgresPassword is the committed local-dev credential from
+// platform/docker-compose.yml. It keeps `make collector-run` zero-setup, but
+// pointing it at a remote host is always a misconfiguration — the whole world
+// can read this repo, and the devtoken table it would guard holds every API
+// key's secret. Same tripwire as the Python side's
+// settings.py:_refuse_dev_password_on_remote_host.
+const devPostgresPassword = "hexgate-dev-password"
 
 // Config is the `hexgatebiscuitauth` block in config.yaml.
 type Config struct {
@@ -104,6 +114,9 @@ func (c *Config) Validate() error {
 		return errors.New("revocation.dsn is required while revocation.enabled is true; " +
 			"set revocation.enabled: false to run on signature and TTL checks alone")
 	}
+	if err := refuseDevPasswordOnRemoteHost(string(c.Revocation.DSN)); err != nil {
+		return err
+	}
 	if c.Revocation.PollInterval <= 0 {
 		return fmt.Errorf("revocation.poll_interval must be positive, got %s", c.Revocation.PollInterval)
 	}
@@ -114,4 +127,41 @@ func (c *Config) Validate() error {
 			c.Revocation.MaxStaleness, c.Revocation.PollInterval)
 	}
 	return nil
+}
+
+// refuseDevPasswordOnRemoteHost fails fast on the one DSN shape that is always
+// a misconfiguration: the committed dev password pointed at a host other than
+// this machine. Parsed with the same parser pgxpool uses at Start, so what is
+// vetted here — including any PG* environment variables pgx would honour — is
+// exactly what would connect.
+func refuseDevPasswordOnRemoteHost(dsn string) error {
+	pgCfg, err := pgconn.ParseConfig(dsn)
+	if err != nil {
+		return fmt.Errorf("revocation.dsn does not parse: %w", err)
+	}
+	if pgCfg.Password != devPostgresPassword {
+		return nil
+	}
+
+	hosts := []string{pgCfg.Host}
+	for _, fallback := range pgCfg.Fallbacks {
+		hosts = append(hosts, fallback.Host)
+	}
+	for _, host := range hosts {
+		if !isLocalHost(host) {
+			return fmt.Errorf(
+				"revocation.dsn points at non-local host %q but still carries the committed "+
+					"dev password — set HEXGATE_COLLECTOR_POSTGRES_DSN to a real credential", host)
+		}
+	}
+	return nil
+}
+
+func isLocalHost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	// A path means a Unix socket, reachable only from this machine.
+	return strings.HasPrefix(host, "/")
 }

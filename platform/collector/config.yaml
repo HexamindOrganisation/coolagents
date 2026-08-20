@@ -93,6 +93,8 @@ extensions:
       #
       # LOCAL DEV ONLY credentials, matching the postgres service in
       # platform/docker-compose.yml — never reuse these anywhere deployed.
+      # Enforced, not just asked: config validation refuses this password on
+      # any non-local host, same as the Python side's settings.py validator.
       # pgx wants a plain postgres:// URL, not the postgresql+asyncpg:// form
       # the Python side's DATABASE_URL uses.
       dsn: ${env:HEXGATE_COLLECTOR_POSTGRES_DSN:-postgres://hexgate:hexgate-dev-password@localhost:5433/hexgate}

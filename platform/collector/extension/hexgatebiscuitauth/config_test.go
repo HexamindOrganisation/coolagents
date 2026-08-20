@@ -72,6 +72,46 @@ func TestConfigValidate_when_revocation_is_disabled_then_database_settings_are_n
 	require.NoError(t, cfg.Validate())
 }
 
+// The committed dev password on a non-local host is always a misconfiguration:
+// the repo is readable by anyone, and the devtoken table holds every API key's
+// secret. Same tripwire as settings.py's _refuse_dev_password_on_remote_host.
+func TestConfigValidate_when_dev_password_points_at_a_remote_host_then_an_error_is_returned(t *testing.T) {
+	cfg := validConfig()
+	cfg.Revocation.DSN = "postgres://hexgate:hexgate-dev-password@db.staging.internal:5432/hexgate"
+
+	err := cfg.Validate()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committed")
+	assert.Contains(t, err.Error(), "db.staging.internal")
+}
+
+// The committed default DSN has to keep working — the guard exists to protect
+// deployments, not to break `make collector-run`.
+func TestConfigValidate_when_dev_password_points_at_localhost_then_config_is_accepted(t *testing.T) {
+	cfg := validConfig()
+	cfg.Revocation.DSN = "postgres://hexgate:hexgate-dev-password@localhost:5433/hexgate"
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfigValidate_when_a_real_password_points_at_a_remote_host_then_config_is_accepted(t *testing.T) {
+	cfg := validConfig()
+	cfg.Revocation.DSN = "postgres://hexgate:s3cret-rotated@db.staging.internal:5432/hexgate"
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfigValidate_when_dsn_is_malformed_then_an_error_is_returned(t *testing.T) {
+	cfg := validConfig()
+	cfg.Revocation.DSN = "not a dsn"
+
+	err := cfg.Validate()
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revocation.dsn does not parse")
+}
+
 func TestConfigValidate_when_poll_interval_is_not_positive_then_an_error_is_returned(t *testing.T) {
 	cfg := validConfig()
 	cfg.Revocation.PollInterval = 0

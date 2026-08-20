@@ -28,6 +28,15 @@ const (
 
 	authorizationHeader = "authorization"
 	bearerScheme        = "bearer"
+
+	// maxCredentialLength bounds the Authorization value before anything is
+	// decoded, parsed, or verified. Everything downstream costs work
+	// proportional to the token's size — base64 decode, protobuf parse, and
+	// one Ed25519 verification plus one Datalog run per block — and
+	// attenuation needs no signing key, so a token's size is attacker-chosen.
+	// A minted key is a few hundred bytes and legitimate attenuation adds
+	// ~150 per block, so 8 KiB is far above anything real.
+	maxCredentialLength = 8 << 10
 )
 
 // Reasons returned to the caller. These become the body of a 401 (HTTP) or the
@@ -97,6 +106,10 @@ func (a *biscuitAuth) Authenticate(ctx context.Context, sources map[string][]str
 	credential, err := bearerCredential(sources)
 	if err != nil {
 		return ctx, err
+	}
+	if len(credential) > maxCredentialLength {
+		a.logger.Debug("rejected an oversized credential", zap.Int("length", len(credential)))
+		return ctx, errInvalidCredential
 	}
 
 	_, envelopeProjectID, biscuitB64, err := parseEnvelope(credential)

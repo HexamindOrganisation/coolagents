@@ -3,6 +3,7 @@ package hexgatebiscuitauth
 import (
 	"context"
 	"crypto/ed25519"
+	"strings"
 	"testing"
 	"time"
 
@@ -105,6 +106,18 @@ func TestAuthenticate_when_metadata_is_propagated_then_the_credential_is_strippe
 	assert.Empty(t, info.Metadata.Get("authorization"))
 	// Unrelated metadata the receiver collected has to survive.
 	assert.Equal(t, []string{"acme"}, info.Metadata.Get("X-Tenant-Hint"))
+}
+
+// The length cap runs before the envelope is even split, so an oversized
+// credential is rejected without any decoding or signature work.
+func TestAuthenticate_when_credential_is_oversized_then_the_request_is_rejected(t *testing.T) {
+	pub, _ := newTestKeypair(t)
+	auth := newTestAuth(t, pub, nil)
+	oversized := envelopeFor(strings.Repeat("A", maxCredentialLength))
+
+	_, err := auth.Authenticate(context.Background(), httpSources("Bearer "+oversized))
+
+	require.ErrorIs(t, err, errInvalidCredential)
 }
 
 func TestAuthenticate_when_no_authorization_header_is_present_then_the_request_is_rejected(t *testing.T) {

@@ -11,6 +11,17 @@ import (
 	"github.com/biscuit-auth/biscuit-go/v2/parser"
 )
 
+// maxAppendedBlocks caps how many attenuation blocks a token may carry.
+//
+// Authorizer() verifies one Ed25519 signature per block and Authorize() runs
+// a (bounded, but ~2ms) Datalog pass per block, so per-request CPU is linear
+// in the block count — and attenuation needs no signing key, so the count is
+// chosen by whoever holds the token, including holders of revoked or expired
+// ones (both are rejected only after this work is done). Real attenuation
+// depth is single digits: the platform mints one authority block and a dev's
+// backend adds a narrowing block or two.
+const maxAppendedBlocks = 8
+
 // identity holds the facts read out of a verified token's authority block.
 //
 // ProjectID is the project the token *claimed* at mint time. It is signed, so
@@ -43,6 +54,14 @@ func verifyBiscuit(rootPub ed25519.PublicKey, biscuitB64 string, now time.Time) 
 	if err != nil {
 		// Structural decode only — no signature has been checked yet.
 		return nil, fmt.Errorf("deserialize biscuit: %w", err)
+	}
+
+	// BlockCount() covers appended blocks only (the authority block is held
+	// separately), which is exactly the attacker-appendable part. Checked
+	// before Authorizer() so an oversized chain costs no signature work.
+	if count := token.BlockCount(); count > maxAppendedBlocks {
+		return nil, fmt.Errorf(
+			"token carries %d appended blocks, more than the %d this collector accepts", count, maxAppendedBlocks)
 	}
 
 	// Authorizer() is where the Ed25519 signature chain is verified against

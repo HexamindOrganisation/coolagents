@@ -1,6 +1,9 @@
 package hexgatebiscuitauth
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +117,39 @@ func TestVerifyBiscuit_when_an_appended_block_adds_a_failing_check_then_authoriz
 	assert.Contains(t, err.Error(), "authorization failed")
 }
 
+// Attenuation depth is attacker-chosen (no signing key needed), and each block
+// costs a signature verification and a Datalog run, so the count has to be
+// capped before that work starts.
+func TestVerifyBiscuit_when_token_carries_too_many_appended_blocks_then_verification_fails(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	token := mintToken(t, priv, defaultMintOptions())
+
+	for i := 0; i < maxAppendedBlocks+1; i++ {
+		token = attenuate(t, token, fmt.Sprintf(`hop("%d");`, i))
+	}
+
+	_, err := verifyBiscuit(pub, token, referenceNow)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "appended blocks")
+}
+
+// The cap must not reject legitimate attenuation: a token at exactly the limit
+// still verifies, and its identity still comes from the authority block.
+func TestVerifyBiscuit_when_attenuated_up_to_the_block_limit_then_token_is_accepted(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	token := mintToken(t, priv, defaultMintOptions())
+
+	for i := 0; i < maxAppendedBlocks; i++ {
+		token = attenuate(t, token, fmt.Sprintf(`hop("%d");`, i))
+	}
+
+	id, err := verifyBiscuit(pub, token, referenceNow)
+
+	require.NoError(t, err)
+	assert.Equal(t, "tok_a1b2c3d4e5f6", id.TokenID)
+}
+
 func TestVerifyBiscuit_when_token_id_fact_is_missing_then_verification_fails(t *testing.T) {
 	pub, priv := newTestKeypair(t)
 	opts := defaultMintOptions()
@@ -136,6 +172,41 @@ func TestVerifyBiscuit_when_authority_block_has_two_token_ids_then_verification_
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exactly one token_id")
+}
+
+// The cross-language guarantee the whole design leans on: biscuit-go must
+// verify what biscuit-python actually signs. Every other test here minted its
+// token in Go; this one runs against a committed fixture minted by the real
+// platform code path (core/biscuits.py, via testdata/python_minted/
+// mint_fixture.py), so a wire-format divergence between the two libraries —
+// protobuf schema, symbol table, date literals, envelope, key encoding —
+// breaks CI instead of production. The signing keypair was a throwaway whose
+// private half was never persisted.
+func TestVerifyBiscuit_when_token_was_minted_by_the_python_platform_then_it_verifies(t *testing.T) {
+	rawKey, err := os.ReadFile("testdata/python_minted/root.pub")
+	require.NoError(t, err)
+	// Through parsePublicKey, not a bare cast: the fixture key file is in
+	// keystore.py's on-disk format, so this also pins the keyring path.
+	rootPub, err := parsePublicKey(rawKey)
+	require.NoError(t, err)
+
+	rawEnvelope, err := os.ReadFile("testdata/python_minted/envelope.txt")
+	require.NoError(t, err)
+
+	env, projectID, biscuitB64, err := parseEnvelope(strings.TrimSpace(string(rawEnvelope)))
+	require.NoError(t, err, "make_envelope's output must split cleanly")
+	assert.Equal(t, "live", env)
+	assert.Equal(t, "fixture-project", projectID)
+
+	id, err := verifyBiscuit(rootPub, biscuitB64, referenceNow)
+
+	require.NoError(t, err, "a biscuit-python token must verify with biscuit-go")
+	assert.Equal(t, "tok_pyfixture0001", id.TokenID)
+	assert.Equal(t, "fixture-project", id.ProjectID)
+	assert.Equal(t, "live", id.Env)
+	assert.Equal(t, "python-fixture", id.Name)
+	assert.ElementsMatch(t, []string{"mint_user_token", "read_audit"}, id.Scopes)
+	assert.False(t, id.IssuedAt.IsZero(), "the issued_at date literal must survive the crossing")
 }
 
 func TestVerifyBiscuit_when_payload_is_not_base64_then_verification_fails(t *testing.T) {
