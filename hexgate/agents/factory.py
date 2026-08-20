@@ -42,6 +42,7 @@ from hexgate.runtime import (
     ToolUseContext,
     Workspace,
     reset_current_tool_use_context,
+    run_scope,
     set_current_tool_use_context,
 )
 from hexgate.streaming import StreamEvent, new_root_run_id, normalize_langchain_events
@@ -56,6 +57,11 @@ LangChainAgentGraph: TypeAlias = CompiledStateGraph
 ToolSpec: TypeAlias = BaseTool | Callable[..., Any] | dict[str, Any]
 AgentState: TypeAlias = dict[str, Any]
 AgentInput: TypeAlias = str | Sequence[object] | Mapping[str, object] | BaseModel
+# Fallback when the agent was built without a ``name``. Shared by the enforcer
+# (which stamps it on every audit event) and the run scope, so a nameless
+# agent's decisions and its run facts agree on what it is called.
+DEFAULT_AGENT_NAME = "default"
+
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant built on a tool-using agent runtime.\n\n"
     "Your job is to answer clearly and directly, using the tools available to "
@@ -396,9 +402,10 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         await self._check_ban()
-        return await self._graph.ainvoke(
-            payload, config=self._with_usage_callback(config)
-        )
+        with run_scope(self.name or DEFAULT_AGENT_NAME):
+            return await self._graph.ainvoke(
+                payload, config=self._with_usage_callback(config)
+            )
 
     async def astream_events(
         self,
@@ -415,10 +422,11 @@ class HexgateAgent:
         """
         await _refresh_policy_safely(self)
         await self._check_ban()
-        async for event in self._graph.astream_events(
-            payload, config=self._with_usage_callback(config), version=version
-        ):
-            yield event
+        with run_scope(self.name or DEFAULT_AGENT_NAME):
+            async for event in self._graph.astream_events(
+                payload, config=self._with_usage_callback(config), version=version
+            ):
+                yield event
 
     async def _check_ban(self) -> None:
         """Refuse a banned agent/user before the graph runs, if a gate is
@@ -552,7 +560,7 @@ class HexgateAgent:
                 engine = load_policy_set(policy)
             enforcer = build_enforcer(
                 engine,
-                agent_name=self.name or "default",
+                agent_name=self.name or DEFAULT_AGENT_NAME,
                 decision_observer=decision_observer,
             )
 
