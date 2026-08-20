@@ -12,7 +12,7 @@ from pydantic_ai.result import StreamedRunResult
 
 from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.pydantic_ai.usage import emit_run_usage
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import HexgateContext, run_scope
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -75,17 +75,19 @@ class HexgatePydanticAgent:
 
     @asynccontextmanager
     async def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
-        """Async HexgateContext scope + Langfuse propagation."""
+        """Async HexgateContext scope + run facts + Langfuse propagation."""
         async with context:
-            with propagate_attributes(**self._propagate_kwargs(context, method)):
-                yield
+            with run_scope(self._agent_name):
+                with propagate_attributes(**self._propagate_kwargs(context, method)):
+                    yield
 
     @contextmanager
     def _bind(self, context: HexgateContext, method: str) -> Iterator[None]:
-        """Sync HexgateContext scope + Langfuse propagation."""
+        """Sync HexgateContext scope + run facts + Langfuse propagation."""
         with context.sync_scope():
-            with propagate_attributes(**self._propagate_kwargs(context, method)):
-                yield
+            with run_scope(self._agent_name):
+                with propagate_attributes(**self._propagate_kwargs(context, method)):
+                    yield
 
     async def run(
         self,

@@ -35,7 +35,7 @@ from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import HexgateContext, run_scope, use_run_facts
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -210,7 +210,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         async with hexgate_context:
-            with self._propagate(hexgate_context, agent.name):
+            with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
                     input,
@@ -244,7 +244,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         with hexgate_context.sync_scope():
-            with self._propagate(hexgate_context, agent.name):
+            with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 try:
                     return Runner.run_sync(
                         wrapped_agent,
@@ -314,22 +314,30 @@ class HexgateRunner:
         )
 
         with hexgate_context.sync_scope():
-            with self._propagate(hexgate_context, agent.name):
-                result = Runner.run_streamed(
-                    wrapped_agent,
-                    input,
-                    run_config=run_config,
-                    hooks=self._merge_hooks(hooks),
-                    **kwargs,
-                )
+            # The scope must be open around run_streamed(): it spawns the agent
+            # loop as a background task that snapshots the contextvars at
+            # creation, and that task is where tools fire. The task's snapshot
+            # keeps the facts alive after this block exits.
+            with run_scope(agent.name) as run_facts:
+                with self._propagate(hexgate_context, agent.name):
+                    result = Runner.run_streamed(
+                        wrapped_agent,
+                        input,
+                        run_config=run_config,
+                        hooks=self._merge_hooks(hooks),
+                        **kwargs,
+                    )
 
         original_stream_events = result.stream_events
 
         async def _stream_events_with_scope():
             async with hexgate_context:
-                with self._propagate(hexgate_context, agent.name):
-                    async for event in original_stream_events():
-                        yield event
+                # Re-bind the facts the background task snapshotted rather than
+                # minting a second run: one invocation must have one run id.
+                with use_run_facts(run_facts):
+                    with self._propagate(hexgate_context, agent.name):
+                        async for event in original_stream_events():
+                            yield event
 
         result.stream_events = _stream_events_with_scope
         return result
