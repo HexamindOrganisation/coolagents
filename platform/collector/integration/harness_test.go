@@ -30,6 +30,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -409,6 +410,11 @@ service:
 	return path
 }
 
+// probeClient bounds each individual readiness probe. waitUntilReady's own
+// deadline is only re-checked between attempts, so without this a single
+// stalled request could hang past it.
+var probeClient = &http.Client{Timeout: 2 * time.Second}
+
 // waitUntilReady polls the OTLP endpoint until an unauthenticated request is
 // rejected.
 //
@@ -432,7 +438,7 @@ func waitUntilReady(t *testing.T, collector runningCollector) {
 		default:
 		}
 
-		response, err := http.Post(
+		response, err := probeClient.Post(
 			"http://"+collector.httpEndpoint+"/v1/traces",
 			"application/json",
 			strings.NewReader(spanPayload))
@@ -472,9 +478,11 @@ func postSpans(t *testing.T, collector runningCollector, credential string) (int
 	require.NoError(t, err)
 	defer response.Body.Close()
 
-	body := make([]byte, 512)
-	n, _ := response.Body.Read(body)
-	return response.StatusCode, string(body[:n])
+	// io.ReadAll, not a single Read: a Read is allowed to return early, and
+	// callers assert.Contains against this body.
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	return response.StatusCode, string(body)
 }
 
 // spanPayload is a minimal, valid OTLP/HTTP JSON trace request. Hand-built on
@@ -495,7 +503,9 @@ const spanPayload = `{"resourceSpans":[{"resource":{"attributes":[{"key":"servic
 // Tests mint their own tokens rather than calling the control plane, so they
 // need no Python and no running API. The cross-language guarantee — biscuit-go
 // verifying what biscuit-python signed — is a separate concern, covered by the
-// PR #0 spike rather than here.
+// extension's committed-fixture test
+// (TestVerifyBiscuit_when_token_was_minted_by_the_python_platform_then_it_verifies)
+// rather than here.
 func writeRootKeypair(t *testing.T) (ed25519.PrivateKey, string) {
 	t.Helper()
 
