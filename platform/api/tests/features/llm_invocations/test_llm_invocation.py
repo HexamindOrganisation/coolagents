@@ -72,8 +72,8 @@ def test_insert_llm_invocations_batch_happy_path() -> None:
     rows = args[1]
     assert len(rows) == 3
     assert kwargs["column_names"] == _LLM_INVOCATION_COLUMNS
-    # No async_insert on the batch path — see the audit batch tests.
-    assert "settings" not in kwargs
+    # No async_insert on the batch path (pinned to 0) — see the audit batch tests.
+    assert kwargs["settings"] == {"async_insert": 0}
     project_index = _LLM_INVOCATION_COLUMNS.index("project_id")
     assert [row[project_index] for row in rows] == ["proj_0", "proj_1", "proj_2"]
 

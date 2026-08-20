@@ -95,7 +95,8 @@ def insert_llm_invocations_batch(
     features/audit/service.py: dedup stays within the monthly received_at
     partition, and an intra-batch duplicate collapses at insert time with the
     last occurrence winning. No async_insert, unlike the single-row path —
-    this insert is already a batch.
+    this insert is already a batch; pinned to 0 so a server-side default
+    change can't silently make it ack-before-durable.
     """
     if not items:
         return
@@ -109,6 +110,7 @@ def insert_llm_invocations_batch(
         "llm_invocation",
         rows,
         column_names=_LLM_INVOCATION_COLUMNS,
+        settings={"async_insert": 0},
     )
 
 

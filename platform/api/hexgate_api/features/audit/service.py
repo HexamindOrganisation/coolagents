@@ -199,7 +199,7 @@ def insert_decisions_batch(
     clickhouse_client: Client,
     items: list[tuple[DecisionEvent, str, str]],
 ) -> None:
-    """Write many decision rows in one atomic insert.
+    """Write many decision rows in one batch insert.
 
     ``items`` is ``(event, project_id, agent_version_id)`` per event — both
     ids resolved per item, because a consumer batch aggregates across Kafka
@@ -231,10 +231,13 @@ def insert_decisions_batch(
     # many small inserts, and this insert is already a batch — buffering it
     # again would only add a server-side copy and a busy-timeout wait. A plain
     # synchronous insert surfaces failures the same way (the call raises).
+    # Pinned to 0 rather than left to the server default so a cluster-wide
+    # async_insert=1 can't silently turn this into ack-before-durable.
     clickhouse_client.insert(
         DECISION_TABLE,
         rows,
         column_names=_DECISION_COLUMNS,
+        settings={"async_insert": 0},
     )
 
 
@@ -317,6 +320,8 @@ def insert_ban_enforcements_batch(
         BAN_ENFORCEMENT_TABLE,
         rows,
         column_names=_BAN_ENFORCEMENT_COLUMNS,
+        # Same synchronous-insert pin as insert_decisions_batch.
+        settings={"async_insert": 0},
     )
 
 

@@ -1381,8 +1381,9 @@ def test_insert_decisions_batch_happy_path() -> None:
     assert len(rows) == 3
     assert kwargs["column_names"] == _DECISION_COLUMNS
     # No async_insert on the batch path — it coalesces small inserts, and this
-    # insert is already a batch; a plain synchronous insert raises on failure.
-    assert "settings" not in kwargs
+    # insert is already a batch; pinned to 0 so a server-default flip can't
+    # silently make the insert ack-before-durable.
+    assert kwargs["settings"] == {"async_insert": 0}
     # project_id / agent_version_id are per item, not hoisted batch-wide: a
     # consumer batch aggregates across Kafka records and can span projects.
     project_index = _DECISION_COLUMNS.index("project_id")
