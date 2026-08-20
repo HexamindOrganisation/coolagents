@@ -45,7 +45,7 @@ from uuid import uuid4
 # silently fail-open cap, shipped as a working feature. So the counters this
 # record already accumulates are deliberately absent below; each joins the
 # registry and the projection together, in the change that wires its writer.
-KNOWN_RUN_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_s"})
+KNOWN_RUN_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_seconds"})
 
 
 @dataclass(slots=True)
@@ -66,7 +66,7 @@ class RunFacts:
     agent: str
     # True only for DETACHED, where every mutator returns early. See DETACHED.
     detached: bool = False
-    # Origin for ``elapsed_s``. Monotonic, not wall clock: an NTP step
+    # Origin for ``elapsed_seconds``. Monotonic, not wall clock: an NTP step
     # backwards would un-block a run that had already exceeded its time
     # budget. Private and never a ``run.*`` path — only the derived elapsed is
     # exposed, so there is no second time field to keep consistent.
@@ -185,9 +185,9 @@ class RunFacts:
                 # Derived, not stored: the grammar has no time functions.
                 # Zero when detached rather than process uptime — DETACHED's
                 # origin is set at import, so a live subtraction would make
-                # ``run.elapsed_s < 300`` deny every out-of-scope call once
+                # ``run.elapsed_seconds < 300`` deny every out-of-scope call once
                 # the process had been up five minutes.
-                "elapsed_s": (
+                "elapsed_seconds": (
                     0.0 if self.detached else time.monotonic() - self._started_monotonic
                 ),
             }

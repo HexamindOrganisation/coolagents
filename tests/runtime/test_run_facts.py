@@ -160,10 +160,10 @@ def test_recorder_discovery_is_not_vacuous() -> None:
 
 def test_detached_elapsed_is_zero_not_uptime(monkeypatch: pytest.MonkeyPatch) -> None:
     """DETACHED's clock origin is set at import, so ``monotonic() - origin``
-    would report process uptime — and ``run.elapsed_s < 300`` would start
+    would report process uptime — and ``run.elapsed_seconds < 300`` would start
     denying every out-of-scope call once the process had been up 5 minutes."""
     monkeypatch.setattr(time, "monotonic", lambda: _FAR_FUTURE_MONOTONIC)
-    assert DETACHED.as_namespace()["elapsed_s"] == 0.0
+    assert DETACHED.as_namespace()["elapsed_seconds"] == 0.0
 
 
 def test_get_run_facts_is_never_none() -> None:
@@ -403,7 +403,7 @@ def test_as_namespace_exposes_identity_and_elapsed() -> None:
         namespace = facts.as_namespace()
         assert namespace["id"] == facts.id
         assert namespace["agent"] == "billing"
-        assert namespace["elapsed_s"] >= 0.0
+        assert namespace["elapsed_seconds"] >= 0.0
 
 
 def test_elapsed_derives_from_the_monotonic_clock(
@@ -415,7 +415,7 @@ def test_elapsed_derives_from_the_monotonic_clock(
     monkeypatch.setattr(time, "monotonic", lambda: next(clock))
 
     with run_scope("a") as facts:  # consumes 100.0 as the origin
-        assert facts.as_namespace()["elapsed_s"] == pytest.approx(42.5)
+        assert facts.as_namespace()["elapsed_seconds"] == pytest.approx(42.5)
 
 
 # ---------------------------------------------------------------------------
