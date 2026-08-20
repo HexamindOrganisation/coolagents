@@ -34,19 +34,12 @@ _LLM_INVOCATION_INSERT_SETTINGS = {
 }
 
 
-def insert_llm_invocation(
-    clickhouse_client: Client,
-    *,
-    event: LlmInvocationEvent,
-    project_id: str,
-    agent_version_id: str,
-) -> None:
-    """Write one row to llm_invocation.
-
-    Raises ClickHouseError on insert failure; propagates so the caller maps
-    it to a transport error.
-    """
-    row = [
+def _llm_invocation_row(
+    event: LlmInvocationEvent, *, project_id: str, agent_version_id: str
+) -> list:
+    """Build one llm_invocation row in ``_LLM_INVOCATION_COLUMNS`` order,
+    shared by the single-row and batch insert paths."""
+    return [
         event.event_id,
         event.occurred_at,
         project_id,  # bearer-resolved
@@ -62,11 +55,60 @@ def insert_llm_invocation(
         event.error_code,
     ]
 
+
+def insert_llm_invocation(
+    clickhouse_client: Client,
+    *,
+    event: LlmInvocationEvent,
+    project_id: str,
+    agent_version_id: str,
+) -> None:
+    """Write one row to llm_invocation.
+
+    Raises ClickHouseError on insert failure; propagates so the caller maps
+    it to a transport error.
+    """
+    row = _llm_invocation_row(
+        event, project_id=project_id, agent_version_id=agent_version_id
+    )
     clickhouse_client.insert(
         "llm_invocation",
         [row],
         column_names=_LLM_INVOCATION_COLUMNS,
         settings=_LLM_INVOCATION_INSERT_SETTINGS,
+    )
+
+
+def insert_llm_invocations_batch(
+    clickhouse_client: Client,
+    items: list[tuple[LlmInvocationEvent, str, str]],
+) -> None:
+    """Write many llm_invocation rows in one batch insert.
+
+    ``items`` is ``(event, project_id, agent_version_id)`` per event — both
+    ids resolved per item, because a consumer batch aggregates across Kafka
+    records and so can span projects and agents. Retry-safe rather than
+    atomic: a failed call can have landed part of the batch (ClickHouse
+    commits per block), so the caller retries the whole batch — safe because
+    ReplacingMergeTree(received_at) collapses re-inserted event_ids on
+    merges. Same guarantee edges as ``insert_decisions_batch`` in
+    features/audit/service.py: dedup stays within the monthly received_at
+    partition, and an intra-batch duplicate collapses at insert time with the
+    last occurrence winning. No async_insert, unlike the single-row path —
+    this insert is already a batch.
+    """
+    if not items:
+        return
+    rows = [
+        _llm_invocation_row(
+            event, project_id=project_id, agent_version_id=agent_version_id
+        )
+        for event, project_id, agent_version_id in items
+    ]
+    clickhouse_client.insert(
+        "llm_invocation",
+        rows,
+        column_names=_LLM_INVOCATION_COLUMNS,
     )
 
 
