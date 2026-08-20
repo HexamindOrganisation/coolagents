@@ -8,6 +8,7 @@ had no coverage of its own. Fixtures mirror `test_projects.py`.
 
 from __future__ import annotations
 
+from biscuit_auth import AuthorizerBuilder, Rule
 from fastapi.testclient import TestClient
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -15,7 +16,11 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from hexgate_api.constants import DEFAULT_PROJECT_ID
 from hexgate_api.core import keystore as keystore_mod
+from hexgate_api.core.biscuits import parse_envelope, verify_token
+from hexgate_api.core.keystore import FileKeyStore
+from hexgate_api.features.tokens.service import mint_api_key
 from hexgate_api.main import app
 from hexgate_api.seeds.defaults import ensure_default_project
 
@@ -176,3 +181,36 @@ def test_revoke_token_when_token_already_deleted_then_status_is_404(
 
     r = client.delete(f"/v1/projects/{pid}/tokens/{token_id}")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# mint_api_key() — service-level invariants
+# ---------------------------------------------------------------------------
+
+
+async def test_mint_api_key_happy_path(session_factory, tmp_path) -> None:
+    """The token_id fact signed into the biscuit is the row's primary key.
+
+    The OTLP Collector looks a token up in its cache by that fact, so a fact
+    that doesn't match the row id points at nothing.
+    """
+    ks = FileKeyStore(base_dir=tmp_path / "keystore")
+    ks.ensure_keypair()
+
+    async with session_factory() as session:
+        row, full_token = await mint_api_key(
+            session,
+            project_id=DEFAULT_PROJECT_ID,
+            name="collector-key",
+            scopes=["read_audit"],
+            env="live",
+            signing_key_bytes=ks._private_key_bytes(),
+        )
+
+    _, _, biscuit_b64 = parse_envelope(full_token)
+    biscuit = verify_token(biscuit_b64, ks.public_key_bytes())
+
+    minted = (
+        AuthorizerBuilder().build(biscuit).query(Rule("found($id) <- token_id($id)"))
+    )
+    assert [f.terms[0] for f in minted] == [row.id]
