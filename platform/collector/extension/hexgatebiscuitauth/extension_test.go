@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/client"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // newTestAuth builds an extension already "started": root key loaded and a
@@ -138,6 +140,23 @@ func TestAuthenticate_when_credential_is_empty_then_the_request_is_rejected(t *t
 	require.ErrorIs(t, err, errMissingCredential)
 }
 
+// http.Header and metadata.MD both collapse a repeated header into one key, so
+// two credentials can only come from something unusual upstream; picking a
+// winner would let that upstream decide which one authenticates.
+func TestAuthenticate_when_two_credentials_are_supplied_then_the_request_is_rejected(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	opts := defaultMintOptions()
+	auth := newTestAuth(t, pub, map[string]string{opts.tokenID: opts.projectID})
+	token := envelopeFor(mintToken(t, priv, opts))
+
+	_, err := auth.Authenticate(context.Background(), map[string][]string{
+		"Authorization": {"Bearer " + token, "Bearer fty_live_other_bm90aGluZw=="},
+	})
+
+	require.ErrorIs(t, err, errAmbiguousCredential,
+		"one of the two being valid must not rescue an ambiguous request")
+}
+
 func TestAuthenticate_when_envelope_is_malformed_then_the_request_is_rejected(t *testing.T) {
 	pub, _ := newTestKeypair(t)
 	auth := newTestAuth(t, pub, nil)
@@ -188,6 +207,12 @@ func TestAuthenticate_when_revocation_snapshot_is_stale_then_the_request_is_refu
 
 	require.ErrorIs(t, err, errUnavailable)
 	assert.NotContains(t, err.Error(), "max_staleness", "internal state must stay out of the client's error")
+	// configgrpc forwards an error's own status, so this is what makes gRPC
+	// clients see a retryable UNAVAILABLE instead of a terminal
+	// UNAUTHENTICATED during a control-plane outage.
+	s, ok := status.FromError(err)
+	require.True(t, ok, "errUnavailable must carry a gRPC status")
+	assert.Equal(t, codes.Unavailable, s.Code())
 }
 
 // The trust boundary: the row is live state, the signed fact is a mint-time
@@ -235,6 +260,21 @@ func TestAuthenticate_when_revocation_is_disabled_then_the_signed_project_fact_i
 	require.NoError(t, err)
 	assert.Equal(t, []string{opts.projectID},
 		client.FromContext(ctx).Metadata.Get(metadataProjectID))
+}
+
+// With revocation off there is no row to fall back to, and stamping the empty
+// claim would hand the pipeline an empty partition key.
+func TestAuthenticate_when_revocation_is_disabled_and_the_token_has_no_project_fact_then_the_request_is_rejected(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	opts := defaultMintOptions()
+	opts.omitProject = true
+	auth := newTestAuth(t, pub, nil)
+	auth.cache = nil
+
+	_, err := auth.Authenticate(context.Background(),
+		httpSources("Bearer "+envelopeFor(mintToken(t, priv, opts))))
+
+	require.ErrorIs(t, err, errInvalidCredential)
 }
 
 func TestAuthenticate_when_token_ttl_has_expired_then_the_request_is_rejected(t *testing.T) {

@@ -33,6 +33,9 @@ type mintOptions struct {
 	ttl time.Duration
 	// omitTokenID drops the token_id fact, to exercise the rejection path.
 	omitTokenID bool
+	// omitProject drops the project fact, which the platform always mints;
+	// with revocation disabled there is no row to fall back to.
+	omitProject bool
 	// extraFacts are appended to the authority block verbatim.
 	extraFacts []string
 }
@@ -60,12 +63,15 @@ func mintToken(t *testing.T, priv ed25519.PrivateKey, opts mintOptions) string {
 
 	builder := biscuit.NewBuilder(priv)
 
-	facts := []string{
-		fmt.Sprintf(`project("%s")`, opts.projectID),
+	var facts []string
+	if !opts.omitProject {
+		facts = append(facts, fmt.Sprintf(`project("%s")`, opts.projectID))
+	}
+	facts = append(facts,
 		fmt.Sprintf(`name("%s")`, opts.name),
 		fmt.Sprintf(`env("%s")`, opts.env),
 		fmt.Sprintf(`issued_at(%s)`, datalogDatetime(opts.issuedAt)),
-	}
+	)
 	if !opts.omitTokenID {
 		facts = append(facts, fmt.Sprintf(`token_id("%s")`, opts.tokenID))
 	}

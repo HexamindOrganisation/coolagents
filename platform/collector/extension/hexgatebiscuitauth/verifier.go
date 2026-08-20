@@ -31,10 +31,13 @@ const maxAppendedBlocks = 8
 type identity struct {
 	TokenID   string
 	ProjectID string
-	Env       string
-	Name      string
-	Scopes    []string
-	IssuedAt  time.Time
+	// Env is informational at ingest: live and test keys feed the same
+	// pipeline, and nothing here separates them. If env-level separation is
+	// ever wanted it belongs in pipeline routing, not in this authenticator.
+	Env      string
+	Name     string
+	Scopes   []string
+	IssuedAt time.Time
 }
 
 // verifyBiscuit checks a token's signature and its own embedded checks, then
@@ -110,7 +113,7 @@ func verifyBiscuit(rootPub ed25519.PublicKey, biscuitB64 string, now time.Time) 
 //
 // biscuit-go gives us that separation: Authorize() loads the authority block's
 // facts into the authorizer's own world, but loads each appended block's facts
-// into a *clone* of it (authorizer.go:210 in biscuit-go v2.2.0). Query() reads
+// into a *clone* of it (authorizer.go:211 in biscuit-go v2.2.0). Query() reads
 // the un-cloned world, so appended facts are invisible here. See
 // TestReadIdentity_when_attenuated_block_forges_facts_then_authority_wins.
 func readIdentity(authorizer biscuit.Authorizer) (*identity, error) {

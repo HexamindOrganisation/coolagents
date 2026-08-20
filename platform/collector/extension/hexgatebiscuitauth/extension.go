@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/extensionauth"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Metadata keys this extension writes onto the request context.
@@ -43,10 +45,26 @@ const (
 // gRPC status message, so they say what to fix and nothing more — anything
 // about our own internal state stays in the logs.
 var (
-	errMissingCredential = errors.New("missing bearer credential")
-	errInvalidCredential = errors.New("invalid Hexgate API key")
-	errUnavailable       = errors.New("cannot verify credentials right now")
+	errMissingCredential   = errors.New("missing bearer credential")
+	errInvalidCredential   = errors.New("invalid Hexgate API key")
+	errAmbiguousCredential = errors.New("more than one bearer credential supplied")
+	errUnavailable         = &unavailableError{}
 )
+
+// unavailableError is "our side is broken, retry", as opposed to "your key is
+// bad". GRPCStatus() is what makes the difference reach the client: configgrpc
+// forwards an error's own status when it carries one, so gRPC callers get
+// UNAVAILABLE — which OTLP SDK exporters treat as retryable — instead of a
+// terminal UNAUTHENTICATED during a control-plane outage. HTTP has no
+// equivalent hook (confighttp hardcodes 401 for every auth error), so HTTP
+// callers must go by the message.
+type unavailableError struct{}
+
+func (*unavailableError) Error() string { return "cannot verify credentials right now" }
+
+func (e *unavailableError) GRPCStatus() *status.Status {
+	return status.New(codes.Unavailable, e.Error())
+}
 
 type biscuitAuth struct {
 	cfg    *Config
@@ -141,6 +159,14 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 	if a.cache == nil {
 		// Revocation disabled: the signed fact is all we have. Start() has
 		// already warned about running this way.
+		if id.ProjectID == "" {
+			// The platform always mints a project fact, so a token without one
+			// is not ours — and with no row to fall back to, stamping it would
+			// hand the pipeline an empty partition key.
+			a.logger.Warn("rejected a validly-signed token that carries no project fact",
+				zap.String("token_id", id.TokenID))
+			return "", errInvalidCredential
+		}
 		return id.ProjectID, nil
 	}
 
@@ -184,18 +210,31 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 // HTTP hands us http.Header's canonical casing ("Authorization") and gRPC hands
 // us metadata.MD's lowercase ("authorization"), so this matches
 // case-insensitively rather than guessing which protocol it is serving.
+//
+// Exactly one credential is accepted. http.Header and metadata.MD both collapse
+// a repeated header into one key with several values, so more than one can only
+// come from something unusual upstream; picking a winner would make the choice
+// depend on that upstream's normalization, so ambiguity is rejected instead.
 func bearerCredential(sources map[string][]string) (string, error) {
+	var credentials []string
 	for name, values := range sources {
 		if !strings.EqualFold(name, authorizationHeader) {
 			continue
 		}
 		for _, value := range values {
 			if credential := stripBearerScheme(value); credential != "" {
-				return credential, nil
+				credentials = append(credentials, credential)
 			}
 		}
 	}
-	return "", errMissingCredential
+	switch len(credentials) {
+	case 0:
+		return "", errMissingCredential
+	case 1:
+		return credentials[0], nil
+	default:
+		return "", errAmbiguousCredential
+	}
 }
 
 // stripBearerScheme returns the credential from an Authorization value, or ""
