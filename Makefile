@@ -230,8 +230,14 @@ redpanda-reset: ## Wipe ONLY the Redpanda data volume, restart, and recreate top
 # separate those two steps). Runs natively on the host for local dev,
 # same convention as `make platform-api` — see platform/collector/config.yaml
 # for why it points at localhost, not the redpanda:29092 container listener.
+#
+# The Biscuit auth extension under platform/collector/extension/ is its own Go
+# module, wired in by builder-config.yaml's `replaces`. Nested modules are
+# invisible to `./...` from platform/collector, so its own vet/test runs are
+# separate steps below.
 
 COLLECTOR_BUILDER_VERSION := v0.158.0
+COLLECTOR_EXT_BISCUITAUTH := platform/collector/extension/hexgatebiscuitauth
 
 .PHONY: collector-install-builder
 collector-install-builder: ## One-time: install the ocb builder tool ($GOBIN)
@@ -245,8 +251,15 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 collector-run: redpanda-topics ## Run the collector binary against config.yaml (needs `make redpanda-topics` first)
 	cd platform/collector && ./hexgate-collector --config=config.yaml
 
+.PHONY: collector-test
+collector-test: ## Unit tests for the collector's own Go modules
+	cd $(COLLECTOR_EXT_BISCUITAUTH) && go test -race ./...
+
 .PHONY: collector-check
-collector-check: ## Vet + build the collector, validate config.yaml (no ocb regeneration)
+collector-check: ## Vet + test + build the collector, validate config.yaml (no ocb regeneration)
+	cd $(COLLECTOR_EXT_BISCUITAUTH) && gofmt -l . | (! grep .)
+	cd $(COLLECTOR_EXT_BISCUITAUTH) && go vet ./...
+	cd $(COLLECTOR_EXT_BISCUITAUTH) && go test -race ./...
 	cd platform/collector && go vet ./...
 	cd platform/collector && go build -o hexgate-collector ./...
 	cd platform/collector && ./hexgate-collector validate --config=config.yaml

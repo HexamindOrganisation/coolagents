@@ -1,13 +1,13 @@
 # Runtime config for the hexgate-collector binary (built via
 # `make collector-generate`, or run directly via `make collector-run`).
-# Dev-only defaults throughout — not load-tested, not the real auth.
+# Dev-only defaults throughout — not load-tested.
 receivers:
   otlp:
     protocols:
       grpc:
         endpoint: 127.0.0.1:4317
         auth:
-          authenticator: bearertokenauth
+          authenticator: hexgatebiscuitauth
         # Required for message_key_from_metadata_key (see the kafka
         # exporter below) to see project_id at all — client metadata
         # isn't propagated to downstream consumers by default.
@@ -15,7 +15,7 @@ receivers:
       http:
         endpoint: 127.0.0.1:4318
         auth:
-          authenticator: bearertokenauth
+          authenticator: hexgatebiscuitauth
         include_metadata: true
 
 processors:
@@ -62,10 +62,9 @@ exporters:
     traces:
       topic: hexgate.otlp.raw
       encoding: otlp_proto
-      # Real value once the Biscuit auth extension (separate PR) sets
-      # "project_id" in the request's client metadata — bearertokenauth
-      # below doesn't. Until then this key is simply absent and every
-      # span falls back to random partition assignment.
+      # Set by the hexgatebiscuitauth extension below, which resolves it from
+      # the API key's database row (not from the token's own self-declared
+      # project fact, which is only a mint-time snapshot).
       message_key_from_metadata_key: project_id
     record_partitioner:
       # Hashes whatever message_key_from_metadata_key resolves to, so
@@ -74,15 +73,38 @@ exporters:
         hasher: murmur2
 
 extensions:
-  bearertokenauth:
-    # Placeholder auth for this scaffold — accepts one token, nothing like
-    # real Biscuit verification. Env-overridable with a committed dev
-    # default, same pattern as the Redpanda/Postgres/ClickHouse creds in
-    # platform/docker-compose.yml.
-    token: ${env:HEXGATE_COLLECTOR_TOKEN:-hexgate-scaffold-stub-token}
+  hexgatebiscuitauth:
+    # The platform's root Ed25519 public key — the public half of the key
+    # core/keystore.py signs every API key with. It writes the raw 32 bytes to
+    # hexgate.pub (0644) next to the private half, so the default below is the
+    # keystore's own default directory relative to this one. Same host-native
+    # dev convention as the broker address below.
+    #
+    # Use `public_key` instead to paste the key inline: that field takes the
+    # exact base64 string GET /v1/.well-known/keys publishes as keys[0].x,
+    # for a Collector with no shared filesystem with the control plane.
+    public_key_file: ${env:HEXGATE_COLLECTOR_PUBLIC_KEY_FILE:-../api/data/hexgate.pub}
+
+    revocation:
+      # Revoking an API key deletes its row, so the check is a lookup against
+      # a snapshot of the whole key table rather than a flag. The signed
+      # token_id fact is that row's own id (platform-api PR #126), which is
+      # what lets this be keyed on a short id instead of the full secret.
+      #
+      # LOCAL DEV ONLY credentials, matching the postgres service in
+      # platform/docker-compose.yml — never reuse these anywhere deployed.
+      # pgx wants a plain postgres:// URL, not the postgresql+asyncpg:// form
+      # the Python side's DATABASE_URL uses.
+      dsn: ${env:HEXGATE_COLLECTOR_POSTGRES_DSN:-postgres://hexgate:hexgate-dev-password@localhost:5433/hexgate}
+      # Also the worst-case window in which an already-revoked key still works.
+      poll_interval: 20s
+      # How long a snapshot may go un-refreshed before this stops trusting it
+      # and rejects everything. Without it, a Postgres outage would freeze the
+      # revocation list and revoked keys would keep working for its duration.
+      max_staleness: 2m
 
 service:
-  extensions: [bearertokenauth]
+  extensions: [hexgatebiscuitauth]
   pipelines:
     traces:
       receivers: [otlp]
