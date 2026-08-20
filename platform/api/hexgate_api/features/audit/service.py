@@ -1,6 +1,7 @@
 """ClickHouse layer for audit events — both halves of the pipeline.
 
-Write path: validation caps + ``insert_decision`` (the SDK ingest).
+Write path: validation caps + ``insert_decision`` (the SDK ingest), plus
+the ``insert_*_batch`` twins (the span-enricher job, pre-capped input).
 Read path: ``summarize`` / ``timeseries`` / ``list_decisions`` (the
 dashboard aggregations). They stay in one module because they share the
 table contract (``_DECISION_COLUMNS``, windows, scope filters) — unlike
