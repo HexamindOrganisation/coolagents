@@ -2,8 +2,8 @@
 
 The gate reuses ``PolicyEnforcer.decide`` on the synthetic ``agent.run`` key, so
 these drive it through a real ``PolicySet`` enforcer under an open context scope,
-the same path a run entry takes. Admission is opt-in: no admission block means no
-gate (``resolve_agent_gate`` returns ``None``).
+the same path a run entry takes. Admission is opt-in: ``resolve_agent_gate`` always
+returns a gate, but a policy that declares no admission makes every check a no-op.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from hexgate.security import (
     resolve_agent_gate,
 )
 from hexgate.security.enforcer import PolicyEnforcer
-from hexgate.security.policy_set import load_policy_set
+from hexgate.security.policy_set import load_policy_set, load_policy_set_from_dict
 
 _ROLE = HexgateContext(user_id="u", user_roles=["support"])
 
@@ -143,3 +143,42 @@ async def test_async_admission_approval_async_handler() -> None:
     gate = resolve_agent_gate(_enforcer("approval_required"), approval_handler=approve)
     async with HexgateContext(user_id="u", user_roles=["support"]):
         await gate.check_admission_async()
+
+
+# --- multi-role opt-in (no lockout) ----------------------------------------
+
+
+def test_role_without_admission_is_admitted_despite_another_role_declaring_it() -> None:
+    # Regression: admission is opt-in, so adding it to one role must not lock out
+    # roles that declare none. viewer (no admission) stays admitted even though
+    # admin/contractor declare admission; the union is monotonic.
+    ps = load_policy_set_from_dict(
+        {
+            "roles": {
+                "default": {"default_policy": {"mode": "deny"}},
+                "admin": {
+                    "default_policy": {"mode": "deny"},
+                    "admission": {"mode": "allow"},
+                },
+                "contractor": {
+                    "default_policy": {"mode": "deny"},
+                    "admission": {"mode": "deny"},
+                },
+                "viewer": {"default_policy": {"mode": "deny"}},  # no admission
+            }
+        }
+    )
+    gate = resolve_agent_gate(PolicyEnforcer(ps, agent_name="agent"))
+
+    # viewer declares no admission → opt-in admit (not locked out).
+    with HexgateContext(user_id="u", user_roles=["viewer"]).sync_scope():
+        gate.check_admission()
+
+    # contractor explicitly denies admission.
+    with HexgateContext(user_id="u", user_roles=["contractor"]).sync_scope():
+        with pytest.raises(AgentNotAdmittedError):
+            gate.check_admission()
+
+    # carrying both: viewer's opt-in admits via the permissive union.
+    with HexgateContext(user_id="u", user_roles=["viewer", "contractor"]).sync_scope():
+        gate.check_admission()

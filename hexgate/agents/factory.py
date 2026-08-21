@@ -566,8 +566,13 @@ class HexgateAgent:
                 )
             if pipeline is None or pipeline.is_empty:
                 # Nothing to enforce and no guards to run (an observer-only
-                # pipeline can't fire without guards): return unguarded.
-                return self.with_tools(list(self.tools))
+                # pipeline can't fire without guards): return unguarded. Clear any
+                # admission gate a prior enforce_policy attached, or with_tools
+                # would carry it forward and the "unguarded" agent would still
+                # refuse admission.
+                unguarded = self.with_tools(list(self.tools))
+                unguarded._agent_gate = None
+                return unguarded
             enforcer = None  # guards-only gating, no policy engine
         else:
             if isinstance(policy, (PolicyBundle, PolicySet)):
@@ -609,6 +614,10 @@ class HexgateAgent:
             rebuilt._agent_gate = resolve_agent_gate(
                 enforcer, approval_handler=approval_handler
             )
+        else:
+            # Guards-only path: no enforcer, so no admission. Clear any gate a
+            # prior enforce_policy left, which with_tools would otherwise carry.
+            rebuilt._agent_gate = None
         return rebuilt
 
     def refresh_policy(self) -> None:
