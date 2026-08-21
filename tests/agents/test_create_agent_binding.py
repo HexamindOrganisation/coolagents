@@ -19,7 +19,7 @@ from langchain_core.tools import tool
 from hexgate.agents import factory
 from hexgate.adapters.langchain.tools import GuardedTool
 from hexgate.cloud.client import HexgateError
-from hexgate.security import AgentPolicy, PolicySet
+from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 from hexgate.security.source import PlatformPolicySource
 
@@ -355,3 +355,13 @@ def test_enforce_policy_none_without_source_is_noop() -> None:
 
     assert rebuilt.tools == [echo]  # unwrapped
     assert rebuilt._binding is None
+
+
+def test_enforce_policy_none_clears_a_prior_admission_gate() -> None:
+    # enforce_policy(None) returns an unguarded rebuild; a prior admission gate
+    # must not survive via with_tools, or the "unguarded" agent still refuses.
+    agent, _ = factory.create_agent(model="openai:gpt-5.4", tools=[echo], name="a")
+    guarded = agent.enforce_policy(AgentPolicy(admission=BaseToolPolicy(mode="allow")))
+    assert guarded._agent_gate is not None
+    unguarded = guarded.enforce_policy(None)
+    assert unguarded._agent_gate is None
