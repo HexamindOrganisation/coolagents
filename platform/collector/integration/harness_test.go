@@ -322,8 +322,8 @@ type runningCollector struct {
 func startCollector(t *testing.T, opts collectorOptions) runningCollector {
 	t.Helper()
 
-	httpEndpoint := freeAddress(t)
-	grpcEndpoint := freeAddress(t)
+	httpEndpoint, releaseHTTP := reserveAddress(t)
+	grpcEndpoint, releaseGRPC := reserveAddress(t)
 	logPath := filepath.Join(t.TempDir(), "collector.log")
 	logFile, err := os.Create(logPath)
 	require.NoError(t, err)
@@ -350,6 +350,10 @@ func startCollector(t *testing.T, opts collectorOptions) runningCollector {
 		"HEXGATE_COLLECTOR_POSTGRES_DSN="+postgresDSN(),
 		"HEXGATE_REDPANDA_BOOTSTRAP_SERVER="+broker(),
 	)
+	// Released here rather than at reservation time so nothing else can take
+	// either port while the override config is being written.
+	releaseHTTP()
+	releaseGRPC()
 	require.NoError(t, cmd.Start(), "start the collector")
 
 	// One owner for Wait(): calling it from both here and the cleanup would
@@ -584,14 +588,31 @@ func mintEnvelope(t *testing.T, private ed25519.PrivateKey, fixture apiKeyFixtur
 // Misc
 // ---------------------------------------------------------------------------
 
-// freeAddress asks the kernel for an unused port so parallel runs and a
-// developer's own collector on 4317/4318 cannot collide.
-func freeAddress(t *testing.T) string {
+// reserveAddress asks the kernel for an unused port and holds it until the
+// caller releases it, so parallel runs and a developer's own collector on
+// 4317/4318 cannot collide.
+//
+// Holding is the point. A helper that closed the listener before returning
+// would only be reporting that the port was free a moment ago, and two calls in
+// a row could hand back the same one.
+//
+// The collector cannot bind a port we are still holding, so release as late as
+// possible. That leaves the child's startup — exec, config load, then the bind
+// — during which another process can still take it. Nothing closes that window
+// short of handing the child an already-bound socket, and the receiver only
+// takes an endpoint string. It is left alone because losing is loud: the
+// collector exits with "address already in use" and waitUntilReady prints the
+// log.
+func reserveAddress(t *testing.T) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer listener.Close()
-	return listener.Addr().String()
+	release := func() { _ = listener.Close() }
+	// Belt and braces: if an assertion between here and the release fails, the
+	// port is freed at test end rather than held for the rest of the run.
+	// Closing twice is harmless, so callers still release explicitly.
+	t.Cleanup(release)
+	return listener.Addr().String(), release
 }
 
 // randomUUID returns a UUID-shaped id, which is what a real project id looks

@@ -78,9 +78,8 @@ func TestCollectorPipeline_when_api_key_is_revoked_then_spans_are_rejected_after
 		"a revoked key must stop being accepted once the revocation cache refreshes")
 }
 
-// A key that verifies cryptographically but matches no row must be refused.
-// This is also what a key minted before the signed token_id became the row id
-// looks like, which is why the Collector logs that case distinctly.
+// A key that verifies cryptographically but matches no row must be refused:
+// the signature alone is not authority, the row is.
 func TestCollectorPipeline_when_token_id_matches_no_row_then_request_is_rejected(t *testing.T) {
 	connectPostgres(t)
 	private, publicKeyFile := writeRootKeypair(t)

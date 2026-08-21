@@ -68,7 +68,7 @@ func parsePublicKey(raw []byte) (ed25519.PublicKey, error) {
 	if decodeErr != nil {
 		return nil, fmt.Errorf(
 			"expected either %d raw bytes or a base64-encoded key, got %d bytes that do not decode: %w",
-			ed25519.PublicKeySize, len(raw), decodeErr)
+			ed25519.PublicKeySize, len(text), decodeErr)
 	}
 	if len(decoded) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf(

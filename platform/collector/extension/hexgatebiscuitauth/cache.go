@@ -18,11 +18,10 @@ import (
 // join is needed — project_id is denormalised straight onto the row — and no
 // tenancy filter either, since the Collector serves every project.
 //
-// The secret column is deliberately not selected. Since PR #126 the signed
-// token_id fact *is* the row's primary key, so a verified token can be looked
-// up by that id and the Collector never has to hold full credentials in
-// memory. Before that fix the two ids were drawn independently, and this
-// lookup would have had to match on the secret itself.
+// The secret column is deliberately not selected. The signed token_id fact
+// *is* the row's primary key (platform-api PR #126), so a verified token can
+// be looked up by that id and the Collector never has to hold full
+// credentials in memory.
 //
 // A full-table read is viable because the row count is small: one row per API
 // key, thousands across the whole platform rather than millions.
@@ -38,9 +37,8 @@ const apiKeyQuery = `SELECT id, project_id FROM devtoken`
 const loadTimeout = 10 * time.Second
 
 var (
-	// errUnknownAPIKey means a validly-signed token's id matches no row —
-	// it was revoked, or it predates PR #126 and its signed token_id was
-	// never a row id in the first place.
+	// errUnknownAPIKey means a validly-signed token's id matches no row,
+	// which is what revoking a key leaves behind.
 	errUnknownAPIKey = errors.New("api key is revoked or unknown")
 
 	// errCacheStale means we can no longer vouch for the revocation list.

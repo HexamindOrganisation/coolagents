@@ -47,6 +47,17 @@ func TestParsePublicKey_when_key_decodes_to_the_wrong_length_then_an_error_is_re
 	assert.Contains(t, err.Error(), "is 32 bytes")
 }
 
+// The reported byte count is the trimmed text that was actually handed to the
+// decoders, not the raw input — an operator comparing it against what they
+// pasted should not be off by the trailing newline.
+func TestParsePublicKey_when_key_does_not_decode_then_the_error_counts_the_trimmed_input(t *testing.T) {
+	_, err := parsePublicKey([]byte("  not*base64!\n")) // 11 characters once trimmed
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "got 11 bytes")
+	assert.NotContains(t, err.Error(), "got 14 bytes", "the whitespace must not be counted")
+}
+
 func TestParsePublicKey_when_key_is_empty_then_an_error_is_returned(t *testing.T) {
 	_, err := parsePublicKey(nil)
 

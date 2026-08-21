@@ -158,6 +158,22 @@ func TestAuthenticate_when_two_credentials_are_supplied_then_the_request_is_reje
 		"one of the two being valid must not rescue an ambiguous request")
 }
 
+// The same envelope twice is one credential, not a conflict: there is no
+// winner to pick, so nothing to be ambiguous about.
+func TestAuthenticate_when_the_same_credential_is_supplied_twice_then_the_request_is_accepted(t *testing.T) {
+	pub, priv := newTestKeypair(t)
+	opts := defaultMintOptions()
+	auth := newTestAuth(t, pub, map[string]string{opts.tokenID: opts.projectID})
+	token := envelopeFor(mintToken(t, priv, opts))
+
+	ctx, err := auth.Authenticate(context.Background(), map[string][]string{
+		"authorization": {"Bearer " + token, "Bearer " + token},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{opts.projectID}, client.FromContext(ctx).Metadata.Get(metadataProjectID))
+}
+
 func TestAuthenticate_when_envelope_is_malformed_then_the_request_is_rejected(t *testing.T) {
 	pub, _ := newTestKeypair(t)
 	auth := newTestAuth(t, pub, nil)
@@ -179,8 +195,7 @@ func TestAuthenticate_when_token_is_signed_by_another_key_then_the_request_is_re
 	require.ErrorIs(t, err, errInvalidCredential)
 }
 
-// A revoked key's row is gone, so its token_id resolves to nothing. This is
-// also what a key minted before the token_id/row-id fix looks like.
+// A revoked key's row is gone, so its token_id resolves to nothing.
 func TestAuthenticate_when_token_id_matches_no_row_then_the_request_is_rejected(t *testing.T) {
 	pub, priv := newTestKeypair(t)
 	opts := defaultMintOptions()
@@ -234,6 +249,40 @@ func TestAuthenticate_when_the_cache_stays_stale_then_the_outage_is_logged_once(
 	}
 
 	assert.Equal(t, 1, observed.Len(), "five rejected requests must produce one Error, not five")
+}
+
+// "Once per outage" only holds if the flag is cleared by every path that proves
+// the snapshot is trustworthy. A revoked key resolves against a perfectly fresh
+// snapshot, so a recovery seen only through revoked keys still has to clear the
+// flag — otherwise the next outage loses its CompareAndSwap and goes unlogged.
+func TestAuthenticate_when_recovery_is_seen_only_through_revoked_keys_then_the_next_outage_is_still_logged(t *testing.T) {
+	core, observed := observer.New(zap.ErrorLevel)
+	pub, priv := newTestKeypair(t)
+	opts := defaultMintOptions()
+	auth := newTestAuth(t, pub, map[string]string{opts.tokenID: opts.projectID})
+	auth.logger = zap.New(core)
+	now := time.Now()
+	sources := httpSources("Bearer " + envelopeFor(mintToken(t, priv, opts)))
+
+	stale := func() *revocationCache {
+		return newLoadedCache(map[string]string{opts.tokenID: opts.projectID}, now.Add(-time.Hour), now)
+	}
+
+	auth.cache = stale()
+	_, err := auth.Authenticate(context.Background(), sources)
+	require.ErrorIs(t, err, errUnavailable)
+	require.Equal(t, 1, observed.Len(), "the first outage must be logged")
+
+	// The list is fresh again, but this key's row is gone.
+	auth.cache = newLoadedCache(map[string]string{"tok_someoneelse": "other-project"}, now, now)
+	_, err = auth.Authenticate(context.Background(), sources)
+	require.ErrorIs(t, err, errInvalidCredential)
+
+	auth.cache = stale()
+	_, err = auth.Authenticate(context.Background(), sources)
+	require.ErrorIs(t, err, errUnavailable)
+
+	assert.Equal(t, 2, observed.Len(), "the second outage must be logged too, not swallowed by a stuck flag")
 }
 
 // The trust boundary: the row is live state, the signed fact is a mint-time

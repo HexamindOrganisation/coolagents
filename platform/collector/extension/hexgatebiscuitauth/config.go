@@ -35,6 +35,7 @@ package hexgatebiscuitauth
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -157,10 +158,23 @@ func refuseDevPasswordOnRemoteHost(dsn string) error {
 	return nil
 }
 
+// isLocalHost reports whether a Postgres host reaches this machine and nowhere
+// else.
+//
+// Parsed rather than matched against literals, because "local" has more
+// spellings than it looks: loopback is the whole 127.0.0.0/8, so 127.0.0.2 is
+// as local as 127.0.0.1, and ::1 can also arrive as 0:0:0:0:0:0:0:1 or the
+// IPv4-mapped ::ffff:127.0.0.1. netip recognises all of them. "localhost" is a
+// name rather than an address and so never parses, hence the separate case.
+//
+// Still an allowlist, so it fails closed: an unrecognised spelling costs a
+// refused local config, never an accepted remote one.
 func isLocalHost(host string) bool {
-	switch host {
-	case "localhost", "127.0.0.1", "::1":
+	if host == "localhost" {
 		return true
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return ip.IsLoopback()
 	}
 	// A path means a Unix socket, reachable only from this machine.
 	return strings.HasPrefix(host, "/")

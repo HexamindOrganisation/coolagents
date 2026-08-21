@@ -95,6 +95,39 @@ func TestConfigValidate_when_dev_password_points_at_localhost_then_config_is_acc
 	require.NoError(t, cfg.Validate())
 }
 
+// Loopback is the whole 127.0.0.0/8, so a dev-password DSN on 127.0.0.2 is a
+// genuinely local setup and must not be refused.
+func TestConfigValidate_when_dev_password_points_at_another_loopback_address_then_config_is_accepted(t *testing.T) {
+	cfg := validConfig()
+	cfg.Revocation.DSN = "postgres://hexgate:hexgate-dev-password@127.0.0.2:5433/hexgate"
+
+	require.NoError(t, cfg.Validate())
+}
+
+func TestIsLocalHost(t *testing.T) {
+	for _, tc := range []struct {
+		host  string
+		local bool
+	}{
+		{"localhost", true},
+		{"127.0.0.1", true},
+		{"127.0.0.2", true},       // the whole /8 is loopback
+		{"127.255.255.254", true}, // ...right to the end of it
+		{"::1", true},
+		{"0:0:0:0:0:0:0:1", true},     // same address, longhand
+		{"::ffff:127.0.0.1", true},    // IPv4-mapped; Go unmaps before testing
+		{"/var/run/postgresql", true}, // Unix socket directory
+		{"0.0.0.0", false},            // wildcard bind address, not loopback
+		{"169.254.169.254", false},    // cloud metadata: private, not local
+		{"10.0.0.5", false},
+		{"db.staging.internal", false},
+		{"postgres", false}, // a Docker service name is another container
+		{"", false},
+	} {
+		assert.Equal(t, tc.local, isLocalHost(tc.host), "isLocalHost(%q)", tc.host)
+	}
+}
+
 func TestConfigValidate_when_a_real_password_points_at_a_remote_host_then_config_is_accepted(t *testing.T) {
 	cfg := validConfig()
 	cfg.Revocation.DSN = "postgres://hexgate:s3cret-rotated@db.staging.internal:5432/hexgate"

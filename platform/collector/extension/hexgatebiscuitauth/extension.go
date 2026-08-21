@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -180,14 +181,19 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 	projectID, err := a.cache.lookup(id.TokenID)
 	switch {
 	case errors.Is(err, errUnknownAPIKey):
-		// Worth a Warn even at volume: this is the signature of a key that
-		// was revoked, or one minted before PR #126 made the signed token_id
-		// the row's own id. The latter needs re-minting and is otherwise
-		// indistinguishable from a revocation, so name both.
-		a.logger.Warn("rejected an API key whose token_id matches no row in devtoken: "+
-			"it was revoked, or it predates the token_id/row-id fix and must be re-minted",
+		// Worth a Warn even at volume: the signature held, so this key was
+		// minted by us and its row is gone. Revocation is the expected
+		// cause; the other way to get here is a Collector pointed at a
+		// different control-plane database than the one that minted the key,
+		// which is a deployment mistake worth seeing.
+		a.logger.Warn("rejected an API key whose token_id matches no row in devtoken: it was "+
+			"revoked, or this Collector is reading a different control-plane database than the "+
+			"one that minted it",
 			zap.String("token_id", id.TokenID),
 			zap.String("token_project_id", id.ProjectID))
+		// The snapshot answered, so it is trusted — lookup only reaches this
+		// error after the loaded and freshness checks pass.
+		a.markAvailable()
 		return "", errInvalidCredential
 	case errors.Is(err, errCacheStale), errors.Is(err, errCacheNotLoaded):
 		// Not the caller's fault, and not their business either — the detail
@@ -202,9 +208,7 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 		return "", errUnavailable
 	}
 
-	if a.unavailable.CompareAndSwap(true, false) {
-		a.logger.Info("the revocation list is trusted again; resuming traffic")
-	}
+	a.markAvailable()
 
 	// Signed fact vs. live row. The signature rules out tampering, so a
 	// mismatch means the key was moved between projects after it was minted;
@@ -218,16 +222,29 @@ func (a *biscuitAuth) resolveProject(id *identity) (string, error) {
 	return projectID, nil
 }
 
+// markAvailable ends an outage, logging the recovery once.
+//
+// Every path that proves the snapshot is trustworthy has to call this, not just
+// the successful lookup: if the flag stays set after the list recovers, the
+// next genuine outage loses its CompareAndSwap and goes unlogged entirely.
+func (a *biscuitAuth) markAvailable() {
+	if a.unavailable.CompareAndSwap(true, false) {
+		a.logger.Info("the revocation list is trusted again; resuming traffic")
+	}
+}
+
 // bearerCredential finds the Authorization value in the request.
 //
 // HTTP hands us http.Header's canonical casing ("Authorization") and gRPC hands
 // us metadata.MD's lowercase ("authorization"), so this matches
 // case-insensitively rather than guessing which protocol it is serving.
 //
-// Exactly one credential is accepted. http.Header and metadata.MD both collapse
-// a repeated header into one key with several values, so more than one can only
-// come from something unusual upstream; picking a winner would make the choice
-// depend on that upstream's normalization, so ambiguity is rejected instead.
+// Exactly one distinct credential is accepted. http.Header and metadata.MD both
+// collapse a repeated header into one key with several values, so more than one
+// can only come from something unusual upstream. The same envelope repeated is
+// still one credential, with no winner to pick; differing values are rejected,
+// because choosing between them would make the choice depend on that upstream's
+// normalization.
 func bearerCredential(sources map[string][]string) (string, error) {
 	var credentials []string
 	for name, values := range sources {
@@ -235,7 +252,8 @@ func bearerCredential(sources map[string][]string) (string, error) {
 			continue
 		}
 		for _, value := range values {
-			if credential := stripBearerScheme(value); credential != "" {
+			if credential := stripBearerScheme(value); credential != "" &&
+				!slices.Contains(credentials, credential) {
 				credentials = append(credentials, credential)
 			}
 		}
