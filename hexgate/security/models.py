@@ -62,23 +62,34 @@ AgentVia = Literal["tool", "handoff"]
 # exactly as the ``net.*`` egress tools already do.
 AGENT_RUN_TOOL = "agent.run"
 
+# Prefixes for the reach keys (``agent.tool:<name>`` / ``agent.handoff:<name>``),
+# derived from AgentVia so a new via mode is covered everywhere automatically. One
+# source of truth for the namespace reservation and for both engines' closed-world
+# handling, so pydantic and Rego cannot drift on which names are agent keys.
+AGENT_REACH_PREFIXES = tuple(f"agent.{via}:" for via in get_args(AgentVia))
+
 
 def agent_target_key(via: AgentVia, target: str) -> str:
     """Synthetic tool key for reaching ``target`` in a given transfer mode."""
     return f"agent.{via}:{target}"
 
 
-def is_agent_key(name: str) -> bool:
-    """True for a synthetic agent-level key (``agent.run`` / ``agent.tool:`` /
-    ``agent.handoff:``).
+def is_agent_reach_key(name: str) -> bool:
+    """True for an ``agent.tool:`` / ``agent.handoff:`` reach key.
 
-    Used both to reserve the namespace from authored tools and to make agent reach
-    closed-world: an unlisted agent key denies regardless of ``default_policy``.
-    Derives the prefixes from :data:`AgentVia` so a new via mode is covered here
-    automatically."""
-    if name == AGENT_RUN_TOOL:
-        return True
-    return any(name.startswith(f"agent.{via}:") for via in get_args(AgentVia))
+    Reach is closed-world: an unlisted reach key denies regardless of
+    ``default_policy``. Admission (``agent.run``) is *not* a reach key — it is
+    opt-in, so its absence admits — hence the two are checked separately."""
+    return name.startswith(AGENT_REACH_PREFIXES)
+
+
+def is_agent_key(name: str) -> bool:
+    """True for any synthetic agent-level key (``agent.run`` or a reach key).
+
+    Used to reserve the ``agent.*`` namespace from authored tools. Enforcement
+    splits the two: :func:`is_agent_reach_key` for the closed-world reach keys,
+    ``agent.run`` for opt-in admission."""
+    return name == AGENT_RUN_TOOL or is_agent_reach_key(name)
 
 
 class AgentTargetPolicy(BaseToolPolicy):

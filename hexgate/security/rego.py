@@ -85,7 +85,13 @@ from hexgate.security.constraints import (
     Ref,
     parse_constraint,
 )
-from hexgate.security.models import AgentPolicy, BaseToolPolicy, FileToolPolicy
+from hexgate.security.models import (
+    AGENT_REACH_PREFIXES,
+    AGENT_RUN_TOOL,
+    AgentPolicy,
+    BaseToolPolicy,
+    FileToolPolicy,
+)
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
     PolicySet,
@@ -293,6 +299,22 @@ def _rules_for_role(
                 helpers,
             )
         )
+    if policy.agents and AGENT_RUN_TOOL not in effective:
+        # This role uses agent-level enforcement (has reach rules) but declares no
+        # admission, so admission is opt-in: an unlisted agent.run admits regardless
+        # of default_policy. Mirrors the _ADMISSION_OPT_IN_ALLOW fallback in the
+        # pydantic engine. Only emitted for agent-aware policies, so plain tool
+        # bundles are unchanged (agent.run is never queried on them anyway).
+        out.extend(
+            _gated_rules(
+                role,
+                role_guard,
+                [f'    input.tool == "{_escape_string(AGENT_RUN_TOOL)}"'],
+                BaseToolPolicy(mode="allow"),
+                AGENT_RUN_TOOL,
+                helpers,
+            )
+        )
     out.extend(_default_rules(role, role_guard, policy.default_policy, listed, helpers))
     return out
 
@@ -312,10 +334,15 @@ def _default_rules(
     """
     if default_policy.mode == "deny":
         return []
-    # agent.* keys are closed-world: a permissive default must not grant an unlisted
-    # agent reach, so exclude them from the catch-all (an unlisted agent key then
-    # matches no rule and denies). Mirrors get_tool_policy in the pydantic engine.
-    tool_guard = ['    not startswith(input.tool, "agent.")']
+    # Reach keys are closed-world: a permissive default must not grant an unlisted
+    # agent.tool:/agent.handoff:, so exclude them from the catch-all (an unlisted
+    # reach key then matches no rule and denies). agent.run is deliberately NOT
+    # excluded — admission is opt-in and its own rule handles it. Mirrors
+    # get_tool_policy / is_agent_reach_key in the pydantic engine.
+    tool_guard = [
+        f"    not startswith(input.tool, {json.dumps(prefix)})"
+        for prefix in AGENT_REACH_PREFIXES
+    ]
     if listed:
         members = ", ".join(json.dumps(name) for name in listed)
         tool_guard.append(f"    not input.tool in {{{members}}}")

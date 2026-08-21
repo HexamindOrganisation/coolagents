@@ -13,16 +13,20 @@ from hexgate.security.decision import DecisionOutcome, Verdict
 from hexgate.security.errors import ApprovalRequiredError, PolicyDeniedError
 from hexgate.security.file_scope import build_file_scope_hint, is_path_allowed
 from hexgate.security.models import (
+    AGENT_RUN_TOOL,
     AgentPolicy,
     BaseToolPolicy,
     FileToolPolicy,
     ToolPolicy,
-    is_agent_key,
+    is_agent_reach_key,
 )
 
-# Unlisted agent-level keys are closed-world: they deny regardless of
-# default_policy, so a permissive tool default never silently grants agent reach.
-_AGENT_CLOSED_WORLD_DENY = BaseToolPolicy(mode="deny")
+# Reach keys are closed-world: an unlisted agent.tool:/agent.handoff: denies
+# regardless of default_policy, so a permissive tool default never silently grants
+# agent reach. Admission (agent.run) is the opposite: opt-in, so an unlisted
+# agent.run admits (a role that declares no admission does not restrict it).
+_AGENT_REACH_CLOSED_WORLD_DENY = BaseToolPolicy(mode="deny")
+_ADMISSION_OPT_IN_ALLOW = BaseToolPolicy(mode="allow")
 
 if TYPE_CHECKING:
     from hexgate.security.bundle import PolicyBundle
@@ -49,18 +53,27 @@ def get_tool_policy(policy: AgentPolicy, tool_name: str) -> ToolPolicy:
     """Resolve the effective policy for a tool name.
 
     Reads ``effective_tools`` (authored tools plus lowered ``agent.*`` keys) so a
-    synthetic agent-level key resolves through the same path as any tool. An
-    unlisted *agent* key denies unconditionally (agent reach is closed-world, so a
-    permissive ``default_policy`` cannot silently grant a handoff or sub-agent
-    call); any other unlisted tool falls to ``default_policy``. The Rego compiler
-    excludes ``agent.*`` from its permissive catch-all for the same reason, keeping
-    both engines in agreement.
+    synthetic agent-level key resolves through the same path as any tool. Fallbacks
+    for an unlisted key differ by kind:
+
+    * an unlisted **reach** key (``agent.tool:`` / ``agent.handoff:``) denies,
+      closed-world, so a permissive ``default_policy`` cannot silently grant a
+      handoff or sub-agent call;
+    * an unlisted ``agent.run`` **admits** (admission is opt-in — a role that
+      declares no admission does not restrict who may start the agent);
+    * any other unlisted tool falls to ``default_policy``.
+
+    The Rego compiler mirrors both (it excludes reach keys from its permissive
+    catch-all and emits an opt-in allow rule for ``agent.run``), keeping the engines
+    in agreement.
     """
     tool_policy = policy.effective_tools.get(tool_name)
     if tool_policy is not None:
         return tool_policy
-    if is_agent_key(tool_name):
-        return _AGENT_CLOSED_WORLD_DENY
+    if tool_name == AGENT_RUN_TOOL:
+        return _ADMISSION_OPT_IN_ALLOW
+    if is_agent_reach_key(tool_name):
+        return _AGENT_REACH_CLOSED_WORLD_DENY
     return policy.default_policy
 
 
