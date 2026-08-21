@@ -299,12 +299,14 @@ def _rules_for_role(
                 helpers,
             )
         )
-    if policy.agents and AGENT_RUN_TOOL not in effective:
-        # This role uses agent-level enforcement (has reach rules) but declares no
-        # admission, so admission is opt-in: an unlisted agent.run admits regardless
-        # of default_policy. Mirrors the _ADMISSION_OPT_IN_ALLOW fallback in the
-        # pydantic engine. Only emitted for agent-aware policies, so plain tool
-        # bundles are unchanged (agent.run is never queried on them anyway).
+    if AGENT_RUN_TOOL not in effective:
+        # Admission is opt-in: a role that declares no admission rule admits, so an
+        # unlisted agent.run allows regardless of default_policy. Emitted for every
+        # role (not gated on agent blocks) so it matches the unconditional
+        # _ADMISSION_OPT_IN_ALLOW fallback in the pydantic engine — otherwise a role
+        # without an admission rule would deny agent.run on the WASM path while
+        # allowing it on the pydantic path (the same non-monotonic lockout, one
+        # engine over).
         out.extend(
             _gated_rules(
                 role,
