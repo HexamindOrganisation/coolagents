@@ -312,11 +312,13 @@ def _default_rules(
     """
     if default_policy.mode == "deny":
         return []
+    # agent.* keys are closed-world: a permissive default must not grant an unlisted
+    # agent reach, so exclude them from the catch-all (an unlisted agent key then
+    # matches no rule and denies). Mirrors get_tool_policy in the pydantic engine.
+    tool_guard = ['    not startswith(input.tool, "agent.")']
     if listed:
         members = ", ".join(json.dumps(name) for name in listed)
-        tool_guard = [f"    not input.tool in {{{members}}}"]
-    else:
-        tool_guard = []  # nothing listed → the default applies to every tool
+        tool_guard.append(f"    not input.tool in {{{members}}}")
     return _gated_rules(
         role, role_guard, tool_guard, default_policy, "<default>", helpers
     )

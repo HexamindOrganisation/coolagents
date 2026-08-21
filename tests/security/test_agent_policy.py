@@ -10,6 +10,8 @@ emits the same lowered keys, with no engine change.
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from pydantic import ValidationError
 
@@ -26,6 +28,8 @@ from hexgate.security import (
     compile_to_rego,
     load_policy_set_from_dict,
 )
+
+needs_opa = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on PATH")
 
 # --- lowering --------------------------------------------------------------
 
@@ -183,6 +187,44 @@ def test_rego_compiler_emits_lowered_agent_keys() -> None:
     assert 'input.tool == "agent.handoff:billing-bot"' in rego
 
 
+def test_rego_permissive_default_excludes_agent_keys() -> None:
+    # Under an allow-default the catch-all must exclude agent.* so an unlisted
+    # agent reach denies (closed-world) on the WASM path too, matching get_tool_policy.
+    rego = compile_to_rego({"default_policy": {"mode": "allow"}})
+    assert 'not startswith(input.tool, "agent.")' in rego
+
+
+@needs_opa
+def test_closed_world_agent_parity_pydantic_vs_wasm() -> None:
+    # The closed-world exclusion must agree across engines: an allow-default grants
+    # unlisted tools but denies unlisted agent reach on both the pydantic and WASM
+    # paths.
+    from hexgate.security import compile_to_wasm, verdict_from_rego
+    from hexgate.security.wasm_engine import WasmPolicy
+
+    payload = {
+        "default_policy": {"mode": "allow"},
+        "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
+    }
+    ps = load_policy_set_from_dict(payload)
+    engine = WasmPolicy.from_bytes(compile_to_wasm(compile_to_rego(payload)).wasm)
+
+    cases = [
+        "some_unlisted_tool",  # ordinary tool → default allow
+        agent_target_key("tool", "billing-bot"),  # listed → allow
+        agent_target_key("handoff", "billing-bot"),  # via not listed → deny
+        agent_target_key("tool", "other-bot"),  # target not listed → deny
+    ]
+    for tool in cases:
+        pyd = ps.evaluate(role="default", tool=tool, args={})
+        wsm = verdict_from_rego(
+            engine.decide(role="default", tool=tool, args={}),
+            tool_name=tool,
+            role="default",
+        )
+        assert pyd.outcome is wsm.outcome, tool
+
+
 # --- inheritance -----------------------------------------------------------
 
 
@@ -228,59 +270,23 @@ def test_const_ref_in_agent_constraint_validated() -> None:
         load_policy_set_from_dict(payload)
 
 
-def test_narrowing_that_loosens_a_deny_under_permissive_default_is_rejected() -> None:
-    # Parent denies both vias; child drops handoff under an allow-default, so
-    # handoff would fall through to allow and lose the parent's deny. Fail-open,
-    # so reject.
-    payload = {
-        "roles": {
-            "base": {
-                "is_mixin": True,
-                "agents": {"admin-bot": {"mode": "deny", "via": ["tool", "handoff"]}},
-            },
-            "support": {
-                "inherits": ["base"],
-                "default_policy": {"mode": "allow"},
-                "agents": {"admin-bot": {"mode": "allow", "via": ["tool"]}},
-            },
-        }
-    }
-    with pytest.raises(PolicySetError, match="silently loosen"):
-        load_policy_set_from_dict(payload)
-
-
-def test_narrowing_via_under_deny_default_is_allowed() -> None:
-    # Victor's case: inherit the mixin's grants, keep billing-bot callable as a
-    # tool, but never hand off. Under deny-by-default the dropped handoff via
-    # tightens to deny, which is exactly the intent, so this must NOT raise.
-    payload = {
-        "roles": {
-            "base": {
-                "is_mixin": True,
-                "tools": {"search_kb": {"mode": "allow"}},
-                "agents": {
-                    "billing-bot": {"mode": "allow", "via": ["tool", "handoff"]}
-                },
-            },
-            "support": {  # deny-by-default (no default_policy set)
-                "inherits": ["base"],
-                "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
-            },
-        }
-    }
-    policy_set = load_policy_set_from_dict(payload)
-    assert_allows(policy_set, "search_kb", role="support")
-    assert_allows(policy_set, agent_target_key("tool", "billing-bot"), role="support")
-    # handoff dropped → falls to support's deny-by-default → denied, as intended.
-    assert_denies(
-        policy_set, agent_target_key("handoff", "billing-bot"), role="support"
+def test_agent_reach_is_closed_world_even_under_allow_default() -> None:
+    # A permissive default_policy grants unlisted *tools*, but never an unlisted
+    # *agent* reach: agent keys are closed-world regardless of the default.
+    policy = AgentPolicy(
+        default_policy=BaseToolPolicy(mode="allow"),
+        agents={"billing-bot": AgentTargetPolicy(mode="allow", via=["tool"])},
     )
+    assert_allows(policy, "some_unlisted_tool")  # ordinary tool → default allow
+    assert_allows(policy, agent_target_key("tool", "billing-bot"))  # listed
+    assert_denies(policy, agent_target_key("handoff", "billing-bot"))  # via not listed
+    assert_denies(policy, agent_target_key("tool", "other-bot"))  # target not listed
 
 
-def test_narrowing_that_drops_a_parent_constraint_is_rejected() -> None:
-    # Modes tie (both allow) but the parent's handoff rule carries a constraint the
-    # allow-default lacks; the dropped via would fall through to an *unconstrained*
-    # allow, silently losing the cap. Reject.
+def test_dropped_via_denies_regardless_of_default() -> None:
+    # A child that narrows a target's vias: the dropped via denies whatever the
+    # default is (closed-world), so a permissive default cannot resurrect it. No
+    # error, no fail-open — the whole class the old guard chased is gone.
     payload = {
         "roles": {
             "base": {
@@ -300,31 +306,56 @@ def test_narrowing_that_drops_a_parent_constraint_is_rejected() -> None:
             },
         }
     }
-    with pytest.raises(PolicySetError, match="silently loosen"):
-        load_policy_set_from_dict(payload)
+    policy_set = load_policy_set_from_dict(payload)
+    assert_allows(policy_set, agent_target_key("tool", "billing-bot"), role="support")
+    # handoff dropped → closed-world deny even under an allow-default, cap and all.
+    assert_denies(
+        policy_set,
+        agent_target_key("handoff", "billing-bot"),
+        {"amount": 5000},
+        role="support",
+    )
 
 
-def test_narrowing_under_matching_unconstrained_allow_is_fine() -> None:
-    # Same shape but the parent rule has no constraint, so falling through to the
-    # allow-default loosens nothing. No error.
+def test_inherited_dropped_via_denies_under_later_permissive_default() -> None:
+    # The inheritance hazard: a mid role narrows to tool-only, then a descendant
+    # flips default_policy to allow without touching agents. The dropped handoff
+    # still denies (closed-world), so the descendant cannot silently resurrect it.
     payload = {
         "roles": {
             "base": {
                 "is_mixin": True,
                 "agents": {
-                    "billing-bot": {"mode": "allow", "via": ["tool", "handoff"]}
+                    "billing-bot": {
+                        "mode": "allow",
+                        "via": ["tool", "handoff"],
+                        "constraints": ["args.amount <= 100"],
+                    }
+                },
+            },
+            "mid": {
+                "is_mixin": True,
+                "inherits": ["base"],
+                "agents": {
+                    "billing-bot": {
+                        "mode": "allow",
+                        "via": ["tool"],
+                        "constraints": ["args.amount <= 100"],
+                    }
                 },
             },
             "support": {
-                "inherits": ["base"],
-                "default_policy": {"mode": "allow"},
-                "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
+                "inherits": ["mid"],
+                "default_policy": {"mode": "allow"},  # declares no agents
             },
         }
     }
     policy_set = load_policy_set_from_dict(payload)
-    assert_allows(
-        policy_set, agent_target_key("handoff", "billing-bot"), role="support"
+    assert_denies(
+        policy_set,
+        agent_target_key("handoff", "billing-bot"),
+        {"amount": 5000},
+        role="support",
     )
 
 

@@ -68,9 +68,14 @@ def agent_target_key(via: AgentVia, target: str) -> str:
     return f"agent.{via}:{target}"
 
 
-def _is_reserved_agent_key(name: str) -> bool:
-    # Derive the reserved prefixes from AgentVia (via agent_target_key's shape),
-    # so a new via mode cannot be added without this guard covering it too.
+def is_agent_key(name: str) -> bool:
+    """True for a synthetic agent-level key (``agent.run`` / ``agent.tool:`` /
+    ``agent.handoff:``).
+
+    Used both to reserve the namespace from authored tools and to make agent reach
+    closed-world: an unlisted agent key denies regardless of ``default_policy``.
+    Derives the prefixes from :data:`AgentVia` so a new via mode is covered here
+    automatically."""
     if name == AGENT_RUN_TOOL:
         return True
     return any(name.startswith(f"agent.{via}:") for via in get_args(AgentVia))
@@ -150,7 +155,7 @@ class AgentPolicy(BaseModel):
         would collide with a lowered agent rule in :attr:`effective_tools` and
         silently shadow (or be shadowed by) it. Reject it at load."""
         for name in value:
-            if _is_reserved_agent_key(name):
+            if is_agent_key(name):
                 raise ValueError(
                     f"tool name {name!r} is reserved for agent-level gating; "
                     "use the 'admission'/'agents' blocks instead"
