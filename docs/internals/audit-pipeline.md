@@ -510,8 +510,8 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
    order via `make clickhouse-cli` **before** deploying the API that references
    the new column. Exception: when no `ALTER` can restate pre-existing rows
    truthfully — the multi-role columns — no migration ships and the volume is
-   recreated instead (`make clickhouse-reset`), which is what
-   `AuditSchemaOutOfDate` tells the operator.
+   recreated instead (`make clickhouse-reset`). A boot-time gap raises
+   `SchemaOutOfDate`, which points the operator at both paths.
 6. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.

@@ -142,9 +142,10 @@ class SchemaOutOfDate(Exception):
         )
         super().__init__(
             f"ClickHouse schema is behind this build ({detail}). "
-            "Recreate the volume so init/schema.sql runs (`make clickhouse-reset` "
-            "locally) before starting the API. Event tables ship no migrations: "
-            "no ALTER can restate pre-existing rows truthfully."
+            "Apply the matching migration from platform/clickhouse/migrations/ "
+            "if one ships for these columns; otherwise recreate the volume so "
+            "init/schema.sql runs (`make clickhouse-reset` locally) before "
+            "starting the API."
         )
         self.missing = missing
 
