@@ -413,6 +413,60 @@ class PolicyCheckResponse(BaseModel):
     lints: list[PolicyLintOut] = Field(default_factory=list)
 
 
+# --- Editor: preview, test, move (see policy-editor-plan.md) -----------------
+
+
+class PolicyModuleDraft(BaseModel):
+    """An unsaved edit of one module, overlaid before resolve/test."""
+
+    tier: str  # "boundary" | "capability"
+    path: str
+    content: str
+
+
+class PolicyDraft(BaseModel):
+    """The editor's unsaved state: one module OR the roles map (never both)."""
+
+    module: Optional[PolicyModuleDraft] = None
+    roles: Optional[dict[str, list[str]]] = None
+
+
+class PolicyPreviewRequest(BaseModel):
+    draft: Optional[PolicyDraft] = None
+
+
+class PolicyPreviewResponse(BaseModel):
+    """Resolved policy per role + lints for the (optionally draft-overlaid) project.
+
+    Always 200: an unresolvable or unparseable draft comes back with an empty
+    ``resolved`` and an error lint, so the editor renders it in place.
+    """
+
+    resolved: dict[str, dict] = Field(default_factory=dict)
+    lints: list[PolicyLintOut] = Field(default_factory=list)
+
+
+class PolicyTestRequest(BaseModel):
+    """A tool call to evaluate against the whole resolved policy for ``role``."""
+
+    role: str
+    tool: str
+    args: dict = Field(default_factory=dict)
+    attributes: Optional[dict] = None
+    draft: Optional[PolicyDraft] = None  # reflect an unsaved edit, like preview
+
+
+class PolicyTestResponse(BaseModel):
+    outcome: str  # "allow" | "deny" | "approval_required"
+    reason: Optional[str] = None
+    violations: list[str] = Field(default_factory=list)
+    hint: Optional[str] = None
+
+
+class MoveModuleRequest(BaseModel):
+    new_path: str
+
+
 # --- Agent manifest registration ---------------------------------------------
 # These mirror hexgate/manifest/models.py so SDK and platform stay in sync.
 

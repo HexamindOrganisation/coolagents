@@ -974,3 +974,161 @@ async def test_resolves_false_on_unparseable_stored_module(session_factory) -> N
         await pm.set_roles(s, project_id=proj.id, roles={"default": ["broken"]})
         await s.commit()
         assert await pm.resolves(s, proj.id) is False  # must not raise
+# --- editor endpoints: preview, test, move --------------------------------
+
+
+def test_preview_overlays_an_unsaved_draft(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)  # view_orders only
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    # draft adds lookup_order to read_only, unsaved
+    draft = {
+        "module": {
+            "tier": "capability",
+            "path": "read_only",
+            "content": "tools:\n  view_orders: { mode: allow }\n  lookup_order: { mode: allow }\n",
+        }
+    }
+    body = client.post(
+        f"/v1/projects/{pid}/policy/preview", json={"draft": draft}
+    ).json()
+    tools = body["resolved"]["default"]["tools"]
+    assert "lookup_order" in tools  # reflects the draft, not the stored module
+    # stored resolve still doesn't have it
+    stored = client.get(f"/v1/projects/{pid}/policy/resolve").json()
+    assert "lookup_order" not in stored["roles"]["default"]["tools"]
+
+
+def test_preview_unparseable_draft_is_an_error_lint_not_500(client: TestClient) -> None:
+    pid = _project(client)
+    draft = {"module": {"tier": "capability", "path": "x", "content": "tools: [broken"}}
+    r = client.post(f"/v1/projects/{pid}/policy/preview", json={"draft": draft})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["resolved"] == {}
+    assert any(lint["code"] == "parse-error" for lint in body["lints"])
+
+
+def test_test_policy_allow_then_deny(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "boundary", "org_core", BOUNDARY)  # refund <= 1000
+    _put_module(client, pid, "capability", "payments", PAYMENTS)  # refund allow
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"billing": ["payments"]}}
+    )
+
+    allow = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "billing", "tool": "refund_order", "args": {"amount": 800}},
+    ).json()
+    assert allow["outcome"] == "allow"
+
+    deny = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "billing", "tool": "refund_order", "args": {"amount": 1500}},
+    ).json()
+    assert deny["outcome"] == "deny"
+    assert deny["reason"]  # explains why
+
+
+def test_test_policy_unknown_role_404(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    r = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "ghost", "tool": "view_orders", "args": {}},
+    )
+    assert r.status_code == 404
+
+
+def test_move_capability_cascades_to_role_bindings(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"billing": ["read_only"]}}
+    )
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/read_only",
+        json={"new_path": "team/read_only"},
+    )
+    assert r.status_code == 200, r.text
+    paths = {
+        (m["tier"], m["path"])
+        for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
+    }
+    assert ("capability", "team/read_only") in paths
+    assert ("capability", "read_only") not in paths
+    # the binding followed the rename
+    roles = client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"]
+    assert roles["billing"] == ["team/read_only"]
+
+
+def test_move_conflict_is_409(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "a", READ_ONLY)
+    _put_module(client, pid, "capability", "b", PAYMENTS)
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/a", json={"new_path": "b"}
+    )
+    assert r.status_code == 409
+
+
+def test_move_missing_module_is_404(client: TestClient) -> None:
+    pid = _project(client)
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/ghost", json={"new_path": "x"}
+    )
+    assert r.status_code == 404
+
+
+def test_capability_with_deny_rejected_at_write(client: TestClient) -> None:
+    # A capability that denies must fail fast at write (422), not save (200) and
+    # then poison the whole project's resolve via the SDK's library-wide check.
+    pid = _project(client)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-modules/capability/bad",
+        json={"content": "tools:\n  x: { mode: deny }\n"},
+    )
+    assert r.status_code == 422
+    assert "deny" in r.json()["detail"].lower()
+
+
+async def test_stored_invalid_module_is_diagnostic_not_500(session_factory) -> None:
+    # A stored module that no longer parses (schema drift / out-of-band edit)
+    # must surface as an invalid-module lint on check and a 422-mapped error on
+    # resolve, never a raw 500.
+    import uuid
+
+    from hexgate_api.constants import DEFAULT_ORG_ID
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule, Project
+
+    async with session_factory() as s:
+        proj = Project(
+            id=str(uuid.uuid4()),
+            org_id=DEFAULT_ORG_ID,
+            name=f"inv-{uuid.uuid4().hex[:8]}",
+        )
+        s.add(proj)
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="tools: {x: {mode: bogus}}",  # bad mode -> won't validate
+                content_hash="x",
+            )
+        )
+        await s.commit()
+
+        lints = await pm.check(s, proj.id)
+        assert any(lint.code == "invalid-module" for lint in lints)
+        with pytest.raises(pm.InvalidModuleError):
+            await pm.resolve(s, proj.id)
