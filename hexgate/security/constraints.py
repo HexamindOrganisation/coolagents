@@ -84,6 +84,10 @@ from functools import lru_cache
 from typing import Any
 
 from hexgate.security.errors import PolicyDeniedError
+from hexgate.security.regex_safety import (
+    UnsupportedRegex,
+    find_exponential_ambiguity,
+)
 
 
 class ConstraintParseError(ValueError):
@@ -659,6 +663,53 @@ def _validate_re2(pattern: str, source: str) -> None:
             "(backreferences, lookaround, \\Z anchor, inline comments, or "
             "conditionals) — the WASM engine would diverge"
         )
+    _validate_linear_time(pattern, source)
+
+
+def _validate_linear_time(pattern: str, source: str) -> None:
+    """Reject a regex RE2 runs in linear time but Python's ``re`` does not.
+
+    The pydantic engine evaluates ``matches`` with ``re.search``, which
+    backtracks; a WASM bundle runs the same pattern under RE2, which cannot.
+    So an exponentially ambiguous pattern is a second way for the two engines
+    to diverge — not on the verdict, but on whether one of them returns at
+    all — and the arguments a constraint is fed are attacker-influenced.
+    Refused at load, like the syntax above, so it cannot reach a deployment.
+
+    See :mod:`hexgate.security.regex_safety` and
+    ``docs/adr/R-CONSTRAINT-001``.
+    """
+    try:
+        witness = find_exponential_ambiguity(pattern)
+    except UnsupportedRegex as exc:
+        if exc.re2_incompatible:
+            raise ConstraintParseError(
+                f"regex {pattern!r} in {source!r} uses an atomic group or a "
+                "possessive quantifier, which RE2 does not have — the WASM "
+                "engine would diverge"
+            ) from exc
+        raise ConstraintParseError(
+            f"regex {pattern!r} in {source!r} uses {exc.construct}, which this "
+            "check cannot verify as linear-time — rewrite it with the "
+            "constructs the policy grammar documents"
+        ) from exc
+    if witness is False:
+        return
+    if witness is None:
+        raise ConstraintParseError(
+            f"regex {pattern!r} in {source!r} is too complex to verify as "
+            "linear-time on the backtracking engine — simplify it so the "
+            "policy behaves the same on both engines"
+        )
+    raise ConstraintParseError(
+        f"regex {pattern!r} in {source!r} can backtrack exponentially: the "
+        f"segment {witness.pump!r} can be matched more than one way, so on an "
+        f"input like {witness.example!r} the number of combinations Python's "
+        "engine must try doubles as the input grows, while the WASM engine "
+        "stays linear. Rewrite the repetition so each iteration has only one "
+        "way to match (a required separator between iterations, or a single "
+        "quantifier instead of a nested one)"
+    )
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:

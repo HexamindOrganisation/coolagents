@@ -95,6 +95,25 @@ pattern anywhere in the string. Add `^` and `$` when you mean the *whole* value,
 like the ticket-ID example above.
 </Tip>
 
+<Warning>
+A pattern must be one a regex engine can match in **linear time**. Policies are
+refused at load when a repetition can match the same text more than one way —
+`^(a+)+$`, `^([a-z]+)*$`, `^(a|aa)+$` — because the engine then has to try every
+split. A 34-character argument already takes ten minutes to decide, and the cost
+keeps quadrupling every two characters. The error names the pattern and an
+example string.
+
+The fix is to leave only one way to match each repetition: `^(a+)+$` is just
+`^a+$`, and a repeated group needs a separator that cannot be absorbed by the
+group itself — `^([a-z0-9-]+[.])+corp[.]com$` is fine, because the `[.]` ends
+every iteration.
+
+A milder version of the same problem is not refused today: two repetitions that
+can both absorb the same text, like `^a*a*a*$`, still load, and matching cost
+then grows with the square or cube of the argument length rather than doubling.
+Worth avoiding, but it will not stop a policy from loading.
+</Warning>
+
 ## Rules over a list
 
 When an argument is a **list**, `every` and `any` let you constrain its
