@@ -45,6 +45,13 @@ dependencies = [
     # in production. Dev mode stays on StderrEmailSender (no key needed).
     # Sync SDK; wrapped via asyncio.to_thread in mailer.py.
     "resend>=2.4",
+    # Span-enricher job (jobs/enricher): asyncio Kafka client — getmany
+    # batching, manual offset commit, DLQ producer.
+    "aiokafka>=0.12",
+    # The enricher decodes ExportTraceServiceRequest protobufs from Kafka.
+    # Transitive via the hexgate SDK's langfuse chain, but pinned since we
+    # import it directly (same rule as python-dotenv above).
+    "opentelemetry-proto>=1.41",
 ]
 
 [dependency-groups]

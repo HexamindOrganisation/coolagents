@@ -22,6 +22,18 @@ class Settings(BaseSettings):
     clickhouse_database: str = "hexgate_audit"
     clickhouse_secure: bool = False
 
+    # Span-enricher job (jobs/enricher). Redpanda is Kafka-protocol-compatible,
+    # so these feed a stock Kafka client (aiokafka). localhost:9092 is the host
+    # listener (platform/docker-compose.yml); in-compose consumers use
+    # redpanda:29092. Same env var the collector and create-topics.sh read.
+    redpanda_bootstrap_server: str = "localhost:9092"
+    redpanda_raw_topic: str = "hexgate.otlp.raw"
+    redpanda_dlq_topic: str = "hexgate.otlp.dlq"
+    enricher_consumer_group: str = "hexgate-enricher"
+    enricher_poll_timeout_ms: int = 1000
+    enricher_max_poll_records: int = 500
+    enricher_insert_max_backoff_s: float = 30.0
+
     @model_validator(mode="after")
     def _refuse_dev_password_on_remote_host(self) -> "Settings":
         # The dev default keeps `make clickhouse-up` zero-setup, but pointing
