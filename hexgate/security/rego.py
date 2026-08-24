@@ -85,7 +85,13 @@ from hexgate.security.constraints import (
     Ref,
     parse_constraint,
 )
-from hexgate.security.models import AgentPolicy, BaseToolPolicy, FileToolPolicy
+from hexgate.security.models import (
+    AGENT_REACH_PREFIXES,
+    AGENT_RUN_TOOL,
+    AgentPolicy,
+    BaseToolPolicy,
+    FileToolPolicy,
+)
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
     PolicySet,
@@ -271,13 +277,15 @@ def _rules_for_role(
 ) -> list[str]:
     """Render rules for one resolved role (allow + violations per tool).
 
-    Explicitly-listed tools each get their own ``input.tool == "X"`` rule;
+    Explicitly-listed tools each get their own ``input.tool == "X"`` rule
+    (including the lowered ``agent.*`` keys in ``effective_tools``);
     ``default_policy`` (when not ``deny``) gets a catch-all for any tool *not*
     explicitly listed — mirroring the pydantic engine's
-    ``policy.tools.get(tool, default_policy)`` fallback so both engines agree
+    ``effective_tools.get(tool, default_policy)`` fallback so both engines agree
     on unlisted tools.
     """
-    listed = sorted(policy.tools)
+    effective = policy.effective_tools
+    listed = sorted(effective)
     out: list[str] = []
     for tool_name in listed:
         tool_guard = [f'    input.tool == "{_escape_string(tool_name)}"']
@@ -286,8 +294,26 @@ def _rules_for_role(
                 role,
                 role_guard,
                 tool_guard,
-                policy.tools[tool_name],
+                effective[tool_name],
                 tool_name,
+                helpers,
+            )
+        )
+    if AGENT_RUN_TOOL not in effective:
+        # Admission is opt-in: a role that declares no admission rule admits, so an
+        # unlisted agent.run allows regardless of default_policy. Emitted for every
+        # role (not gated on agent blocks) so it matches the unconditional
+        # _ADMISSION_OPT_IN_ALLOW fallback in the pydantic engine — otherwise a role
+        # without an admission rule would deny agent.run on the WASM path while
+        # allowing it on the pydantic path (the same non-monotonic lockout, one
+        # engine over).
+        out.extend(
+            _gated_rules(
+                role,
+                role_guard,
+                [f'    input.tool == "{_escape_string(AGENT_RUN_TOOL)}"'],
+                BaseToolPolicy(mode="allow"),
+                AGENT_RUN_TOOL,
                 helpers,
             )
         )
@@ -310,11 +336,18 @@ def _default_rules(
     """
     if default_policy.mode == "deny":
         return []
+    # Reach keys are closed-world: a permissive default must not grant an unlisted
+    # agent.tool:/agent.handoff:, so exclude them from the catch-all (an unlisted
+    # reach key then matches no rule and denies). agent.run is deliberately NOT
+    # excluded — admission is opt-in and its own rule handles it. Mirrors
+    # get_tool_policy / is_agent_reach_key in the pydantic engine.
+    tool_guard = [
+        f"    not startswith(input.tool, {json.dumps(prefix)})"
+        for prefix in AGENT_REACH_PREFIXES
+    ]
     if listed:
         members = ", ".join(json.dumps(name) for name in listed)
-        tool_guard = [f"    not input.tool in {{{members}}}"]
-    else:
-        tool_guard = []  # nothing listed → the default applies to every tool
+        tool_guard.append(f"    not input.tool in {{{members}}}")
     return _gated_rules(
         role, role_guard, tool_guard, default_policy, "<default>", helpers
     )

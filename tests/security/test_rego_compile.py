@@ -154,11 +154,13 @@ def test_emits_allow_rule_per_role_and_tool() -> None:
     rules = _allow_rules(rego)
     # support_bot: 3 roles (read_only is mixin, dropped) × 3 tools (web_search,
     # read_file each get an allow per role; refund_order is allow for support
-    # + billing, deny for default).
-    #   default  → web_search, read_file (refund_order is deny, no rule)
-    #   support  → web_search, read_file, refund_order (with 2 constraints)
-    #   billing  → web_search, read_file, refund_order (with 2 constraints)
-    assert len(rules) == 2 + 3 + 3
+    # + billing, deny for default). Plus one agent.run opt-in allow per role,
+    # since no role lists admission (admission is opt-in, so an absent agent.run
+    # admits — emitted on every role to match the pydantic engine).
+    #   default  → web_search, read_file, agent.run (refund_order is deny, no rule)
+    #   support  → web_search, read_file, refund_order (2 constraints), agent.run
+    #   billing  → web_search, read_file, refund_order (2 constraints), agent.run
+    assert len(rules) == (2 + 1) + (3 + 1) + (3 + 1)
 
 
 def test_mixin_role_omitted_from_output() -> None:
@@ -374,7 +376,9 @@ def test_approval_required_emits_separate_rule_head() -> None:
         },
     }
     rego = compile_to_rego(payload)
-    assert len(_allow_rules(rego)) == 0
+    # The only allow rule is the agent.run admission opt-in; issue_credit is an
+    # approval rule, not an allow rule.
+    assert all("agent.run" in rule for rule in _allow_rules(rego))
     [approval] = _approval_rules(rego)
     assert 'input.tool == "issue_credit"' in approval
     assert "input.args.amount <= 500" in approval
@@ -394,7 +398,8 @@ def test_flat_single_policy_compiles_as_default_role() -> None:
         },
     }
     rego = compile_to_rego(payload)
-    [rule] = _allow_rules(rego)
+    # web_search plus the agent.run admission opt-in; pick the web_search rule.
+    [rule] = [r for r in _allow_rules(rego) if "web_search" in r]
     assert 'input.tool == "web_search"' in rule
     # Only the default role exists → no role guard; it applies to every caller
     # (including unknown roles, per the default-role fallback).
@@ -511,7 +516,9 @@ def test_quantifier_emits_helper_rule() -> None:
     }
     rego = compile_to_rego(payload)
     assert re.search(r"_q_[0-9a-f]+ if \{\n\s+every __e_[0-9a-f]+ in ", rego)
-    [allow_body] = _allow_rules(rego)
+    # Two allow rules now: tool "t" and the agent.run admission opt-in. The
+    # quantifier body is on "t".
+    [allow_body] = [r for r in _allow_rules(rego) if "agent.run" not in r]
     assert re.search(r"_q_[0-9a-f]+", allow_body)  # allow references the helper
     assert re.search(r"not _q_[0-9a-f]+", rego)  # violation negates the helper
     assert "not every" not in rego and "not some" not in rego  # never inline-negated

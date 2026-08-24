@@ -500,11 +500,15 @@ def check_default_role_exposure(policy_set: PolicySet) -> list[PolicyLint]:
             )
         )
 
-    for tool, tool_policy in sorted(default_policy.tools.items()):
+    # effective_tools, not tools: a default role that grants an admission or
+    # agents rule (lowered to an ``agent.*`` key) is reachable by any undefined
+    # role name too, and that is exactly the exposure this lint exists to catch.
+    for tool, tool_policy in sorted(default_policy.effective_tools.items()):
         if tool_policy.mode not in GRANT_MODES:
             continue
         if any(
-            tool in other.tools and other.tools[tool].mode in GRANT_MODES
+            tool in other.effective_tools
+            and other.effective_tools[tool].mode in GRANT_MODES
             for other in others
         ):
             continue

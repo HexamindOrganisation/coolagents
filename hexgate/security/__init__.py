@@ -20,12 +20,16 @@ from hexgate.security.bans import (
     resolve_ban_gate,
 )
 from hexgate.security.models import (
+    AGENT_RUN_TOOL,
     AgentPolicy,
+    AgentTargetPolicy,
+    AgentVia,
     BaseToolPolicy,
     FileScope,
     FileToolPolicy,
     PolicyMode,
     ToolPolicy,
+    agent_target_key,
 )
 from hexgate.security.constraints import (
     Constraint,
@@ -133,8 +137,12 @@ from hexgate.security.testing import (
 )
 
 __all__ = [
+    "AGENT_RUN_TOOL",
     "AgentBannedError",
     "AgentPolicy",
+    "AgentTargetPolicy",
+    "AgentVia",
+    "agent_target_key",
     "LayerKind",
     "LinkError",
     "LinkResult",

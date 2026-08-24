@@ -171,6 +171,7 @@ def link(
 ) -> tuple[AgentPolicy, RuleTrace]:
     """Fold one role's layers into a single :class:`AgentPolicy`. Pure; no I/O."""
     _reject_file_scope(boundaries, capabilities)
+    _reject_unsupported_module_fields(boundaries, capabilities)
     _reject_default_policy_constraints(boundaries, capabilities)
     consts = _merge_consts(boundaries, capabilities)
 
@@ -269,6 +270,35 @@ def _reject_file_scope(
                     f"which module composition does not support yet — keep it in a "
                     f"single-file policy or drop file_scope ({module.source})"
                 )
+
+
+# The AgentPolicy fields the fold understands. Anything else a module sets is
+# rejected by _reject_unsupported_module_fields, so a field added to AgentPolicy
+# later fails closed here instead of being silently dropped by _fold_tool.
+_MODULE_COMPOSABLE_FIELDS = frozenset(
+    {"version", "inherits", "is_mixin", "default_policy", "tools", "consts"}
+)
+
+
+def _reject_unsupported_module_fields(
+    boundaries: list[ModuleContent], capabilities: list[ModuleContent]
+) -> None:
+    """Reject any top-level AgentPolicy field a module sets that the fold does not
+    compose (today: ``admission`` / ``agents``; tomorrow: whatever is added next).
+
+    ``_fold_tool`` reads only ``.tools``, so an un-composed field would be silently
+    dropped, erasing a rule an operator authored — the same fail-open
+    :func:`_reject_file_scope` guards against, generalized. Allowlisting the fields
+    the fold understands means a new AgentPolicy field is rejected automatically
+    until composition learns it, rather than shipping fail-open by omission."""
+    for module in (*boundaries, *capabilities):
+        extra = module.policy.model_fields_set - _MODULE_COMPOSABLE_FIELDS
+        if extra:
+            raise LinkError(
+                f"module {module.name!r} sets {sorted(extra)}, which module "
+                f"composition does not support (the fold composes only tools); "
+                f"keep it in a single-file policy ({module.source})"
+            )
 
 
 def _fold_tool(

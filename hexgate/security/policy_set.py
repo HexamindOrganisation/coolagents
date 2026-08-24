@@ -38,7 +38,12 @@ import yaml
 
 from hexgate.security.constraints import iter_const_refs, parse_constraint
 from hexgate.security.decision import Verdict
-from hexgate.security.models import AgentPolicy, BaseToolPolicy, ToolPolicy
+from hexgate.security.models import (
+    AgentPolicy,
+    AgentTargetPolicy,
+    BaseToolPolicy,
+    ToolPolicy,
+)
 
 
 DEFAULT_ROLE_NAME = "default"
@@ -135,7 +140,7 @@ def _validate_const_refs(policies: Mapping[str, AgentPolicy]) -> None:
     """
     for role, policy in policies.items():
         available = set(policy.consts)
-        for tool_policy in (*policy.tools.values(), policy.default_policy):
+        for tool_policy in (*policy.effective_tools.values(), policy.default_policy):
             for raw in tool_policy.constraints:
                 for name in iter_const_refs(parse_constraint(raw)):
                     if name not in available:
@@ -303,15 +308,23 @@ def _resolve_inheritance(
     if not own.inherits:
         return own
     merged_tools: dict[str, ToolPolicy] = {}
+    merged_agents: dict[str, AgentTargetPolicy] = {}
     merged_consts: dict[str, object] = {}
     merged_default: BaseToolPolicy = own.default_policy
+    merged_admission: BaseToolPolicy | None = own.admission
 
-    # Merge parents left-to-right (later parents override earlier).
+    # Merge parents left-to-right (later parents override earlier). ``agents``
+    # merges by target name like ``tools`` does. ``admission`` only overwrites when
+    # a parent actually sets one, so a later mixin that omits it can't null out an
+    # earlier parent's rule — dropping an agent gate silently would be fail-open.
     for parent_name in own.inherits:
         parent = _resolve_inheritance(parent_name, raw, chain + [name])
         merged_tools.update(parent.tools)
+        merged_agents.update(parent.agents)
         merged_consts.update(parent.consts)
         merged_default = parent.default_policy
+        if parent.admission is not None:
+            merged_admission = parent.admission
 
     # Self overrides everything from parents. Check ``model_fields_set`` rather
     # than comparing against ``BaseToolPolicy()``: a child that explicitly says
@@ -319,9 +332,12 @@ def _resolve_inheritance(
     # user's intent is to override, and silently inheriting an ``allow`` from a
     # parent would be fail-open.
     merged_tools.update(own.tools)
+    merged_agents.update(own.agents)
     merged_consts.update(own.consts)
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy
+    if "admission" in own.model_fields_set:
+        merged_admission = own.admission
 
     return AgentPolicy(
         version=own.version,
@@ -330,4 +346,6 @@ def _resolve_inheritance(
         default_policy=merged_default,
         tools=merged_tools,
         consts=merged_consts,
+        admission=merged_admission,
+        agents=merged_agents,
     )

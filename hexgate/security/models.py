@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from functools import cached_property
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from hexgate.security.constraints import parse_constraint
 
@@ -52,6 +53,64 @@ class FileToolPolicy(BaseToolPolicy):
 
 ToolPolicy = BaseToolPolicy | FileToolPolicy
 
+AgentVia = Literal["tool", "handoff"]
+
+# Reserved synthetic tool keys that agent-level gating lowers to. Kept here so
+# the lowering and the agent gate (which builds the same keys at the seam) share
+# one definition. ``.`` and ``:`` are safe in a tool name: both engines treat the
+# name as an opaque string (the Rego compiler emits ``input.tool == "<name>"``),
+# exactly as the ``net.*`` egress tools already do.
+AGENT_RUN_TOOL = "agent.run"
+
+# Prefixes for the reach keys (``agent.tool:<name>`` / ``agent.handoff:<name>``),
+# derived from AgentVia so a new via mode is covered everywhere automatically. One
+# source of truth for the namespace reservation and for both engines' closed-world
+# handling, so pydantic and Rego cannot drift on which names are agent keys.
+AGENT_REACH_PREFIXES = tuple(f"agent.{via}:" for via in get_args(AgentVia))
+
+
+def agent_target_key(via: AgentVia, target: str) -> str:
+    """Synthetic tool key for reaching ``target`` in a given transfer mode."""
+    return f"agent.{via}:{target}"
+
+
+def is_agent_reach_key(name: str) -> bool:
+    """True for an ``agent.tool:`` / ``agent.handoff:`` reach key.
+
+    Reach is closed-world: an unlisted reach key denies regardless of
+    ``default_policy``. Admission (``agent.run``) is *not* a reach key — it is
+    opt-in, so its absence admits — hence the two are checked separately."""
+    return name.startswith(AGENT_REACH_PREFIXES)
+
+
+def is_agent_key(name: str) -> bool:
+    """True for any synthetic agent-level key (``agent.run`` or a reach key).
+
+    Used to reserve the ``agent.*`` namespace from authored tools. Enforcement
+    splits the two: :func:`is_agent_reach_key` for the closed-world reach keys,
+    ``agent.run`` for opt-in admission."""
+    return name == AGENT_RUN_TOOL or is_agent_reach_key(name)
+
+
+class AgentTargetPolicy(BaseToolPolicy):
+    """Authorize reaching one named target agent, per transfer mode.
+
+    ``via`` names the transfer modes this rule governs: ``tool`` (agent-as-tool,
+    the orchestrator keeps control) and/or ``handoff`` (control transfers). A
+    target listed for ``tool`` only cannot be handed off to, and the reverse.
+    ``mode`` and ``constraints`` behave exactly as on a tool policy.
+    """
+
+    via: list[AgentVia] = Field(default_factory=lambda: ["tool", "handoff"])
+
+    @field_validator("via")
+    @classmethod
+    def _validate_via(cls, value: list[AgentVia]) -> list[AgentVia]:
+        if not value:
+            raise ValueError("via must list at least one of 'tool', 'handoff'")
+        # De-dup, order-preserving.
+        return list(dict.fromkeys(value))
+
 
 class AgentPolicy(BaseModel):
     """Define an agent-wide tool authorization policy.
@@ -67,7 +126,25 @@ class AgentPolicy(BaseModel):
     ``consts`` names reusable values referenced from constraints as
     ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
+
+    Agent-level gating (both optional):
+
+    * ``admission`` — ingress. May this role start or enter *this* agent at all?
+    * ``agents`` — egress. Which *other* agents may this role reach, keyed by
+      target name, each an :class:`AgentTargetPolicy`.
+
+    Both lower into synthetic tool keys via :attr:`effective_tools`, which both
+    policy engines read, so agent-level rules evaluate through the identical
+    decision path as tools with no engine change. A target not named in ``agents``
+    falls to ``default_policy`` (deny by default), so a listed-``agents`` policy is
+    closed-world for free; the runtime gate refines that fallback in a later PR.
     """
+
+    # frozen: policies are immutable after load (inheritance builds fresh
+    # instances, nothing reassigns a field), which is what makes memoizing
+    # effective_tools safe. cached_property is a plain descriptor, not a field,
+    # so pydantic must leave it alone.
+    model_config = ConfigDict(frozen=True, ignored_types=(cached_property,))
 
     version: int = 1
     inherits: list[str] = Field(default_factory=list)
@@ -75,3 +152,57 @@ class AgentPolicy(BaseModel):
     default_policy: BaseToolPolicy = Field(default_factory=BaseToolPolicy)
     tools: dict[str, ToolPolicy] = Field(default_factory=dict)
     consts: dict[str, Any] = Field(default_factory=dict)
+    admission: BaseToolPolicy | None = None
+    agents: dict[str, AgentTargetPolicy] = Field(default_factory=dict)
+
+    @field_validator("tools")
+    @classmethod
+    def _reject_reserved_tool_names(
+        cls, value: dict[str, ToolPolicy]
+    ) -> dict[str, ToolPolicy]:
+        """Keep the ``agent.*`` key namespace for agent-level gating.
+
+        An authored tool named ``agent.run`` / ``agent.tool:x`` / ``agent.handoff:x``
+        would collide with a lowered agent rule in :attr:`effective_tools` and
+        silently shadow (or be shadowed by) it. Reject it at load."""
+        for name in value:
+            if is_agent_key(name):
+                raise ValueError(
+                    f"tool name {name!r} is reserved for agent-level gating; "
+                    "use the 'admission'/'agents' blocks instead"
+                )
+        return value
+
+    def lowered_agent_tools(self) -> dict[str, BaseToolPolicy]:
+        """Expand ``admission``/``agents`` into synthetic tool entries.
+
+        ``admission`` → ``agent.run``; each ``agents`` target → one entry per
+        ``via`` mode (``agent.tool:<name>`` / ``agent.handoff:<name>``). Only the
+        *listed* rules are lowered; the fallback for an unlisted target is the
+        agent gate's concern, not this map's.
+        """
+        lowered: dict[str, BaseToolPolicy] = {}
+        if self.admission is not None:
+            lowered[AGENT_RUN_TOOL] = self.admission
+        for target, target_policy in self.agents.items():
+            # Use the AgentTargetPolicy directly (it is a BaseToolPolicy): a bare
+            # rebuild would silently drop any field later added to BaseToolPolicy.
+            # via is an extra field the engines ignore.
+            for via in target_policy.via:
+                lowered[agent_target_key(via, target)] = target_policy
+        return lowered
+
+    @cached_property
+    def effective_tools(self) -> dict[str, ToolPolicy]:
+        """Authored ``tools`` plus the lowered agent-level entries.
+
+        The single view both engines read (:func:`~hexgate.security.policy.get_tool_policy`
+        and the Rego compiler), so a lowered ``agent.*`` key evaluates byte-for-byte
+        the same on the pydantic and WASM paths. Memoized: ``get_tool_policy`` reads
+        this on every decision, and policies are immutable after load (inheritance
+        builds fresh instances), so the merge runs once per policy, not per call.
+        """
+        lowered = self.lowered_agent_tools()
+        if not lowered:
+            return self.tools
+        return {**self.tools, **lowered}
