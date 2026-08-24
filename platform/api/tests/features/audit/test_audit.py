@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from hexgate_api.constants import ROLE_ADMIN, ROLE_MEMBER
 from hexgate_api.core import keystore as keystore_mod
+from hexgate_api.core.clickhouse import SchemaOutOfDate
 from hexgate_api.features.audit import service as audit
 from hexgate_api.features.audit.service import (
     list_ban_enforcements,
@@ -531,7 +532,7 @@ def test_verify_schema_names_the_missing_columns() -> None:
         for c in schema[audit.DECISION_TABLE]
         if c not in ("user_roles", "deciding_role")
     ]
-    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+    with pytest.raises(SchemaOutOfDate) as exc:
         audit.verify_schema(_describing(columns_by_table=schema))
     assert exc.value.missing == {audit.DECISION_TABLE: ["deciding_role", "user_roles"]}
     assert "recreate the volume" in str(exc.value).lower()
@@ -540,7 +541,7 @@ def test_verify_schema_names_the_missing_columns() -> None:
 def test_verify_schema_covers_ban_enforcement_too() -> None:
     schema = _full_schema()
     schema[audit.BAN_ENFORCEMENT_TABLE].remove("ban_id")
-    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+    with pytest.raises(SchemaOutOfDate) as exc:
         audit.verify_schema(_describing(columns_by_table=schema))
     assert exc.value.missing == {audit.BAN_ENFORCEMENT_TABLE: ["ban_id"]}
 
@@ -559,7 +560,7 @@ def test_verify_schema_reports_an_absent_table_as_a_schema_gap() -> None:
     escaping the lifespan and crash-looping the whole control plane."""
     client = MagicMock()
     client.query.side_effect = _server_error(60, "Table hexgate_audit.x does not exist")
-    with pytest.raises(audit.AuditSchemaOutOfDate) as exc:
+    with pytest.raises(SchemaOutOfDate) as exc:
         audit.verify_schema(client)
     assert exc.value.missing[audit.DECISION_TABLE] == sorted(audit._DECISION_COLUMNS)
 

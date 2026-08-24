@@ -132,7 +132,7 @@ def insert_batch(
 # feature has to know about another feature's tables.
 
 
-class AuditSchemaOutOfDate(Exception):
+class SchemaOutOfDate(Exception):
     """An event table is missing a column the ingest writes."""
 
     def __init__(self, missing: dict[str, list[str]]) -> None:
@@ -143,8 +143,8 @@ class AuditSchemaOutOfDate(Exception):
         super().__init__(
             f"ClickHouse schema is behind this build ({detail}). "
             "Recreate the volume so init/schema.sql runs (`make clickhouse-reset` "
-            "locally) before starting the API. The multi-role columns ship no "
-            "migration: no ALTER can restate pre-existing rows truthfully."
+            "locally) before starting the API. Event tables ship no migrations: "
+            "no ALTER can restate pre-existing rows truthfully."
         )
         self.missing = missing
 
@@ -163,7 +163,7 @@ def _server_error_code(exc: DatabaseError) -> int | None:
 def verify_written_columns(
     client: Client, tables: Sequence[tuple[str, list[str]]]
 ) -> None:
-    """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
+    """Raise :class:`SchemaOutOfDate` if a written column is missing.
 
     Extra server-side columns are fine — only gaps in what we write break
     inserts. Startup-only: changing this needs a deployment or manual DDL.
@@ -194,4 +194,4 @@ def verify_written_columns(
         if gaps:
             missing[table] = gaps
     if missing:
-        raise AuditSchemaOutOfDate(missing)
+        raise SchemaOutOfDate(missing)

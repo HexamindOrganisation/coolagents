@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from hexgate_api.core import keystore as keystore_mod
-from hexgate_api.core.clickhouse import AuditSchemaOutOfDate
+from hexgate_api.core.clickhouse import SchemaOutOfDate
 from hexgate_api.core.db import get_session
 from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api.deps.clickhouse import require_clickhouse
@@ -713,6 +713,6 @@ def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
     columns = [
         c for c in llm_invocations._LLM_INVOCATION_COLUMNS if c != "input_tokens"
     ]
-    with pytest.raises(AuditSchemaOutOfDate) as exc:
+    with pytest.raises(SchemaOutOfDate) as exc:
         llm_invocations.verify_schema(_describing(columns))
     assert exc.value.missing == {"llm_invocation": ["input_tokens"]}

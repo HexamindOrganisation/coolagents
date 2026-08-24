@@ -29,7 +29,7 @@ LLM_INVOCATION_TABLE = "llm_invocation"
 
 
 def verify_schema(client: Client) -> None:
-    """Raise AuditSchemaOutOfDate if llm_invocation misses a written column.
+    """Raise SchemaOutOfDate if llm_invocation misses a written column.
 
     This feature's slice of the startup guard — same machinery and semantics
     as the audit tables' check (see core.clickhouse.verify_written_columns)."""

@@ -21,10 +21,6 @@ from collections.abc import Sequence
 from clickhouse_connect.driver.client import Client
 
 from hexgate_api.core.clickhouse import BatchItem, insert_batch, verify_written_columns
-
-# AuditSchemaOutOfDate is re-imported here (redundant alias = explicit
-# re-export) so main.py and tests keep addressing it as audit.…
-from hexgate_api.core.clickhouse import AuditSchemaOutOfDate as AuditSchemaOutOfDate
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -309,7 +305,7 @@ def insert_ban_enforcements_batch(
 
 
 def verify_schema(client: Client) -> None:
-    """Raise :class:`AuditSchemaOutOfDate` if this feature's tables miss a
+    """Raise :class:`SchemaOutOfDate` if this feature's tables miss a
     written column. Machinery + semantics in core.clickhouse; every feature
     writing an event table wraps it for its own, so startup checks compose
     without features importing each other."""
