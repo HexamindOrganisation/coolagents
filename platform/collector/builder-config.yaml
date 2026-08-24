@@ -23,10 +23,20 @@ exporters:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/kafkaexporter v0.158.0
 
 extensions:
-  # Placeholder auth for this scaffold PR — proves the auth-extension
-  # wiring point works before the real hexgatebiscuitauth extension
-  # (separate PR) replaces it.
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/bearertokenauthextension v0.158.0
+  # Real Biscuit auth: verifies the API key's Ed25519 signature chain and its
+  # embedded checks, resolves the key against a polled revocation cache, and
+  # puts project_id on the request context for the kafka exporter's partition
+  # key. Replaces the scaffold's stock bearertokenauth placeholder.
+  #
+  # The version here is nominal: the `replaces` entry at the bottom of this
+  # file redirects the module to this tree, so nothing is ever fetched for it.
+  # (ocb's own per-module `path:` field would emit `=> extension/...` without
+  # the leading `./` that Go requires, so the replace is written by hand.)
+  # Its go.mod pins the same v1.64.0 / v0.158.0 train as everything above —
+  # Go resolves each module to the highest version required anywhere in the
+  # build, so a drifting pin there would silently upgrade this whole
+  # distribution.
+  - gomod: hexgate.dev/collector/extension/hexgatebiscuitauth v0.1.0
 
 providers:
   - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.64.0
@@ -35,3 +45,9 @@ providers:
 telemetry:
   gomod: go.opentelemetry.io/collector/service v0.158.0
   import: go.opentelemetry.io/collector/service/telemetry/otelconftelemetry
+
+# Build the Biscuit auth extension from this tree instead of resolving
+# hexgate.dev/collector/extension/hexgatebiscuitauth from a module proxy —
+# it is only ever consumed by this distribution and is versioned with it.
+replaces:
+  - hexgate.dev/collector/extension/hexgatebiscuitauth => ./extension/hexgatebiscuitauth
