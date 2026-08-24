@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from hexgate_api.core import keystore as keystore_mod
+from hexgate_api.core.clickhouse import AuditSchemaOutOfDate
 from hexgate_api.core.db import get_session
 from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api.deps.clickhouse import require_clickhouse
@@ -684,3 +685,34 @@ def test_summarize_llm_invocations_happy_path() -> None:
             "ALTER TABLE llm_invocation DELETE WHERE project_id = {pid:String}",
             parameters={"pid": project_id},
         )
+
+
+# ---------------------------------------------------------------------------
+# verify_schema() — this feature's slice of the startup guard
+# ---------------------------------------------------------------------------
+
+
+def _describing(columns: list[str]) -> MagicMock:
+    """A client whose DESCRIBE returns the given columns for llm_invocation."""
+    client = MagicMock()
+    result = MagicMock()
+    result.column_names = ["name", "type"]
+    result.result_rows = [[c, "String"] for c in columns]
+    client.query.return_value = result
+    return client
+
+
+def test_verify_schema_passes_on_a_current_schema() -> None:
+    columns = list(llm_invocations._LLM_INVOCATION_COLUMNS)
+    llm_invocations.verify_schema(_describing(columns))  # no raise
+
+
+def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
+    """The gap this closes: llm_invocation was never in the startup check, so a
+    stale volume surfaced as runtime insert failures instead of a boot error."""
+    columns = [
+        c for c in llm_invocations._LLM_INVOCATION_COLUMNS if c != "input_tokens"
+    ]
+    with pytest.raises(AuditSchemaOutOfDate) as exc:
+        llm_invocations.verify_schema(_describing(columns))
+    assert exc.value.missing == {"llm_invocation": ["input_tokens"]}

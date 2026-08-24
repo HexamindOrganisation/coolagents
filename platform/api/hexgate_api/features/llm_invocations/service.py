@@ -4,7 +4,7 @@ from clickhouse_connect.driver.client import Client
 
 from datetime import datetime
 
-from hexgate_api.core.clickhouse import BatchItem, insert_batch
+from hexgate_api.core.clickhouse import BatchItem, insert_batch, verify_written_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -24,6 +24,16 @@ _LLM_INVOCATION_COLUMNS = [
     "status",
     "error_code",
 ]
+
+LLM_INVOCATION_TABLE = "llm_invocation"
+
+
+def verify_schema(client: Client) -> None:
+    """Raise AuditSchemaOutOfDate if llm_invocation misses a written column.
+
+    This feature's slice of the startup guard — same machinery and semantics
+    as the audit tables' check (see core.clickhouse.verify_written_columns)."""
+    verify_written_columns(client, ((LLM_INVOCATION_TABLE, _LLM_INVOCATION_COLUMNS),))
 
 
 # async_insert batches small inserts; wait_for_async_insert=1 blocks until flush
@@ -75,7 +85,7 @@ def insert_llm_invocation(
         event, project_id=project_id, agent_version_id=agent_version_id
     )
     clickhouse_client.insert(
-        "llm_invocation",
+        LLM_INVOCATION_TABLE,
         [row],
         column_names=_LLM_INVOCATION_COLUMNS,
         settings=_LLM_INVOCATION_INSERT_SETTINGS,

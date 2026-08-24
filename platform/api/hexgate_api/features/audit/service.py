@@ -14,15 +14,17 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from datetime import datetime, timedelta
 from collections import deque
 from collections.abc import Sequence
 
 from clickhouse_connect.driver.client import Client
-from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
-from hexgate_api.core.clickhouse import BatchItem, insert_batch, table_columns
+from hexgate_api.core.clickhouse import BatchItem, insert_batch, verify_written_columns
+
+# AuditSchemaOutOfDate is re-imported here (redundant alias = explicit
+# re-export) so main.py and tests keep addressing it as audit.…
+from hexgate_api.core.clickhouse import AuditSchemaOutOfDate as AuditSchemaOutOfDate
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -42,23 +44,6 @@ class AuditPayloadTooLarge(Exception):
         super().__init__(f"{field} exceeds {limit} bytes")
         self.field = field
         self.limit = limit
-
-
-class AuditSchemaOutOfDate(Exception):
-    """An audit table is missing a column the ingest writes."""
-
-    def __init__(self, missing: dict[str, list[str]]) -> None:
-        detail = "; ".join(
-            f"{table}: {', '.join(columns)}"
-            for table, columns in sorted(missing.items())
-        )
-        super().__init__(
-            f"ClickHouse schema is behind this build ({detail}). "
-            "Recreate the volume so init/schema.sql runs (`make clickhouse-reset` "
-            "locally) before starting the API. The multi-role columns ship no "
-            "migration: no ALTER can restate pre-existing rows truthfully."
-        )
-        self.missing = missing
 
 
 DECISION_TABLE = "policy_decision"
@@ -322,53 +307,19 @@ def insert_ban_enforcements_batch(
 
 # --- Schema guard ------------------------------------------------------------
 
-_UNKNOWN_TABLE_CODE = 60
-# clickhouse-connect exposes the server-side code only in the message text;
-# DatabaseError carries no structured attribute for it.
-_SERVER_ERROR_CODE_RE = re.compile(r"code:\s*(\d+)")
-
-
-def _server_error_code(exc: DatabaseError) -> int | None:
-    match = _SERVER_ERROR_CODE_RE.search(str(exc))
-    return int(match.group(1)) if match else None
-
 
 def verify_schema(client: Client) -> None:
-    """Raise :class:`AuditSchemaOutOfDate` if a written column is missing.
-
-    Extra server-side columns are fine — only gaps in what we write break
-    inserts. Startup-only: changing this needs a deployment or manual DDL.
-
-    An absent table breaks inserts exactly like an absent column, so it earns
-    the same actionable error rather than a raw driver traceback out of the
-    lifespan. Every other failure degrades to a warning: being unable to read
-    the schema is not evidence that it is stale, and the error this would
-    otherwise raise tells the operator to destroy the volume. Degrading is
-    safe — a genuinely broken table makes inserts 503, which the SDK retries.
-    """
-    missing: dict[str, list[str]] = {}
-    for table, columns in (
-        (DECISION_TABLE, _DECISION_COLUMNS),
-        (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
-    ):
-        try:
-            present = table_columns(client, table)
-        except OperationalError as exc:
-            _log.warning(
-                "ClickHouse unreachable during %s schema check: %s", table, exc
-            )
-            return
-        except DatabaseError as exc:
-            if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
-                # ACCESS_DENIED on a scoped grant, quota, metadata blip…
-                _log.warning("cannot verify the %s schema: %s", table, exc)
-                return
-            present = set()
-        gaps = sorted(set(columns) - present)
-        if gaps:
-            missing[table] = gaps
-    if missing:
-        raise AuditSchemaOutOfDate(missing)
+    """Raise :class:`AuditSchemaOutOfDate` if this feature's tables miss a
+    written column. Machinery + semantics in core.clickhouse; every feature
+    writing an event table wraps it for its own, so startup checks compose
+    without features importing each other."""
+    verify_written_columns(
+        client,
+        (
+            (DECISION_TABLE, _DECISION_COLUMNS),
+            (BAN_ENFORCEMENT_TABLE, _BAN_ENFORCEMENT_COLUMNS),
+        ),
+    )
 
 
 # --- Read path: dashboard aggregation (query-time GROUP BY, no rollups) -------

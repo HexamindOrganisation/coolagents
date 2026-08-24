@@ -16,6 +16,9 @@ from hexgate_api.features.agents.router import router as agents_router
 from hexgate_api.features.agents.service import backfill_bundles
 from hexgate_api.features.audit.router import router as audit_router
 from hexgate_api.features.audit.service import verify_schema as verify_audit_schema
+from hexgate_api.features.llm_invocations.service import (
+    verify_schema as verify_llm_schema,
+)
 from hexgate_api.features.auth.router import include_auth_routers, mount_oauth_routers
 from hexgate_api.features.bans.router import router as bans_router
 from hexgate_api.features.chat.router import router as chat_router
@@ -159,8 +162,9 @@ async def lifespan(app_: FastAPI):
     else:
         # Behind this build, every insert is rejected and dropped by the SDK —
         # silently, from this side. Refuse to boot so the previous deployment
-        # keeps serving.
+        # keeps serving. Each feature checks the tables it writes.
         verify_audit_schema(get_clickhouse())
+        verify_llm_schema(get_clickhouse())
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
     from hexgate_api.features.auth.service import _cookie_secure, _dashboard_url
