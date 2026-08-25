@@ -19,6 +19,7 @@ from hexgate_api.deps.org import require_org_member
 from hexgate_api.deps.tokens import require_project
 from hexgate_api.features.llm_invocations import service as llm_invocations
 from hexgate_api.features.llm_invocations.service import summarize_llm_invocations
+from hexgate_api.core.clickhouse import BatchItem
 from hexgate_api.main import app
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -48,6 +49,70 @@ def _llm_event(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 # Pydantic schema validation
 # ---------------------------------------------------------------------------
+
+
+def test_insert_llm_invocations_batch_happy_path() -> None:
+    """N per-item-resolved events become ONE insert call carrying N rows;
+    project_id/agent_version_id stay per item (a consumer batch can span
+    projects). See the audit tests for the shared batch-insert contract."""
+    from hexgate_api.features.llm_invocations.service import (
+        _LLM_INVOCATION_COLUMNS,
+        insert_llm_invocations_batch,
+    )
+
+    clickhouse_client = MagicMock()
+    items = [
+        BatchItem(
+            LlmInvocationEvent(**_llm_event()),
+            project_id=f"proj_{i}",
+            agent_version_id=f"ver_{i}",
+        )
+        for i in range(3)
+    ]
+
+    insert_llm_invocations_batch(clickhouse_client, items)
+
+    clickhouse_client.insert.assert_called_once()
+    args, kwargs = clickhouse_client.insert.call_args
+    assert args[0] == "llm_invocation"
+    rows = args[1]
+    assert len(rows) == 3
+    assert kwargs["column_names"] == _LLM_INVOCATION_COLUMNS
+    # No async_insert on the batch path (pinned to 0) — see the audit batch tests.
+    assert kwargs["settings"] == {"async_insert": 0}
+    project_index = _LLM_INVOCATION_COLUMNS.index("project_id")
+    assert [row[project_index] for row in rows] == ["proj_0", "proj_1", "proj_2"]
+
+
+def test_when_the_batch_is_empty_then_clickhouse_is_not_called() -> None:
+    from hexgate_api.features.llm_invocations.service import (
+        insert_llm_invocations_batch,
+    )
+
+    clickhouse_client = MagicMock()
+
+    insert_llm_invocations_batch(clickhouse_client, [])
+
+    clickhouse_client.insert.assert_not_called()
+
+
+def test_when_an_event_is_batched_then_its_row_matches_the_single_insert() -> None:
+    """Single-row and batch paths share the row builder; identical input must
+    produce identical rows so the two cannot drift."""
+    from hexgate_api.features.llm_invocations.service import (
+        insert_llm_invocation,
+        insert_llm_invocations_batch,
+    )
+
+    event = LlmInvocationEvent(**_llm_event())
+    single, batch = MagicMock(), MagicMock()
+
+    insert_llm_invocation(single, event=event, project_id="p", agent_version_id="v")
+    insert_llm_invocations_batch(
+        batch, [BatchItem(event, project_id="p", agent_version_id="v")]
+    )
+
+    assert batch.insert.call_args.args[1][0] == single.insert.call_args.args[1][0]
 
 
 def test_when_payload_is_minimal_then_defaults_are_applied() -> None:

@@ -1,6 +1,7 @@
 """ClickHouse layer for audit events — both halves of the pipeline.
 
-Write path: validation caps + ``insert_decision`` (the SDK ingest).
+Write path: validation caps + ``insert_decision`` (the SDK ingest), plus
+the ``insert_*_batch`` twins (the span-enricher job, pre-capped input).
 Read path: ``summarize`` / ``timeseries`` / ``list_decisions`` (the
 dashboard aggregations). They stay in one module because they share the
 table contract (``_DECISION_COLUMNS``, windows, scope filters) — unlike
@@ -16,11 +17,12 @@ import logging
 import re
 from datetime import datetime, timedelta
 from collections import deque
+from collections.abc import Sequence
 
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
-from hexgate_api.core.clickhouse import table_columns
+from hexgate_api.core.clickhouse import BatchItem, insert_batch, table_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -106,17 +108,14 @@ _DECISION_INSERT_SETTINGS = {
 }
 
 
-def insert_decision(
-    clickhouse_client: Client,
-    *,
-    event: DecisionEvent,
-    project_id: str,
-    agent_version_id: str,
-) -> None:
-    """Write one decision row to policy_decision.
+def _decision_row(
+    event: DecisionEvent, *, project_id: str, agent_version_id: str
+) -> list:
+    """Build one policy_decision row in ``_DECISION_COLUMNS`` order.
 
-    Raises AuditPayloadTooLarge on payload overflow and ClickHouseError on
-    insert failure; both propagate so the caller maps them to transport errors.
+    The single place the row-shaping rules live — payload serialization, the
+    falsy-attributes normalisation, the legacy ``role`` shim — shared by the
+    single-row and batch insert paths so the two cannot drift apart.
     """
     args_json = (
         json.dumps(event.arguments, default=str) if event.arguments is not None else ""
@@ -130,12 +129,6 @@ def insert_decision(
     attributes_json = (
         json.dumps(event.attributes, default=str) if event.attributes else ""
     )
-    if len(args_json.encode("utf-8")) > MAX_ARGS_BYTES:
-        raise AuditPayloadTooLarge("arguments", MAX_ARGS_BYTES)
-    if len(hint_json.encode("utf-8")) > MAX_HINT_BYTES:
-        raise AuditPayloadTooLarge("hint", MAX_HINT_BYTES)
-    if len(attributes_json.encode("utf-8")) > MAX_ATTRIBUTES_BYTES:
-        raise AuditPayloadTooLarge("attributes", MAX_ATTRIBUTES_BYTES)
 
     # ``role`` is an ingest-only compatibility shim, the single place the legacy
     # scalar still exists anywhere in the system. An SDK released before
@@ -146,7 +139,7 @@ def insert_decision(
     # This survives any database recreation, because the SDK is pip-installed.
     user_roles = list(event.user_roles) or ([event.role] if event.role else [])
 
-    row = [
+    return [
         event.event_id,
         event.occurred_at,
         project_id,  # bearer-resolved
@@ -165,11 +158,89 @@ def insert_decision(
         user_roles,
         event.deciding_role,
     ]
+
+
+# Caps live on the single-row path only: it serves direct external API callers,
+# who may send anything. The batch path's one planned caller (the span-enricher
+# job, OTel migration design doc PR 5) truncates and redacts server-side before
+# inserting, so the batch functions trust their input instead of re-checking.
+# Indices derived from the column list so a reorder cannot desynchronise them.
+_DECISION_PAYLOAD_CAPS = (
+    (_DECISION_COLUMNS.index("arguments"), "arguments", MAX_ARGS_BYTES),
+    (_DECISION_COLUMNS.index("hint"), "hint", MAX_HINT_BYTES),
+    (_DECISION_COLUMNS.index("attributes"), "attributes", MAX_ATTRIBUTES_BYTES),
+)
+
+
+def insert_decision(
+    clickhouse_client: Client,
+    *,
+    event: DecisionEvent,
+    project_id: str,
+    agent_version_id: str,
+) -> None:
+    """Write one decision row to policy_decision.
+
+    Raises AuditPayloadTooLarge on payload overflow and ClickHouseError on
+    insert failure; both propagate so the caller maps them to transport errors.
+    """
+    row = _decision_row(event, project_id=project_id, agent_version_id=agent_version_id)
+    for index, field, limit in _DECISION_PAYLOAD_CAPS:
+        if len(row[index].encode("utf-8")) > limit:
+            raise AuditPayloadTooLarge(field, limit)
+
     clickhouse_client.insert(
         DECISION_TABLE,
         [row],
         column_names=_DECISION_COLUMNS,
         settings=_DECISION_INSERT_SETTINGS,
+    )
+
+
+def insert_decisions_batch(
+    clickhouse_client: Client,
+    items: Sequence[BatchItem[DecisionEvent]],
+) -> None:
+    """Write many decision rows in one batch insert.
+
+    Each ``BatchItem`` carries its own ``project_id`` and ``agent_version_id``
+    (keyword-only, see ``BatchItem``) — resolved per item, because a consumer
+    batch aggregates across Kafka records and so can span projects and agents.
+
+    Contract with the caller (the span-enricher job): payloads arrive already
+    byte-capped and redacted — that job is the authoritative server-side
+    enforcement point, so unlike ``insert_decision`` there is no cap check
+    here.
+
+    Retry-safe rather than atomic: ClickHouse commits per block (and the
+    driver may re-send once on a dropped keep-alive), so a failed call can
+    have landed part of the batch. The caller's move on any failure is to
+    retry the whole batch. What makes that safe is the table engine, and the
+    guarantee is *eventual*, not immediate: ReplacingMergeTree(received_at)
+    keeps every inserted row on disk and only collapses rows sharing a sort
+    key (project_id, occurred_at, event_id) — highest received_at wins — when
+    a background merge happens to cover the parts holding them. Merges are
+    opportunistic, with no upper bound on when they run, and the read paths
+    (``summarize``, ``timeseries``, ``list_decisions``) query without
+    ``FINAL``, so after a retry both copies of each event_id are counted
+    until that merge lands — typically seconds to minutes on these tables,
+    but not guaranteed. Only ``SELECT ... FINAL`` (or an argMax GROUP BY)
+    sees the collapsed view before then. Two further edges: dedup never
+    crosses the monthly received_at partition, so a retry that straddles a
+    month boundary double-counts permanently (accepted — a seconds-wide
+    window, at most once a month); and a duplicate event_id *within* one
+    batch is not reliably collapsed at insert time. ``optimize_on_insert``
+    applies the engine's merge to each inserted *block*, and the driver
+    splits a large batch into ~2MB blocks — so two copies in the same block
+    do collapse on the way in (observed: last occurrence wins, since both
+    carry the same server-stamped received_at), while copies that straddle a
+    block boundary land in separate parts and wait for a background merge
+    like any other duplicate. Callers that can see Kafka redeliveries within
+    one poll should dedup by event_id before building the batch rather than
+    rely on this.
+    """
+    insert_batch(
+        clickhouse_client, DECISION_TABLE, _DECISION_COLUMNS, _decision_row, items
     )
 
 
@@ -190,15 +261,12 @@ _BAN_ENFORCEMENT_COLUMNS = [
 ]
 
 
-def insert_ban_enforcement(
-    clickhouse_client: Client,
-    *,
-    event: BanEnforcementEvent,
-    project_id: str,
-    agent_version_id: str,
-) -> None:
-    """Write one row to ban_enforcement (no payload caps — no arguments/hint blobs)."""
-    row = [
+def _ban_enforcement_row(
+    event: BanEnforcementEvent, *, project_id: str, agent_version_id: str
+) -> list:
+    """Build one ban_enforcement row in ``_BAN_ENFORCEMENT_COLUMNS`` order,
+    shared by the single-row and batch insert paths."""
+    return [
         event.event_id,
         event.occurred_at,
         project_id,  # bearer-resolved
@@ -210,12 +278,45 @@ def insert_ban_enforcement(
         event.ban_id,
         event.reason,
     ]
+
+
+def insert_ban_enforcement(
+    clickhouse_client: Client,
+    *,
+    event: BanEnforcementEvent,
+    project_id: str,
+    agent_version_id: str,
+) -> None:
+    """Write one row to ban_enforcement (no payload caps — no arguments/hint blobs)."""
+    row = _ban_enforcement_row(
+        event, project_id=project_id, agent_version_id=agent_version_id
+    )
     clickhouse_client.insert(
         BAN_ENFORCEMENT_TABLE,
         [row],
         column_names=_BAN_ENFORCEMENT_COLUMNS,
         # Same async-insert-and-block semantics as decisions.
         settings=_DECISION_INSERT_SETTINGS,
+    )
+
+
+def insert_ban_enforcements_batch(
+    clickhouse_client: Client,
+    items: Sequence[BatchItem[BanEnforcementEvent]],
+) -> None:
+    """Write many ban_enforcement rows in one batch insert.
+
+    Same shape and contract as ``insert_decisions_batch`` — per-item
+    ``BatchItem`` with its own ids, retry-safe rather than atomic
+    (see that docstring for the guarantee and its edges) — minus the
+    payload-cap contract, since this table carries no blob columns at all.
+    """
+    insert_batch(
+        clickhouse_client,
+        BAN_ENFORCEMENT_TABLE,
+        _BAN_ENFORCEMENT_COLUMNS,
+        _ban_enforcement_row,
+        items,
     )
 
 
