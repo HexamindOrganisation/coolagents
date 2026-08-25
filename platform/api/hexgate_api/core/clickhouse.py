@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
-from typing import Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 import clickhouse_connect
 from clickhouse_connect.driver.client import Client
@@ -57,18 +58,32 @@ def table_columns(client: Client, table: str) -> set[str]:
     return {row[name_index] for row in result.result_rows}
 
 
-_E = TypeVar("_E", contravariant=True)
+E = TypeVar("E")
+_E_contra = TypeVar("_E_contra", contravariant=True)
 
 
-class RowBuilder(Protocol[_E]):
-    """Shape one event into a row, in the caller's column order.
+@dataclass(frozen=True, slots=True)
+class BatchItem(Generic[E]):
+    """One event plus the ids it resolves to, for the ``insert_*_batch`` paths.
 
-    Keyword-only ids on purpose — the batch item is a bare tuple, and this
-    is where the two adjacent ``str`` fields get names again.
+    Both ids are keyword-only on purpose: they are two adjacent strings, and
+    a positional ``(event, agent_version_id, project_id)`` slip would land
+    every row with the ids transposed and nothing to catch it. This mirrors
+    the ``*, project_id, agent_version_id`` signature of the single-row
+    inserts, so the batch path is no easier to get wrong than they are.
     """
 
+    event: E
+    _: KW_ONLY
+    project_id: str
+    agent_version_id: str
+
+
+class RowBuilder(Protocol[_E_contra]):
+    """Shape one event into a row, in the caller's column order."""
+
     def __call__(
-        self, event: _E, *, project_id: str, agent_version_id: str
+        self, event: _E_contra, *, project_id: str, agent_version_id: str
     ) -> list: ...
 
 
@@ -87,18 +102,22 @@ def insert_batch(
     client: Client,
     table: str,
     columns: Sequence[str],
-    row_builder: RowBuilder[_E],
-    items: list[tuple[_E, str, str]],
+    row_builder: RowBuilder[E],
+    items: Sequence[BatchItem[E]],
 ) -> None:
-    """Insert ``items`` — ``(event, project_id, agent_version_id)`` each — as
-    one multi-row insert into ``table``, rows built by ``row_builder`` in
-    ``columns`` order. Retry semantics are the table engine's, not this
-    function's; see the per-table ``insert_*_batch`` docstrings.
+    """Insert ``items`` as one multi-row insert into ``table``, rows built by
+    ``row_builder`` in ``columns`` order. Retry semantics are the table
+    engine's, not this function's; see the per-table ``insert_*_batch``
+    docstrings.
     """
     if not items:
         return
     rows = [
-        row_builder(event, project_id=project_id, agent_version_id=agent_version_id)
-        for event, project_id, agent_version_id in items
+        row_builder(
+            item.event,
+            project_id=item.project_id,
+            agent_version_id=item.agent_version_id,
+        )
+        for item in items
     ]
     client.insert(table, rows, column_names=columns, settings=BATCH_INSERT_SETTINGS)

@@ -36,6 +36,7 @@ from hexgate_api.query_scope import (
     RETENTION_WINDOW,
     prepare_date_range,
 )
+from hexgate_api.core.clickhouse import BatchItem
 from hexgate_api.core.keystore import FileKeyStore
 from hexgate_api.core.db import get_session
 from hexgate_api.deps.clickhouse import require_clickhouse
@@ -1370,7 +1371,14 @@ def test_insert_decisions_batch_happy_path() -> None:
     )
 
     clickhouse_client = MagicMock()
-    items = [(DecisionEvent(**_event()), f"proj_{i}", f"ver_{i}") for i in range(3)]
+    items = [
+        BatchItem(
+            DecisionEvent(**_event()),
+            project_id=f"proj_{i}",
+            agent_version_id=f"ver_{i}",
+        )
+        for i in range(3)
+    ]
 
     insert_decisions_batch(clickhouse_client, items)
 
@@ -1422,7 +1430,9 @@ def test_when_an_event_has_a_legacy_role_then_batch_and_single_rows_match() -> N
     single, batch = MagicMock(), MagicMock()
 
     insert_decision(single, event=event, project_id="p", agent_version_id="v")
-    insert_decisions_batch(batch, [(event, "p", "v")])
+    insert_decisions_batch(
+        batch, [BatchItem(event, project_id="p", agent_version_id="v")]
+    )
 
     single_row = single.insert.call_args.args[1][0]
     batch_row = batch.insert.call_args.args[1][0]
@@ -1444,7 +1454,9 @@ def test_when_a_batch_row_exceeds_the_caps_then_it_is_inserted_as_given() -> Non
     oversized = DecisionEvent(**_event(arguments={"blob": "x" * (MAX_ARGS_BYTES + 1)}))
     clickhouse_client = MagicMock()
 
-    insert_decisions_batch(clickhouse_client, [(oversized, "p", "v")])
+    insert_decisions_batch(
+        clickhouse_client, [BatchItem(oversized, project_id="p", agent_version_id="v")]
+    )
 
     clickhouse_client.insert.assert_called_once()
 
@@ -1458,7 +1470,11 @@ def test_insert_ban_enforcements_batch_happy_path() -> None:
 
     clickhouse_client = MagicMock()
     items = [
-        (BanEnforcementEvent(**_ban_enforcement()), f"proj_{i}", f"ver_{i}")
+        BatchItem(
+            BanEnforcementEvent(**_ban_enforcement()),
+            project_id=f"proj_{i}",
+            agent_version_id=f"ver_{i}",
+        )
         for i in range(2)
     ]
 
@@ -2018,9 +2034,21 @@ def test_real_clickhouse_batch_insert_lands_all_rows() -> None:
     project_a = f"test_proj_{uuid.uuid4().hex[:8]}"
     project_b = f"test_proj_{uuid.uuid4().hex[:8]}"
     items = [
-        (DecisionEvent(**_event(reason="batch-a1")), project_a, "ver_a"),
-        (DecisionEvent(**_event(reason="batch-a2")), project_a, "ver_a"),
-        (DecisionEvent(**_event(reason="batch-b1")), project_b, "ver_b"),
+        BatchItem(
+            DecisionEvent(**_event(reason="batch-a1")),
+            project_id=project_a,
+            agent_version_id="ver_a",
+        ),
+        BatchItem(
+            DecisionEvent(**_event(reason="batch-a2")),
+            project_id=project_a,
+            agent_version_id="ver_a",
+        ),
+        BatchItem(
+            DecisionEvent(**_event(reason="batch-b1")),
+            project_id=project_b,
+            agent_version_id="ver_b",
+        ),
     ]
 
     insert_decisions_batch(clickhouse_client, items)
@@ -2057,7 +2085,12 @@ def test_when_a_batch_is_reinserted_then_rows_collapse_to_one_per_event() -> Non
 
     clickhouse_client = real_get_clickhouse()
     project_id = f"test_proj_{uuid.uuid4().hex[:8]}"
-    items = [(DecisionEvent(**_event()), project_id, "ver_x") for _ in range(3)]
+    items = [
+        BatchItem(
+            DecisionEvent(**_event()), project_id=project_id, agent_version_id="ver_x"
+        )
+        for _ in range(3)
+    ]
 
     insert_decisions_batch(clickhouse_client, items)
     insert_decisions_batch(clickhouse_client, items)  # the retry

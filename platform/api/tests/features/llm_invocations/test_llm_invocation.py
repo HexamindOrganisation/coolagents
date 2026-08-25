@@ -19,6 +19,7 @@ from hexgate_api.deps.org import require_org_member
 from hexgate_api.deps.tokens import require_project
 from hexgate_api.features.llm_invocations import service as llm_invocations
 from hexgate_api.features.llm_invocations.service import summarize_llm_invocations
+from hexgate_api.core.clickhouse import BatchItem
 from hexgate_api.main import app
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -61,7 +62,12 @@ def test_insert_llm_invocations_batch_happy_path() -> None:
 
     clickhouse_client = MagicMock()
     items = [
-        (LlmInvocationEvent(**_llm_event()), f"proj_{i}", f"ver_{i}") for i in range(3)
+        BatchItem(
+            LlmInvocationEvent(**_llm_event()),
+            project_id=f"proj_{i}",
+            agent_version_id=f"ver_{i}",
+        )
+        for i in range(3)
     ]
 
     insert_llm_invocations_batch(clickhouse_client, items)
@@ -102,7 +108,9 @@ def test_when_an_event_is_batched_then_its_row_matches_the_single_insert() -> No
     single, batch = MagicMock(), MagicMock()
 
     insert_llm_invocation(single, event=event, project_id="p", agent_version_id="v")
-    insert_llm_invocations_batch(batch, [(event, "p", "v")])
+    insert_llm_invocations_batch(
+        batch, [BatchItem(event, project_id="p", agent_version_id="v")]
+    )
 
     assert batch.insert.call_args.args[1][0] == single.insert.call_args.args[1][0]
 

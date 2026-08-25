@@ -1,8 +1,10 @@
+from collections.abc import Sequence
+
 from clickhouse_connect.driver.client import Client
 
 from datetime import datetime
 
-from hexgate_api.core.clickhouse import insert_batch
+from hexgate_api.core.clickhouse import BatchItem, insert_batch
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -82,15 +84,16 @@ def insert_llm_invocation(
 
 def insert_llm_invocations_batch(
     clickhouse_client: Client,
-    items: list[tuple[LlmInvocationEvent, str, str]],
+    items: Sequence[BatchItem[LlmInvocationEvent]],
 ) -> None:
     """Write many llm_invocation rows in one batch insert.
 
-    ``items`` is ``(event, project_id, agent_version_id)`` per event — both
-    ids resolved per item, because a consumer batch aggregates across Kafka
-    records and so can span projects and agents. Retry-safe rather than
-    atomic: a failed call can have landed part of the batch (ClickHouse
-    commits per block), so the caller retries the whole batch — safe because
+    Each ``BatchItem`` carries its own ``project_id`` and ``agent_version_id``
+    (keyword-only, see ``BatchItem``) — resolved per item, because a consumer
+    batch aggregates across Kafka records and so can span projects and agents.
+    Retry-safe rather than atomic: a failed call can have landed part of the
+    batch (ClickHouse commits per block), so the caller retries the whole
+    batch — safe because
     ReplacingMergeTree(received_at) eventually collapses re-inserted
     event_ids on a background merge (both copies are visible to non-FINAL
     reads until then). Same guarantee edges as ``insert_decisions_batch`` in

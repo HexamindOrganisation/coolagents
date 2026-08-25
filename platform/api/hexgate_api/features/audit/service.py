@@ -17,11 +17,12 @@ import logging
 import re
 from datetime import datetime, timedelta
 from collections import deque
+from collections.abc import Sequence
 
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
-from hexgate_api.core.clickhouse import insert_batch, table_columns
+from hexgate_api.core.clickhouse import BatchItem, insert_batch, table_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -198,13 +199,13 @@ def insert_decision(
 
 def insert_decisions_batch(
     clickhouse_client: Client,
-    items: list[tuple[DecisionEvent, str, str]],
+    items: Sequence[BatchItem[DecisionEvent]],
 ) -> None:
     """Write many decision rows in one batch insert.
 
-    ``items`` is ``(event, project_id, agent_version_id)`` per event — both
-    ids resolved per item, because a consumer batch aggregates across Kafka
-    records and so can span projects and agents.
+    Each ``BatchItem`` carries its own ``project_id`` and ``agent_version_id``
+    (keyword-only, see ``BatchItem``) — resolved per item, because a consumer
+    batch aggregates across Kafka records and so can span projects and agents.
 
     Contract with the caller (the span-enricher job): payloads arrive already
     byte-capped and redacted — that job is the authoritative server-side
@@ -301,12 +302,12 @@ def insert_ban_enforcement(
 
 def insert_ban_enforcements_batch(
     clickhouse_client: Client,
-    items: list[tuple[BanEnforcementEvent, str, str]],
+    items: Sequence[BatchItem[BanEnforcementEvent]],
 ) -> None:
     """Write many ban_enforcement rows in one batch insert.
 
     Same shape and contract as ``insert_decisions_batch`` — per-item
-    ``(event, project_id, agent_version_id)``, retry-safe rather than atomic
+    ``BatchItem`` with its own ids, retry-safe rather than atomic
     (see that docstring for the guarantee and its edges) — minus the
     payload-cap contract, since this table carries no blob columns at all.
     """
