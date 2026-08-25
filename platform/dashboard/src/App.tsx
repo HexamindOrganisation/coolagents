@@ -13,6 +13,7 @@ import { OrgSettingsPage } from "@/routes/OrgSettings";
 import { OrgsPage } from "@/routes/Orgs";
 import { PlaygroundPage } from "@/routes/Playground";
 import { PoliciesPage } from "@/routes/Policies";
+import { PolicyModulesPage } from "@/routes/PolicyModules";
 import { ResetPasswordPage } from "@/routes/ResetPassword";
 import { SettingsPage } from "@/routes/Settings";
 import { SignInPage } from "@/routes/SignIn";
@@ -59,6 +60,7 @@ export default function App() {
           <Route index element={<Navigate to="/agents" replace />} />
           <Route path="agents" element={<AgentsPage />} />
           <Route path="policies" element={<PoliciesPage />} />
+          <Route path="policy-modules" element={<PolicyModulesPage />} />
           <Route path="graph" element={<GraphPage />} />
           <Route path="playground" element={<PlaygroundPage />} />
           <Route path="audit" element={<AuditPage />} />

@@ -3,6 +3,7 @@ import { useNavigate, NavLink, Outlet } from "react-router-dom";
 import {
   Ban,
   BarChart3,
+  Boxes,
   Building2,
   FileCode,
   KeyRound,
@@ -87,6 +88,7 @@ function useActiveBootstrap(): void {
 const workspaceLinks = [
   { to: "/agents", label: "Agents", icon: FileCode },
   { to: "/policies", label: "Policies", icon: ShieldCheck },
+  { to: "/policy-modules", label: "Modules", icon: Boxes },
   { to: "/graph", label: "Graph", icon: Network },
   { to: "/playground", label: "Playground", icon: MessageSquareCode },
   { to: "/audit", label: "Audit", icon: ScrollText },
