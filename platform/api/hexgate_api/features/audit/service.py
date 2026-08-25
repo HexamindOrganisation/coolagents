@@ -214,13 +214,21 @@ def insert_decisions_batch(
     Retry-safe rather than atomic: ClickHouse commits per block (and the
     driver may re-send once on a dropped keep-alive), so a failed call can
     have landed part of the batch. The caller's move on any failure is to
-    retry the whole batch — ReplacingMergeTree(received_at) collapses
-    re-inserted event_ids on merges, so duplicates cancel rather than
-    double-count. Two edges of that guarantee: dedup never crosses the
-    monthly received_at partition, so a retry that straddles a month
-    boundary can double-count (accepted — a seconds-wide window, and only at
-    most once a month); and a duplicate event_id *within* one batch
-    collapses at insert time, last occurrence winning.
+    retry the whole batch. What makes that safe is the table engine, and the
+    guarantee is *eventual*, not immediate: ReplacingMergeTree(received_at)
+    keeps every inserted row on disk and only collapses rows sharing a sort
+    key (project_id, occurred_at, event_id) — highest received_at wins — when
+    a background merge happens to cover the parts holding them. Merges are
+    opportunistic, with no upper bound on when they run, and the read paths
+    (``summarize``, ``timeseries``, ``list_decisions``) query without
+    ``FINAL``, so after a retry both copies of each event_id are counted
+    until that merge lands — typically seconds to minutes on these tables,
+    but not guaranteed. Only ``SELECT ... FINAL`` (or an argMax GROUP BY)
+    sees the collapsed view before then. Two further edges: dedup never
+    crosses the monthly received_at partition, so a retry that straddles a
+    month boundary double-counts permanently (accepted — a seconds-wide
+    window, at most once a month); and a duplicate event_id *within* one
+    batch collapses at insert time, last occurrence winning.
     """
     if not items:
         return

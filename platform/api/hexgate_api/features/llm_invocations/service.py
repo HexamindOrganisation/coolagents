@@ -90,8 +90,9 @@ def insert_llm_invocations_batch(
     records and so can span projects and agents. Retry-safe rather than
     atomic: a failed call can have landed part of the batch (ClickHouse
     commits per block), so the caller retries the whole batch — safe because
-    ReplacingMergeTree(received_at) collapses re-inserted event_ids on
-    merges. Same guarantee edges as ``insert_decisions_batch`` in
+    ReplacingMergeTree(received_at) eventually collapses re-inserted
+    event_ids on a background merge (both copies are visible to non-FINAL
+    reads until then). Same guarantee edges as ``insert_decisions_batch`` in
     features/audit/service.py: dedup stays within the monthly received_at
     partition, and an intra-batch duplicate collapses at insert time with the
     last occurrence winning. No async_insert, unlike the single-row path —
