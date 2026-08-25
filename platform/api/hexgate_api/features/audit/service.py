@@ -21,7 +21,7 @@ from collections import deque
 from clickhouse_connect.driver.client import Client
 from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
-from hexgate_api.core.clickhouse import table_columns
+from hexgate_api.core.clickhouse import insert_batch, table_columns
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -238,23 +238,8 @@ def insert_decisions_batch(
     one poll should dedup by event_id before building the batch rather than
     rely on this.
     """
-    if not items:
-        return
-    rows = [
-        _decision_row(event, project_id=project_id, agent_version_id=agent_version_id)
-        for event, project_id, agent_version_id in items
-    ]
-    # No async_insert here, unlike the single-row path: it exists to coalesce
-    # many small inserts, and this insert is already a batch — buffering it
-    # again would only add a server-side copy and a busy-timeout wait. A plain
-    # synchronous insert surfaces failures the same way (the call raises).
-    # Pinned to 0 rather than left to the server default so a cluster-wide
-    # async_insert=1 can't silently turn this into ack-before-durable.
-    clickhouse_client.insert(
-        DECISION_TABLE,
-        rows,
-        column_names=_DECISION_COLUMNS,
-        settings={"async_insert": 0},
+    insert_batch(
+        clickhouse_client, DECISION_TABLE, _DECISION_COLUMNS, _decision_row, items
     )
 
 
@@ -325,20 +310,12 @@ def insert_ban_enforcements_batch(
     (see that docstring for the guarantee and its edges) — minus the
     payload-cap contract, since this table carries no blob columns at all.
     """
-    if not items:
-        return
-    rows = [
-        _ban_enforcement_row(
-            event, project_id=project_id, agent_version_id=agent_version_id
-        )
-        for event, project_id, agent_version_id in items
-    ]
-    clickhouse_client.insert(
+    insert_batch(
+        clickhouse_client,
         BAN_ENFORCEMENT_TABLE,
-        rows,
-        column_names=_BAN_ENFORCEMENT_COLUMNS,
-        # Same synchronous-insert pin as insert_decisions_batch.
-        settings={"async_insert": 0},
+        _BAN_ENFORCEMENT_COLUMNS,
+        _ban_enforcement_row,
+        items,
     )
 
 

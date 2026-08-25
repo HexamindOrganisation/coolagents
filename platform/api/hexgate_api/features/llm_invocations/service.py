@@ -2,6 +2,7 @@ from clickhouse_connect.driver.client import Client
 
 from datetime import datetime
 
+from hexgate_api.core.clickhouse import insert_batch
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import LlmInvocationEvent
 
@@ -96,23 +97,15 @@ def insert_llm_invocations_batch(
     features/audit/service.py: dedup stays within the monthly received_at
     partition, and an intra-batch duplicate collapses at insert time only if
     both copies fall in the same insert block — otherwise it waits for a
-    background merge. No async_insert, unlike the single-row path —
-    this insert is already a batch; pinned to 0 so a server-side default
-    change can't silently make it ack-before-durable.
+    background merge. No async_insert, unlike the single-row path — see
+    ``BATCH_INSERT_SETTINGS`` in core/clickhouse.py for why.
     """
-    if not items:
-        return
-    rows = [
-        _llm_invocation_row(
-            event, project_id=project_id, agent_version_id=agent_version_id
-        )
-        for event, project_id, agent_version_id in items
-    ]
-    clickhouse_client.insert(
+    insert_batch(
+        clickhouse_client,
         "llm_invocation",
-        rows,
-        column_names=_LLM_INVOCATION_COLUMNS,
-        settings={"async_insert": 0},
+        _LLM_INVOCATION_COLUMNS,
+        _llm_invocation_row,
+        items,
     )
 
 
