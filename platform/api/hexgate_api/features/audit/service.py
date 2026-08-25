@@ -228,7 +228,15 @@ def insert_decisions_batch(
     crosses the monthly received_at partition, so a retry that straddles a
     month boundary double-counts permanently (accepted — a seconds-wide
     window, at most once a month); and a duplicate event_id *within* one
-    batch collapses at insert time, last occurrence winning.
+    batch is not reliably collapsed at insert time. ``optimize_on_insert``
+    applies the engine's merge to each inserted *block*, and the driver
+    splits a large batch into ~2MB blocks — so two copies in the same block
+    do collapse on the way in (observed: last occurrence wins, since both
+    carry the same server-stamped received_at), while copies that straddle a
+    block boundary land in separate parts and wait for a background merge
+    like any other duplicate. Callers that can see Kafka redeliveries within
+    one poll should dedup by event_id before building the batch rather than
+    rely on this.
     """
     if not items:
         return

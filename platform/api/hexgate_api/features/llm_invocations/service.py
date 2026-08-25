@@ -94,8 +94,9 @@ def insert_llm_invocations_batch(
     event_ids on a background merge (both copies are visible to non-FINAL
     reads until then). Same guarantee edges as ``insert_decisions_batch`` in
     features/audit/service.py: dedup stays within the monthly received_at
-    partition, and an intra-batch duplicate collapses at insert time with the
-    last occurrence winning. No async_insert, unlike the single-row path —
+    partition, and an intra-batch duplicate collapses at insert time only if
+    both copies fall in the same insert block — otherwise it waits for a
+    background merge. No async_insert, unlike the single-row path —
     this insert is already a batch; pinned to 0 so a server-side default
     change can't silently make it ack-before-durable.
     """
