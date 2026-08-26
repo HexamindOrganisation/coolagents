@@ -36,7 +36,11 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext
-from hexgate.security.agent_gate import resolve_agent_gate, resolve_reach_gate
+from hexgate.security.agent_gate import (
+    HandoffDepthExceededError,
+    resolve_agent_gate,
+    resolve_reach_gate,
+)
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -102,8 +106,16 @@ class _HexgateReachHooks(RunHooks):
 
     def __init__(self, runner: "HexgateRunner") -> None:
         self._runner = runner
+        self._depth = 0  # per-run: this hook is rebuilt on every run
 
     async def on_handoff(self, context, from_agent, to_agent) -> None:
+        # Depth cap first, as a runaway guard independent of reach policy: a
+        # handoff transfers control forward, so the count of handoffs in this run
+        # is the chain depth. Counts every handoff, governed source or not.
+        self._depth += 1
+        cap = self._runner._max_handoff_depth
+        if cap is not None and self._depth > cap:
+            raise HandoffDepthExceededError(self._depth, cap)
         binding = self._runner._bindings.get(canonical_agent_name(from_agent))
         if binding is None:
             return  # source is not Hexgate-governed; reach from it isn't gated here
@@ -123,6 +135,7 @@ class HexgateRunner:
         approval_handler: ApprovalHandler | None = None,
         guards: "Sequence[Guard] | None" = None,
         guard_observer: "GuardObserver | None" = None,
+        max_handoff_depth: int | None = None,
     ):
         # ``guards`` (not ``hooks``) on purpose: ``run*`` below already take a
         # ``hooks=`` that means the agents SDK's ``RunHooks`` (we mirror the SDK
@@ -140,6 +153,8 @@ class HexgateRunner:
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
         self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
+        # Handoff-chain depth cap (None = no cap); enforced per run by the reach hook.
+        self._max_handoff_depth = max_handoff_depth
         # Guards are fixed per runner; threaded into each per-call rewrap below,
         # where wrap_openai_agent builds the pipeline (matching the other adapters).
         self._guards = guards

@@ -20,6 +20,7 @@ from hexgate.security import (
     AgentNotAdmittedError,
     AgentPolicy,
     BaseToolPolicy,
+    HandoffDepthExceededError,
     PolicySet,
     ReachNotAllowedError,
     ResolvedPolicy,
@@ -96,6 +97,30 @@ async def test_reach_hook_noop_without_reach_policy() -> None:
     hook = _HexgateReachHooks(runner)
     async with _user():
         await hook.on_handoff(None, _agent("orchestrator"), _agent("anyone"))
+
+
+# --- handoff depth cap (A4) ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reach_hook_enforces_depth_cap() -> None:
+    # Depth counts every handoff in the run (the hook is per-run), independent of
+    # reach policy: an un-governed source still counts toward the cap.
+    runner = HexgateRunner(api_key="k", max_handoff_depth=1)
+    hook = _HexgateReachHooks(runner)
+    async with _user():
+        await hook.on_handoff(None, _agent("a"), _agent("b"))  # depth 1 == cap → ok
+        with pytest.raises(HandoffDepthExceededError):
+            await hook.on_handoff(None, _agent("a"), _agent("c"))  # depth 2 > cap
+
+
+@pytest.mark.asyncio
+async def test_reach_hook_no_cap_by_default() -> None:
+    runner = HexgateRunner(api_key="k")  # no cap
+    hook = _HexgateReachHooks(runner)
+    async with _user():
+        for _ in range(5):
+            await hook.on_handoff(None, _agent("a"), _agent("b"))  # never raises
 
 
 # --- admission at run entry ------------------------------------------------

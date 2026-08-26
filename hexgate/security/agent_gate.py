@@ -131,6 +131,24 @@ class ReachNotAllowedError(Exception):
         super().__init__(decision.as_error_message())
 
 
+class HandoffDepthExceededError(Exception):
+    """Raised when a run's handoff chain grows past its depth cap.
+
+    A handoff transfers control forward (A → B → C …), so the count of handoffs
+    within one run is the depth of the chain. The cap is a runaway guard,
+    independent of reach policy: even an all-allowed chain stops here. Carries the
+    observed ``depth`` and the ``cap`` it exceeded.
+    """
+
+    def __init__(self, depth: int, cap: int) -> None:
+        self.depth = depth
+        self.cap = cap
+        super().__init__(
+            f"handoff depth {depth} exceeds the cap of {cap}; refusing further "
+            "delegation in this run"
+        )
+
+
 # ---- gates ----------------------------------------------------------------
 
 
