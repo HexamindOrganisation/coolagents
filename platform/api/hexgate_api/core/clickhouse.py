@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
 from typing import Generic, Protocol, TypeVar
@@ -194,5 +194,27 @@ def verify_written_columns(
         gaps = sorted(set(columns) - present)
         if gaps:
             missing[table] = gaps
+    if missing:
+        raise SchemaOutOfDate(missing)
+
+
+def verify_all(client: Client, checks: Sequence[Callable[[Client], None]]) -> None:
+    """Run every feature's ``verify_schema`` and raise one
+    :class:`SchemaOutOfDate` naming every gap.
+
+    Calling the checks one after another would stop at the first stale
+    feature, so a volume behind on two tables reports one, gets migrated,
+    and fails again on the next boot. Aggregating here keeps the per-feature
+    wrappers ignorant of each other's tables while giving the operator the
+    whole list in a single boot. Only :class:`SchemaOutOfDate` is collected:
+    the wrappers already degrade unreachable/denied schemas to warnings, so
+    anything else escaping is a bug and should surface as one.
+    """
+    missing: dict[str, list[str]] = {}
+    for check in checks:
+        try:
+            check(client)
+        except SchemaOutOfDate as exc:
+            missing.update(exc.missing)
     if missing:
         raise SchemaOutOfDate(missing)
