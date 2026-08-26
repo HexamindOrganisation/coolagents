@@ -299,24 +299,6 @@ def _rules_for_role(
                 helpers,
             )
         )
-    if AGENT_RUN_TOOL not in effective:
-        # Admission is opt-in: a role that declares no admission rule admits, so an
-        # unlisted agent.run allows regardless of default_policy. Emitted for every
-        # role (not gated on agent blocks) so it matches the unconditional
-        # _ADMISSION_OPT_IN_ALLOW fallback in the pydantic engine — otherwise a role
-        # without an admission rule would deny agent.run on the WASM path while
-        # allowing it on the pydantic path (the same non-monotonic lockout, one
-        # engine over).
-        out.extend(
-            _gated_rules(
-                role,
-                role_guard,
-                [f'    input.tool == "{_escape_string(AGENT_RUN_TOOL)}"'],
-                BaseToolPolicy(mode="allow"),
-                AGENT_RUN_TOOL,
-                helpers,
-            )
-        )
     out.extend(_default_rules(role, role_guard, policy.default_policy, listed, helpers))
     return out
 
@@ -336,12 +318,13 @@ def _default_rules(
     """
     if default_policy.mode == "deny":
         return []
-    # Reach keys are closed-world: a permissive default must not grant an unlisted
-    # agent.tool:/agent.handoff:, so exclude them from the catch-all (an unlisted
-    # reach key then matches no rule and denies). agent.run is deliberately NOT
-    # excluded — admission is opt-in and its own rule handles it. Mirrors
-    # get_tool_policy / is_agent_reach_key in the pydantic engine.
-    tool_guard = [
+    # Agent keys are closed-world: a permissive default must not grant an unlisted
+    # agent key, so exclude them from the catch-all (an unlisted agent key then
+    # matches no rule and denies). Excludes exactly the reserved shapes — agent.run
+    # and the reach prefixes — so an authored tool merely named "agent.foo" still
+    # follows the default, matching is_agent_key in the pydantic engine (R-AGENT-002).
+    tool_guard = [f"    input.tool != {json.dumps(AGENT_RUN_TOOL)}"]
+    tool_guard += [
         f"    not startswith(input.tool, {json.dumps(prefix)})"
         for prefix in AGENT_REACH_PREFIXES
     ]

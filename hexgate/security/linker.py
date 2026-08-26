@@ -194,7 +194,9 @@ def _reject_capability_denies(capabilities: Sequence[ModuleContent]) -> None:
     hoisted here and run over every capability, bound or not.
     """
     for cap in capabilities:
-        for tool, tp in cap.policy.tools.items():
+        # effective_tools, so a capability that denies an agent key (a lowered
+        # agents:/admission deny) is caught too — capabilities grant only.
+        for tool, tp in cap.policy.effective_tools.items():
             if tp.mode == "deny":
                 raise LinkError(
                     f"capability {cap.name!r} denies {tool!r}; capabilities may "
@@ -218,8 +220,10 @@ def link(
         if rule is not None:
             tools[name] = rule
 
-    # Effective default is fail-closed: a tool no layer grants is denied.
-    effective = AgentPolicy(
+    # Effective default is fail-closed: a tool no layer grants is denied. The
+    # folded map may include lowered agent.* keys (composed agent-level blocks),
+    # so build through the resolved path, which carries them in tools directly.
+    effective = AgentPolicy.resolved(
         default_policy=BaseToolPolicy(mode="deny"), tools=tools, consts=consts
     )
     return effective, trace
@@ -312,7 +316,18 @@ def _reject_file_scope(
 # rejected by _reject_unsupported_module_fields, so a field added to AgentPolicy
 # later fails closed here instead of being silently dropped by _fold_tool.
 _MODULE_COMPOSABLE_FIELDS = frozenset(
-    {"version", "inherits", "is_mixin", "default_policy", "tools", "consts"}
+    {
+        "version",
+        "inherits",
+        "is_mixin",
+        "default_policy",
+        "tools",
+        "consts",
+        # Agent-level blocks lower to agent.* keys the fold composes like tools
+        # (a boundary agent-deny is authoritative, a capability agent-grant unions).
+        "admission",
+        "agents",
+    }
 )
 
 
@@ -320,13 +335,14 @@ def _reject_unsupported_module_fields(
     boundaries: list[ModuleContent], capabilities: list[ModuleContent]
 ) -> None:
     """Reject any top-level AgentPolicy field a module sets that the fold does not
-    compose (today: ``admission`` / ``agents``; tomorrow: whatever is added next).
+    compose (whatever is added next).
 
-    ``_fold_tool`` reads only ``.tools``, so an un-composed field would be silently
-    dropped, erasing a rule an operator authored — the same fail-open
-    :func:`_reject_file_scope` guards against, generalized. Allowlisting the fields
-    the fold understands means a new AgentPolicy field is rejected automatically
-    until composition learns it, rather than shipping fail-open by omission."""
+    The fold composes ``tools`` and the lowered ``agent.*`` keys from
+    ``effective_tools``, so an un-composed field would be silently dropped, erasing
+    a rule an operator authored — the same fail-open :func:`_reject_file_scope`
+    guards against, generalized. Allowlisting the fields the fold understands means
+    a new AgentPolicy field is rejected automatically until composition learns it,
+    rather than shipping fail-open by omission."""
     for module in (*boundaries, *capabilities):
         extra = module.policy.model_fields_set - _MODULE_COMPOSABLE_FIELDS
         if extra:
@@ -346,7 +362,7 @@ def _fold_tool(
     """Resolve one tool across all layers. ``None`` means implicit-deny (omit)."""
     # Capabilities may only grant. A capability deny is a config error.
     for cap in capabilities:
-        tp = cap.policy.tools.get(tool)
+        tp = cap.policy.effective_tools.get(tool)
         if tp is not None and tp.mode == "deny":
             raise LinkError(
                 f"capability {cap.name!r} denies {tool!r}; capabilities may only "
@@ -357,7 +373,7 @@ def _fold_tool(
     #    (has constraints) instead subtracts its region from the grant (step 5).
     conditional_denies: list[tuple[ModuleContent, list[str]]] = []
     for g in boundaries:
-        tp = g.policy.tools.get(tool)
+        tp = g.policy.effective_tools.get(tool)
         if tp is not None and tp.mode == "deny":
             if tp.constraints:
                 conditional_denies.append((g, list(tp.constraints)))
@@ -370,7 +386,7 @@ def _fold_tool(
     contributors: list[Provenance] = []
     ceiling_constraints: list[str] = []
     for g in boundaries:
-        tp = g.policy.tools.get(tool)
+        tp = g.policy.effective_tools.get(tool)
         is_ceiling = g.policy.default_policy.mode == "deny"
         if tp is not None and tp.mode in GRANT_MODES:
             ceiling_constraints.extend(tp.constraints)  # fences intersect (AND)
@@ -385,7 +401,7 @@ def _fold_tool(
     # 3+4. Capability grants. No grant → eligible but ungranted → implicit deny.
     grants: list[tuple[ModuleContent, ToolPolicy]] = []
     for cap in capabilities:
-        tp = cap.policy.tools.get(tool)
+        tp = cap.policy.effective_tools.get(tool)
         if tp is not None and tp.mode in GRANT_MODES:
             grants.append((cap, tp))
     if not grants:
@@ -443,7 +459,8 @@ def _any_approval(
     if any(tp.mode == "approval_required" for tp in grants):
         return True
     return any(
-        (tp := g.policy.tools.get(tool)) is not None and tp.mode == "approval_required"
+        (tp := g.policy.effective_tools.get(tool)) is not None
+        and tp.mode == "approval_required"
         for g in boundaries
     )
 
@@ -452,7 +469,8 @@ def _tool_names(*groups: list[ModuleContent]) -> list[str]:
     names: set[str] = set()
     for group in groups:
         for module in group:
-            names.update(module.policy.tools)
+            # effective_tools, so lowered agent.* keys are folded like tool keys.
+            names.update(module.policy.effective_tools)
     return sorted(names)
 
 

@@ -173,6 +173,29 @@ class AgentPolicy(BaseModel):
                 )
         return value
 
+    @classmethod
+    def resolved(
+        cls,
+        *,
+        default_policy: BaseToolPolicy,
+        tools: dict[str, ToolPolicy],
+        consts: dict[str, Any],
+    ) -> "AgentPolicy":
+        """Build a linker-resolved policy directly from folded tool keys.
+
+        The fold composes agent-level blocks into lowered ``agent.*`` keys and
+        stores them alongside ordinary tools, so a resolved policy carries them
+        in ``tools`` rather than in ``admission``/``agents``: per-via divergence
+        across capabilities (a target allowed via one mode, denied via another,
+        or granted different constraints per mode) can't always be reverse-lowered
+        into a single :class:`AgentTargetPolicy`. The reserved-key guard on
+        ``tools`` is an authoring ergonomic that does not apply to this machine
+        path, so this bypasses validation via ``model_construct`` — every value is
+        an already-validated model instance produced by the fold."""
+        return cls.model_construct(
+            default_policy=default_policy, tools=dict(tools), consts=dict(consts)
+        )
+
     def lowered_agent_tools(self) -> dict[str, BaseToolPolicy]:
         """Expand ``admission``/``agents`` into synthetic tool entries.
 
