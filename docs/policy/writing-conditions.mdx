@@ -93,6 +93,13 @@ For strings, four helpers go beyond exact match:
 `matches` uses a regular expression and is **unanchored** — it looks for the
 pattern anywhere in the string. Add `^` and `$` when you mean the *whole* value,
 like the ticket-ID example above.
+
+The engine is [RE2](https://github.com/google/re2/wiki/Syntax), the same one the
+compiled policy bundle runs, so a pattern behaves identically wherever the policy
+is enforced. RE2 leaves out backreferences and lookaround; a pattern using them
+is refused when the policy loads, with the reason RE2 gives. Note that `$` means
+the end of the value, and does not also match just before a trailing newline the
+way some regex engines do.
 </Tip>
 
 ## Rules over a list
