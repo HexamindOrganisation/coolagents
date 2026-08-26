@@ -36,6 +36,7 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext
+from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -134,6 +135,9 @@ class HexgateRunner:
             resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
+            )
+            warn_if_admission_unenforced(
+                resolved.engine, framework="OpenAI Agents", agent_name=name
             )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding

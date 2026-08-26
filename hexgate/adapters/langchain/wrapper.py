@@ -22,6 +22,7 @@ from hexgate.adapters.langchain.tools import install_enforcer_on_tools
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.guards.types import build_pipeline
+from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -64,6 +65,9 @@ def wrap_langchain_agent(
     resolved = resolve_policy(agent_name, api_key=resolved_key, client=client)
     enforcer = build_enforcer(
         resolved.engine, agent_name=agent_name, api_key=resolved_key
+    )
+    warn_if_admission_unenforced(
+        resolved.engine, framework="LangChain", agent_name=agent_name
     )
     pipeline = build_pipeline(guards, observer=guard_observer)
     install_enforcer_on_tools(tools, enforcer=enforcer, pipeline=pipeline)
