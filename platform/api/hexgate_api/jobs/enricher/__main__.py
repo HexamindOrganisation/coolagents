@@ -13,7 +13,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from hexgate_api.core.clickhouse import AuditSchemaOutOfDate
+from hexgate_api.core.clickhouse import SchemaOutOfDate
 from hexgate_api.jobs.enricher.consumer import EnricherJob, TopicsMissing
 from hexgate_api.settings import get_settings
 
@@ -28,7 +28,7 @@ def main() -> int:
     )
     try:
         asyncio.run(EnricherJob(get_settings()).run())
-    except (AuditSchemaOutOfDate, TopicsMissing) as exc:
+    except (SchemaOutOfDate, TopicsMissing) as exc:
         _log.error("startup check failed: %s", exc)
         return 1
     return 0

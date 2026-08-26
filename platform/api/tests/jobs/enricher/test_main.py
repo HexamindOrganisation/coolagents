@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from hexgate_api.core.clickhouse import AuditSchemaOutOfDate
+from hexgate_api.core.clickhouse import SchemaOutOfDate
 from hexgate_api.jobs.enricher import __main__ as entry
 from hexgate_api.jobs.enricher.consumer import TopicsMissing
 
 
 @pytest.mark.parametrize(
     "failure",
-    [AuditSchemaOutOfDate({"policy_decision": ["x"]}), TopicsMissing(["t"])],
+    [SchemaOutOfDate({"policy_decision": ["x"]}), TopicsMissing(["t"])],
 )
 def test_when_a_startup_check_fails_then_exit_code_is_1(monkeypatch, failure) -> None:
     async def _run(self):

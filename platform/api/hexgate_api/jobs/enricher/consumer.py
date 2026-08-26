@@ -20,7 +20,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.errors import CommitFailedError
 from clickhouse_connect.driver.client import Client
 
-from hexgate_api.core.clickhouse import get_clickhouse
+from hexgate_api.core.clickhouse import BatchItem, get_clickhouse
 from hexgate_api.core.db import engine
 from hexgate_api.features.audit.service import (
     insert_ban_enforcements_batch,
@@ -208,17 +208,29 @@ class EnricherJob:
             {(project_id, event.agent_name) for event, project_id in events}
         )
         decisions = [
-            (event, pid, versions[(pid, event.agent_name)])
+            BatchItem(
+                event,
+                project_id=pid,
+                agent_version_id=versions[(pid, event.agent_name)],
+            )
             for event, pid in events
             if isinstance(event, DecisionEvent)
         ]
         llms = [
-            (event, pid, versions[(pid, event.agent_name)])
+            BatchItem(
+                event,
+                project_id=pid,
+                agent_version_id=versions[(pid, event.agent_name)],
+            )
             for event, pid in events
             if isinstance(event, LlmInvocationEvent)
         ]
         bans = [
-            (event, pid, versions[(pid, event.agent_name)])
+            BatchItem(
+                event,
+                project_id=pid,
+                agent_version_id=versions[(pid, event.agent_name)],
+            )
             for event, pid in events
             if isinstance(event, BanEnforcementEvent)
         ]
