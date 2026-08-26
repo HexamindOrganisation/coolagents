@@ -90,6 +90,15 @@ def test_reach_target_name_is_canonicalized() -> None:
         gate.check_reach("  billing-bot ", via="handoff")  # trimmed → matches
 
 
+def test_reach_authored_target_key_is_canonicalized() -> None:
+    # The other side of parity: a whitespace-padded *authored* target key lowers to
+    # the canonical reach key, so a canonical runtime target still matches (the
+    # lowering and the gate normalize identically).
+    gate = resolve_reach_gate(_enforcer({"  billing-bot ": {"mode": "allow"}}))
+    with _ROLE.sync_scope():
+        gate.check_reach("billing-bot", via="handoff")  # authored padding trimmed
+
+
 # --- approval --------------------------------------------------------------
 
 

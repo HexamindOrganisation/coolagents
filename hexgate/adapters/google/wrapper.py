@@ -18,7 +18,6 @@ from google.adk.agents import BaseAgent
 from hexgate.adapters.google.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
 from hexgate.guards.types import build_pipeline
-from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 from hexgate.security.naming import canonical_agent_name
@@ -54,9 +53,8 @@ def wrap_google_agent(
 
     resolved = resolve_policy(agent_name, api_key=api_key, client=client)
     enforcer = build_enforcer(resolved.engine, agent_name=agent_name, api_key=api_key)
-    warn_if_admission_unenforced(
-        resolved.engine, framework="Google ADK", agent_name=agent_name
-    )
+    # No admission/reach warning here: the Google HexgateRunner enforces both
+    # (admission at run entry, reach at the transfer/AgentTool seam).
     pipeline = build_pipeline(guards, observer=guard_observer)
     guarded_tools = wrap_tools(
         tools, enforcer, approval_handler=approval_handler, pipeline=pipeline
