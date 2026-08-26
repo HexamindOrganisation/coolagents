@@ -35,7 +35,7 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext, run_scope, use_run_facts
-from hexgate.security.agent_gate import warn_if_admission_unenforced
+from hexgate.security.agent_gate import resolve_agent_gate, resolve_reach_gate
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -84,6 +84,32 @@ class _CompositeRunHooks(RunHooks):
     async def on_tool_end(self, context, agent, tool, result) -> None:
         for hook in self._hooks:
             await hook.on_tool_end(context, agent, tool, result)
+
+
+class _HexgateReachHooks(RunHooks):
+    """Enforce agent-to-agent reach at the SDK handoff seam.
+
+    ``on_handoff`` fires (awaited, via ``asyncio.gather``) after the target agent
+    is resolved but before the handoff completes, so raising here vetoes the
+    transfer and the target never runs. Reach is governed by the *source* agent's
+    policy, so this looks up the source's cached binding and decides
+    ``agent.handoff:<target>``. Only handoffs from a Hexgate-governed source (the
+    resolved top-level agent) are gated; a handoff from an un-governed sub-agent is
+    left alone here (sub-agent governance is a later slice). Agent-as-tool reach
+    (``Agent.as_tool``) has no target handle at this seam and is not gated.
+    """
+
+    def __init__(self, runner: "HexgateRunner") -> None:
+        self._runner = runner
+
+    async def on_handoff(self, context, from_agent, to_agent) -> None:
+        binding = self._runner._bindings.get(canonical_agent_name(from_agent))
+        if binding is None:
+            return  # source is not Hexgate-governed; reach from it isn't gated here
+        gate = resolve_reach_gate(
+            binding.enforcer, approval_handler=self._runner._approval_handler
+        )
+        await gate.check_reach_async(canonical_agent_name(to_agent), via="handoff")
 
 
 class HexgateRunner:
@@ -136,9 +162,6 @@ class HexgateRunner:
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
             )
-            warn_if_admission_unenforced(
-                resolved.engine, framework="OpenAI Agents", agent_name=name
-            )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
         return binding
@@ -152,6 +175,22 @@ class HexgateRunner:
                 name, api_key=self.api_key, client=self._client
             )
         return self._ban_gates[name]
+
+    async def _check_admission_async(self, binding: PolicyBinding) -> None:
+        """Refuse a caller not admitted by the top-level agent's policy, before the
+        run starts. Must run inside the active HexgateContext scope (admission reads
+        the caller's role from it). No-op when the policy declares no admission."""
+        gate = resolve_agent_gate(
+            binding.enforcer, approval_handler=self._approval_handler
+        )
+        await gate.check_admission_async()
+
+    def _check_admission_sync(self, binding: PolicyBinding) -> None:
+        """Sync mirror of :meth:`_check_admission_async`."""
+        gate = resolve_agent_gate(
+            binding.enforcer, approval_handler=self._approval_handler
+        )
+        gate.check_admission()
 
     def _setup_observability(self):
         """Install Langfuse + OpenAIAgentsInstrumentor (idempotent)."""
@@ -173,21 +212,29 @@ class HexgateRunner:
             yield
 
     def _merge_hooks(self, hooks: RunHooks | None) -> RunHooks:
-        """Compose caller-supplied ``hooks`` with the usage hook — never
-        clobber a hooks object the caller already passed."""
-        usage_hooks = HexgateUsageHooks(api_key=self.api_key)
-        if hooks is None:
-            return usage_hooks
-        if not isinstance(hooks, RunHooksBase):
-            # A Hexgate guard list passed to run(hooks=...) instead of the
-            # constructor would otherwise crash at the first lifecycle callback,
-            # far from the mistake. Name it here.
-            raise TypeError(
-                f"run(hooks=...) takes an agents RunHooks object, got "
-                f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
-                "HexgateRunner(guards=[...])."
-            )
-        return _CompositeRunHooks([hooks, usage_hooks])
+        """Compose the caller's ``hooks`` with Hexgate's own — never clobber a
+        hooks object the caller already passed.
+
+        Always installs the usage hook and the reach hook (which enforces
+        ``agent.handoff:*`` at the SDK handoff seam), so the result is always a
+        composite fanning out to every hook in turn.
+        """
+        installed: list[RunHooksBase] = [
+            HexgateUsageHooks(api_key=self.api_key),
+            _HexgateReachHooks(self),
+        ]
+        if hooks is not None:
+            if not isinstance(hooks, RunHooksBase):
+                # A Hexgate guard list passed to run(hooks=...) instead of the
+                # constructor would otherwise crash at the first lifecycle callback,
+                # far from the mistake. Name it here.
+                raise TypeError(
+                    f"run(hooks=...) takes an agents RunHooks object, got "
+                    f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
+                    "HexgateRunner(guards=[...])."
+                )
+            installed.insert(0, hooks)
+        return _CompositeRunHooks(installed)
 
     async def run(
         self,
@@ -214,6 +261,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         async with hexgate_context:
+            await self._check_admission_async(binding)  # in-scope: reads the role
             with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
@@ -248,6 +296,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         with hexgate_context.sync_scope():
+            self._check_admission_sync(binding)  # in-scope: reads the role
             with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return Runner.run_sync(
                     wrapped_agent,
@@ -360,6 +409,8 @@ class HexgateRunner:
         )
 
         with hexgate_context.sync_scope():
+            # Before run_streamed spawns its task, so a non-admitted run yields nothing.
+            self._check_admission_sync(binding)
             # Scope must be open around run_streamed(): it snapshots the
             # contextvars into the background task where tools fire, and that
             # snapshot keeps the facts alive after this block exits.
