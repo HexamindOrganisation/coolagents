@@ -6,12 +6,15 @@ a non-tool subject. It gates *admission* — may this caller, in this role, run 
 agent — by deciding the synthetic ``agent.run`` key at run entry, before the model
 sees anything.
 
-Admission is opt-in. The gate enforces only when the current policy declares an
-``admission`` block, checked per run inside :meth:`AgentGate.check_admission` (not
-at build time), so an agent whose policy never mentions admission runs exactly as
-before, and a hot-reloaded policy that adds or drops admission is honored on the
-next run. A denial is caller-facing: admission fires before the model runs, so
-there is no tool result to render into, the run simply does not start.
+Engagement is opt-in. The gate enforces only when the current policy declares an
+``admission`` block anywhere, read per run via ``PolicyEngine.declares_admission()``
+(not at build time), so an agent whose policy never mentions admission runs exactly
+as before, and a hot-reloaded policy that adds or drops admission is honored on the
+next run. Once admission is declared, agent keys are closed-world (R-AGENT-002): a
+caller whose role is not granted admission is refused, so a silent co-role can
+neither admit an unknown caller nor defeat an explicit deny. A denial is
+caller-facing: admission fires before the model runs, so there is no tool result to
+render into, the run simply does not start.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import logging
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
-from hexgate.security.decision import Decision, DecisionOutcome, PolicyEngine
+from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.models import AGENT_RUN_TOOL
 
 if TYPE_CHECKING:
@@ -42,30 +45,13 @@ class AgentNotAdmittedError(Exception):
         super().__init__(decision.as_error_message())
 
 
-def policy_declares_admission(engine: PolicyEngine) -> bool:
-    """True if any role in a pydantic :class:`PolicySet` declares an ``admission`` block.
-
-    The opt-in signal. ``decide()`` cannot tell an explicit ``agent.run`` rule from
-    a fall-through to ``default_policy``, so the gate must know whether admission was
-    authored at all. Only the pydantic ``PolicySet`` exposes the ``AgentPolicy`` at
-    runtime; a compiled WASM bundle does not, so it reports ``False`` here and
-    bundle-served admission rides a manifest flag added in a later PR.
-    """
-    from hexgate.security.policy_set import PolicySet
-
-    if isinstance(engine, PolicySet):
-        return any(
-            engine.policy_for(role).admission is not None for role in engine.roles
-        )
-    return False
-
-
 class AgentGate:
     """Reduce an agent run to an admit/refuse verdict via the enforcer.
 
-    Built only for policies that declare admission, so its mere presence means
-    "enforce"; there is no enabled flag. Mirrors the egress ``Gate``: hold the
-    enforcer and the approval handler, decide, fold approval, fail closed.
+    Always built; whether it enforces is decided per run from
+    ``PolicyEngine.declares_admission()``, so its presence does not mean "enforce".
+    Mirrors the egress ``Gate``: hold the enforcer and the approval handler, decide,
+    fold approval, fail closed.
     """
 
     def __init__(
@@ -86,7 +72,7 @@ class AgentGate:
         build time, so a hot-reloaded policy that adds or drops admission is
         honored on the next run rather than frozen at bind.
         """
-        if not policy_declares_admission(self._enforcer.policy):
+        if not self._enforcer.policy.declares_admission():
             return
         decision = self._decide()
         if decision.allowed:
@@ -101,7 +87,7 @@ class AgentGate:
 
     async def check_admission_async(self) -> None:
         """Async mirror of :meth:`check_admission` — awaits an async handler."""
-        if not policy_declares_admission(self._enforcer.policy):
+        if not self._enforcer.policy.declares_admission():
             return
         decision = self._decide()
         if decision.allowed:
