@@ -4,6 +4,7 @@ core/clickhouse.py."""
 from unittest.mock import MagicMock
 
 import pytest
+from clickhouse_connect.driver.exceptions import DatabaseError
 
 from hexgate_api.core.clickhouse import (
     BATCH_INSERT_SETTINGS,
@@ -11,6 +12,7 @@ from hexgate_api.core.clickhouse import (
     SchemaOutOfDate,
     insert_batch,
     verify_all,
+    verify_written_columns,
 )
 
 
@@ -87,6 +89,18 @@ def test_when_two_features_are_stale_then_every_gap_is_reported_at_once() -> Non
     }
 
 
+def test_when_two_checks_report_the_same_table_then_columns_are_merged() -> None:
+    with pytest.raises(SchemaOutOfDate) as exc:
+        verify_all(
+            MagicMock(),
+            (
+                _stale({"policy_decision": ["user_roles"]}),
+                _stale({"policy_decision": ["hint", "user_roles"]}),
+            ),
+        )
+    assert exc.value.missing == {"policy_decision": ["hint", "user_roles"]}
+
+
 def test_when_one_feature_is_stale_then_the_others_still_run() -> None:
     later = MagicMock()
 
@@ -105,3 +119,35 @@ def test_when_a_check_fails_for_another_reason_then_it_is_not_swallowed() -> Non
 
     with pytest.raises(RuntimeError):
         verify_all(MagicMock(), (broken,))
+
+
+# ---------------------------------------------------------------------------
+# verify_written_columns() — degrading never discards a gap already found
+# ---------------------------------------------------------------------------
+
+
+def _describe(columns: list[str]) -> MagicMock:
+    result = MagicMock()
+    result.column_names = ["name", "type"]
+    result.result_rows = [(name, "String") for name in columns]
+    return result
+
+
+def test_when_a_later_table_is_denied_then_an_earlier_gap_still_raises() -> None:
+    """Without this, the early degrade on table B returned quietly and the
+    process booted with table A stale — every insert into A then dropped."""
+    client = MagicMock()
+    client.query.side_effect = [
+        _describe(["id"]),  # policy_decision: missing user_roles
+        DatabaseError("Code: 497. DB::Exception: ACCESS_DENIED"),  # ban_enforcement
+    ]
+
+    with pytest.raises(SchemaOutOfDate) as exc:
+        verify_written_columns(
+            client,
+            (
+                ("policy_decision", ["id", "user_roles"]),
+                ("ban_enforcement", ["id"]),
+            ),
+        )
+    assert exc.value.missing == {"policy_decision": ["user_roles"]}

@@ -175,6 +175,10 @@ def verify_written_columns(
     the schema is not evidence that it is stale, and the error this would
     otherwise raise tells the operator to destroy the volume. Degrading is
     safe — a genuinely broken table makes inserts 503, which the SDK retries.
+
+    Degrading stops the scan but never discards a gap already found: a stale
+    earlier table is evidence on its own, and returning quietly would let the
+    process boot and drop every insert into it.
     """
     missing: dict[str, list[str]] = {}
     for table, columns in tables:
@@ -184,12 +188,12 @@ def verify_written_columns(
             _log.warning(
                 "ClickHouse unreachable during %s schema check: %s", table, exc
             )
-            return
+            break
         except DatabaseError as exc:
             if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
                 # ACCESS_DENIED on a scoped grant, quota, metadata blip…
                 _log.warning("cannot verify the %s schema: %s", table, exc)
-                return
+                break
             present = set()
         gaps = sorted(set(columns) - present)
         if gaps:
@@ -215,6 +219,9 @@ def verify_all(client: Client, checks: Sequence[Callable[[Client], None]]) -> No
         try:
             check(client)
         except SchemaOutOfDate as exc:
-            missing.update(exc.missing)
+            # Merge, don't clobber: two checks naming the same table must
+            # both surface, or the operator is back to one gap per reboot.
+            for table, columns in exc.missing.items():
+                missing[table] = sorted(set(missing.get(table, ())) | set(columns))
     if missing:
         raise SchemaOutOfDate(missing)
