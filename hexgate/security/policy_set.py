@@ -39,10 +39,12 @@ import yaml
 from hexgate.security.constraints import iter_const_refs, parse_constraint
 from hexgate.security.decision import Verdict
 from hexgate.security.models import (
+    AGENT_RUN_TOOL,
     AgentPolicy,
     AgentTargetPolicy,
     BaseToolPolicy,
     ToolPolicy,
+    is_agent_reach_key,
 )
 
 
@@ -121,6 +123,24 @@ class PolicySet:
     def roles(self) -> list[str]:
         """List of role names, including ``default``, excluding mixins."""
         return sorted(self._policies)
+
+    def declares_admission(self) -> bool:
+        """True if any resolved role carries the ``agent.run`` key.
+
+        Derived from ``effective_tools`` rather than a source field so it holds
+        after inheritance and module folding, where the ``admission`` block has
+        become an ``agent.run`` key (R-AGENT-002)."""
+        return any(
+            AGENT_RUN_TOOL in policy.effective_tools
+            for policy in self._policies.values()
+        )
+
+    def declares_reach(self) -> bool:
+        """True if any resolved role carries an ``agent.tool:`` / ``agent.handoff:`` key."""
+        return any(
+            any(is_agent_reach_key(key) for key in policy.effective_tools)
+            for policy in self._policies.values()
+        )
 
     def __contains__(self, role: str) -> bool:
         return role in self._policies

@@ -291,31 +291,48 @@ def test_file_scope_in_module_raises():
         link([guard], [])
 
 
-def test_link_rejects_agents_block_in_module() -> None:
-    # An ``agents`` egress rule authored in a module would be silently dropped by
-    # the fold (which composes ``.tools`` only) — the same fail-open file_scope
-    # guards against. Fail loud instead.
-    mod = ModuleContent(
+def test_boundary_agents_deny_composes_as_authoritative_deny() -> None:
+    # An ``agents`` block lowers to agent.* keys the fold composes like tools
+    # (R-AGENT-002). A boundary agent-deny is authoritative — it folds to a hard
+    # deny on the lowered reach key, exactly as a boundary tool deny would.
+    boundary = ModuleContent(
         name="b",
         kind="boundary",
         policy=AgentPolicy(agents={"evil-bot": {"mode": "deny"}}),
         source="b.yaml",
         content_hash="hash-b",
     )
-    with pytest.raises(LinkError, match=r"\['agents'\]"):
-        link([mod], [])
+    effective, _ = link([boundary], [])
+    denied = effective.effective_tools["agent.handoff:evil-bot"]
+    assert denied.mode == "deny"
 
 
-def test_link_rejects_admission_block_in_module() -> None:
-    mod = ModuleContent(
+def test_capability_admission_grant_composes() -> None:
+    # A capability may grant admission: an ``admission`` block lowers to agent.run,
+    # which the fold unions like any other capability grant.
+    cap = ModuleContent(
         name="c",
         kind="capability",
         policy=AgentPolicy(admission={"mode": "allow"}),
         source="c.yaml",
         content_hash="hash-c",
     )
-    with pytest.raises(LinkError, match=r"\['admission'\]"):
-        link([], [mod])
+    effective, _ = link([], [cap])
+    assert effective.effective_tools["agent.run"].mode == "allow"
+
+
+def test_capability_agents_deny_is_a_link_error() -> None:
+    # Capabilities grant only, agent keys included: a capability that denies a
+    # lowered agent key is a config error, same as a capability tool deny.
+    cap = ModuleContent(
+        name="c",
+        kind="capability",
+        policy=AgentPolicy(agents={"evil-bot": {"mode": "deny"}}),
+        source="c.yaml",
+        content_hash="hash-c",
+    )
+    with pytest.raises(LinkError, match=r"agent\.handoff:evil-bot"):
+        link([], [cap])
 
 
 # --- provenance + policy-set wiring ---

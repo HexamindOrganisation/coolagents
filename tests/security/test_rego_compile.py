@@ -154,13 +154,12 @@ def test_emits_allow_rule_per_role_and_tool() -> None:
     rules = _allow_rules(rego)
     # support_bot: 3 roles (read_only is mixin, dropped) × 3 tools (web_search,
     # read_file each get an allow per role; refund_order is allow for support
-    # + billing, deny for default). Plus one agent.run opt-in allow per role,
-    # since no role lists admission (admission is opt-in, so an absent agent.run
-    # admits — emitted on every role to match the pydantic engine).
-    #   default  → web_search, read_file, agent.run (refund_order is deny, no rule)
-    #   support  → web_search, read_file, refund_order (2 constraints), agent.run
-    #   billing  → web_search, read_file, refund_order (2 constraints), agent.run
-    assert len(rules) == (2 + 1) + (3 + 1) + (3 + 1)
+    # + billing, deny for default). No role lists admission, and agent.run is
+    # closed-world (no opt-in rule) — so no agent.* rules are emitted (R-AGENT-002).
+    #   default  → web_search, read_file (refund_order is deny, no rule)
+    #   support  → web_search, read_file, refund_order (2 constraints)
+    #   billing  → web_search, read_file, refund_order (2 constraints)
+    assert len(rules) == 2 + 3 + 3
 
 
 def test_mixin_role_omitted_from_output() -> None:
