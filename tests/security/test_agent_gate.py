@@ -9,6 +9,8 @@ a no-op. Once admission is declared, agent keys are closed-world (R-AGENT-002).
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from hexgate.runtime.context import HexgateContext
@@ -17,7 +19,9 @@ from hexgate.security import (
     AgentPolicy,
     BaseToolPolicy,
     resolve_agent_gate,
+    warn_if_admission_unenforced,
 )
+from hexgate.security import agent_gate as agent_gate_mod
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import load_policy_set, load_policy_set_from_dict
 
@@ -195,3 +199,44 @@ def test_admission_is_closed_world_across_roles_with_permissive_union() -> None:
     with HexgateContext(user_id="u", user_roles=["viewer", "contractor"]).sync_scope():
         with pytest.raises(AgentNotAdmittedError):
             gate.check_admission()
+
+
+# --- adapter interim warning (admission unenforced off the native agent) ---
+
+
+def _engine(admission_mode: str | None):
+    admission = BaseToolPolicy(mode=admission_mode) if admission_mode else None
+    return load_policy_set(
+        AgentPolicy(default_policy=BaseToolPolicy(mode="deny"), admission=admission)
+    )
+
+
+def test_warn_if_admission_unenforced_fires_once_when_declared(caplog) -> None:
+    agent_gate_mod._admission_unenforced_warned.clear()
+    engine = _engine("allow")
+    with caplog.at_level(logging.WARNING, logger=agent_gate_mod.__name__):
+        warn_if_admission_unenforced(engine, framework="OpenAI Agents", agent_name="a")
+        warn_if_admission_unenforced(engine, framework="OpenAI Agents", agent_name="a")
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1  # deduped per (framework, agent)
+    assert "admission" in records[0].getMessage()
+    assert "OpenAI Agents" in records[0].getMessage()
+
+
+def test_warn_if_admission_unenforced_silent_without_admission(caplog) -> None:
+    agent_gate_mod._admission_unenforced_warned.clear()
+    with caplog.at_level(logging.WARNING, logger=agent_gate_mod.__name__):
+        warn_if_admission_unenforced(
+            _engine(None), framework="Google ADK", agent_name="a"
+        )
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_warn_if_admission_unenforced_distinguishes_framework_and_agent(caplog) -> None:
+    agent_gate_mod._admission_unenforced_warned.clear()
+    engine = _engine("deny")  # declared (deny) still counts as configured
+    with caplog.at_level(logging.WARNING, logger=agent_gate_mod.__name__):
+        warn_if_admission_unenforced(engine, framework="OpenAI Agents", agent_name="a")
+        warn_if_admission_unenforced(engine, framework="Google ADK", agent_name="a")
+        warn_if_admission_unenforced(engine, framework="OpenAI Agents", agent_name="b")
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 3

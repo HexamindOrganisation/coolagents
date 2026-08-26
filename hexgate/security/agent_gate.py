@@ -28,9 +28,44 @@ from hexgate.security.models import AGENT_RUN_TOOL
 
 if TYPE_CHECKING:
     from hexgate.approvals import ApprovalHandler
+    from hexgate.security.decision import PolicyEngine
     from hexgate.security.enforcer import PolicyEnforcer
 
 _log = logging.getLogger(__name__)
+
+# Dedupe key: admission is enforced only on the native HexgateAgent in A2, so the
+# framework adapters warn once per (framework, agent) that a declared admission
+# block is not enforced there yet. Per-adapter run-entry admission lands in A3.
+_admission_unenforced_warned: set[tuple[str, str]] = set()
+
+
+def warn_if_admission_unenforced(
+    engine: PolicyEngine, *, framework: str, agent_name: str
+) -> None:
+    """Warn once when a policy declares admission on an adapter that can't enforce it.
+
+    Admission (the ``agent.run`` run-entry gate) is wired only into the native
+    :class:`~hexgate.agents.factory.HexgateAgent` in A2; the OpenAI/Google/
+    pydantic_ai/LangChain adapters check the ban gate at run entry but not
+    admission. Until per-adapter admission lands (A3), a declared ``admission``
+    block is a silent no-op on those adapters — so surface it loudly at wrap time
+    rather than fail open without a trace. No-op when the policy declares no
+    admission (the common case), and deduped per ``(framework, agent_name)`` so a
+    long-lived process logs it once, not per run."""
+    if not engine.declares_admission():
+        return
+    key = (framework, agent_name)
+    if key in _admission_unenforced_warned:
+        return
+    _admission_unenforced_warned.add(key)
+    _log.warning(
+        "policy for agent %r declares an 'admission' block, but admission is not "
+        "enforced on the %s adapter yet (only on the native HexgateAgent); this run "
+        "will proceed without an admission check. Per-adapter admission lands in a "
+        "follow-up (A3); use the native agent to enforce admission today.",
+        agent_name,
+        framework,
+    )
 
 
 class AgentNotAdmittedError(Exception):

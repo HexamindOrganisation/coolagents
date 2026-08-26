@@ -23,6 +23,7 @@ from hexgate.security.agent_gate import (
     AgentGate,
     AgentNotAdmittedError,
     resolve_agent_gate,
+    warn_if_admission_unenforced,
 )
 from hexgate.security.models import (
     AGENT_RUN_TOOL,
@@ -263,4 +264,5 @@ __all__ = [
     "load_policy_set",
     "load_policy_set_from_dict",
     "parse_constraint",
+    "warn_if_admission_unenforced",
 ]
