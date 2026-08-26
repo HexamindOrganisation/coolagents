@@ -2,8 +2,9 @@
 
 The gate reuses ``PolicyEnforcer.decide`` on the synthetic ``agent.run`` key, so
 these drive it through a real ``PolicySet`` enforcer under an open context scope,
-the same path a run entry takes. Admission is opt-in: ``resolve_agent_gate`` always
-returns a gate, but a policy that declares no admission makes every check a no-op.
+the same path a run entry takes. Engagement is opt-in: ``resolve_agent_gate`` always
+returns a gate, but a policy that declares no admission anywhere makes every check
+a no-op. Once admission is declared, agent keys are closed-world (R-AGENT-002).
 """
 
 from __future__ import annotations
@@ -145,13 +146,14 @@ async def test_async_admission_approval_async_handler() -> None:
         await gate.check_admission_async()
 
 
-# --- multi-role opt-in (no lockout) ----------------------------------------
+# --- multi-role (closed-world + permissive union) --------------------------
 
 
-def test_role_without_admission_is_admitted_despite_another_role_declaring_it() -> None:
-    # Regression: admission is opt-in, so adding it to one role must not lock out
-    # roles that declare none. viewer (no admission) stays admitted even though
-    # admin/contractor declare admission; the union is monotonic.
+def test_admission_is_closed_world_across_roles_with_permissive_union() -> None:
+    # Under Option B (R-AGENT-002) admission is closed-world once any role declares
+    # it: engagement is PolicySet-wide (admin declares admission → the gate fires
+    # for everyone), so a role not granted admission is refused. The multi-role
+    # fold stays permissive: any role that grants admission admits the caller.
     ps = load_policy_set_from_dict(
         {
             "roles": {
@@ -164,21 +166,32 @@ def test_role_without_admission_is_admitted_despite_another_role_declaring_it() 
                     "default_policy": {"mode": "deny"},
                     "admission": {"mode": "deny"},
                 },
-                "viewer": {"default_policy": {"mode": "deny"}},  # no admission
+                "viewer": {"default_policy": {"mode": "deny"}},  # no admission grant
             }
         }
     )
     gate = resolve_agent_gate(PolicyEnforcer(ps, agent_name="agent"))
 
-    # viewer declares no admission → opt-in admit (not locked out).
-    with HexgateContext(user_id="u", user_roles=["viewer"]).sync_scope():
+    # admin is granted admission → admitted.
+    with HexgateContext(user_id="u", user_roles=["admin"]).sync_scope():
         gate.check_admission()
 
-    # contractor explicitly denies admission.
+    # viewer grants no admission → closed-world refuse (the gate is engaged because
+    # admin declares admission somewhere in the set).
+    with HexgateContext(user_id="u", user_roles=["viewer"]).sync_scope():
+        with pytest.raises(AgentNotAdmittedError):
+            gate.check_admission()
+
+    # contractor explicitly denies admission → refused.
     with HexgateContext(user_id="u", user_roles=["contractor"]).sync_scope():
         with pytest.raises(AgentNotAdmittedError):
             gate.check_admission()
 
-    # carrying both: viewer's opt-in admits via the permissive union.
-    with HexgateContext(user_id="u", user_roles=["viewer", "contractor"]).sync_scope():
+    # admin + contractor: the permissive union admits (admin grants; ALLOW wins).
+    with HexgateContext(user_id="u", user_roles=["contractor", "admin"]).sync_scope():
         gate.check_admission()
+
+    # viewer + contractor: neither grants admission → refused.
+    with HexgateContext(user_id="u", user_roles=["viewer", "contractor"]).sync_scope():
+        with pytest.raises(AgentNotAdmittedError):
+            gate.check_admission()

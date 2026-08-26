@@ -22,7 +22,6 @@ from hexgate.security.bans import (
 from hexgate.security.agent_gate import (
     AgentGate,
     AgentNotAdmittedError,
-    policy_declares_admission,
     resolve_agent_gate,
 )
 from hexgate.security.models import (
@@ -162,7 +161,6 @@ __all__ = [
     "DEFAULT_AGENT",
     "AgentBinding",
     "RoleMatrix",
-    "policy_declares_admission",
     "resolve_agent_gate",
     "LayerKind",
     "LinkError",
