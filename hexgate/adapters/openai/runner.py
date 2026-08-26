@@ -40,6 +40,7 @@ from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+from hexgate.security.naming import canonical_agent_name
 
 if TYPE_CHECKING:
     from hexgate.guards.types import Guard, GuardObserver
@@ -126,10 +127,10 @@ class HexgateRunner:
         unregistered agent (platform 404) raises — register it first with
         ``hexgate register``.
         """
-        # `or "default"` collapses a None/empty name to a real string (matches
-        # the pydantic_ai adapter) so a null identity never reaches the cache
-        # key or the platform resolve / enforcer / audit below.
-        name = getattr(agent, "name", None) or "default"
+        # Shared derivation (trim + blank/None → "default") so a null identity
+        # never reaches the cache key or the platform resolve / enforcer / audit
+        # below, and so it matches how a reach target would be named.
+        name = canonical_agent_name(agent)
         binding = self._bindings.get(name)
         if binding is None:
             resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
@@ -146,7 +147,7 @@ class HexgateRunner:
     def _ban_gate_for(self, agent: Agent) -> BanGate | None:
         """Get-or-resolve the cached ban gate for ``agent``'s name (``None`` in
         local mode / no key). ``None`` is cached too, so we resolve once."""
-        name = getattr(agent, "name", None) or "default"
+        name = canonical_agent_name(agent)
         if name not in self._ban_gates:
             self._ban_gates[name] = resolve_ban_gate(
                 name, api_key=self.api_key, client=self._client

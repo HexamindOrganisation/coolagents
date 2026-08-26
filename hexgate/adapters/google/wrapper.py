@@ -21,6 +21,7 @@ from hexgate.guards.types import build_pipeline
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.enforcer import build_enforcer
+from hexgate.security.naming import canonical_agent_name
 
 if TYPE_CHECKING:
     from hexgate.cloud.client import HexgateClient
@@ -48,7 +49,7 @@ def wrap_google_agent(
     unregistered agent (platform 404) raises — register it first with
     ``hexgate register``.
     """
-    agent_name = getattr(agent, "name", "default")
+    agent_name = canonical_agent_name(agent)
     tools = list(getattr(agent, "tools", []) or [])
 
     resolved = resolve_policy(agent_name, api_key=api_key, client=client)

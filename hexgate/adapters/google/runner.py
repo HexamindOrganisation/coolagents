@@ -25,6 +25,7 @@ from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext
 from hexgate.security.bans import resolve_ban_gate
+from hexgate.security.naming import canonical_agent_name
 
 if TYPE_CHECKING:
     from hexgate.guards.types import Guard, GuardObserver
@@ -73,7 +74,7 @@ class HexgateRunner:
             session_service=session_service,
             **runner_kwargs,
         )
-        self._agent_name = getattr(agent, "name", "default")
+        self._agent_name = canonical_agent_name(agent)
         self._ban_gate = resolve_ban_gate(
             self._agent_name, api_key=self.api_key, client=client
         )

@@ -27,6 +27,7 @@ from hexgate.security.agent_gate import warn_if_admission_unenforced
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+from hexgate.security.naming import canonical_agent_name
 
 if TYPE_CHECKING:
     from hexgate.guards.types import Guard, GuardObserver
@@ -80,7 +81,7 @@ def wrap_pydantic_agent(
             "No API key provided. Pass api_key= explicitly or set the HEXGATE_API_KEY environment variable."
         )
 
-    agent_name = getattr(agent, "name", None) or "default"
+    agent_name = canonical_agent_name(agent)
     tools = _extract_tools(agent)
 
     # One client shared by the policy and ban resolvers — avoids a second
