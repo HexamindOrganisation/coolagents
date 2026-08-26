@@ -6,6 +6,7 @@ Single shared Client — clickhouse-connect manages its own HTTP pool internally
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
@@ -13,6 +14,7 @@ from typing import Generic, Protocol, TypeVar
 
 import clickhouse_connect
 from clickhouse_connect.driver.client import Client
+from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 
 from hexgate_api.settings import get_settings
 
@@ -121,3 +123,76 @@ def insert_batch(
         for item in items
     ]
     client.insert(table, rows, column_names=columns, settings=BATCH_INSERT_SETTINGS)
+
+
+# --- Written-schema guard ------------------------------------------------------
+#
+# Generic machinery for the per-feature startup checks: each feature's
+# service.py wraps verify_written_columns with its own (table, columns), so no
+# feature has to know about another feature's tables.
+
+
+class SchemaOutOfDate(Exception):
+    """An event table is missing a column the ingest writes."""
+
+    def __init__(self, missing: dict[str, list[str]]) -> None:
+        detail = "; ".join(
+            f"{table}: {', '.join(columns)}"
+            for table, columns in sorted(missing.items())
+        )
+        super().__init__(
+            f"ClickHouse schema is behind this build ({detail}). "
+            "Apply the matching migration from platform/clickhouse/migrations/ "
+            "if one ships for these columns; otherwise recreate the volume so "
+            "init/schema.sql runs (`make clickhouse-reset` locally) before "
+            "starting the API."
+        )
+        self.missing = missing
+
+
+_UNKNOWN_TABLE_CODE = 60
+# clickhouse-connect exposes the server-side code only in the message text;
+# DatabaseError carries no structured attribute for it.
+_SERVER_ERROR_CODE_RE = re.compile(r"code:\s*(\d+)")
+
+
+def _server_error_code(exc: DatabaseError) -> int | None:
+    match = _SERVER_ERROR_CODE_RE.search(str(exc))
+    return int(match.group(1)) if match else None
+
+
+def verify_written_columns(
+    client: Client, tables: Sequence[tuple[str, list[str]]]
+) -> None:
+    """Raise :class:`SchemaOutOfDate` if a written column is missing.
+
+    Extra server-side columns are fine — only gaps in what we write break
+    inserts. Startup-only: changing this needs a deployment or manual DDL.
+
+    An absent table breaks inserts exactly like an absent column, so it earns
+    the same actionable error rather than a raw driver traceback out of the
+    lifespan. Every other failure degrades to a warning: being unable to read
+    the schema is not evidence that it is stale, and the error this would
+    otherwise raise tells the operator to destroy the volume. Degrading is
+    safe — a genuinely broken table makes inserts 503, which the SDK retries.
+    """
+    missing: dict[str, list[str]] = {}
+    for table, columns in tables:
+        try:
+            present = table_columns(client, table)
+        except OperationalError as exc:
+            _log.warning(
+                "ClickHouse unreachable during %s schema check: %s", table, exc
+            )
+            return
+        except DatabaseError as exc:
+            if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
+                # ACCESS_DENIED on a scoped grant, quota, metadata blip…
+                _log.warning("cannot verify the %s schema: %s", table, exc)
+                return
+            present = set()
+        gaps = sorted(set(columns) - present)
+        if gaps:
+            missing[table] = gaps
+    if missing:
+        raise SchemaOutOfDate(missing)
