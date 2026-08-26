@@ -254,7 +254,7 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 # and the root public key, so this target now provides the first two and
 # checks for the third — the pre-auth collector booted on Redpanda alone.
 .PHONY: enricher-run
-enricher-run: redpanda-topics clickhouse-up ## Run the span-enricher job (Kafka → ClickHouse)
+enricher-run: redpanda-topics clickhouse-up ## Run the span-enricher job (Redpanda → ClickHouse)
 	cd platform/api && uv run python -m hexgate_api.jobs.enricher
 
 collector-run: postgres-up redpanda-topics ## Run the collector binary against config.yaml
