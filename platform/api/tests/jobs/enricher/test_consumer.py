@@ -6,11 +6,15 @@ The ordering contract under test: inserts → DLQ sends → offset commit.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
+
+import pytest
 
 from clickhouse_connect.driver.exceptions import OperationalError
 
 from hexgate.tracing import semconv
 from tests.jobs.enricher.conftest import (
+    FakeConsumer,
     FakeRecord,
     ban_attrs,
     decision_attrs,
@@ -125,3 +129,130 @@ async def test_when_the_agent_version_is_unresolved_then_inserted_with_empty_str
     decision_rows = clickhouse.insert.call_args_list[0].args[1]
     assert decision_rows[0][4] == ""
     assert consumer.commits == 1
+
+
+# ---------------------------------------------------------------------------
+# run() lifecycle + the two availability-critical failure branches
+# ---------------------------------------------------------------------------
+
+
+async def _noop(*_args, **_kwargs):
+    return None
+
+
+class _LifecycleConsumer(FakeConsumer):
+    """FakeConsumer plus the lifecycle surface run() touches. Serves one
+    poll of `records`, then requests a stop so run() returns."""
+
+    def __init__(self, calls, records, topics, job_ref):
+        super().__init__(calls)
+        self._records = records
+        self._topics = topics
+        self._job_ref = job_ref
+        self.started = self.stopped = False
+
+    async def start(self):
+        self.started = True
+
+    async def stop(self):
+        self.stopped = True
+
+    async def topics(self):
+        return self._topics
+
+    async def getmany(self, timeout_ms, max_records):
+        self._job_ref[0].request_stop()  # one poll, then exit the loop
+        return {"tp0": self._records} if self._records else {}
+
+
+def _lifecycle_job(monkeypatch, make_job, *, records, topics):
+    job, clickhouse, _consumer, producer, calls = make_job()
+    consumer = _LifecycleConsumer(calls, records, topics, [job])
+    producer.start = producer.stop = _noop  # type: ignore[attr-defined]
+    job._consumer = consumer
+    monkeypatch.setattr(
+        "hexgate_api.jobs.enricher.consumer.verify_audit_schema", lambda c: None
+    )
+    monkeypatch.setattr(
+        "hexgate_api.jobs.enricher.consumer.verify_llm_schema", lambda c: None
+    )
+    monkeypatch.setattr(
+        "hexgate_api.jobs.enricher.consumer.engine", SimpleNamespace(dispose=_noop)
+    )
+    return job, clickhouse, consumer, calls
+
+
+async def test_run_happy_path_processes_a_poll_then_stops_cleanly(
+    monkeypatch, make_job
+) -> None:
+    records = [_record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])])]
+    job, clickhouse, consumer, calls = _lifecycle_job(
+        monkeypatch,
+        make_job,
+        records=records,
+        topics={"hexgate.otlp.raw", "hexgate.otlp.dlq"},
+    )
+
+    await job.run()
+
+    assert consumer.started and consumer.stopped
+    assert calls == ["insert", "commit"]
+
+
+async def test_when_a_topic_is_missing_then_run_fails_fast(
+    monkeypatch, make_job
+) -> None:
+    from hexgate_api.jobs.enricher.consumer import TopicsMissing
+
+    job, clickhouse, consumer, calls = _lifecycle_job(
+        monkeypatch, make_job, records=[], topics={"hexgate.otlp.raw"}
+    )
+
+    with pytest.raises(TopicsMissing) as exc:
+        await job.run()
+
+    assert "hexgate.otlp.dlq" in str(exc.value)
+    assert "make redpanda-topics" in str(exc.value)
+    assert consumer.stopped  # finally-block cleanup still ran
+
+
+async def test_when_stop_is_requested_mid_outage_then_no_commit(
+    monkeypatch, make_job
+) -> None:
+    """The data-loss guard: a SIGTERM while ClickHouse is down must exit the
+    retry loop WITHOUT committing, so the poll replays after restart."""
+    import hexgate_api.jobs.enricher.consumer as consumer_mod
+
+    job, clickhouse, consumer, producer, calls = make_job(
+        insert_side_effect=[OperationalError("down"), OperationalError("still down")]
+    )
+    records = [_record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])])]
+
+    async def _stop_instead_of_sleeping(_delay):
+        job.request_stop()
+
+    # The first failure sleeps; hijack that sleep to request the stop.
+    monkeypatch.setattr(consumer_mod.asyncio, "sleep", _stop_instead_of_sleeping)
+
+    await job._process_poll(records)
+
+    assert consumer.commits == 0
+    assert producer.sent == []
+
+
+async def test_when_commit_fails_on_rebalance_then_poll_is_dropped_not_fatal(
+    make_job,
+) -> None:
+    from aiokafka.errors import CommitFailedError
+
+    job, clickhouse, consumer, producer, calls = make_job()
+
+    async def _failing_commit():
+        raise CommitFailedError("rebalance")
+
+    consumer.commit = _failing_commit  # type: ignore[method-assign]
+    records = [_record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])])]
+
+    await job._process_poll(records)  # no raise: the new owner replays it
+
+    assert calls == ["insert"]

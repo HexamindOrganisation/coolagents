@@ -232,8 +232,6 @@ class EnricherJob:
         # shrink the whole retry cadence with one setting.
         backoff = min(1.0, self._settings.enricher_insert_max_backoff_s)
         while True:
-            if self._stop.is_set():
-                return  # stopping mid-outage: no commit, the poll replays later
             try:
                 await asyncio.to_thread(
                     insert_decisions_batch, self._clickhouse, decisions
@@ -246,6 +244,11 @@ class EnricherJob:
                 )
                 break
             except Exception:
+                if self._stop.is_set():
+                    # Stopping mid-outage: don't wait, don't commit — the poll
+                    # replays after restart. A healthy in-flight poll is never
+                    # abandoned; the check lives here, not at the loop top.
+                    return
                 _log.exception(
                     "ClickHouse insert failed; retrying whole batch in %.0fs", backoff
                 )
