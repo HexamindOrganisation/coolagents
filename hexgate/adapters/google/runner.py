@@ -26,7 +26,11 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext, run_scope
-from hexgate.security.agent_gate import resolve_agent_gate, resolve_reach_gate
+from hexgate.security.agent_gate import (
+    HandoffDepthExceededError,
+    resolve_agent_gate,
+    resolve_reach_gate,
+)
 from hexgate.security.bans import resolve_ban_gate
 from hexgate.security.naming import canonical_agent_name, canonical_name
 
@@ -51,11 +55,24 @@ class _HexgateReachPlugin(BasePlugin):
     def __init__(self, runner: "HexgateRunner") -> None:
         super().__init__(name="hexgate_reach")
         self._runner = runner
+        # Handoff depth per invocation (this plugin is shared across runs, unlike
+        # the OpenAI per-run hook), cleared in after_run_callback.
+        self._depth: dict[str, int] = {}
 
     async def before_tool_callback(self, *, tool, tool_args, tool_context) -> None:
+        is_transfer = tool.name == "transfer_to_agent"
+        # Depth cap first, as a runaway guard independent of reach policy and of
+        # which agent transfers: a transfer moves control forward, so the count of
+        # transfers in one invocation is the chain depth.
+        cap = self._runner._max_handoff_depth
+        if is_transfer and cap is not None:
+            inv = tool_context.invocation_id
+            self._depth[inv] = self._depth.get(inv, 0) + 1
+            if self._depth[inv] > cap:
+                raise HandoffDepthExceededError(self._depth[inv], cap)
         if canonical_name(tool_context.agent_name) != self._runner._agent_name:
             return None  # source is not the governed root; reach from it isn't gated
-        if tool.name == "transfer_to_agent":
+        if is_transfer:
             target, via = tool_args.get("agent_name"), "handoff"
         elif isinstance(tool, AgentTool):
             target, via = getattr(tool.agent, "name", None), "tool"
@@ -68,6 +85,11 @@ class _HexgateReachPlugin(BasePlugin):
             approval_handler=self._runner._approval_handler,
         )
         await gate.check_reach_async(canonical_name(target), via=via)
+        return None
+
+    async def after_run_callback(self, *, invocation_context) -> None:
+        # Drop this invocation's depth counter so the map does not grow unbounded.
+        self._depth.pop(invocation_context.invocation_id, None)
         return None
 
 
@@ -84,6 +106,7 @@ class HexgateRunner:
         approval_handler: ApprovalHandler | None = None,
         guards: "Sequence[Guard] | None" = None,
         guard_observer: "GuardObserver | None" = None,
+        max_handoff_depth: int | None = None,
         **runner_kwargs: Any,
     ):
         # ``guards`` matches the OpenAI runner's constructor. ADK's ``run`` has
@@ -98,6 +121,9 @@ class HexgateRunner:
         # Runner is built once — refresh swaps the enforcer's policy
         # without touching it. One client is shared with the ban resolver.
         self._approval_handler = approval_handler
+        # Handoff-chain depth cap (None = no cap); enforced per invocation by the
+        # reach plugin.
+        self._max_handoff_depth = max_handoff_depth
         client = HexgateClient(HexgateConfig.from_env(api_key=self.api_key))
         self._wrapped_agent, self._binding = wrap_google_agent(
             agent,

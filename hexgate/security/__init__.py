@@ -22,6 +22,7 @@ from hexgate.security.bans import (
 from hexgate.security.agent_gate import (
     AgentGate,
     AgentNotAdmittedError,
+    HandoffDepthExceededError,
     ReachGate,
     ReachNotAllowedError,
     resolve_agent_gate,
@@ -160,6 +161,7 @@ __all__ = [
     "AgentBannedError",
     "AgentGate",
     "AgentNotAdmittedError",
+    "HandoffDepthExceededError",
     "ReachGate",
     "ReachNotAllowedError",
     "AgentPolicy",

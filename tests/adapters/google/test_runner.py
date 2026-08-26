@@ -25,6 +25,7 @@ from hexgate.security import (
     AgentNotAdmittedError,
     AgentPolicy,
     BaseToolPolicy,
+    HandoffDepthExceededError,
     PolicySet,
     ReachNotAllowedError,
     ResolvedPolicy,
@@ -670,6 +671,30 @@ def test_admission_sync_noop_without_admission(
     runner = _runner_with_policy(monkeypatch)  # no admission declared
     with _user().sync_scope():
         runner._check_admission_sync()  # no raise
+
+
+@pytest.mark.asyncio
+async def test_reach_plugin_enforces_depth_cap_per_invocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner_with_policy(monkeypatch, agents={"b": {"mode": "allow"}})
+    runner._max_handoff_depth = 1
+    plugin = _HexgateReachPlugin(runner)
+    tool = SimpleNamespace(name="transfer_to_agent")
+    ctx = SimpleNamespace(agent_name="orchestrator", invocation_id="inv-1")
+    async with _user():
+        await plugin.before_tool_callback(
+            tool=tool, tool_args={"agent_name": "b"}, tool_context=ctx
+        )  # depth 1 == cap → ok
+        with pytest.raises(HandoffDepthExceededError):
+            await plugin.before_tool_callback(
+                tool=tool, tool_args={"agent_name": "b"}, tool_context=ctx
+            )  # depth 2 > cap
+    # after_run clears this invocation's counter so it does not leak.
+    await plugin.after_run_callback(
+        invocation_context=SimpleNamespace(invocation_id="inv-1")
+    )
+    assert "inv-1" not in plugin._depth
 
 
 # ---------------------------------------------------------------------------
