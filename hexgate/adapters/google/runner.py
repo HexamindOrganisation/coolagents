@@ -11,8 +11,10 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator
 import nest_asyncio
 from google.adk.agents import BaseAgent
 from google.adk.apps import App
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions import BaseSessionService
+from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
@@ -24,11 +26,49 @@ from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext, run_scope
+from hexgate.security.agent_gate import resolve_agent_gate, resolve_reach_gate
 from hexgate.security.bans import resolve_ban_gate
-from hexgate.security.naming import canonical_agent_name
+from hexgate.security.naming import canonical_agent_name, canonical_name
 
 if TYPE_CHECKING:
     from hexgate.guards.types import Guard, GuardObserver
+
+
+class _HexgateReachPlugin(BasePlugin):
+    """Enforce agent-to-agent reach at the ADK tool seam.
+
+    ADK expresses delegation as tool calls: ``transfer_to_agent(agent_name=...)``
+    (handoff, control transfers) and :class:`AgentTool` (agent-as-tool, the caller
+    keeps control). ``before_tool_callback`` fires before either runs, so deciding
+    the target's reach key here and raising :class:`ReachNotAllowedError` on a deny
+    stops the transfer/delegation before it happens. Reach is governed by the
+    source agent's policy; only the governed root's reach is gated (a transfer
+    originating from an un-governed sub-agent is left alone, matching the OpenAI
+    adapter). Ordinary tools fall through — they are already gated by the wrapped
+    enforcer.
+    """
+
+    def __init__(self, runner: "HexgateRunner") -> None:
+        super().__init__(name="hexgate_reach")
+        self._runner = runner
+
+    async def before_tool_callback(self, *, tool, tool_args, tool_context) -> None:
+        if canonical_name(tool_context.agent_name) != self._runner._agent_name:
+            return None  # source is not the governed root; reach from it isn't gated
+        if tool.name == "transfer_to_agent":
+            target, via = tool_args.get("agent_name"), "handoff"
+        elif isinstance(tool, AgentTool):
+            target, via = getattr(tool.agent, "name", None), "tool"
+        else:
+            return None  # ordinary tool; the wrapped enforcer already gates it
+        if not target:
+            return None
+        gate = resolve_reach_gate(
+            self._runner._binding.enforcer,
+            approval_handler=self._runner._approval_handler,
+        )
+        await gate.check_reach_async(canonical_name(target), via=via)
+        return None
 
 
 class HexgateRunner:
@@ -57,6 +97,7 @@ class HexgateRunner:
         # Policy resolves at construction (the loud-failure point); the
         # Runner is built once — refresh swaps the enforcer's policy
         # without touching it. One client is shared with the ban resolver.
+        self._approval_handler = approval_handler
         client = HexgateClient(HexgateConfig.from_env(api_key=self.api_key))
         self._wrapped_agent, self._binding = wrap_google_agent(
             agent,
@@ -68,6 +109,9 @@ class HexgateRunner:
         )
         plugins = list(runner_kwargs.pop("plugins", None) or [])
         plugins.append(HexgateUsagePlugin(api_key=self.api_key))
+        # Reach enforcement at the ADK transfer/AgentTool seam. Appended after the
+        # caller's plugins so it always runs; it never rewrites tool input.
+        plugins.append(_HexgateReachPlugin(self))
         app = App(name=app_name, root_agent=self._wrapped_agent, plugins=plugins)
         self._runner = Runner(
             app=app,
@@ -78,6 +122,22 @@ class HexgateRunner:
         self._ban_gate = resolve_ban_gate(
             self._agent_name, api_key=self.api_key, client=client
         )
+
+    async def _check_admission_async(self) -> None:
+        """Refuse a caller not admitted by the root agent's policy before the run
+        drives. Must run inside the active HexgateContext scope. No-op when the
+        policy declares no admission."""
+        gate = resolve_agent_gate(
+            self._binding.enforcer, approval_handler=self._approval_handler
+        )
+        await gate.check_admission_async()
+
+    def _check_admission_sync(self) -> None:
+        """Sync mirror of :meth:`_check_admission_async`."""
+        gate = resolve_agent_gate(
+            self._binding.enforcer, approval_handler=self._approval_handler
+        )
+        gate.check_admission()
 
     def _setup_observability(self):
         """Install Langfuse + GoogleADKInstrumentor (idempotent)."""
@@ -123,6 +183,7 @@ class HexgateRunner:
             run_scope(self._agent_name),
             self._propagate(hexgate_context),
         ):
+            self._check_admission_sync()  # in-scope: reads the caller's role
             agen = self._runner.run_async(
                 user_id=hexgate_context.user_id,
                 session_id=hexgate_context.session_id,
@@ -164,6 +225,7 @@ class HexgateRunner:
             session_id if session_id is not None else hexgate_context.session_id
         )
         async with hexgate_context:
+            await self._check_admission_async()  # in-scope: reads the caller's role
             with run_scope(self._agent_name), self._propagate(hexgate_context):
                 async for event in self._runner.run_async(
                     user_id=hexgate_context.user_id,
