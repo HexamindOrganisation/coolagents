@@ -22,8 +22,12 @@ from hexgate.security.bans import (
 from hexgate.security.agent_gate import (
     AgentGate,
     AgentNotAdmittedError,
+    ReachGate,
+    ReachNotAllowedError,
     resolve_agent_gate,
+    resolve_reach_gate,
     warn_if_admission_unenforced,
+    warn_if_reach_unenforced,
 )
 from hexgate.security.models import (
     AGENT_RUN_TOOL,
@@ -147,6 +151,8 @@ __all__ = [
     "AgentBannedError",
     "AgentGate",
     "AgentNotAdmittedError",
+    "ReachGate",
+    "ReachNotAllowedError",
     "AgentPolicy",
     "AgentTargetPolicy",
     "AgentVia",
@@ -252,5 +258,7 @@ __all__ = [
     "load_policy_set",
     "load_policy_set_from_dict",
     "parse_constraint",
+    "resolve_reach_gate",
     "warn_if_admission_unenforced",
+    "warn_if_reach_unenforced",
 ]
