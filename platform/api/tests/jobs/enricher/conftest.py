@@ -167,9 +167,12 @@ class FakeConsumer:
 class FakeProducer:
     calls: list[str]
     sent: list[tuple[str, bytes | None, bytes]] = field(default_factory=list)
+    failures: list[Exception] = field(default_factory=list)  # consumed one per send
 
     async def send_and_wait(self, topic: str, value: bytes, key: bytes | None) -> None:
         self.calls.append("dlq")
+        if self.failures:
+            raise self.failures.pop(0)
         self.sent.append((topic, key, value))
 
 
@@ -179,7 +182,12 @@ def make_job(monkeypatch: pytest.MonkeyPatch):
     append to the shared call log; resolve_versions is stubbed to return
     per-pair fake ids ("" via the `unresolved` flag)."""
 
-    def _make(*, unresolved: bool = False, insert_side_effect: Any = None):
+    def _make(
+        *,
+        unresolved: bool = False,
+        insert_side_effect: Any = None,
+        send_side_effect: Any = None,
+    ):
         calls: list[str] = []
         clickhouse = MagicMock()
 
@@ -199,7 +207,7 @@ def make_job(monkeypatch: pytest.MonkeyPatch):
         )
         settings = Settings(enricher_insert_max_backoff_s=0.01)
         consumer = FakeConsumer(calls)
-        producer = FakeProducer(calls)
+        producer = FakeProducer(calls, failures=list(send_side_effect or []))
         job = EnricherJob(
             settings,
             clickhouse_client=clickhouse,

@@ -268,6 +268,52 @@ async def test_when_stop_is_requested_mid_outage_then_no_commit(
     assert producer.sent == []
 
 
+def _one_bad_span_record():
+    bad = decision_attrs()
+    del bad[semconv.TOOL_NAME]
+    return _record([(semconv.SCOPE_AUDIT, [make_span(bad)])])
+
+
+async def test_when_a_dlq_send_fails_then_it_is_retried_and_committed_once(
+    make_job,
+) -> None:
+    from aiokafka.errors import KafkaTimeoutError
+
+    job, clickhouse, consumer, producer, calls = make_job(
+        send_side_effect=[KafkaTimeoutError("dlq leader unavailable")]
+    )
+
+    await job._process_poll([_one_bad_span_record()])
+
+    # First send fails, second lands; the envelope is written exactly once.
+    assert calls == ["dlq", "dlq", "commit"]
+    assert len(producer.sent) == 1
+    assert consumer.commits == 1
+
+
+async def test_when_stop_is_requested_mid_dlq_outage_then_no_commit(
+    monkeypatch, make_job
+) -> None:
+    """Same guard as the ClickHouse path: a SIGTERM while the DLQ topic is
+    unreachable must leave the offset uncommitted so the poll replays."""
+    import hexgate_api.jobs.enricher.consumer as consumer_mod
+    from aiokafka.errors import KafkaTimeoutError
+
+    job, clickhouse, consumer, producer, calls = make_job(
+        send_side_effect=[KafkaTimeoutError("down"), KafkaTimeoutError("still down")]
+    )
+
+    async def _stop_instead_of_sleeping(_delay):
+        job.request_stop()
+
+    monkeypatch.setattr(consumer_mod.asyncio, "sleep", _stop_instead_of_sleeping)
+
+    await job._process_poll([_one_bad_span_record()])
+
+    assert consumer.commits == 0
+    assert producer.sent == []
+
+
 async def test_when_commit_fails_on_rebalance_then_poll_is_dropped_not_fatal(
     make_job,
 ) -> None:

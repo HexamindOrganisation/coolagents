@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -139,6 +141,30 @@ class EnricherJob:
             await self._producer.stop()
             await engine.dispose()
 
+    async def _retry_until_acked(
+        self, attempt: Callable[[], Awaitable[None]], what: str
+    ) -> bool:
+        """Run ``attempt`` until it succeeds; False if a stop arrived first.
+
+        A False return means the caller must not commit: the poll replays
+        after restart. A healthy in-flight attempt is never abandoned — the
+        stop check lives in the failure branch, not at the loop top. Initial
+        backoff never exceeds the cap, so tests (and operators) can shrink
+        the whole retry cadence with one setting.
+        """
+        cap = self._settings.enricher_insert_max_backoff_s
+        backoff = min(1.0, cap)
+        while True:
+            try:
+                await attempt()
+                return True
+            except Exception:
+                if self._stop.is_set():
+                    return False
+                _log.exception("%s failed; retrying in %.0fs", what, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, cap)
+
     async def _process_poll(self, records: list[Any]) -> None:
         """One full cycle over one poll's records. See the module docstring
         for the ordering contract."""
@@ -246,37 +272,30 @@ class EnricherJob:
         # halting this partition is correct: committing would drop data, and
         # redelivery after a restart dedups. Re-running all three inserts on a
         # partial failure is safe per the batch functions' contract.
-        # Initial backoff never exceeds the cap, so tests (and operators) can
-        # shrink the whole retry cadence with one setting.
-        backoff = min(1.0, self._settings.enricher_insert_max_backoff_s)
-        while True:
-            try:
-                await asyncio.to_thread(
-                    insert_decisions_batch, self._clickhouse, decisions
-                )
-                await asyncio.to_thread(
-                    insert_llm_invocations_batch, self._clickhouse, llms
-                )
-                await asyncio.to_thread(
-                    insert_ban_enforcements_batch, self._clickhouse, bans
-                )
-                break
-            except Exception:
-                if self._stop.is_set():
-                    # Stopping mid-outage: don't wait, don't commit — the poll
-                    # replays after restart. A healthy in-flight poll is never
-                    # abandoned; the check lives here, not at the loop top.
-                    return
-                _log.exception(
-                    "ClickHouse insert failed; retrying whole batch in %.0fs", backoff
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, self._settings.enricher_insert_max_backoff_s)
-
-        for key, envelope in dlq_messages:
-            await self._producer.send_and_wait(
-                self._settings.redpanda_dlq_topic, envelope, key=key
+        async def _insert_all() -> None:
+            await asyncio.to_thread(insert_decisions_batch, self._clickhouse, decisions)
+            await asyncio.to_thread(
+                insert_llm_invocations_batch, self._clickhouse, llms
             )
+            await asyncio.to_thread(
+                insert_ban_enforcements_batch, self._clickhouse, bans
+            )
+
+        if not await self._retry_until_acked(_insert_all, "ClickHouse insert"):
+            return
+
+        # Same posture for the DLQ: an envelope that never lands would be lost
+        # for good once the offset commits, so a send failure halts here too.
+        # Per message, so a mid-list failure re-sends only what is left.
+        for key, envelope in dlq_messages:
+            send = partial(
+                self._producer.send_and_wait,
+                self._settings.redpanda_dlq_topic,
+                envelope,
+                key=key,
+            )
+            if not await self._retry_until_acked(send, "DLQ send"):
+                return
 
         try:
             await self._consumer.commit()
