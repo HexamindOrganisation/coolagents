@@ -7,8 +7,10 @@ normally (including every span of a keyless record), the whole record only
 when its bytes are undecodable. Keyed by project_id so DLQ partitioning
 mirrors the source.
 
-DLQ messages can duplicate when a poll is replayed after a rebalance
-(offsets commit only after processing) — consumers must tolerate that.
+DLQ messages can duplicate whenever a poll replays — a rebalance, a crash, or
+a stop during the DLQ retry loop — because offsets commit only after every
+send has landed. Envelopes carry no dedup key, so nothing collapses them the
+way ReplacingMergeTree does for the tables; consumers must tolerate that.
 """
 
 from __future__ import annotations

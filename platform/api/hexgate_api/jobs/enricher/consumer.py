@@ -5,8 +5,9 @@ decode → per-span map/validate (rejects → DLQ envelopes, siblings survive)
 → resolve agent versions → three batch inserts (retried as a whole until
 ClickHouse acks) → DLQ sends → offset commit. Committing only after the
 ClickHouse ack means a crash anywhere in the cycle replays the poll on
-restart, which is safe: event_id is the idempotency key and
-ReplacingMergeTree collapses the duplicates.
+restart, which is safe for the tables: event_id is the idempotency key and
+ReplacingMergeTree collapses the duplicates. DLQ envelopes have no such key
+and are simply re-sent on replay (see dlq.py).
 """
 
 from __future__ import annotations
