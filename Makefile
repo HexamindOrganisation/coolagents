@@ -178,6 +178,14 @@ POSTGRES_DSN ?= postgresql+asyncpg://hexgate:hexgate-dev-password@localhost:5433
 postgres-up: ## Start local Postgres and wait until healthy
 	$(COMPOSE) up -d --wait postgres
 
+# The schema belongs to platform-api; anything else that reads the relational
+# store (collector, enricher, integration tests) creates it through here so a
+# fresh volume never surfaces as "no such table" on the first request.
+.PHONY: postgres-init
+postgres-init: postgres-up ## Create the platform-api tables on local Postgres (idempotent)
+	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -c \
+		"import asyncio; from hexgate_api.core.db import init_db; asyncio.run(init_db())"
+
 .PHONY: postgres-stop
 postgres-stop: ## Stop Postgres (keeps the data volume)
 	$(COMPOSE) stop postgres
@@ -253,16 +261,17 @@ collector-generate: ## Regenerate + compile the collector from builder-config.ya
 # The authenticator makes boot fatal without Postgres, the devtoken schema,
 # and the root public key, so this target now provides the first two and
 # checks for the third — the pre-auth collector booted on Redpanda alone.
-.PHONY: enricher-run
-enricher-run: redpanda-topics clickhouse-up ## Run the span-enricher job (Redpanda → ClickHouse)
-	cd platform/api && uv run python -m hexgate_api.jobs.enricher
-
-collector-run: postgres-up redpanda-topics ## Run the collector binary against config.yaml
-	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -c \
-		"import asyncio; from hexgate_api.core.db import init_db; asyncio.run(init_db())"
+collector-run: postgres-init redpanda-topics ## Run the collector binary against config.yaml
 	@test -f platform/api/data/hexgate.pub \
 		|| { echo "platform/api/data/hexgate.pub is missing — run 'make platform-api' once to generate the root keypair, or set HEXGATE_COLLECTOR_PUBLIC_KEY_FILE"; exit 1; }
 	cd platform/collector && ./hexgate-collector --config=config.yaml
+
+# Same Postgres as platform-api-pg: the resolver reads agent/agent_version
+# there, and pointing the job at the SQLite fallback instead would resolve
+# every agent_version_id to "" without an error.
+.PHONY: enricher-run
+enricher-run: postgres-init redpanda-topics clickhouse-up ## Run the span-enricher job (Redpanda → ClickHouse)
+	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -m hexgate_api.jobs.enricher
 
 .PHONY: collector-test
 collector-test: ## Unit tests for the collector's own Go modules
@@ -270,13 +279,11 @@ collector-test: ## Unit tests for the collector's own Go modules
 
 # Opt-in, like the Python side's `pytest -m integration`: these drive the real
 # binary against a real Postgres and Redpanda, so they are kept out of
-# collector-check. The schema belongs to platform-api, so it is created here
-# rather than by the Go tests.
+# collector-check. The schema belongs to platform-api, so postgres-init creates
+# it rather than the Go tests.
 .PHONY: collector-test-integration
-collector-test-integration: postgres-up redpanda-topics ## Collector integration tests (real Postgres + Redpanda)
+collector-test-integration: postgres-init redpanda-topics ## Collector integration tests (real Postgres + Redpanda)
 	cd platform/collector && go build -o hexgate-collector ./...
-	cd platform/api && DATABASE_URL=$(POSTGRES_DSN) uv run python -c \
-		"import asyncio; from hexgate_api.core.db import init_db; asyncio.run(init_db())"
 	cd $(COLLECTOR_EXT_INTEGRATION) && go test -tags integration -count=1 ./...
 
 .PHONY: collector-check
