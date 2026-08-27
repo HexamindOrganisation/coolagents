@@ -60,6 +60,16 @@ class _HexgateReachPlugin(BasePlugin):
         self._depth: dict[str, int] = {}
 
     async def before_tool_callback(self, *, tool, tool_args, tool_context) -> None:
+        # A raise here aborts the run, so after_run_callback never fires; drop this
+        # invocation's depth entry on the way out to keep the shared map from
+        # leaking one entry per aborted (over-depth or reach-denied) run.
+        try:
+            return await self._gate_tool(tool, tool_args, tool_context)
+        except Exception:
+            self._depth.pop(tool_context.invocation_id, None)
+            raise
+
+    async def _gate_tool(self, tool, tool_args, tool_context) -> None:
         is_transfer = tool.name == "transfer_to_agent"
         # Depth cap first, as a runaway guard independent of reach policy and of
         # which agent transfers: a transfer moves control forward, so the count of

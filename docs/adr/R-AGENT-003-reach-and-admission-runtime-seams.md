@@ -33,7 +33,7 @@ Warn-and-defer keeps closed-world honest across frameworks: enforcement lands on
 ## Deferred (follow-ups, warned in the interim)
 
 - **Per-sub-agent / post-handoff admission** (B re-checking admission at its run entry): needs resolving sub-agent policies and handling unregistered sub-agents, so it is out of this slice. Reach from the governed source is the boundary control today.
-- **Agent-as-tool reach on OpenAI** (`Agent.as_tool`): no metadata links the produced function tool back to a target agent name at the seam.
+- **Agent-as-tool reach on OpenAI** (`Agent.as_tool`): no metadata links the produced function tool back to a target agent name at the seam, so it cannot be *enforced* — but a policy that declares a `via: tool` target now *warns* (`warn_if_tool_reach_unenforced`, gated on `declares_tool_reach()` so handoff-only policies are not spammed), so the gap is no longer silent.
 - **pydantic_ai and native reach**: no runtime target handle.
 - **Manifest drift lint** (reach key vs declared sub-agents/handoffs): needs `AgentManifest` to carry target declarations, a cross-package change.
 

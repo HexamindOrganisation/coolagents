@@ -8,6 +8,8 @@ scope. Engagement is opt-in: a policy with no ``agents`` block is a no-op.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from hexgate.runtime.context import HexgateContext
@@ -16,7 +18,9 @@ from hexgate.security import (
     BaseToolPolicy,
     ReachNotAllowedError,
     resolve_reach_gate,
+    warn_if_tool_reach_unenforced,
 )
+from hexgate.security import agent_gate as agent_gate_mod
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import load_policy_set
 
@@ -151,3 +155,45 @@ async def test_async_reach_approval_async_handler() -> None:
     )
     async with HexgateContext(user_id="u", user_roles=["support"]):
         await gate.check_reach_async("billing-bot", via="handoff")
+
+
+# --- tool-reach detection + OpenAI-style warning ---------------------------
+
+
+def test_declares_tool_reach_distinguishes_via() -> None:
+    tool = load_policy_set(
+        AgentPolicy(agents={"b": {"mode": "allow", "via": ["tool"]}})
+    )
+    handoff = load_policy_set(
+        AgentPolicy(agents={"b": {"mode": "allow", "via": ["handoff"]}})
+    )
+    assert tool.declares_tool_reach() is True
+    assert tool.declares_reach() is True
+    assert handoff.declares_tool_reach() is False  # handoff-only
+    assert handoff.declares_reach() is True
+
+
+def test_warn_if_tool_reach_unenforced(caplog) -> None:
+    agent_gate_mod._reach_unenforced_warned.clear()
+    tool_engine = load_policy_set(
+        AgentPolicy(agents={"b": {"mode": "allow", "via": ["tool"]}})
+    )
+    handoff_engine = load_policy_set(
+        AgentPolicy(agents={"b": {"mode": "allow", "via": ["handoff"]}})
+    )
+    with caplog.at_level(logging.WARNING, logger=agent_gate_mod.__name__):
+        # handoff-only: enforced on OpenAI, so no tool-reach warning
+        warn_if_tool_reach_unenforced(
+            handoff_engine, framework="OpenAI Agents", agent_name="a"
+        )
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+        # tool-via declared: warns once
+        warn_if_tool_reach_unenforced(
+            tool_engine, framework="OpenAI Agents", agent_name="a"
+        )
+        warn_if_tool_reach_unenforced(
+            tool_engine, framework="OpenAI Agents", agent_name="a"
+        )
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1  # deduped
+    assert "as-tool" in records[0].getMessage()

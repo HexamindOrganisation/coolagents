@@ -94,6 +94,29 @@ def warn_if_reach_unenforced(
     )
 
 
+def warn_if_tool_reach_unenforced(
+    engine: PolicyEngine, *, framework: str, agent_name: str
+) -> None:
+    """Warn once when a policy declares agent-as-tool reach on an adapter that
+    enforces handoff reach but not agent-as-tool reach (OpenAI).
+
+    OpenAI gates handoffs at ``on_handoff`` but ``Agent.as_tool`` produces a plain
+    function tool with no link back to the target agent, so ``via: tool`` targets
+    are not enforceable at that seam. Fires only when a tool-via target is actually
+    declared (``declares_tool_reach``), so a handoff-only policy is not warned."""
+    if not engine.declares_tool_reach():
+        return
+    if not _mark_warned(_reach_unenforced_warned, framework, agent_name):
+        return
+    _log.warning(
+        "policy for agent %r declares agent-as-tool reach ('agents' target with "
+        "via: tool), but the %s adapter enforces handoff reach only; as-tool "
+        "delegations will proceed without a reach check.",
+        agent_name,
+        framework,
+    )
+
+
 def _mark_warned(seen: set[tuple[str, str]], framework: str, agent_name: str) -> bool:
     """Record ``(framework, agent_name)`` in ``seen``; return True the first time."""
     key = (framework, agent_name)
@@ -211,6 +234,28 @@ class _PolicyGate:
             )
             return False
 
+    def _cleared_sync(self, decision: Decision) -> bool:
+        """Whether ``decision`` clears the gate (sync): allowed outright, or a
+        NEEDS_APPROVAL that a handler approves. The one place the pass/refuse
+        condition lives, so admission and reach can never drift."""
+        if decision.allowed:
+            return True
+        return (
+            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
+            and self._approval_handler is not None
+            and self._resolve_approval_sync(decision)
+        )
+
+    async def _cleared_async(self, decision: Decision) -> bool:
+        """Async mirror of :meth:`_cleared_sync` — awaits an async handler."""
+        if decision.allowed:
+            return True
+        return (
+            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
+            and self._approval_handler is not None
+            and await self._resolve_approval_async(decision)
+        )
+
 
 class AgentGate(_PolicyGate):
     """Reduce an agent run to an admit/refuse verdict via the enforcer.
@@ -233,30 +278,16 @@ class AgentGate(_PolicyGate):
         if not self._enforcer.policy.declares_admission():
             return
         decision = self._decide()
-        if decision.allowed:
-            return
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and self._approval_handler is not None
-            and self._resolve_approval_sync(decision)
-        ):
-            return
-        raise AgentNotAdmittedError(decision)
+        if not self._cleared_sync(decision):
+            raise AgentNotAdmittedError(decision)
 
     async def check_admission_async(self) -> None:
         """Async mirror of :meth:`check_admission` — awaits an async handler."""
         if not self._enforcer.policy.declares_admission():
             return
         decision = self._decide()
-        if decision.allowed:
-            return
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and self._approval_handler is not None
-            and await self._resolve_approval_async(decision)
-        ):
-            return
-        raise AgentNotAdmittedError(decision)
+        if not await self._cleared_async(decision):
+            raise AgentNotAdmittedError(decision)
 
     def _decide(self) -> Decision:
         # agent name rides in args so a constraint can read args.agent; the
@@ -287,30 +318,16 @@ class ReachGate(_PolicyGate):
         if not self._enforcer.policy.declares_reach():
             return
         decision = self._decide(target, via)
-        if decision.allowed:
-            return
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and self._approval_handler is not None
-            and self._resolve_approval_sync(decision)
-        ):
-            return
-        raise ReachNotAllowedError(decision)
+        if not self._cleared_sync(decision):
+            raise ReachNotAllowedError(decision)
 
     async def check_reach_async(self, target: str, *, via: AgentVia) -> None:
         """Async mirror of :meth:`check_reach` — awaits an async handler."""
         if not self._enforcer.policy.declares_reach():
             return
         decision = self._decide(target, via)
-        if decision.allowed:
-            return
-        if (
-            decision.outcome is DecisionOutcome.NEEDS_APPROVAL
-            and self._approval_handler is not None
-            and await self._resolve_approval_async(decision)
-        ):
-            return
-        raise ReachNotAllowedError(decision)
+        if not await self._cleared_async(decision):
+            raise ReachNotAllowedError(decision)
 
     def _decide(self, target: str, via: AgentVia) -> Decision:
         # target/via ride in args so a constraint can read args.target / args.via;

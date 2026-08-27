@@ -45,6 +45,7 @@ from hexgate.security.models import (
     BaseToolPolicy,
     ToolPolicy,
     is_agent_reach_key,
+    is_agent_via_key,
 )
 
 
@@ -139,6 +140,13 @@ class PolicySet:
         """True if any resolved role carries an ``agent.tool:`` / ``agent.handoff:`` key."""
         return any(
             any(is_agent_reach_key(key) for key in policy.effective_tools)
+            for policy in self._policies.values()
+        )
+
+    def declares_tool_reach(self) -> bool:
+        """True if any resolved role carries an ``agent.tool:`` (agent-as-tool) key."""
+        return any(
+            any(is_agent_via_key(key, "tool") for key in policy.effective_tools)
             for policy in self._policies.values()
         )
 

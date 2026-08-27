@@ -683,7 +683,7 @@ async def test_reach_plugin_gates_transfer_to_agent(
     )
     plugin = _HexgateReachPlugin(runner)
     tool = SimpleNamespace(name="transfer_to_agent")
-    ctx = SimpleNamespace(agent_name="orchestrator")  # the governed root
+    ctx = SimpleNamespace(agent_name="orchestrator", invocation_id="i")  # governed root
     async with _user():
         await plugin.before_tool_callback(
             tool=tool, tool_args={"agent_name": "billing-bot"}, tool_context=ctx
@@ -703,7 +703,7 @@ async def test_reach_plugin_skips_non_root_source(
     )
     plugin = _HexgateReachPlugin(runner)
     tool = SimpleNamespace(name="transfer_to_agent")
-    ctx = SimpleNamespace(agent_name="a-sub-agent")  # not the governed root
+    ctx = SimpleNamespace(agent_name="a-sub-agent", invocation_id="i")  # not root
     async with _user():
         await plugin.before_tool_callback(
             tool=tool, tool_args={"agent_name": "evil-bot"}, tool_context=ctx
@@ -719,7 +719,7 @@ async def test_reach_plugin_ignores_ordinary_tool(
     )
     plugin = _HexgateReachPlugin(runner)
     tool = SimpleNamespace(name="search")  # a normal tool, not a transfer/AgentTool
-    ctx = SimpleNamespace(agent_name="orchestrator")
+    ctx = SimpleNamespace(agent_name="orchestrator", invocation_id="i")
     async with _user():
         await plugin.before_tool_callback(
             tool=tool, tool_args={"q": "x"}, tool_context=ctx
@@ -757,10 +757,8 @@ async def test_reach_plugin_enforces_depth_cap_per_invocation(
             await plugin.before_tool_callback(
                 tool=tool, tool_args={"agent_name": "b"}, tool_context=ctx
             )  # depth 2 > cap
-    # after_run clears this invocation's counter so it does not leak.
-    await plugin.after_run_callback(
-        invocation_context=SimpleNamespace(invocation_id="inv-1")
-    )
+    # The raise aborts the run (after_run_callback never fires), so the callback
+    # must have already dropped this invocation's counter — no leak.
     assert "inv-1" not in plugin._depth
 
 
