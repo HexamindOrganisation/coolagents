@@ -10,6 +10,7 @@ docs/adr/R-POL-002).
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -25,6 +26,7 @@ from hexgate_api.schemas import (
     MoveModuleRequest,
     PolicyCheckResponse,
     PolicyDraft,
+    PolicyFolderRead,
     PolicyLintOut,
     PolicyModuleRead,
     PolicyModuleWrite,
@@ -216,6 +218,60 @@ async def api_delete_policy_module(
             raise HTTPException(status_code=404, detail="module not found")
         if await service.is_modular(session, project_id):
             await _recompile_project_agents(session, project_id)
+    return Response(status_code=204)
+
+
+# --- folders (persisted empty folders) ---------------------------------------
+# No recompile on folder writes: folders never reach resolve (they're not
+# modules), so they can't change any agent's enforced bundle.
+
+
+@router.get("/projects/{project_id}/policy-folders", tags=["policy"])
+async def api_list_policy_folders(
+    project_id: str,
+    _user: User = Depends(require_org_member),
+    session: AsyncSession = Depends(get_session),
+) -> list[PolicyFolderRead]:
+    """Persisted empty folders in the project's module library."""
+    rows = await service.list_folders(session, project_id)
+    return [PolicyFolderRead(tier=r.tier, path=r.path) for r in rows]
+
+
+@router.put("/projects/{project_id}/policy-folders/{tier}/{path:path}", tags=["policy"])
+async def api_put_policy_folder(
+    project_id: str,
+    tier: str,
+    path: str,
+    _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
+    session: AsyncSession = Depends(get_session),
+) -> PolicyFolderRead:
+    """Create an empty folder marker (idempotent). 422 if the tier is unknown."""
+    try:
+        row = await service.create_folder(
+            session, project_id=project_id, tier=tier, path=path
+        )
+    except service.InvalidModuleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PolicyFolderRead(tier=row.tier, path=row.path)
+
+
+@router.delete(
+    "/projects/{project_id}/policy-folders/{tier}/{path:path}",
+    status_code=204,
+    tags=["policy"],
+)
+async def api_delete_policy_folder(
+    project_id: str,
+    tier: str,
+    path: str,
+    _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    deleted = await service.delete_folder(
+        session, project_id=project_id, tier=tier, path=path
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="folder not found")
     return Response(status_code=204)
 
 
@@ -419,7 +475,9 @@ async def api_test_policy(
         outcome=_OUTCOME_WIRE.get(verdict.outcome.name, verdict.outcome.name.lower()),
         reason=verdict.reason,
         violations=[str(v) for v in (verdict.violations or [])],
-        hint=verdict.hint,
+        # Verdict.hint is a machine-readable dict (file-scope path hint); the wire
+        # field is a string, so serialize it rather than 500 on a dict.
+        hint=json.dumps(verdict.hint) if verdict.hint is not None else None,
     )
 
 

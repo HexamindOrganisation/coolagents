@@ -216,7 +216,13 @@ export function EditorPane({
         return;
       }
       setRoles.mutate(parsed, {
-        onSuccess: () => toast.success("Saved roles.yaml"),
+        onSuccess: () => {
+          // Re-sync the buffer to the canonical dump the server now echoes, so
+          // a bare/reordered roles.yaml doesn't read as perpetually "unsaved"
+          // (dumpRoles rarely equals the user's typed text byte-for-byte).
+          setDraft(dumpRoles(parsed));
+          toast.success("Saved roles.yaml");
+        },
         onError: (e) =>
           toast.error(
             e instanceof ApiError ? e.message : "Could not save roles",

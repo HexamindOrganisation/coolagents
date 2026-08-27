@@ -142,3 +142,32 @@ describe("policy-module api requests", () => {
     });
   });
 });
+
+describe("policy-folder api requests", () => {
+  it("lists folders", async () => {
+    const calls = capture([]);
+    await api.listPolicyFolders(P);
+    expect(calls[0]).toMatchObject({
+      url: "/v1/projects/p1/policy-folders",
+      method: "GET",
+    });
+  });
+
+  it("creates a folder via PUT, encoding path segments", async () => {
+    const calls = capture({ tier: "capability", path: "team a/x" });
+    await api.createPolicyFolder(P, "capability", "team a/x");
+    expect(calls[0]).toMatchObject({
+      url: "/v1/projects/p1/policy-folders/capability/team%20a/x",
+      method: "PUT",
+    });
+  });
+
+  it("deletes a folder", async () => {
+    const calls = capture(null, 204);
+    await api.deletePolicyFolder(P, "boundary", "team_a");
+    expect(calls[0]).toMatchObject({
+      url: "/v1/projects/p1/policy-folders/boundary/team_a",
+      method: "DELETE",
+    });
+  });
+});

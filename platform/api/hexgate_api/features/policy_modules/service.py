@@ -20,7 +20,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.ids import new_id
-from hexgate_api.models import PolicyModule, RoleBinding, utcnow
+from hexgate_api.models import PolicyFolder, PolicyModule, RoleBinding, utcnow
 
 logger = logging.getLogger("hexgate.platform.policy_modules")
 
@@ -189,6 +189,75 @@ async def delete_module(
 ) -> bool:
     """Remove one module. Returns False if it didn't exist."""
     row = await _get_module(session, project_id, tier, path)
+    if row is None:
+        return False
+    await session.delete(row)
+    await session.commit()
+    return True
+
+
+# --- folders (persisted empty folders; see models.PolicyFolder) --------------
+# Folders are usually derived from module paths; these rows exist only to keep
+# an EMPTY folder visible before any module lands in it. They never reach
+# resolve/analyze (those read modules), so no recompile on folder writes.
+
+
+async def _get_folder(
+    session: AsyncSession, project_id: str, tier: str, path: str
+) -> PolicyFolder | None:
+    stmt = select(PolicyFolder).where(
+        PolicyFolder.project_id == project_id,
+        PolicyFolder.tier == tier,
+        PolicyFolder.path == path,
+    )
+    return (await session.exec(stmt)).first()
+
+
+async def list_folders(session: AsyncSession, project_id: str) -> list[PolicyFolder]:
+    """Every persisted empty folder in the project's library."""
+    stmt = (
+        select(PolicyFolder)
+        .where(PolicyFolder.project_id == project_id)
+        .order_by(PolicyFolder.tier, PolicyFolder.path)  # type: ignore[arg-type]
+    )
+    return list((await session.exec(stmt)).all())
+
+
+async def create_folder(
+    session: AsyncSession, *, project_id: str, tier: str, path: str
+) -> PolicyFolder:
+    """Create an empty folder marker. Idempotent: returns the existing row if
+    the folder is already present (so re-creating is a no-op, not a 409)."""
+    if tier not in VALID_TIERS:
+        raise InvalidModuleError(
+            f"unknown tier {tier!r} (expected one of {VALID_TIERS})"
+        )
+    existing = await _get_folder(session, project_id, tier, path)
+    if existing is not None:
+        return existing
+    row = PolicyFolder(
+        id=new_id(PolicyFolder), project_id=project_id, tier=tier, path=path
+    )
+    session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # A concurrent create won the unique constraint — return its row.
+        await session.rollback()
+        existing = await _get_folder(session, project_id, tier, path)
+        if existing is None:
+            raise
+        return existing
+    await session.refresh(row)
+    return row
+
+
+async def delete_folder(
+    session: AsyncSession, *, project_id: str, tier: str, path: str
+) -> bool:
+    """Remove an empty-folder marker. Returns False if it didn't exist. Modules
+    under the prefix (if any) are untouched — the folder then stays derived."""
+    row = await _get_folder(session, project_id, tier, path)
     if row is None:
         return False
     await session.delete(row)
@@ -606,6 +675,27 @@ async def _draft_inputs(
     stored path.
     """
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    return _overlay_draft(
+        boundaries,
+        capabilities,
+        roles,
+        draft_module=draft_module,
+        draft_roles=draft_roles,
+    )
+
+
+def _overlay_draft(
+    boundaries,
+    capabilities,
+    roles,
+    *,
+    draft_module: tuple[str, str, str] | None = None,
+    draft_roles: dict[str, list[str]] | None = None,
+):
+    """Overlay one unsaved edit onto resolved inputs — the draft-parse step,
+    split out so ``preview`` can attribute a *draft* parse failure to the draft,
+    not to a stored module that separately fails to load. Raises if the draft
+    module content doesn't parse/validate."""
     if draft_module is not None:
         tier, path, content = draft_module
         mc = _draft_module_content(tier, path, content)
@@ -639,10 +729,20 @@ async def preview(
     from hexgate.security.constraints import ConstraintParseError
 
     try:
-        boundaries, capabilities, roles = await _draft_inputs(
-            session, project_id, draft_module=draft_module, draft_roles=draft_roles
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    except Exception as exc:  # noqa: BLE001 — a STORED module no longer parses
+        # Not the draft's fault — don't pin it to the edited file's path.
+        return {}, [PolicyLint("parse-error", "error", str(exc), source=None)]
+
+    try:
+        boundaries, capabilities, roles = _overlay_draft(
+            boundaries,
+            capabilities,
+            roles,
+            draft_module=draft_module,
+            draft_roles=draft_roles,
         )
-    except Exception as exc:  # noqa: BLE001 — a draft that doesn't parse is a lint
+    except Exception as exc:  # noqa: BLE001 — the draft itself doesn't parse
         src = draft_module[1] if draft_module else None
         return {}, [PolicyLint("parse-error", "error", str(exc), source=src)]
 

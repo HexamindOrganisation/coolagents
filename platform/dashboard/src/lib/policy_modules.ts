@@ -51,6 +51,41 @@ export function usePolicyModules(projectId: string | null) {
   });
 }
 
+const foldersKey = (pid: string) => ["policy-folders", pid] as const;
+
+/** Persisted empty folders in the project's library (see PolicyFolder). */
+export function usePolicyFolders(projectId: string | null) {
+  return useQuery({
+    queryKey: foldersKey(projectId as string),
+    queryFn: () => api.listPolicyFolders(projectId as string),
+    enabled: !!projectId,
+    staleTime: 30_000,
+  });
+}
+
+interface FolderInput {
+  tier: PolicyTier;
+  path: string;
+}
+
+export function useCreateFolder(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: FolderInput) =>
+      api.createPolicyFolder(projectId, input.tier, input.path),
+    onSuccess: () => qc.invalidateQueries({ queryKey: foldersKey(projectId) }),
+  });
+}
+
+export function useDeleteFolder(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: FolderInput) =>
+      api.deletePolicyFolder(projectId, input.tier, input.path),
+    onSuccess: () => qc.invalidateQueries({ queryKey: foldersKey(projectId) }),
+  });
+}
+
 /** The project's role bindings (role -> imported capability names). */
 export function usePolicyRoles(projectId: string | null) {
   return useQuery({

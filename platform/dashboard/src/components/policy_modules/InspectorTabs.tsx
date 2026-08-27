@@ -33,6 +33,7 @@ export function InspectorTabs({
   roles,
   draft,
   resolves,
+  modular,
   previewing,
 }: {
   projectId: string;
@@ -41,6 +42,7 @@ export function InspectorTabs({
   roles: RoleBindings;
   draft: PolicyDraft | null;
   resolves: boolean;
+  modular: boolean;
   previewing: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("resolved");
@@ -77,7 +79,11 @@ export function InspectorTabs({
       </div>
       <div className="flex-1 overflow-hidden">
         {tab === "resolved" && (
-          <ResolvedTab resolved={resolved} resolves={resolves} />
+          <ResolvedTab
+            resolved={resolved}
+            resolves={resolves}
+            modular={modular}
+          />
         )}
         {tab === "lints" && <LintsTab lints={lints} />}
         {tab === "test" && (
@@ -137,9 +143,11 @@ function TabButton({
 function ResolvedTab({
   resolved,
   resolves,
+  modular,
 }: {
   resolved: ResolvedPolicy | undefined;
   resolves: boolean;
+  modular: boolean;
 }) {
   const roleNames = useMemo(
     () => (resolved ? Object.keys(resolved).sort() : []),
@@ -149,13 +157,16 @@ function ResolvedTab({
   const [view, setView] = useState<"table" | "yaml">("table");
   const active = roleNames.includes(role) ? role : (roleNames[0] ?? "");
 
-  if (!resolves || !resolved || roleNames.length === 0) {
+  // A classic project (no role bindings) resolves to a synthetic `default`
+  // importing every capability — but no agent enforces it in classic mode, so
+  // don't show it here (it would contradict the "classic" banner).
+  if (!modular || !resolves || !resolved || roleNames.length === 0) {
     return (
       <div className="h-full grid place-items-center px-6 text-center">
         <p className="text-xs text-muted-foreground">
-          {resolves
-            ? "No roles bound yet — bind one in roles.yaml to see the composed policy."
-            : "The modules don't compose. See the Lints tab."}
+          {!resolves
+            ? "The modules don't compose. See the Lints tab."
+            : "Bind a role in roles.yaml to see the composed policy. (Classic projects enforce each agent's own policy.)"}
         </p>
       </div>
     );

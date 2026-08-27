@@ -370,6 +370,13 @@ class PolicyModuleWrite(BaseModel):
     content: str
 
 
+class PolicyFolderRead(BaseModel):
+    """A persisted empty folder — tier + path prefix (see models.PolicyFolder)."""
+
+    tier: str
+    path: str
+
+
 class RoleBindingsRead(BaseModel):
     """A project's role bindings as the ``(role, agent)`` matrix:
     ``role -> agent-or-"*" -> capability names``. The ``"*"`` agent is the

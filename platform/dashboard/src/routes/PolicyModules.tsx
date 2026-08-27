@@ -128,6 +128,7 @@ export function PolicyModulesPage() {
               roles={roleBindings}
               draft={draftActive ? draft : null}
               resolves={resolves}
+              modular={modular}
               previewing={draftActive && preview.isFetching}
             />
           </div>

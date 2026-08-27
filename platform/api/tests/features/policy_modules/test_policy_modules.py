@@ -1132,3 +1132,78 @@ async def test_stored_invalid_module_is_diagnostic_not_500(session_factory) -> N
         assert any(lint.code == "invalid-module" for lint in lints)
         with pytest.raises(pm.InvalidModuleError):
             await pm.resolve(s, proj.id)
+
+
+def test_folder_crud_and_separate_from_modules(client: TestClient) -> None:
+    # Persisted empty folders live in their own table — create/list/delete, and
+    # they are NOT modules (so resolve/analyze never see them).
+    pid = _project(client)
+    r = client.put(f"/v1/projects/{pid}/policy-folders/capability/team_a")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"tier": "capability", "path": "team_a"}
+    # idempotent create (no 409)
+    assert (
+        client.put(f"/v1/projects/{pid}/policy-folders/capability/team_a").status_code
+        == 200
+    )
+    assert client.get(f"/v1/projects/{pid}/policy-folders").json() == [
+        {"tier": "capability", "path": "team_a"}
+    ]
+    # a folder is not a module
+    assert client.get(f"/v1/projects/{pid}/policy-modules").json() == []
+    # delete, then 404 on the second delete
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-folders/capability/team_a"
+        ).status_code
+        == 204
+    )
+    assert client.get(f"/v1/projects/{pid}/policy-folders").json() == []
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-folders/capability/team_a"
+        ).status_code
+        == 404
+    )
+
+
+def test_folder_unknown_tier_is_422(client: TestClient) -> None:
+    pid = _project(client)
+    assert client.put(f"/v1/projects/{pid}/policy-folders/bogus/x").status_code == 422
+
+
+async def test_preview_stored_error_not_attributed_to_draft(session_factory) -> None:
+    # A broken STORED module surfaces with source=None on preview — it must NOT
+    # be pinned to the currently-edited (valid) draft's path.
+    import uuid
+
+    from hexgate_api.constants import DEFAULT_ORG_ID
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule, Project
+
+    async with session_factory() as s:
+        proj = Project(
+            id=str(uuid.uuid4()),
+            org_id=DEFAULT_ORG_ID,
+            name=f"pv-{uuid.uuid4().hex[:6]}",
+        )
+        s.add(proj)
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="tools: {x: {mode: bogus}}",  # invalid stored module
+                content_hash="x",
+            )
+        )
+        await s.commit()
+
+        resolved, lints = await pm.preview(
+            s, proj.id, draft_module=("capability", "team_a/new", "tools: {}\n")
+        )
+        assert resolved == {}
+        err = next(lint for lint in lints if lint.severity == "error")
+        assert err.source is None  # the stored module's fault, not the draft's

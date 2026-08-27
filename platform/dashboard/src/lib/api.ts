@@ -226,6 +226,13 @@ export interface PolicyModuleRead {
   updated_at: string;
 }
 
+/** A persisted empty folder (tier + path prefix). Folders are otherwise derived
+ * from module paths; these keep an empty one visible before a module lands. */
+export interface PolicyFolder {
+  tier: PolicyTier;
+  path: string;
+}
+
 /** Role -> the capability names it imports. Boundaries always apply, so they
  * carry no binding. An empty map means the project is still classic. */
 export type RoleBindings = Record<string, string[]>;
@@ -627,6 +634,21 @@ export const api = {
     request<PolicyModuleRead>(
       `/v1/projects/${projectId}/policy-modules/${tier}/${encodePath(path)}`,
       { method: "PATCH", body: JSON.stringify({ new_path: newPath }) },
+    ),
+
+  listPolicyFolders: (projectId: string) =>
+    request<PolicyFolder[]>(`/v1/projects/${projectId}/policy-folders`),
+
+  createPolicyFolder: (projectId: string, tier: PolicyTier, path: string) =>
+    request<PolicyFolder>(
+      `/v1/projects/${projectId}/policy-folders/${tier}/${encodePath(path)}`,
+      { method: "PUT" },
+    ),
+
+  deletePolicyFolder: (projectId: string, tier: PolicyTier, path: string) =>
+    request<void>(
+      `/v1/projects/${projectId}/policy-folders/${tier}/${encodePath(path)}`,
+      { method: "DELETE" },
     ),
 
   getPolicyRoles: (projectId: string) =>

@@ -14,8 +14,11 @@ import {
 
 import { ApiError, type PolicyModuleRead, type PolicyTier } from "@/lib/api";
 import {
+  useCreateFolder,
+  useDeleteFolder,
   useDeleteModule,
   useMoveModule,
+  usePolicyFolders,
   useUpsertModule,
 } from "@/lib/policy_modules";
 import {
@@ -82,6 +85,9 @@ export function ModuleTree({
   const upsert = useUpsertModule(projectId);
   const move = useMoveModule(projectId);
   const del = useDeleteModule(projectId);
+  const folders = usePolicyFolders(projectId);
+  const createFolder = useCreateFolder(projectId);
+  const deleteFolder = useDeleteFolder(projectId);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // Drag-to-move: the leaf being dragged + the folder key currently hovered.
   // Drops are same-tier only (the PATCH move endpoint is same-tier), so a
@@ -101,14 +107,18 @@ export function ModuleTree({
   // Bumped on every open so the dialog remounts fresh — otherwise it reopens
   // showing the previously-typed value.
   const [dialogSeq, setDialogSeq] = useState(0);
-  // UI-only empty subfolders (the store has no folder entity — folders are
-  // otherwise derived from module paths). Reset on reload until a module lands.
-  const [emptyFolders, setEmptyFolders] = useState<EmptyFolder[]>([]);
-
   function openDialog(next: NonNullable<typeof dialog>) {
     setDialog(next);
     setDialogSeq((s) => s + 1);
   }
+
+  // Persisted empty folders (from the store), mapped to the tree builder's
+  // {tier, prefix} shape. A folder with modules renders from those paths; these
+  // rows only keep an EMPTY folder visible.
+  const emptyFolders = useMemo<EmptyFolder[]>(
+    () => (folders.data ?? []).map((f) => ({ tier: f.tier, prefix: f.path })),
+    [folders.data],
+  );
 
   const roots = useMemo(
     () => buildModuleTree(modules, emptyFolders),
@@ -142,19 +152,43 @@ export function ModuleTree({
       return next;
     });
 
-  // Add a UI-only empty subfolder so it renders before any module lives in it.
+  // Persist an empty subfolder so it renders before any module lives in it.
   function addEmptyFolder(tier: PolicyTier, prefix: string) {
-    setEmptyFolders((prev) =>
-      prev.some((f) => f.tier === tier && f.prefix === prefix)
-        ? prev
-        : [...prev, { tier, prefix }],
+    createFolder.mutate(
+      { tier, path: prefix },
+      {
+        onSuccess: () => {
+          setCollapsed((prev) => {
+            const n = new Set(prev);
+            n.delete(`${tier}:${prefix}`); // keep it expanded
+            return n;
+          });
+          toast.success(`Created folder ${tier}/${prefix}`);
+        },
+        onError: (e) =>
+          toast.error(
+            e instanceof ApiError
+              ? e.message
+              : `Could not create folder ${prefix}`,
+          ),
+      },
     );
-    setCollapsed((prev) => {
-      const n = new Set(prev);
-      n.delete(`${tier}:${prefix}`); // keep it expanded
-      return n;
-    });
-    toast.success(`Created folder ${tier}/${prefix}`);
+  }
+
+  // Delete an empty folder marker (only offered for folders with no children).
+  function handleDeleteFolder(tier: PolicyTier, prefix: string) {
+    deleteFolder.mutate(
+      { tier, path: prefix },
+      {
+        onSuccess: () => toast.success(`Deleted folder ${tier}/${prefix}`),
+        onError: (e) =>
+          toast.error(
+            e instanceof ApiError
+              ? e.message
+              : `Could not delete folder ${prefix}`,
+          ),
+      },
+    );
   }
 
   // Create a module from the dialog's validated (trimmed, non-duplicate) path.
@@ -319,6 +353,15 @@ export function ModuleTree({
                 >
                   <FolderPlus className="size-3.5" />
                 </button>
+                {node.prefix !== "" && node.children.length === 0 && (
+                  <button
+                    title="Delete empty folder"
+                    onClick={() => handleDeleteFolder(node.tier, node.prefix)}
+                    className="hover:text-deny"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                )}
               </span>
             )}
           </div>
@@ -427,10 +470,11 @@ export function ModuleTree({
           }
           description={
             dialog.subfolder
-              ? "Creates an empty subfolder. Add modules to it afterward. (Folders are UI-only until a module lands, so an empty one resets on reload.)"
-              : "Use / to nest in a subfolder, e.g. team_a/payments."
+              ? "Create an empty subfolder here; add modules to it afterward."
+              : "Name the module. Use / to nest further, e.g. payments or team_b/payments."
           }
-          initial={dialog.prefix ? `${dialog.prefix}/` : ""}
+          fixedPrefix={dialog.prefix}
+          initial=""
           existingPaths={dialog.subfolder ? existingFolders : existingPaths}
           confirmLabel={dialog.subfolder ? "Create folder" : "Create"}
           onClose={() => setDialog(null)}
@@ -462,19 +506,21 @@ export function ModuleTree({
   );
 }
 
-/** Modal for a module path — used to create (new module / subfolder) and to
- * rename/move. Trims the path (whitespace + edge slashes) and blocks
- * duplicates against the full tier+path; `selfPath` excludes the entry's own
- * path (so an unchanged rename is a no-op, not a "duplicate"); `requireSlash`
- * enforces nesting in subfolder mode. */
+/** Modal for a module path — used to create (module / folder) and to
+ * rename/move. `fixedPrefix` (create mode) is the immutable parent folder shown
+ * as a label, so the typed value is only the name *within* it — the parent
+ * can't be accidentally cleared, and nesting works at any depth. Rename passes
+ * no `fixedPrefix`, so the input is the full path. Trims the input (whitespace
+ * + edge slashes) and blocks duplicates against the full tier+path; `selfPath`
+ * excludes the entry's own path (so an unchanged rename is a no-op). */
 function ModulePathDialog({
   tier,
   title,
   description,
+  fixedPrefix,
   initial,
   existingPaths,
   selfPath,
-  requireSlash,
   confirmLabel,
   onClose,
   onSubmit,
@@ -482,24 +528,24 @@ function ModulePathDialog({
   tier: PolicyTier;
   title: string;
   description: string;
+  fixedPrefix?: string;
   initial: string;
   existingPaths: Set<string>;
   selfPath?: string;
-  requireSlash?: boolean;
   confirmLabel: string;
   onClose: () => void;
   onSubmit: (path: string) => void;
 }) {
   const [value, setValue] = useState(initial);
-  const path = normalizePath(value);
+  const rel = normalizePath(value);
+  // Combine the fixed parent (if any) with the typed name into the full path.
+  const path = fixedPrefix ? (rel ? `${fixedPrefix}/${rel}` : "") : rel;
   const isSelf = selfPath !== undefined && path === selfPath;
-  const error = !path
+  const error = !rel
     ? "Enter a name."
     : existingPaths.has(`${tier}:${path}`) && !isSelf
       ? `A ${tier} already exists at ${path}.`
-      : requireSlash && !path.includes("/")
-        ? "Use folder/name to create a subfolder."
-        : null;
+      : null;
   // isSelf = an unchanged rename: valid input, but nothing to do -> disabled.
   const disabled = !!error || isSelf;
 
@@ -515,15 +561,23 @@ function ModulePathDialog({
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
-          <Label htmlFor="module-path">Path</Label>
-          <Input
-            id="module-path"
-            autoFocus
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-            placeholder={tier === "capability" ? "team_a/payments" : "org_core"}
-          />
+          <Label htmlFor="module-path">{fixedPrefix ? "Name" : "Path"}</Label>
+          <div className="flex items-center gap-1">
+            {fixedPrefix && (
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                {fixedPrefix}/
+              </span>
+            )}
+            <Input
+              id="module-path"
+              autoFocus
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && submit()}
+              placeholder={tier === "capability" ? "payments" : "org_core"}
+              className="flex-1"
+            />
+          </div>
           {error && value.trim() !== "" && (
             <p className="text-xs text-deny">{error}</p>
           )}
