@@ -173,6 +173,12 @@ class EnricherJob:
         """One full cycle over one poll's records. See the module docstring
         for the ordering contract."""
         events: list[tuple[Event, str]] = []  # (event, project_id)
+        # A produce retry whose first attempt landed puts the same span on the
+        # topic twice, often adjacent and so inside one poll. ClickHouse only
+        # collapses such a pair at insert time when both fall in the same
+        # block, so the batch functions ask the caller to dedup by event_id
+        # first (see insert_decisions_batch). First copy wins.
+        seen_event_ids: set[str] = set()
         dlq_messages: list[tuple[bytes | None, bytes]] = []  # (key, envelope)
         for record in records:
             project_id = record.key.decode("utf-8") if record.key is not None else None
@@ -219,9 +225,7 @@ class EnricherJob:
                 continue
             for scope_name, span, resource_attrs in decoded:
                 try:
-                    events.append(
-                        (map_span(scope_name, span, resource_attrs), project_id)
-                    )
+                    event = map_span(scope_name, span, resource_attrs)
                 except SpanRejected as rejected:
                     # One bad span never rejects its siblings.
                     dlq_messages.append(
@@ -239,6 +243,11 @@ class EnricherJob:
                             ),
                         )
                     )
+                    continue
+                if event.event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(event.event_id)
+                events.append((event, project_id))
 
         versions = await resolve_versions(
             {(project_id, event.agent_name) for event, project_id in events}

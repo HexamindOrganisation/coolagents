@@ -54,6 +54,27 @@ async def test_process_poll_happy_path_inserts_then_commits(make_job) -> None:
     assert decision_rows[0][4] == "ver_researcher"
 
 
+async def test_when_the_same_event_id_arrives_twice_in_one_poll_then_inserted_once(
+    make_job,
+) -> None:
+    # A Collector produce retry whose first attempt landed: two records, same
+    # span. ClickHouse only collapses these at insert time if they share a
+    # block, so the consumer dedups before building the batch.
+    job, clickhouse, consumer, producer, calls = make_job()
+    attrs = decision_attrs()
+    records = [
+        _record([(semconv.SCOPE_AUDIT, [make_span(attrs)])], offset=0),
+        _record([(semconv.SCOPE_AUDIT, [make_span(attrs)])], offset=1),
+    ]
+
+    await job._process_poll(records)
+
+    decision_rows = clickhouse.insert.call_args_list[0].args[1]
+    assert len(decision_rows) == 1
+    assert producer.sent == []  # a duplicate is not an error
+    assert consumer.commits == 1
+
+
 async def test_when_an_insert_fails_then_whole_batch_retried_and_committed_once(
     make_job,
 ) -> None:
