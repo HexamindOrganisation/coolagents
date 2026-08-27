@@ -19,12 +19,37 @@ from typing import Any
 from opentelemetry.proto.trace.v1.trace_pb2 import Span
 
 from hexgate.audit import SENSITIVE_ARG_KEY_RE, redact
+from hexgate.tracing import semconv
 from hexgate_api.jobs.enricher.decode import attrs_dict
+
+# The dict fields travel as JSON strings (semconv wire contract). ``redact``
+# matches dict keys, so a still-serialized payload would pass through whole
+# with its secret-bearing keys unread.
+_JSON_DICT_KEYS = (semconv.ARGUMENTS, semconv.HINT, semconv.ATTRIBUTES)
+_UNPARSEABLE = "[UNPARSEABLE]"
 
 
 def _source(topic: str, partition: int, offset: int) -> dict[str, Any]:
     """Pointer back to the raw record, valid while the source retention lasts."""
     return {"topic": topic, "partition": partition, "offset": offset}
+
+
+def _redacted_attributes(span: Span) -> dict[str, Any]:
+    """Span attributes safe for the DLQ: JSON-string dicts parsed, then redacted.
+
+    A dict field that doesn't parse can't be redacted, so it is dropped rather
+    than forwarded raw — the DLQ is for diagnosing the rejection, and the
+    source record (see ``_source``) still holds the original bytes.
+    """
+    attributes = attrs_dict(span.attributes)
+    for key in _JSON_DICT_KEYS:
+        raw = attributes.get(key)
+        if isinstance(raw, str):
+            try:
+                attributes[key] = json.loads(raw)
+            except ValueError:
+                attributes[key] = _UNPARSEABLE
+    return redact(attributes, pattern=SENSITIVE_ARG_KEY_RE)
 
 
 def span_envelope(
@@ -42,9 +67,11 @@ def span_envelope(
 
     Attributes are redacted (substring key match, the stricter of the two
     SDK patterns) before they land here: this topic has 30-day retention and
-    no ACLs, so unredacted arguments must never reach it.
+    no ACLs, so unredacted arguments must never reach it. The JSON-string
+    dict fields are parsed first so the key match reaches inside them, and
+    they stay dicts in the envelope.
     """
-    attributes = redact(attrs_dict(span.attributes), pattern=SENSITIVE_ARG_KEY_RE)
+    attributes = _redacted_attributes(span)
     payload = {
         "error": error,
         "error_class": error_class,

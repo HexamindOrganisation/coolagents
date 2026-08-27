@@ -53,6 +53,36 @@ def test_when_a_decision_span_is_rejected_then_dlq_attributes_are_redacted() -> 
     assert payload["span"]["attributes"]["sec_ai.api_token"] == "[REDACTED]"
 
 
+def _envelope_attributes(attrs: dict) -> dict:
+    raw = span_envelope(
+        error="whatever",
+        error_class="validation",
+        scope=semconv.SCOPE_AUDIT,
+        project_id="proj_1",
+        topic="t",
+        partition=0,
+        offset=0,
+        span=make_span(attrs),
+    )
+    return json.loads(raw)["span"]["attributes"]
+
+
+def test_when_arguments_hold_a_secret_key_then_dlq_redacts_inside_the_json() -> None:
+    # Arguments arrive as a JSON string; the secret key is inside it, not a
+    # span attribute key, so redaction has to parse before matching.
+    attrs = decision_attrs(
+        **{semconv.ARGUMENTS: json.dumps({"password": "hunter2", "query": "q"})}
+    )
+    attributes = _envelope_attributes(attrs)
+    assert attributes[semconv.ARGUMENTS] == {"password": "[REDACTED]", "query": "q"}
+
+
+def test_when_a_dict_field_is_not_json_then_dlq_drops_it() -> None:
+    attrs = decision_attrs(**{semconv.HINT: "{not json"})
+    attributes = _envelope_attributes(attrs)
+    assert attributes[semconv.HINT] == "[UNPARSEABLE]"
+
+
 def test_when_a_record_is_undecodable_then_envelope_carries_base64() -> None:
     raw_value = b"\xff\xff garbage"
     raw = record_envelope(
