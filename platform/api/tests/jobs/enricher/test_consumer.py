@@ -90,19 +90,47 @@ async def test_when_one_span_is_invalid_then_siblings_insert_and_dlq_receives_it
     assert json.loads(envelope)["error_class"] == "validation"
 
 
-async def test_when_the_record_key_is_missing_then_whole_record_to_dlq(
+async def test_when_the_record_key_is_missing_then_each_span_to_dlq_redacted(
     make_job,
 ) -> None:
+    # A keyless record is still a decodable request; it must be parked span by
+    # span through the redacting envelope, never as raw bytes.
     job, clickhouse, consumer, producer, calls = make_job()
-    records = [
-        _record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])], key=None)
+    secret_args = json.dumps({"password": "hunter2", "query": "q"})
+    spans = [
+        make_span(decision_attrs(**{semconv.ARGUMENTS: secret_args})),
+        make_span(decision_attrs()),
     ]
+    records = [_record([(semconv.SCOPE_AUDIT, spans)], key=None)]
 
     await job._process_poll(records)
 
     clickhouse.insert.assert_not_called()
-    assert json.loads(producer.sent[0][2])["error_class"] == "missing_key"
+    assert len(producer.sent) == 2
+    envelopes = [json.loads(sent[2]) for sent in producer.sent]
+    assert {env["error_class"] for env in envelopes} == {"missing_key"}
+    assert all(env["project_id"] == "" for env in envelopes)
+    assert all("record_value_base64" not in env for env in envelopes)
+    assert envelopes[0]["span"]["attributes"][semconv.ARGUMENTS] == {
+        "password": "[REDACTED]",
+        "query": "q",
+    }
     assert consumer.commits == 1  # parked, not stuck: the poll still completes
+
+
+async def test_when_a_keyless_record_is_undecodable_then_whole_record_to_dlq(
+    make_job,
+) -> None:
+    job, clickhouse, consumer, producer, calls = make_job()
+    records = [FakeRecord(key=None, value=b"\xff\xff garbage")]
+
+    await job._process_poll(records)
+
+    clickhouse.insert.assert_not_called()
+    envelope = json.loads(producer.sent[0][2])
+    assert envelope["error_class"] == "decode"
+    assert envelope["project_id"] is None
+    assert consumer.commits == 1
 
 
 async def test_when_the_payload_is_undecodable_then_whole_record_to_dlq(

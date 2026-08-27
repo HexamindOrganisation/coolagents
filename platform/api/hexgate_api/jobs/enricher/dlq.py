@@ -3,8 +3,9 @@
 JSON, not protobuf: the DLQ's consumers are humans (``rpk topic consume``)
 and a future replay script, volume is low, and a single span can't be
 re-serialized standalone anyway. One message per rejected unit — a span
-normally, the whole record only when its bytes are undecodable or it
-arrived keyless. Keyed by project_id so DLQ partitioning mirrors the source.
+normally (including every span of a keyless record), the whole record only
+when its bytes are undecodable. Keyed by project_id so DLQ partitioning
+mirrors the source.
 
 DLQ messages can duplicate when a poll is replayed after a rebalance
 (offsets commit only after processing) — consumers must tolerate that.

@@ -145,24 +145,10 @@ class EnricherJob:
         events: list[tuple[Event, str]] = []  # (event, project_id)
         dlq_messages: list[tuple[bytes | None, bytes]] = []  # (key, envelope)
         for record in records:
-            if record.key is None:
-                # No auth-derived project attribution → unattributable, park it.
-                dlq_messages.append(
-                    (
-                        None,
-                        dlq.record_envelope(
-                            error="record has no project_id key",
-                            error_class="missing_key",
-                            project_id=None,
-                            topic=record.topic,
-                            partition=record.partition,
-                            offset=record.offset,
-                            raw_value=record.value,
-                        ),
-                    )
-                )
-                continue
-            project_id = record.key.decode("utf-8")
+            project_id = record.key.decode("utf-8") if record.key is not None else None
+            # Decode before looking at the key: a keyless record is usually a
+            # valid request that lost its auth attribution upstream, and only
+            # a decoded span can be redacted before it is parked.
             try:
                 decoded = decode_record(record.value)
             except RecordDecodeError as exc:
@@ -180,6 +166,26 @@ class EnricherJob:
                         ),
                     )
                 )
+                continue
+            if project_id is None:
+                # No auth-derived project attribution → unattributable, park
+                # every span (redacted) rather than the raw record.
+                for scope_name, span, _resource_attrs in decoded:
+                    dlq_messages.append(
+                        (
+                            None,
+                            dlq.span_envelope(
+                                error="record has no project_id key",
+                                error_class="missing_key",
+                                scope=scope_name,
+                                project_id="",
+                                topic=record.topic,
+                                partition=record.partition,
+                                offset=record.offset,
+                                span=span,
+                            ),
+                        )
+                    )
                 continue
             for scope_name, span, resource_attrs in decoded:
                 try:
