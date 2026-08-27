@@ -84,6 +84,15 @@ class EnricherJob:
 
     async def run(self) -> None:
         settings = self._settings
+        # Installed first: until this runs SIGTERM has the default disposition
+        # and kills the process outright, skipping the finally below — so a
+        # signal during the broker connects would leave a dead group member
+        # until the session times out. The handler only flags an Event, so
+        # nothing it needs is created later.
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, self._stop.set)
+
         # Fail fast on a stale ClickHouse volume — same guard the API runs at
         # startup, per feature, covering every table this job writes.
         self._clickhouse = self._clickhouse or get_clickhouse()
@@ -122,10 +131,6 @@ class EnricherJob:
             ]
             if missing:
                 raise TopicsMissing(missing)
-
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, self._stop.set)
 
             _log.info(
                 "enricher consuming %s (group %s) → ClickHouse",
