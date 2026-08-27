@@ -23,7 +23,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from aiokafka.errors import CommitFailedError
 from clickhouse_connect.driver.client import Client
 
-from hexgate_api.core.clickhouse import BatchItem, get_clickhouse
+from hexgate_api.core.clickhouse import BatchItem, get_clickhouse, verify_all
 from hexgate_api.core.db import engine
 from hexgate_api.features.audit.service import (
     insert_ban_enforcements_batch,
@@ -95,10 +95,13 @@ class EnricherJob:
             loop.add_signal_handler(sig, self._stop.set)
 
         # Fail fast on a stale ClickHouse volume — same guard the API runs at
-        # startup, per feature, covering every table this job writes.
+        # startup, aggregated so a volume behind on two tables reports both in
+        # one boot. Sync clickhouse-connect call, so off the loop like the
+        # inserts below.
         self._clickhouse = self._clickhouse or get_clickhouse()
-        verify_audit_schema(self._clickhouse)
-        verify_llm_schema(self._clickhouse)
+        await asyncio.to_thread(
+            verify_all, self._clickhouse, (verify_audit_schema, verify_llm_schema)
+        )
 
         if self._consumer is None:
             self._consumer = AIOKafkaConsumer(

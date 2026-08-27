@@ -265,6 +265,44 @@ async def test_when_a_topic_is_missing_then_run_fails_fast(
     assert consumer.stopped  # finally-block cleanup still ran
 
 
+async def test_when_two_tables_are_stale_then_run_reports_both_gaps_at_once(
+    monkeypatch, make_job
+) -> None:
+    # The two per-feature checks are aggregated: a volume behind on both
+    # policy_decision and llm_invocation must name both in one boot, not one
+    # per restart.
+    from hexgate_api.core.clickhouse import SchemaOutOfDate
+
+    job, clickhouse, consumer, calls = _lifecycle_job(
+        monkeypatch,
+        make_job,
+        records=[],
+        topics={"hexgate.otlp.raw", "hexgate.otlp.dlq"},
+    )
+
+    def _audit_stale(_client):
+        raise SchemaOutOfDate({"policy_decision": ["deciding_role"]})
+
+    def _llm_stale(_client):
+        raise SchemaOutOfDate({"llm_invocation": ["latency_ms"]})
+
+    monkeypatch.setattr(
+        "hexgate_api.jobs.enricher.consumer.verify_audit_schema", _audit_stale
+    )
+    monkeypatch.setattr(
+        "hexgate_api.jobs.enricher.consumer.verify_llm_schema", _llm_stale
+    )
+
+    with pytest.raises(SchemaOutOfDate) as exc:
+        await job.run()
+
+    assert exc.value.missing == {
+        "policy_decision": ["deciding_role"],
+        "llm_invocation": ["latency_ms"],
+    }
+    assert not consumer.started  # the check runs before any broker connect
+
+
 async def test_when_the_producer_fails_to_start_then_the_consumer_still_stops(
     monkeypatch, make_job
 ) -> None:
