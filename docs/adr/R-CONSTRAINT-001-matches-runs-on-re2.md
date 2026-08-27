@@ -47,6 +47,17 @@ this project supports, alongside the native packages already shipped
   anyone relying on the Python reading.
 - `re.ASCII` is no longer needed to keep `\d` / `\w` ASCII: RE2 is ASCII for
   these by default.
+- `\s` no longer covers the vertical tab. RE2 counts tab, newline, form feed,
+  carriage return and space; Python's ASCII class also counts ``. Same
+  direction as the `$` change: it aligns the engine with the bundle, which never
+  matched it either.
+- An argument that is not valid UTF-8 denies instead of raising. RE2 matches
+  over UTF-8 bytes, and `json.loads` accepts strings that have no encoding (an
+  unpaired surrogate, half of an emoji from a truncated payload). Python's `re`
+  evaluated those and the constraint failed; here the encode fails, so the
+  constraint is failed closed rather than allowed to escape the enforcer as an
+  exception. The same input on the *pattern* side is a malformed policy, and is
+  refused at load.
 - Error logging stays on. RE2 can be built with it off, but that also makes an
   invalid pattern compile into an object that never matches — turning a typo
   into a policy that silently denies everything. Raising is worth the log line.

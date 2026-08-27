@@ -682,6 +682,14 @@ def _validate_re2(pattern: str, source: str) -> None:
             "`matches` is evaluated with RE2, the engine a compiled policy "
             "bundle runs"
         ) from exc
+    except UnicodeEncodeError as exc:
+        # RE2 matches over UTF-8 bytes, so a pattern carrying an unpaired
+        # surrogate cannot be encoded at all. That is a malformed policy rather
+        # than a denial, so it is reported where the policy is written.
+        raise ConstraintParseError(
+            f"regex {pattern!r} in {source!r} is not valid UTF-8 (it carries an "
+            "unpaired surrogate), so RE2 cannot compile it"
+        ) from exc
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:
@@ -822,7 +830,15 @@ def _eval_call(node: Call, context: dict[str, Any]) -> bool:
         # RE2 is the engine Rego runs, so the two engines agree by
         # construction instead of by keeping a list of Python features to
         # avoid. It is linear-time, so no pattern can stall the decision.
-        return _compile_re2(v).search(x) is not None
+        try:
+            return _compile_re2(v).search(x) is not None
+        except UnicodeEncodeError:
+            # RE2 matches over UTF-8 bytes, and `json.loads` accepts strings
+            # that have no encoding: a lone `\ud83d` is half an emoji whose other
+            # half never arrived. Fail the constraint rather than raise, so a
+            # malformed argument denies like any other unmatchable value here
+            # instead of escaping the enforcer as an exception.
+            return False
     return False  # unreachable given the _FUNCS whitelist
 
 

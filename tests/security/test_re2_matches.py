@@ -131,7 +131,7 @@ def test_error_carries_re2s_own_reason_as_text() -> None:
 
 
 def test_dollar_no_longer_matches_before_a_trailing_newline() -> None:
-    """The one behaviour change, and it closes a divergence rather than opening one.
+    """A behaviour change that closes a divergence rather than opening one.
 
     Python's `$` matches at the end of the string *or* just before a final
     newline; RE2's matches only at the end. So `^abc$` on `"abc\n"` was true on
@@ -179,3 +179,49 @@ def test_reason_falls_back_to_text_when_re2_reports_a_string() -> None:
     assert _re2_reason(ValueError(b"missing ]")) == "missing ]"  # today's shape
     assert _re2_reason(ValueError("missing ]")) == "missing ]"  # if it ever is str
     assert isinstance(_re2_reason(ValueError()), str)  # and never raises
+
+
+def test_an_unencodable_argument_denies_instead_of_raising() -> None:
+    """A tool argument that is not valid UTF-8 must fail closed.
+
+    RE2 matches over UTF-8 bytes, and `json.loads` accepts strings that have no
+    encoding: an emoji is a surrogate pair, and a truncated payload can deliver
+    only its first half. Python's `re` evaluated such a value and the constraint
+    failed; RE2 cannot encode it at all. The constraint must still deny rather
+    than raise, since `evaluate_tool_call` only catches `PolicyDeniedError` and
+    anything else escapes the enforcer.
+    """
+    lone_surrogate = chr(0xD83D)  # the first half of a surrogate pair
+    args = json.loads(json.dumps({"ticket": "INC-42 " + lone_surrogate}))
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(
+            [_constraint("^INC-[0-9]+$")],
+            {"v": args["ticket"]},
+            "update_ticket",
+            role="support",
+        )
+
+
+def test_an_unencodable_pattern_is_refused_at_load() -> None:
+    # The same encoding limit on the pattern side is a malformed policy, not a
+    # denial, so it belongs at load with the rest of the regex errors.
+    with pytest.raises(ConstraintParseError, match="not valid UTF-8"):
+        parse_constraint(_constraint("^INC-" + chr(0xD83D)))
+
+
+def test_vertical_tab_is_not_whitespace_under_re2() -> None:
+    """The second behaviour change, in the same direction as the `$` one.
+
+    RE2 counts tab, newline, form feed, carriage return and space as
+    whitespace; Python's ASCII class also counts the vertical tab. A pattern
+    relying on the class therefore stops matching a vertical tab here -- and
+    starts agreeing with the compiled bundle, which never matched it.
+
+    Written with `chr` so the characters under test are unambiguous.
+    """
+    constraint = _constraint(r"^\s$")
+    vertical_tab = chr(0x0B)
+    with pytest.raises(PolicyDeniedError):
+        check_constraints([constraint], {"v": vertical_tab}, "tool", role="support")
+    for code in (0x09, 0x0A, 0x0C, 0x0D, 0x20):  # tab, LF, FF, CR, space
+        check_constraints([constraint], {"v": chr(code)}, "tool", role="support")
