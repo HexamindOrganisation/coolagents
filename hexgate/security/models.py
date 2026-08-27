@@ -75,6 +75,14 @@ def agent_target_key(via: AgentVia, target: str) -> str:
     return f"agent.{via}:{target}"
 
 
+def is_agent_via_key(name: str, via: AgentVia) -> bool:
+    """True for a reach key of a specific ``via`` mode (``agent.<via>:``).
+
+    Lets a caller tell agent-as-tool reach from handoff reach, e.g. to warn only
+    about the mode a given adapter cannot enforce."""
+    return name.startswith(f"agent.{via}:")
+
+
 def is_agent_reach_key(name: str) -> bool:
     """True for an ``agent.tool:`` / ``agent.handoff:`` reach key.
 

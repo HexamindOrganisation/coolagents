@@ -39,6 +39,7 @@ from hexgate.security.agent_gate import (
     HandoffDepthExceededError,
     resolve_agent_gate,
     resolve_reach_gate,
+    warn_if_tool_reach_unenforced,
 )
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
@@ -176,6 +177,11 @@ class HexgateRunner:
             resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
+            )
+            # Handoff reach is enforced (on_handoff); agent-as-tool reach is not,
+            # so warn if the policy declares a via: tool target.
+            warn_if_tool_reach_unenforced(
+                resolved.engine, framework="OpenAI Agents", agent_name=name
             )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
@@ -338,6 +344,11 @@ class HexgateRunner:
         tools fire there, not in ``stream_events``. So the HexgateContext scope must be
         active around the ``run_streamed`` call for the task to inherit it —
         the wrapped iterator re-opens it for exit/audit semantics.
+
+        Admission is checked synchronously before the task spawns (so a refused run
+        yields nothing). Like any sync entrypoint, an *async* ``approval_handler``
+        cannot be awaited here and fails closed on a NEEDS_APPROVAL admission
+        verdict; use the async ``run`` entrypoint if admission approval is async.
         """
         self._setup_observability()
         binding = self._binding_for(agent)

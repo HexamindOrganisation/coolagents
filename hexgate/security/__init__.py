@@ -29,6 +29,7 @@ from hexgate.security.agent_gate import (
     resolve_reach_gate,
     warn_if_admission_unenforced,
     warn_if_reach_unenforced,
+    warn_if_tool_reach_unenforced,
 )
 from hexgate.security.models import (
     AGENT_RUN_TOOL,
@@ -277,4 +278,5 @@ __all__ = [
     "resolve_reach_gate",
     "warn_if_admission_unenforced",
     "warn_if_reach_unenforced",
+    "warn_if_tool_reach_unenforced",
 ]
