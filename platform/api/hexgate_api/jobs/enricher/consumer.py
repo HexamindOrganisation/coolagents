@@ -105,9 +105,13 @@ class EnricherJob:
             self._producer = AIOKafkaProducer(
                 bootstrap_servers=settings.redpanda_bootstrap_server, acks="all"
             )
-        await self._consumer.start()
-        await self._producer.start()
+        # Both starts live inside the try: the consumer joins the group on
+        # start(), so a producer that then fails to connect must still leave
+        # the group cleanly instead of holding its partitions until the
+        # session times out. stop() on a never-started client is a no-op.
         try:
+            await self._consumer.start()
+            await self._producer.start()
             # Auto-create is disabled cluster-wide, so a missing topic is an
             # operator error worth an actionable exit, not a silent hang.
             existing = await self._consumer.topics()

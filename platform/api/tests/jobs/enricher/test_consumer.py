@@ -244,6 +244,30 @@ async def test_when_a_topic_is_missing_then_run_fails_fast(
     assert consumer.stopped  # finally-block cleanup still ran
 
 
+async def test_when_the_producer_fails_to_start_then_the_consumer_still_stops(
+    monkeypatch, make_job
+) -> None:
+    from aiokafka.errors import KafkaConnectionError
+
+    job, clickhouse, consumer, calls = _lifecycle_job(
+        monkeypatch,
+        make_job,
+        records=[],
+        topics={"hexgate.otlp.raw", "hexgate.otlp.dlq"},
+    )
+
+    async def _refuse_to_start():
+        raise KafkaConnectionError("producer bootstrap unreachable")
+
+    job._producer.start = _refuse_to_start  # type: ignore[method-assign]
+
+    with pytest.raises(KafkaConnectionError):
+        await job.run()
+
+    # The consumer had already joined the group; it must leave it.
+    assert consumer.started and consumer.stopped
+
+
 async def test_when_stop_is_requested_mid_outage_then_no_commit(
     monkeypatch, make_job
 ) -> None:
