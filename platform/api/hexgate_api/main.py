@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from hexgate_api import health
 from hexgate_api.seeds.defaults import ensure_default_project
-from hexgate_api.core.clickhouse import get_clickhouse
+from hexgate_api.core.clickhouse import get_clickhouse, verify_all
 from hexgate_api.core.clickhouse import ping as clickhouse_ping
 from hexgate_api.core.db import async_session_factory, init_db
 from hexgate_api.core.keystore import keystore
@@ -162,9 +162,9 @@ async def lifespan(app_: FastAPI):
     else:
         # Behind this build, every insert is rejected and dropped by the SDK —
         # silently, from this side. Refuse to boot so the previous deployment
-        # keeps serving. Each feature checks the tables it writes.
-        verify_audit_schema(get_clickhouse())
-        verify_llm_schema(get_clickhouse())
+        # keeps serving. Each feature checks the tables it writes; combined so
+        # one boot names every gap rather than one per restart.
+        verify_all(get_clickhouse(), (verify_audit_schema, verify_llm_schema))
     # Surface deployment config at startup so a misconfig shows in logs
     # rather than as a silent browser CORS/cookie failure.
     from hexgate_api.features.auth.service import _cookie_secure, _dashboard_url

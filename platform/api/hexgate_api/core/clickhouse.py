@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import KW_ONLY, dataclass
 from functools import lru_cache
 from typing import Generic, Protocol, TypeVar
@@ -175,6 +175,10 @@ def verify_written_columns(
     the schema is not evidence that it is stale, and the error this would
     otherwise raise tells the operator to destroy the volume. Degrading is
     safe — a genuinely broken table makes inserts 503, which the SDK retries.
+
+    Degrading stops the scan but never discards a gap already found: a stale
+    earlier table is evidence on its own, and returning quietly would let the
+    process boot and drop every insert into it.
     """
     missing: dict[str, list[str]] = {}
     for table, columns in tables:
@@ -184,15 +188,40 @@ def verify_written_columns(
             _log.warning(
                 "ClickHouse unreachable during %s schema check: %s", table, exc
             )
-            return
+            break
         except DatabaseError as exc:
             if _server_error_code(exc) != _UNKNOWN_TABLE_CODE:
                 # ACCESS_DENIED on a scoped grant, quota, metadata blip…
                 _log.warning("cannot verify the %s schema: %s", table, exc)
-                return
+                break
             present = set()
         gaps = sorted(set(columns) - present)
         if gaps:
             missing[table] = gaps
+    if missing:
+        raise SchemaOutOfDate(missing)
+
+
+def verify_all(client: Client, checks: Sequence[Callable[[Client], None]]) -> None:
+    """Run every feature's ``verify_schema`` and raise one
+    :class:`SchemaOutOfDate` naming every gap.
+
+    Calling the checks one after another would stop at the first stale
+    feature, so a volume behind on two tables reports one, gets migrated,
+    and fails again on the next boot. Aggregating here keeps the per-feature
+    wrappers ignorant of each other's tables while giving the operator the
+    whole list in a single boot. Only :class:`SchemaOutOfDate` is collected:
+    the wrappers already degrade unreachable/denied schemas to warnings, so
+    anything else escaping is a bug and should surface as one.
+    """
+    missing: dict[str, list[str]] = {}
+    for check in checks:
+        try:
+            check(client)
+        except SchemaOutOfDate as exc:
+            # Merge, don't clobber: two checks naming the same table must
+            # both surface, or the operator is back to one gap per reboot.
+            for table, columns in exc.missing.items():
+                missing[table] = sorted(set(missing.get(table, ())) | set(columns))
     if missing:
         raise SchemaOutOfDate(missing)
