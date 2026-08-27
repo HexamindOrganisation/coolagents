@@ -75,6 +75,24 @@ async def test_when_the_same_event_id_arrives_twice_in_one_poll_then_inserted_on
     assert consumer.commits == 1
 
 
+async def test_when_two_projects_share_an_event_id_then_both_are_inserted(
+    make_job,
+) -> None:
+    # event_id is client-set; only the record key is auth-derived. A tenant
+    # reusing another tenant's id is a different event, not a duplicate.
+    job, clickhouse, consumer, producer, calls = make_job()
+    attrs = decision_attrs()
+    records = [
+        _record([(semconv.SCOPE_AUDIT, [make_span(attrs)])], key=b"proj_1"),
+        _record([(semconv.SCOPE_AUDIT, [make_span(attrs)])], key=b"proj_2"),
+    ]
+
+    await job._process_poll(records)
+
+    decision_rows = clickhouse.insert.call_args_list[0].args[1]
+    assert sorted(row[2] for row in decision_rows) == ["proj_1", "proj_2"]
+
+
 async def test_when_an_insert_fails_then_whole_batch_retried_and_committed_once(
     make_job,
 ) -> None:

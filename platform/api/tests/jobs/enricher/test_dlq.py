@@ -83,6 +83,17 @@ def test_when_a_dict_field_is_not_json_then_dlq_drops_it() -> None:
     assert attributes[semconv.HINT] == "[UNPARSEABLE]"
 
 
+def test_when_a_dict_field_is_valid_json_but_not_a_dict_then_dlq_drops_it() -> None:
+    # A bare JSON string or list parses fine but has no keys to redact, so
+    # a secret in it would pass straight through.
+    attrs = decision_attrs(
+        **{semconv.ARGUMENTS: json.dumps("hunter2"), semconv.HINT: json.dumps([1, 2])}
+    )
+    attributes = _envelope_attributes(attrs)
+    assert attributes[semconv.ARGUMENTS] == "[UNPARSEABLE]"
+    assert attributes[semconv.HINT] == "[UNPARSEABLE]"
+
+
 def test_when_a_record_is_undecodable_then_envelope_carries_base64() -> None:
     raw_value = b"\xff\xff garbage"
     raw = record_envelope(

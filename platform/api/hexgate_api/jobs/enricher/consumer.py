@@ -187,8 +187,11 @@ class EnricherJob:
         # topic twice, often adjacent and so inside one poll. ClickHouse only
         # collapses such a pair at insert time when both fall in the same
         # block, so the batch functions ask the caller to dedup by event_id
-        # first (see insert_decisions_batch). First copy wins.
-        seen_event_ids: set[str] = set()
+        # first (see insert_decisions_batch). First copy wins. Scoped by
+        # project: event_id is client-set, project_id is auth-derived, and the
+        # tables' own identity is (project_id, ..., event_id) — one tenant
+        # reusing another's id must never suppress the other's event.
+        seen_event_ids: set[tuple[str, str]] = set()
         dlq_messages: list[tuple[bytes | None, bytes]] = []  # (key, envelope)
         for record in records:
             project_id = record.key.decode("utf-8") if record.key is not None else None
@@ -254,9 +257,9 @@ class EnricherJob:
                         )
                     )
                     continue
-                if event.event_id in seen_event_ids:
+                if (project_id, event.event_id) in seen_event_ids:
                     continue
-                seen_event_ids.add(event.event_id)
+                seen_event_ids.add((project_id, event.event_id))
                 events.append((event, project_id))
 
         versions = await resolve_versions(

@@ -40,18 +40,21 @@ def _source(topic: str, partition: int, offset: int) -> dict[str, Any]:
 def _redacted_attributes(span: Span) -> dict[str, Any]:
     """Span attributes safe for the DLQ: JSON-string dicts parsed, then redacted.
 
-    A dict field that doesn't parse can't be redacted, so it is dropped rather
-    than forwarded raw — the DLQ is for diagnosing the rejection, and the
-    source record (see ``_source``) still holds the original bytes.
+    A dict field that doesn't parse *to a dict* can't be redacted (``redact``
+    matches keys, so a bare string or list has nothing to match), so it is
+    dropped rather than forwarded raw — the DLQ is for diagnosing the
+    rejection, and the source record (see ``_source``) still holds the
+    original bytes.
     """
     attributes = attrs_dict(span.attributes)
     for key in _JSON_DICT_KEYS:
         raw = attributes.get(key)
         if isinstance(raw, str):
             try:
-                attributes[key] = json.loads(raw)
+                parsed = json.loads(raw)
             except ValueError:
-                attributes[key] = _UNPARSEABLE
+                parsed = None
+            attributes[key] = parsed if isinstance(parsed, dict) else _UNPARSEABLE
     return redact(attributes, pattern=SENSITIVE_ARG_KEY_RE)
 
 
