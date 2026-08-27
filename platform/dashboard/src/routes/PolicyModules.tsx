@@ -1,5 +1,4 @@
 import { useCallback, useMemo, useState } from "react";
-import { Boxes } from "lucide-react";
 
 import type { PolicyDraft } from "@/lib/api";
 import { useProjectScoped } from "@/lib/active";
@@ -81,59 +80,63 @@ export function PolicyModulesPage() {
   const loading = modules.isLoading || roles.isLoading;
 
   return (
-    <div className="-mx-8 -my-6 h-[calc(100vh-56px)] flex flex-col overflow-hidden">
-      <header className="flex items-center justify-between gap-4 px-6 py-3 border-b border-border bg-card">
-        <div className="flex items-center gap-2">
-          <Boxes className="size-4 text-muted-foreground" />
-          <span className="text-sm font-medium">Policy modules</span>
-        </div>
-        <DocsLink path={DOC_PATHS.policies} label="Policy docs" />
-      </header>
+    // Recessed page ground with a floating, softly-rounded editor card. Panes
+    // are separated by background shade (side panels recessed vs the editor),
+    // not hard border lines — the VSCode "shades, not rules" feel.
+    <div className="-mx-8 -my-6 h-screen overflow-hidden bg-muted/20 p-3">
+      <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border/60 bg-card shadow-sm">
+        {!loading && (
+          <ModularBanner
+            modular={modular}
+            trailing={
+              <DocsLink path={DOC_PATHS.policies} label="Policy docs" />
+            }
+          />
+        )}
 
-      {!loading && <ModularBanner modular={modular} />}
-
-      {loading || !projectId ? (
-        <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
-          {scope.status === "loading" || loading
-            ? "Loading policy…"
-            : "No project selected."}
-        </div>
-      ) : (
-        <div className="flex-1 grid grid-cols-[240px_minmax(0,1fr)_minmax(320px,380px)] overflow-hidden">
-          <div className="border-r border-border overflow-hidden">
-            <ModuleTree
-              modules={modules.data ?? []}
-              selection={selection}
-              onSelect={setSelection}
-              projectId={projectId}
-              canManage={canManage}
-            />
+        {loading || !projectId ? (
+          <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
+            {scope.status === "loading" || loading
+              ? "Loading policy…"
+              : "No project selected."}
           </div>
-          <div className="overflow-hidden border-r border-border">
-            <EditorPane
-              projectId={projectId}
-              selection={selection}
-              modules={modules.data ?? []}
-              roles={roleBindings}
-              lints={lints}
-              canManage={canManage}
-              onDraftChange={onDraftChange}
-            />
+        ) : (
+          <div className="flex-1 grid grid-cols-[240px_minmax(0,1fr)_minmax(320px,380px)] overflow-hidden">
+            <div className="overflow-hidden bg-background/40">
+              <ModuleTree
+                modules={modules.data ?? []}
+                selection={selection}
+                onSelect={setSelection}
+                projectId={projectId}
+                canManage={canManage}
+              />
+            </div>
+            <div className="overflow-hidden">
+              <EditorPane
+                projectId={projectId}
+                selection={selection}
+                modules={modules.data ?? []}
+                roles={roleBindings}
+                lints={lints}
+                canManage={canManage}
+                onDraftChange={onDraftChange}
+              />
+            </div>
+            <div className="overflow-hidden bg-background/40">
+              <InspectorTabs
+                projectId={projectId}
+                resolved={resolved}
+                lints={lints}
+                roles={roleBindings}
+                draft={draftActive ? draft : null}
+                resolves={resolves}
+                modular={modular}
+                previewing={draftActive && preview.isFetching}
+              />
+            </div>
           </div>
-          <div className="overflow-hidden">
-            <InspectorTabs
-              projectId={projectId}
-              resolved={resolved}
-              lints={lints}
-              roles={roleBindings}
-              draft={draftActive ? draft : null}
-              resolves={resolves}
-              modular={modular}
-              previewing={draftActive && preview.isFetching}
-            />
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

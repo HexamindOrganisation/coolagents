@@ -407,7 +407,7 @@ export function ModuleTree({
         }
       >
         <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate flex-1 font-mono">{node.name}</span>
+        <span className="truncate flex-1">{node.name}</span>
         {canManage && (
           <span className="flex items-center gap-1 opacity-0 group-hover:opacity-100">
             <button
@@ -440,7 +440,7 @@ export function ModuleTree({
     <div className="h-full flex flex-col text-sm">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
         <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-          Modules
+          Files
         </span>
       </div>
       <div className="flex-1 overflow-y-auto p-1.5 scrollbar-thin space-y-0.5">
@@ -455,7 +455,7 @@ export function ModuleTree({
           onClick={() => onSelect({ kind: "roles" })}
         >
           <ScrollText className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="font-mono">roles.yaml</span>
+          <span>roles.yaml</span>
         </div>
         {roots.map((root: FolderNode) => renderNode(root, 0))}
       </div>

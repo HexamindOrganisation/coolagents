@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import CodeMirror from "@uiw/react-codemirror";
+import { yaml } from "@codemirror/lang-yaml";
 import { CheckCircle2, MinusCircle, Play, ShieldAlert } from "lucide-react";
 
 import {
@@ -9,8 +11,22 @@ import {
   type RoleBindings,
 } from "@/lib/api";
 import { useTestPolicy } from "@/lib/policy_modules";
+import { policyEditorThemeTransparent } from "@/components/PolicyEditor/theme";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+// JSON is a subset of YAML, so the YAML grammar highlights the call JSON
+// (keys / strings / numbers) without pulling in a separate lang-json dep.
+const JSON_EXTENSIONS = [yaml()];
+const JSON_BASIC_SETUP = {
+  lineNumbers: false,
+  foldGutter: false,
+  highlightActiveLine: false,
+  highlightActiveLineGutter: false,
+  autocompletion: false,
+  bracketMatching: true,
+  closeBrackets: true,
+} as const;
 
 const SAMPLE = '{\n  "tool": "refund_order",\n  "args": { "amount": 50 }\n}';
 
@@ -125,16 +141,26 @@ export function TestPanel({
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-xs flex-1 min-h-[120px]">
+      <div className="flex flex-col gap-1 text-xs flex-1 min-h-[120px]">
         <span className="text-muted-foreground">Call (JSON)</span>
-        <textarea
-          value={call}
-          onChange={(e) => setCall(e.target.value)}
-          disabled={disabled}
-          spellCheck={false}
-          className="flex-1 rounded-md border border-border bg-background p-2 text-xs font-mono resize-none focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
-        />
-      </label>
+        <div
+          className={cn(
+            "flex-1 overflow-auto rounded-md border border-border scrollbar-thin",
+            disabled && "opacity-50 pointer-events-none",
+          )}
+        >
+          <CodeMirror
+            value={call}
+            onChange={setCall}
+            editable={!disabled}
+            extensions={JSON_EXTENSIONS}
+            theme={policyEditorThemeTransparent}
+            basicSetup={JSON_BASIC_SETUP}
+            height="100%"
+            className="text-xs"
+          />
+        </div>
+      </div>
 
       {parseError && (
         <p className="text-xs text-deny font-mono">{parseError}</p>

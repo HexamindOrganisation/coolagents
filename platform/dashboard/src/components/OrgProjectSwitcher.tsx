@@ -1,11 +1,5 @@
 import { useState } from "react";
-import {
-  Building2,
-  Check,
-  ChevronsUpDown,
-  FolderPlus,
-  Plus,
-} from "lucide-react";
+import { Check, ChevronsUpDown, FolderPlus, Plus } from "lucide-react";
 
 import { CreateOrgDialog } from "@/components/CreateOrgDialog";
 import { CreateProjectDialog } from "@/components/CreateProjectDialog";
@@ -23,10 +17,14 @@ import { useProjects, type ProjectRead } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
 /**
- * The pill that lives in the AppShell header. Reads the active org +
+ * The workspace switcher at the top of the sidebar. Reads the active org +
  * project from the store, lists all the user's orgs (with their
  * projects nested) in a single dropdown. "+ New project" /
  * "+ New organization" footer actions open the corresponding dialogs.
+ *
+ * Renders as a two-line block — project name on top, org name beneath — so
+ * the project reads as the primary context (OpenAI-style) even though one
+ * dropdown still switches both.
  *
  * Two state pieces:
  *   - which orgs/projects exist (from React Query)
@@ -48,6 +46,7 @@ export function OrgProjectSwitcher() {
   const projects: ProjectRead[] = projectsQuery.data ?? [];
   const activeOrg = orgs.find((o) => o.id === activeOrgId) ?? null;
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+  const label = switcherLabel(activeOrg, activeProject, orgsQuery.isLoading);
 
   return (
     <>
@@ -56,18 +55,22 @@ export function OrgProjectSwitcher() {
           <button
             type="button"
             className={cn(
-              "inline-flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1 text-xs",
-              "transition-colors hover:border-primary hover:bg-primary/5",
+              "flex w-full flex-col gap-0.5 rounded-md px-2 py-1 text-left",
+              "transition-colors hover:bg-accent",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
-            <Building2 className="h-3.5 w-3.5 text-primary" />
-            <SwitcherLabel
-              activeOrg={activeOrg}
-              activeProject={activeProject}
-              loading={orgsQuery.isLoading}
-            />
-            <ChevronsUpDown className="h-3 w-3 text-muted-foreground" />
+            <span className="flex w-full items-center gap-1">
+              <span className="truncate text-sm font-medium text-foreground">
+                {label.project}
+              </span>
+              <ChevronsUpDown className="ml-auto size-3 shrink-0 text-muted-foreground" />
+            </span>
+            {label.org && (
+              <span className="truncate text-xs text-muted-foreground">
+                {label.org}
+              </span>
+            )}
           </button>
         </DropdownMenuTrigger>
 
@@ -154,37 +157,16 @@ export function OrgProjectSwitcher() {
   );
 }
 
-interface SwitcherLabelProps {
-  activeOrg: OrgWithRole | null;
-  activeProject: ProjectRead | null;
-  loading: boolean;
-}
-
-function SwitcherLabel({
-  activeOrg,
-  activeProject,
-  loading,
-}: SwitcherLabelProps) {
-  if (loading) {
-    return <span className="text-muted-foreground">Loading…</span>;
-  }
-  if (!activeOrg) {
-    return <span className="text-muted-foreground">Pick an organization</span>;
-  }
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className="text-foreground">{activeOrg.name}</span>
-      {activeProject && (
-        <>
-          <span className="text-muted-foreground">/</span>
-          <span className="font-mono text-foreground">
-            {activeProject.name}
-          </span>
-        </>
-      )}
-      {!activeProject && (
-        <span className="text-muted-foreground">· no project</span>
-      )}
-    </span>
-  );
+/** Project (primary line) + org (secondary line) for the two-line trigger. */
+function switcherLabel(
+  activeOrg: OrgWithRole | null,
+  activeProject: ProjectRead | null,
+  loading: boolean,
+): { project: string; org: string } {
+  if (loading) return { project: "Loading…", org: "" };
+  if (!activeOrg) return { project: "Pick an organization", org: "" };
+  return {
+    project: activeProject?.name ?? "No project",
+    org: activeOrg.name,
+  };
 }
