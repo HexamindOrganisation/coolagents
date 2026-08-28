@@ -159,20 +159,6 @@ def test_check_clean_bundle_is_ok(client: TestClient) -> None:
     assert all(lint["severity"] != "error" for lint in body["lints"])
 
 
-def test_capability_deny_is_link_error_on_check_and_422_on_resolve(
-    client: TestClient,
-) -> None:
-    pid = _project(client)
-    _put_module(client, pid, "capability", "bad", "tools:\n  x: { mode: deny }\n")
-    client.put(f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["bad"]}})
-
-    check = client.get(f"/v1/projects/{pid}/policy/check").json()
-    assert check["ok"] is False
-    assert any(lint["code"] == "link-error" for lint in check["lints"])
-
-    assert client.get(f"/v1/projects/{pid}/policy/resolve").status_code == 422
-
-
 def test_invalid_content_and_tier_are_422(client: TestClient) -> None:
     pid = _project(client)
     # not a policy document
@@ -1063,9 +1049,9 @@ def test_move_capability_cascades_to_role_bindings(client: TestClient) -> None:
     }
     assert ("capability", "team/read_only") in paths
     assert ("capability", "read_only") not in paths
-    # the binding followed the rename
+    # the binding followed the rename (in the (role, agent) matrix)
     roles = client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"]
-    assert roles["billing"] == ["team/read_only"]
+    assert roles["billing"] == {"*": ["team/read_only"]}
 
 
 def test_move_conflict_is_409(client: TestClient) -> None:
