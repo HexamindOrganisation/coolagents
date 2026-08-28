@@ -177,13 +177,14 @@ export function EditorPane({
     if (parse.error) {
       out.push({
         role: null,
+        tool: null,
         line: parse.error.line,
         message: parse.error.message,
       });
     }
     for (const l of fileLints) {
       const line = lintToLine(draft, l);
-      if (line) out.push({ role: l.role, line, message: l.message });
+      if (line) out.push({ role: l.role, tool: l.tool, line, message: l.message });
     }
     return out;
   }, [parse.error, fileLints, draft]);
