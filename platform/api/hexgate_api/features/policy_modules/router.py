@@ -36,10 +36,14 @@ router = APIRouter()
 logger = logging.getLogger("hexgate.platform.policy_modules")
 
 
-def _norm(roles: dict[str, list[str]]) -> dict[str, list[str]]:
-    """Order-insensitive view of a role binding, so re-saving the same imports in
-    a different order doesn't read as a change and trigger a needless recompile."""
-    return {role: sorted(caps) for role, caps in roles.items()}
+def _norm(roles: dict[str, dict[str, list[str]]]) -> dict[str, dict[str, list[str]]]:
+    """Order-insensitive view of the ``(role, agent)`` matrix, so re-saving the
+    same imports in a different order doesn't read as a change and trigger a
+    needless recompile."""
+    return {
+        role: {agent: sorted(caps) for agent, caps in cells.items()}
+        for role, cells in roles.items()
+    }
 
 
 def _module_read(row: PolicyModule) -> PolicyModuleRead:
@@ -250,17 +254,19 @@ async def api_set_policy_roles(
 async def api_resolve_policy(
     project_id: str,
     role: str | None = None,
+    agent: str = "*",
     _user: User = Depends(require_org_member),
     session: AsyncSession = Depends(get_session),
 ) -> ResolvedPolicyResponse:
-    """The composed effective policy per role. 422 if the module set can't be
-    composed (e.g. a capability that denies, or a role importing an unknown
-    capability) — use /policy/check to see that as a lint instead."""
+    """The composed effective policy per role, for one executing agent (``agent``,
+    default the generic ``"*"``). 422 if the module set can't be composed (e.g. a
+    capability that denies, or a role importing an unknown capability) — use
+    /policy/check to see that as a lint instead."""
     from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
 
     try:
-        result = await service.resolve(session, project_id)
+        result = await service.resolve(session, project_id, agent=agent)
     except (LinkError, PolicySetError, ConstraintParseError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

@@ -91,16 +91,34 @@ def _apply_bundle(agent: Agent, bundle: tuple[bytes, str, bytes] | None) -> None
         agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
 
 
+# The generic/default agent key — the "*" column of the (role, agent) matrix.
+# Mirrors hexgate.security.DEFAULT_AGENT; kept local so this module doesn't import
+# the SDK at load (the SDK is imported lazily on the modular path only).
+_DEFAULT_AGENT = "*"
+
+
 async def _modular_bundle(
-    session: AsyncSession, project_id: str, sign: Callable[[bytes], bytes]
+    session: AsyncSession,
+    project_id: str,
+    sign: Callable[[bytes], bytes],
+    *,
+    agent: str = _DEFAULT_AGENT,
+    compiled: dict[str, tuple[bytes, str, bytes] | None] | None = None,
 ) -> tuple[bytes, str, bytes] | None:
-    """Resolve a modular project once and compile its single shared bundle.
+    """Resolve + compile the bundle for ONE agent's column of the matrix (Path A).
+
+    ``agent`` selects the executing agent's ``(role, agent)`` column (default the
+    generic ``"*"``). Each agent resolves to its own role-keyed bundle, so a
+    signed artifact carries only that agent's authority.
 
     Returns ``None`` (never raises) when the project doesn't resolve or the
     resolved policy can't compile (e.g. ``opa`` absent), so callers can leave
     live bundles untouched — the fail-safe in docs/adr/R-POL-002. The SDK
     resolve exceptions are imported here, on the modular path only, so a classic
     save never touches the SDK.
+
+    ``compiled`` is an optional sha256-keyed compile cache: a fan-out over agents
+    that resolve to identical policy then shells out to ``opa`` only once.
 
     The except tuple also covers ``yaml.YAMLError`` / pydantic ``ValidationError``:
     ``resolved_policy_yaml`` re-parses every stored module, and a row valid at
@@ -115,7 +133,9 @@ async def _modular_bundle(
     from hexgate_api.features.policy_modules import service as modules
 
     try:
-        policy_yaml = await modules.resolved_policy_yaml(session, project_id)
+        policy_yaml = await modules.resolved_policy_yaml(
+            session, project_id, agent=agent
+        )
     except (
         LinkError,
         PolicySetError,
@@ -124,12 +144,17 @@ async def _modular_bundle(
         yaml.YAMLError,
     ) as exc:
         logger.warning(
-            "modular project %s does not resolve; no bundle: %s", project_id, exc
+            "modular project %s agent %r does not resolve; no bundle: %s",
+            project_id,
+            agent,
+            exc,
         )
         return None
-    # opa is a synchronous subprocess — run it off the event loop so a policy
-    # write doesn't block every other in-flight request for the compile.
-    return await asyncio.to_thread(compile_bundle, policy_yaml, sign)
+    # opa is a synchronous subprocess — run it off the event loop (inside
+    # _compile_memoized) so a policy write doesn't block every in-flight request.
+    return await _compile_memoized(
+        {} if compiled is None else compiled, policy_yaml, sign
+    )
 
 
 async def bundle_for_agent(
@@ -137,14 +162,14 @@ async def bundle_for_agent(
 ) -> tuple[bytes, str, bytes] | None:
     """Compile the signed bundle for one agent, from the right source.
 
-    Modular project (has a role binding): the project's resolved role-keyed
-    policy. Classic project: the agent's own ``policy_yaml`` (unchanged
-    behavior). See docs/adr/R-POL-002.
+    Modular project (has a role binding): the agent's own column of the resolved
+    ``(role, agent)`` matrix (Path A — one bundle per agent, keyed by name).
+    Classic project: the agent's own ``policy_yaml`` (unchanged). See R-POL-002.
     """
     from hexgate_api.features.policy_modules import service as modules
 
     if await modules.is_modular(session, agent.project_id):
-        return await _modular_bundle(session, agent.project_id, sign)
+        return await _modular_bundle(session, agent.project_id, sign, agent=agent.name)
     return await asyncio.to_thread(compile_bundle, agent.policy_yaml, sign)
 
 
@@ -153,11 +178,12 @@ async def recompile_project(
 ) -> int | None:
     """Recompile every agent in a project after its modules or roles change.
 
-    Modular: resolve + compile once, reusing the single bundle for all agents.
-    On an unresolvable project (or a resolved policy that won't compile) live
-    bundles are left untouched — the fail-safe in docs/adr/R-POL-002, because the
-    modules haven't changed what each agent should enforce, we just can't build
-    it right now.
+    Modular: resolve + compile **per agent** (each agent gets its own column of
+    the (role, agent) matrix), memoizing the opa compile so agents that resolve
+    identically build once. It's all-or-nothing: if ANY agent can't be built
+    (unresolvable project, or a resolved policy that won't compile), live bundles
+    are left untouched for the WHOLE project — the fail-safe in docs/adr/R-POL-002
+    (never a partial update where some agents move and others are stale).
 
     Classic — including a project that just dropped its last role binding, so
     enforcement returns to each agent's ``policy_yaml`` — recompiles each agent
@@ -180,11 +206,17 @@ async def recompile_project(
 
     count = 0
     if await modules.is_modular(session, project_id):
-        bundle = await _modular_bundle(session, project_id, sign)
-        if bundle is None:
-            return None  # can't build now: leave live bundles as-is
+        compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
+        built: dict[str, tuple[bytes, str, bytes]] = {}
         for agent in agents:
-            _apply_bundle(agent, bundle)  # same shared bundle for every agent
+            bundle = await _modular_bundle(
+                session, project_id, sign, agent=agent.name, compiled=compiled
+            )
+            if bundle is None:
+                return None  # any agent unbuildable → keep ALL live (no partial state)
+            built[agent.id] = bundle
+        for agent in agents:
+            _apply_bundle(agent, built[agent.id])  # each agent's own bundle
             session.add(agent)
             count += 1
     else:
@@ -316,17 +348,21 @@ async def backfill_bundles(
 
     count = 0
     for project_id, project_agents in pending.items():
+        compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
         if await modules.is_modular(session, project_id):
-            # Resolve + compile once for the whole project, not once per agent.
-            bundle = await _modular_bundle(session, project_id, sign)
-            if bundle is None:
-                continue
+            # Per agent: each resolves its own column of the (role, agent) matrix,
+            # memoized so agents that resolve identically compile once. A bundle
+            # that can't build is skipped (agent stays bundle-less), not fatal.
             for agent in project_agents:
-                _apply_bundle(agent, bundle)  # same shared bundle for every agent
+                bundle = await _modular_bundle(
+                    session, project_id, sign, agent=agent.name, compiled=compiled
+                )
+                if bundle is None:
+                    continue
+                _apply_bundle(agent, bundle)
                 session.add(agent)
                 count += 1
         else:
-            compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
             for agent in project_agents:
                 bundle = await _compile_memoized(compiled, agent.policy_yaml, sign)
                 if bundle is None:

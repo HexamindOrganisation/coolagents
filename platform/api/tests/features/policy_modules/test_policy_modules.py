@@ -199,8 +199,9 @@ def test_set_roles_is_idempotent_on_reused_role_name(client: TestClient) -> None
     assert r1.status_code == 200, r1.text
     r2 = client.put(f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": []}})
     assert r2.status_code == 200, r2.text
+    # Flat write normalizes to the generic "*" agent in the (role, agent) matrix.
     assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
-        "default": []
+        "default": {"*": []}
     }
 
 
@@ -785,3 +786,98 @@ async def test_classic_recompile_memoizes_identical_policies(
         n = await asvc.recompile_project(s, proj.id, _dummy_sign)
         assert n == 3  # all three agents got a bundle
         assert calls["n"] == 1  # ...from a single opa compile (memoized)
+
+
+# --- (role, agent) matrix ---------------------------------------------------
+
+
+def test_matrix_binding_resolves_per_agent(client: TestClient) -> None:
+    # A named agent sees its own column; an unnamed agent falls back to "*".
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={
+            "roles": {
+                "member": {
+                    "*": ["read_only"],
+                    "billing_bot": ["read_only", "payments"],
+                }
+            }
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Round-trips as the matrix.
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
+        "member": {"*": ["read_only"], "billing_bot": ["read_only", "payments"]}
+    }
+
+    billing = client.get(f"/v1/projects/{pid}/policy/resolve?agent=billing_bot").json()[
+        "roles"
+    ]["member"]["tools"]
+    assert "refund_order" in billing  # its own column grants payments
+
+    generic = client.get(f"/v1/projects/{pid}/policy/resolve?agent=triage_bot").json()[
+        "roles"
+    ]["member"]["tools"]
+    assert "refund_order" not in generic  # unnamed agent -> "*" -> read_only only
+
+
+async def test_recompile_builds_distinct_bundles_per_agent(
+    session_factory, monkeypatch
+) -> None:
+    # Two agents with different columns compile to different bundles (the yaml
+    # each agent resolves to differs), fanned out per agent.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import Agent
+
+    monkeypatch.setattr(
+        asvc, "compile_bundle", lambda py, sign: (py.encode(), "M", b"S")
+    )  # echo the resolved yaml as the wasm bytes so we can compare
+
+    async with session_factory() as s:
+        proj, billing = await _fresh_project_with_agent(s)  # agent name "a1"
+        billing.name = "billing_bot"
+        s.add(billing)
+        triage = Agent(
+            id=new_id(Agent),
+            project_id=proj.id,
+            name="triage_bot",
+            agent_yaml="",
+            policy_yaml="version: 1\n",
+            system_md="",
+        )
+        s.add(triage)
+        await s.commit()
+
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.upsert_module(
+            s, project_id=proj.id, tier="capability", path="payments", content=PAYMENTS
+        )
+        await pm.set_roles(
+            s,
+            project_id=proj.id,
+            roles={
+                "default": {
+                    "billing_bot": ["read_only", "payments"],
+                    "triage_bot": ["read_only"],
+                }
+            },
+        )
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 2
+        await s.refresh(billing)
+        await s.refresh(triage)
+        # billing_bot's bundle carries refund_order; triage_bot's does not.
+        assert b"refund_order" in billing.compiled_wasm
+        assert b"refund_order" not in triage.compiled_wasm

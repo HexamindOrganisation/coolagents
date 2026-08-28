@@ -368,13 +368,21 @@ class PolicyModuleWrite(BaseModel):
 
 
 class RoleBindingsRead(BaseModel):
-    """A project's role bindings: role name -> the capability names it imports."""
+    """A project's role bindings as the ``(role, agent)`` matrix:
+    ``role -> agent-or-"*" -> capability names``. The ``"*"`` agent is the
+    generic default; a project written before the agent axis reads back with all
+    capabilities under ``"*"``."""
 
-    roles: dict[str, list[str]] = Field(default_factory=dict)
+    roles: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
 
 
 class RoleBindingsWrite(BaseModel):
-    roles: dict[str, list[str]] = Field(default_factory=dict)
+    """Write role bindings. Accepts either the ``(role, agent)`` matrix
+    (``role -> {agent: [caps]}``) or the flat form (``role -> [caps]``, applied to
+    the generic ``"*"`` agent) — the service normalizes both, so a flat client
+    stays valid."""
+
+    roles: dict[str, dict[str, list[str]] | list[str]] = Field(default_factory=dict)
 
 
 class ResolvedPolicyResponse(BaseModel):

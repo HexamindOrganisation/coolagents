@@ -22,6 +22,11 @@ from hexgate_api.models import PolicyModule, RoleBinding, utcnow
 
 VALID_TIERS = ("boundary", "capability")
 
+# The generic/default agent key in a role binding. Mirrors
+# ``hexgate.security.DEFAULT_AGENT``; kept local so the store CRUD (get/set_roles)
+# doesn't import the SDK at module load — the SDK is imported lazily in resolve.
+DEFAULT_AGENT = "*"
+
 
 class InvalidModuleError(Exception):
     """A module's tier is unknown, or its content doesn't parse as a policy.
@@ -165,19 +170,42 @@ async def delete_module(
 # --- role bindings -----------------------------------------------------------
 
 
-async def get_roles(session: AsyncSession, project_id: str) -> dict[str, list[str]]:
+RoleMatrixJson = dict[str, dict[str, list[str]]]
+"""The platform's JSON-friendly binding shape: role -> agent-or-"*" -> caps."""
+
+
+def _normalize_cell(stored: object) -> dict[str, list[str]]:
+    """One stored ``RoleBinding.capabilities`` value → ``{agent: [caps]}``.
+
+    A legacy flat ``[names]`` list reads as the generic ``{"*": [names]}`` agent,
+    so old rows keep their exact meaning with no migration. A mapping is already
+    the matrix and passes through.
+    """
+    if isinstance(stored, dict):
+        return {str(agent): list(caps) for agent, caps in stored.items()}
+    if isinstance(stored, list):
+        return {DEFAULT_AGENT: [str(c) for c in stored]}
+    return {}
+
+
+async def get_roles(session: AsyncSession, project_id: str) -> RoleMatrixJson:
+    """The project's role bindings as ``role -> agent-or-"*" -> capabilities``.
+
+    Legacy flat rows normalize to the generic ``"*"`` agent, so a project written
+    before the agent axis reads back identically.
+    """
     rows = (
         await session.exec(
             select(RoleBinding).where(RoleBinding.project_id == project_id)
         )
     ).all()
-    return {row.role: list(row.capabilities) for row in rows}
+    return {row.role: _normalize_cell(row.capabilities) for row in rows}
 
 
 async def roles_importing(
     session: AsyncSession, project_id: str, path: str
 ) -> list[str]:
-    """Role names whose binding still imports the capability ``path``.
+    """Role names whose binding still imports the capability ``path`` under ANY agent.
 
     Used to block deleting a capability that a role still references: without
     this the delete succeeds but the project stops resolving (the SDK linker
@@ -185,13 +213,25 @@ async def roles_importing(
     every agent keeps the old one — still granting the deleted capability.
     """
     roles = await get_roles(session, project_id)
-    return sorted(role for role, caps in roles.items() if path in caps)
+    return sorted(
+        role
+        for role, cells in roles.items()
+        if any(path in caps for caps in cells.values())
+    )
 
 
 async def set_roles(
-    session: AsyncSession, *, project_id: str, roles: dict[str, list[str]]
-) -> dict[str, list[str]]:
+    session: AsyncSession,
+    *,
+    project_id: str,
+    roles: RoleMatrixJson | dict[str, list[str]],
+) -> RoleMatrixJson:
     """Replace the project's role bindings wholesale (a small, edited-together set).
+
+    Accepts either the matrix (``role -> {agent: [caps]}``) or the flat form
+    (``role -> [caps]``, normalized to the generic ``"*"`` agent), so a flat
+    caller stays valid. Stores each role's ``{agent: [caps]}`` mapping in the
+    row's JSON value — no schema change.
 
     Retries once on an IntegrityError: two concurrent wholesale replaces can each
     delete the existing rows and re-insert the same ``(project_id, role)``,
@@ -199,6 +239,7 @@ async def set_roles(
     replaces them cleanly instead of surfacing a 500 (same posture as
     ``upsert_module``'s create-race handling).
     """
+    normalized = {role: _normalize_cell(cells) for role, cells in roles.items()}
     for attempt in range(2):
         existing = (
             await session.exec(
@@ -211,13 +252,13 @@ async def set_roles(
         # order an INSERT first and trip the (project_id, role) unique constraint
         # when a role name recurs across edits (the common wholesale-replace case).
         await session.flush()
-        for role, caps in roles.items():
+        for role, cells in normalized.items():
             session.add(
                 RoleBinding(
                     id=new_id(RoleBinding),
                     project_id=project_id,
                     role=role,
-                    capabilities=list(caps),
+                    capabilities=dict(cells),
                 )
             )
         try:
@@ -246,25 +287,38 @@ def _to_module_content(row: PolicyModule):
 
 
 async def _sdk_inputs(session: AsyncSession, project_id: str):
+    from hexgate.security import AgentBinding
+
     rows = await list_modules(session, project_id)
     boundaries = [_to_module_content(r) for r in rows if r.tier == "boundary"]
     capabilities = [_to_module_content(r) for r in rows if r.tier == "capability"]
+    # Convert the stored JSON matrix into the SDK's RoleMatrix (AgentBinding cells).
     # No role bindings maps to None, not {}: the SDK reads None as "no roles, one
     # default importing every capability" (the all-compose behaviour the local
     # `hexgate policy resolve` and docs/adr/R-POL-001 document), whereas {} is a
     # present-but-empty binding that fail-closes. The platform has no typo-able
     # roles file, so "no bindings" is the no-roles case, not the empty one.
-    roles = await get_roles(session, project_id) or None
+    matrix = await get_roles(session, project_id)
+    roles = {
+        role: {
+            agent: AgentBinding(capabilities=tuple(caps))
+            for agent, caps in cells.items()
+        }
+        for role, cells in matrix.items()
+    } or None
     return boundaries, capabilities, roles
 
 
-async def resolve(session: AsyncSession, project_id: str):
-    """Compose the project into a role-keyed PolicySet. Raises the SDK's
-    LinkError / PolicySetError / ConstraintParseError on an invalid set."""
+async def resolve(session: AsyncSession, project_id: str, agent: str = DEFAULT_AGENT):
+    """Compose one agent's role-keyed PolicySet (Path A). Raises the SDK's
+    LinkError / PolicySetError / ConstraintParseError on an invalid set.
+
+    ``agent`` selects the executing agent's column of the ``(role, agent)`` matrix
+    (default ``"*"`` — the generic view). Each agent resolves to its own bundle."""
     from hexgate.security import resolve_for_project
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
-    return resolve_for_project(boundaries, capabilities, roles)
+    return resolve_for_project(boundaries, capabilities, roles, agent=agent)
 
 
 async def check(session: AsyncSession, project_id: str):
@@ -335,13 +389,17 @@ def roles_json(result, role: str | None = None) -> dict:
     return effective_policy_by_role(result, None if role is None else [role])
 
 
-async def resolved_policy_yaml(session: AsyncSession, project_id: str) -> str:
-    """The project's resolved role-keyed policy as inline-roles YAML.
+async def resolved_policy_yaml(
+    session: AsyncSession, project_id: str, agent: str = DEFAULT_AGENT
+) -> str:
+    """One agent's resolved role-keyed policy as inline-roles YAML.
 
     Serializes to the ``roles:`` shape ``build_signed_bundle`` accepts, so the
     platform compile path is byte-for-byte the same as a single-file policy.
-    Raises the SDK's ``LinkError`` / ``PolicySetError`` / ``ConstraintParseError``
-    if the modules don't compose, so callers can leave live bundles untouched.
+    ``agent`` selects that agent's column of the ``(role, agent)`` matrix (Path A:
+    one bundle per agent). Raises the SDK's ``LinkError`` / ``PolicySetError`` /
+    ``ConstraintParseError`` if the modules don't compose, so callers can leave
+    live bundles untouched.
     """
-    result = await resolve(session, project_id)
+    result = await resolve(session, project_id, agent=agent)
     return yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
