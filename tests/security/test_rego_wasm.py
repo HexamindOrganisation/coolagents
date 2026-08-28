@@ -23,7 +23,6 @@ from hexgate.security.rego_wasm import (
     compile_to_wasm,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(
     not _OPA_AVAILABLE,

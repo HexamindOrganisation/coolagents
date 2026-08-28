@@ -94,7 +94,7 @@ def build_proxy(client: FakeMCPClient, tool: Tool) -> MCPToolProxy:
     Imports `_build_proxy` and `_ToolsetState` lazily so this module
     stays cheap when a test only wants the fake client.
     """
-    from hexgate.mcp.proxy import _ToolsetState
     from hexgate.mcp.proxy import _build_proxy as build
+    from hexgate.mcp.proxy import _ToolsetState
 
     return build(_ToolsetState(client), client.config, tool)  # type: ignore[arg-type]

@@ -19,7 +19,6 @@ from hexgate.cli.serve import ServeContext, _context_from_payload
 from hexgate.cli.state import ChatState
 from hexgate.runtime import HexgateContext, get_current_context
 
-
 # ---------------------------------------------------------------------------
 # _context_from_payload — happy / malformed
 # ---------------------------------------------------------------------------
@@ -335,7 +334,10 @@ async def test_serve_loop_aborts_when_marker_not_echoed(
 # ---------------------------------------------------------------------------
 
 
-from hexgate.cli._common import build_runtime_from_local_agent, load_spec  # noqa: E402  — section-scoped import keeps phase-7 tests visually grouped
+from hexgate.cli._common import (  # noqa: E402  — section-scoped import keeps phase-7 tests visually grouped
+    build_runtime_from_local_agent,
+    load_spec,
+)
 
 
 def test_load_spec_resolves_module_attr_form() -> None:

@@ -99,7 +99,6 @@ from hexgate.security.policy_set import (
     load_policy_set_from_dict,
 )
 
-
 # Rego operators are mostly a superset of ours. ``not in`` needs special
 # handling because Rego writes it as ``not (x in y)``; we wrap the body.
 _INFIX_OPS = {"==", "!=", "<", "<=", ">", ">="}

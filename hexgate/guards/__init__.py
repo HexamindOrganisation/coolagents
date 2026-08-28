@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from hexgate.guards.runner import run_guarded_async, run_guarded_sync
 from hexgate.guards.types import (
-    Halt,
     GuardEvent,
     GuardObserver,
+    Halt,
     Modification,
     Proceed,
     ToolCall,

@@ -45,7 +45,6 @@ from hexgate.security.models import (
     ToolPolicy,
 )
 
-
 DEFAULT_ROLE_NAME = "default"
 
 

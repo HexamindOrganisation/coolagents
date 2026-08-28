@@ -6,7 +6,6 @@ import pytest
 
 from hexgate.mcp import MCPServerConfig, MCPServerConfigError
 
-
 # ---- name validation -------------------------------------------------------
 
 

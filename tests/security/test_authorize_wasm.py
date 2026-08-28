@@ -24,7 +24,6 @@ from hexgate.security import (
     load_policy_set_from_dict,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(
     not _OPA_AVAILABLE,

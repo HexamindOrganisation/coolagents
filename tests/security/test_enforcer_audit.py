@@ -8,10 +8,10 @@ from typing import Any
 import pytest
 
 from hexgate.audit import AuditEvent
-from hexgate.tracing import _senders
 from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import DecisionOutcome, Verdict
 from hexgate.security.enforcer import PolicyEnforcer
+from hexgate.tracing import _senders
 
 
 class _StubEngine:

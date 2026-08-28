@@ -33,9 +33,9 @@ from hexgate.security import (
     PolicySet,
     ResolvedPolicy,
     compile_to_rego,
-    resolve_policy,
     compile_to_wasm,
     generate_keypair,
+    resolve_policy,
     sign_bytes,
 )
 from hexgate.security.enforcer import PolicyEnforcer

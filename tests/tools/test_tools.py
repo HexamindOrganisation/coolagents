@@ -14,9 +14,8 @@ from hexgate.runtime import (
     reset_current_tool_use_context,
     set_current_tool_use_context,
 )
-from hexgate.tools import bash, edit_file, glob, grep, read_file, write_file
+from hexgate.tools import agent_tool, bash, edit_file, glob, grep, read_file, write_file
 from hexgate.tools.decorators import format_tool_call_label
-from hexgate.tools import agent_tool
 
 
 def test_format_tool_call_label_defaults_to_tool_name() -> None:

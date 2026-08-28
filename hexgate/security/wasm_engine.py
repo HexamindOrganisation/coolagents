@@ -58,7 +58,6 @@ from typing import Any
 
 import wasmtime
 
-
 # OPA bundles encode a major + minor ABI version as exported wasm globals.
 # We only know how to drive ABI v1 (the spec covered above); a major bump
 # means refusing to load rather than mis-evaluating.

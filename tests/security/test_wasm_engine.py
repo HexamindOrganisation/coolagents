@@ -22,7 +22,6 @@ from hexgate.security import (
     compile_to_wasm,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(
     not _OPA_AVAILABLE,
@@ -262,6 +261,7 @@ def test_from_bytes_cached_reuses_instance_on_same_hash(demo_wasm: bytes) -> Non
     when the bundle hadn't actually changed.
     """
     import hashlib
+
     from hexgate.security.wasm_engine import _wasm_policy_cache
 
     _wasm_policy_cache.clear()
@@ -277,6 +277,7 @@ def test_from_bytes_cached_reuses_instance_on_same_hash(demo_wasm: bytes) -> Non
 def test_from_bytes_cached_distinguishes_hashes(demo_wasm: bytes) -> None:
     """Different hash → different cached instance (no false collisions)."""
     import hashlib
+
     from hexgate.security import compile_to_rego, compile_to_wasm
     from hexgate.security.wasm_engine import _wasm_policy_cache
 

@@ -16,7 +16,6 @@ import pytest
 from hexgate.cli.serve import RelayApprovalHandler
 from hexgate.security.decision import Decision, DecisionOutcome
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
@@ -447,7 +446,7 @@ async def test_serve_loop_does_not_deadlock_on_approval() -> None:
     inbound frame → its own task) and confirms an approval AND its
     reply can flow through without a stall.
     """
-    from hexgate.cli.serve import _dispatch_message, ServeContext
+    from hexgate.cli.serve import ServeContext, _dispatch_message
     from hexgate.cli.state import ChatState
 
     ws = _FakeWS()

@@ -24,7 +24,6 @@ from hexgate.guards.runner import run_guarded_async
 from hexgate.guards.types import ToolPipeline
 from hexgate.security.enforcer import PolicyEnforcer
 
-
 ToolEntry = Union[BaseTool, Callable[..., Any]]
 
 

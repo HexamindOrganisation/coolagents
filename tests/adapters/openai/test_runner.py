@@ -21,10 +21,10 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.errors import AgentBannedError
+from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 from hexgate.tracing import _senders as senders_mod
 from hexgate.tracing import usage as tracing_usage_mod
 from hexgate.tracing._senders import AuditSender
-from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
 
 @contextmanager
