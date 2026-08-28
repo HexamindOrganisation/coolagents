@@ -454,6 +454,7 @@ async def api_test_policy(
             session,
             project_id,
             role=body.role,
+            agent=body.agent,
             tool=body.tool,
             args=body.args,
             attributes=body.attributes,

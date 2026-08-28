@@ -29,7 +29,10 @@ function dumpRoles(roles: RoleBindings): string {
     rendered[role] =
       agents.length === 1 && agents[0] === "*" ? cells["*"] : cells;
   }
-  return dump({ version: 1, roles: rendered }, { flowLevel: 3, lineWidth: 100 });
+  return dump(
+    { version: 1, roles: rendered },
+    { flowLevel: 3, lineWidth: 100 },
+  );
 }
 
 /** Parse the roles.yaml buffer back to the (role, agent) matrix. Accepts the SDK
@@ -63,13 +66,18 @@ function parseRoles(text: string): RoleBindings {
 
 /** One role's value → `{agent: [caps]}`. A bare list is the generic `"*"` agent;
  * a mapping is the per-agent matrix, each agent's value a capability list. */
-function parseRoleValue(role: string, value: unknown): Record<string, string[]> {
+function parseRoleValue(
+  role: string,
+  value: unknown,
+): Record<string, string[]> {
   const isCapList = (v: unknown): v is string[] =>
     Array.isArray(v) && v.every((c) => typeof c === "string");
   if (isCapList(value)) return { "*": value };
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const cells: Record<string, string[]> = {};
-    for (const [agent, caps] of Object.entries(value as Record<string, unknown>)) {
+    for (const [agent, caps] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
       if (!isCapList(caps)) {
         throw new Error(
           `role ${role}, agent ${agent}: capabilities must be a list of names`,
@@ -213,7 +221,8 @@ export function EditorPane({
     }
     for (const l of fileLints) {
       const line = lintToLine(draft, l);
-      if (line) out.push({ role: l.role, tool: l.tool, line, message: l.message });
+      if (line)
+        out.push({ role: l.role, tool: l.tool, line, message: l.message });
     }
     return out;
   }, [parse.error, fileLints, draft]);

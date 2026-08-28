@@ -761,24 +761,26 @@ async def test_policy(
     *,
     role: str,
     tool: str,
+    agent: str = "main",
     args: dict,
     attributes: dict | None = None,
     draft_module: tuple[str, str, str] | None = None,
-    draft_roles: dict[str, list[str]] | None = None,
+    draft_roles: RoleMatrixJson | dict[str, list[str]] | None = None,
 ):
-    """Evaluate one tool call against the whole resolved policy for ``role``.
+    """Evaluate one tool call against the resolved policy for ``role`` + ``agent``.
 
-    Resolves the composed bundle (all boundaries + the role's capabilities), with
-    the same optional draft overlay as :func:`preview`, then runs the pydantic
-    engine. Returns the SDK ``Verdict``. Raises the SDK compose errors if the set
-    doesn't resolve, and ``KeyError`` (mapped to 404) for an unknown role.
+    Resolves the executing ``agent``'s column of the ``(role, agent)`` matrix (all
+    boundaries + that cell's capabilities), with the same optional draft overlay
+    as :func:`preview`, then runs the pydantic engine. Returns the SDK ``Verdict``.
+    Raises the SDK compose errors if the set doesn't resolve, and ``KeyError``
+    (mapped to 404) for an unknown role.
     """
     from hexgate.security import resolve_for_project
 
     boundaries, capabilities, roles = await _draft_inputs(
         session, project_id, draft_module=draft_module, draft_roles=draft_roles
     )
-    result = resolve_for_project(boundaries, capabilities, roles)
+    result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
     if role not in result.policy_set.roles:
         raise KeyError(role)
     return result.policy_set.evaluate(

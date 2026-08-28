@@ -70,12 +70,22 @@ export function TestPanel({
 }) {
   const roleNames = useMemo(() => Object.keys(roles).sort(), [roles]);
   const [role, setRole] = useState<string>(roleNames[0] ?? "");
+  const [agent, setAgent] = useState<string>("main");
   const [call, setCall] = useState<string>(SAMPLE);
   const [parseError, setParseError] = useState<string | null>(null);
   const test = useTestPolicy(projectId);
 
   // Keep a valid role selected as bindings load / change.
   const effectiveRole = roleNames.includes(role) ? role : (roleNames[0] ?? "");
+
+  // Agent names the bindings mention (besides the generic "*"), for autocomplete.
+  const knownAgents = useMemo(() => {
+    const names = new Set<string>(["main"]);
+    for (const cells of Object.values(roles)) {
+      for (const a of Object.keys(cells)) if (a !== "*") names.add(a);
+    }
+    return [...names].sort();
+  }, [roles]);
 
   function run() {
     let parsed: { tool?: unknown; args?: unknown; attributes?: unknown };
@@ -106,6 +116,7 @@ export function TestPanel({
     setParseError(null);
     test.mutate({
       role: effectiveRole,
+      agent: agent.trim() || "main",
       tool: parsed.tool,
       args: (parsed.args as Record<string, unknown>) ?? {},
       attributes: (parsed.attributes as Record<string, unknown>) ?? null,
@@ -139,6 +150,28 @@ export function TestPanel({
             </option>
           ))}
         </select>
+      </label>
+
+      <label className="flex flex-col gap-1 text-xs">
+        <span className="text-muted-foreground">
+          Executing agent{" "}
+          <span className="text-muted-foreground/70">
+            (falls back to <span className="font-mono">*</span> if unnamed)
+          </span>
+        </span>
+        <input
+          value={agent}
+          onChange={(e) => setAgent(e.target.value)}
+          disabled={disabled}
+          list="test-known-agents"
+          placeholder="main"
+          className="h-8 rounded-md border border-border bg-background px-2 text-sm font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+        />
+        <datalist id="test-known-agents">
+          {knownAgents.map((a) => (
+            <option key={a} value={a} />
+          ))}
+        </datalist>
       </label>
 
       <div className="flex flex-col gap-1 text-xs flex-1 min-h-[120px]">

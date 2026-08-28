@@ -960,6 +960,8 @@ async def test_resolves_false_on_unparseable_stored_module(session_factory) -> N
         await pm.set_roles(s, project_id=proj.id, roles={"default": ["broken"]})
         await s.commit()
         assert await pm.resolves(s, proj.id) is False  # must not raise
+
+
 # --- editor endpoints: preview, test, move --------------------------------
 
 
@@ -1193,3 +1195,35 @@ async def test_preview_stored_error_not_attributed_to_draft(session_factory) -> 
         assert resolved == {}
         err = next(lint for lint in lints if lint.severity == "error")
         assert err.source is None  # the stored module's fault, not the draft's
+
+
+def test_policy_test_evaluates_per_agent(client: TestClient) -> None:
+    # /policy/test resolves the EXECUTING agent's column: billing_bot (payments)
+    # allows a refund; an agent falling back to "*" (read_only) does not.
+    pid = _project(client)
+    _put_module(client, pid, "boundary", "org_core", BOUNDARY)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    assert (
+        client.put(
+            f"/v1/projects/{pid}/policy-roles",
+            json={
+                "roles": {
+                    "member": {
+                        "*": ["read_only"],
+                        "billing_bot": ["read_only", "payments"],
+                    }
+                }
+            },
+        ).status_code
+        == 200
+    )
+    call = {"role": "member", "tool": "refund_order", "args": {"amount": 500}}
+    billing = client.post(
+        f"/v1/projects/{pid}/policy/test", json={**call, "agent": "billing_bot"}
+    ).json()
+    assert billing["outcome"] == "allow"
+    generic = client.post(
+        f"/v1/projects/{pid}/policy/test", json={**call, "agent": "triage_bot"}
+    ).json()
+    assert generic["outcome"] == "deny"  # "*" -> read_only only, no refund grant

@@ -454,9 +454,10 @@ class PolicyPreviewResponse(BaseModel):
 
 
 class PolicyTestRequest(BaseModel):
-    """A tool call to evaluate against the whole resolved policy for ``role``."""
+    """A tool call to evaluate against the resolved policy for ``role`` + ``agent``."""
 
     role: str
+    agent: str = "main"  # the executing agent's column of the (role, agent) matrix
     tool: str
     args: dict = Field(default_factory=dict)
     attributes: Optional[dict] = None
