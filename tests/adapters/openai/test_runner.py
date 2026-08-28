@@ -24,8 +24,8 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.errors import AgentBannedError
-from hexgate.tracing import usage as tracing_usage_mod
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+from hexgate.tracing import usage as tracing_usage_mod
 
 
 class _StaticBanSource:

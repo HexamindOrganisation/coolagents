@@ -1,9 +1,23 @@
 """Security helpers for policies and enforcement."""
 
-from hexgate.security.errors import (
-    AgentBannedError,
-    ApprovalRequiredError,
-    PolicyDeniedError,
+from hexgate.security.agent_gate import (
+    AgentGate,
+    AgentNotAdmittedError,
+    HandoffDepthExceededError,
+    ReachGate,
+    ReachNotAllowedError,
+    resolve_agent_gate,
+    resolve_reach_gate,
+    warn_if_admission_unenforced,
+    warn_if_reach_unenforced,
+    warn_if_tool_reach_unenforced,
+)
+from hexgate.security.analyzer import (
+    PolicyLint,
+    analyze,
+    analyze_project,
+    check,
+    check_project,
 )
 from hexgate.security.bans import (
     EMPTY_BAN_SET,
@@ -19,17 +33,45 @@ from hexgate.security.bans import (
     get_ban_source,
     resolve_ban_gate,
 )
-from hexgate.security.agent_gate import (
-    AgentGate,
-    AgentNotAdmittedError,
-    HandoffDepthExceededError,
-    ReachGate,
-    ReachNotAllowedError,
-    resolve_agent_gate,
-    resolve_reach_gate,
-    warn_if_admission_unenforced,
-    warn_if_reach_unenforced,
-    warn_if_tool_reach_unenforced,
+from hexgate.security.binding import (
+    PolicyBinding,
+    PolicyBindingError,
+    ResolvedPolicy,
+    resolve_policy,
+)
+from hexgate.security.builder import C, PolicyBuilder, RolePolicyBuilder
+from hexgate.security.bundle import (
+    BundleIntegrityError,
+    BundleLoadError,
+    BundleSignatureError,
+    PolicyBundle,
+    SignedBundle,
+    build_signed_bundle,
+)
+from hexgate.security.constraints import (
+    Constraint,
+    ConstraintParseError,
+    check_constraints,
+    evaluate_constraint,
+    parse_constraint,
+)
+from hexgate.security.decision import (
+    Decision,
+    DecisionOutcome,
+    PolicyEngine,
+    Verdict,
+    combine_role_verdicts,
+)
+from hexgate.security.errors import (
+    AgentBannedError,
+    ApprovalRequiredError,
+    PolicyDeniedError,
+)
+from hexgate.security.linker import (
+    effective_policy_by_role,
+    link,
+    link_policy_set,
+    resolve_for_project,
 )
 from hexgate.security.models import (
     AGENT_RUN_TOOL,
@@ -43,42 +85,22 @@ from hexgate.security.models import (
     ToolPolicy,
     agent_target_key,
 )
-from hexgate.security.constraints import (
-    Constraint,
-    ConstraintParseError,
-    check_constraints,
-    evaluate_constraint,
-    parse_constraint,
+from hexgate.security.module_loader import (
+    ModuleLoader,
+    load_local_modules,
+    load_roles,
 )
-from hexgate.security.binding import (
-    PolicyBinding,
-    PolicyBindingError,
-    ResolvedPolicy,
-    resolve_policy,
-)
-from hexgate.security.bundle import (
-    BundleIntegrityError,
-    BundleLoadError,
-    BundleSignatureError,
-    PolicyBundle,
-    SignedBundle,
-    build_signed_bundle,
-)
-from hexgate.security.signing import (
-    SignatureError,
-    decode_key,
-    encode_key,
-    generate_keypair,
-    public_key_for,
-    sign_bytes,
-    verify_bytes,
-)
-from hexgate.security.decision import (
-    Decision,
-    DecisionOutcome,
-    PolicyEngine,
-    Verdict,
-    combine_role_verdicts,
+from hexgate.security.modules import (
+    DEFAULT_AGENT,
+    AgentBinding,
+    LayerKind,
+    LinkError,
+    LinkResult,
+    ModuleContent,
+    ProjectLinkResult,
+    Provenance,
+    RoleMatrix,
+    RuleTrace,
 )
 from hexgate.security.policy import (
     authorize_tool_call,
@@ -99,36 +121,6 @@ from hexgate.security.policy_set import (
     load_policy_set,
     load_policy_set_from_dict,
 )
-from hexgate.security.modules import (
-    DEFAULT_AGENT,
-    AgentBinding,
-    LayerKind,
-    LinkError,
-    LinkResult,
-    ModuleContent,
-    ProjectLinkResult,
-    Provenance,
-    RoleMatrix,
-    RuleTrace,
-)
-from hexgate.security.linker import (
-    effective_policy_by_role,
-    link,
-    link_policy_set,
-    resolve_for_project,
-)
-from hexgate.security.analyzer import (
-    PolicyLint,
-    analyze,
-    analyze_project,
-    check,
-    check_project,
-)
-from hexgate.security.module_loader import (
-    ModuleLoader,
-    load_local_modules,
-    load_roles,
-)
 from hexgate.security.rego import compile_default_only, compile_to_rego
 from hexgate.security.rego_wasm import (
     DEFAULT_ENTRYPOINTS,
@@ -137,6 +129,15 @@ from hexgate.security.rego_wasm import (
     WasmCompileError,
     compile_to_wasm,
 )
+from hexgate.security.signing import (
+    SignatureError,
+    decode_key,
+    encode_key,
+    generate_keypair,
+    public_key_for,
+    sign_bytes,
+    verify_bytes,
+)
 from hexgate.security.source import (
     BundleDirPolicySource,
     PlatformPolicySource,
@@ -144,17 +145,16 @@ from hexgate.security.source import (
     PolicySource,
     YamlPolicySource,
 )
+from hexgate.security.testing import (
+    assert_allows,
+    assert_denies,
+    assert_needs_approval,
+)
 from hexgate.security.wasm_engine import (
     DEFAULT_ENTRYPOINT,
     RegoVerdict,
     WasmEvalError,
     WasmPolicy,
-)
-from hexgate.security.builder import C, PolicyBuilder, RolePolicyBuilder
-from hexgate.security.testing import (
-    assert_allows,
-    assert_denies,
-    assert_needs_approval,
 )
 
 __all__ = [
