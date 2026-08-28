@@ -25,6 +25,11 @@ from hexgate_api.features.agents.compiler import (
     compile_bundle,
 )
 
+# The generic/default agent key. Shared from the policy-modules service (the one
+# platform copy) so store and compile can't drift on the sentinel. This import is
+# SDK-free — policy_modules.service imports the SDK lazily — so it's safe at load.
+from hexgate_api.features.policy_modules.service import DEFAULT_AGENT
+
 logger = logging.getLogger("hexgate.platform.agents")
 
 
@@ -91,18 +96,12 @@ def _apply_bundle(agent: Agent, bundle: tuple[bytes, str, bytes] | None) -> None
         agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
 
 
-# The generic/default agent key — the "*" column of the (role, agent) matrix.
-# Mirrors hexgate.security.DEFAULT_AGENT; kept local so this module doesn't import
-# the SDK at load (the SDK is imported lazily on the modular path only).
-_DEFAULT_AGENT = "*"
-
-
 async def _modular_bundle(
     session: AsyncSession,
     project_id: str,
     sign: Callable[[bytes], bytes],
     *,
-    agent: str = _DEFAULT_AGENT,
+    agent: str = DEFAULT_AGENT,
     compiled: dict[str, tuple[bytes, str, bytes] | None] | None = None,
 ) -> tuple[bytes, str, bytes] | None:
     """Resolve + compile the bundle for ONE agent's column of the matrix (Path A).
@@ -157,6 +156,37 @@ async def _modular_bundle(
     )
 
 
+async def _resolved_yaml_or_none(
+    session: AsyncSession, project_id: str, agent_names: set[str]
+) -> dict[str, str] | None:
+    """Resolve every named agent's policy YAML in one store read (fan-out helper).
+
+    Returns ``None`` (never raises) if the project doesn't compose for some agent —
+    the R-POL-002 fail-safe, so callers keep live bundles. Mirrors
+    :func:`_modular_bundle`'s except set. Resolving here (once) rather than per
+    agent avoids re-reading the store + re-parsing every module N times."""
+    import yaml
+    from pydantic import ValidationError
+
+    from hexgate.security import LinkError, PolicySetError
+    from hexgate.security.constraints import ConstraintParseError
+    from hexgate_api.features.policy_modules import service as modules
+
+    try:
+        return await modules.resolved_yaml_by_agent(session, project_id, agent_names)
+    except (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        ValidationError,
+        yaml.YAMLError,
+    ) as exc:
+        logger.warning(
+            "modular project %s does not resolve; no bundles: %s", project_id, exc
+        )
+        return None
+
+
 async def bundle_for_agent(
     session: AsyncSession, agent: Agent, sign: Callable[[bytes], bytes]
 ) -> tuple[bytes, str, bytes] | None:
@@ -206,12 +236,17 @@ async def recompile_project(
 
     count = 0
     if await modules.is_modular(session, project_id):
+        # Resolve every agent's column in ONE store read, then compile each
+        # (memoized so agents that resolve identically shell out to opa once).
+        yaml_by_agent = await _resolved_yaml_or_none(
+            session, project_id, {a.name for a in agents}
+        )
+        if yaml_by_agent is None:
+            return None  # unresolvable → keep ALL live (fail-safe)
         compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
         built: dict[str, tuple[bytes, str, bytes]] = {}
         for agent in agents:
-            bundle = await _modular_bundle(
-                session, project_id, sign, agent=agent.name, compiled=compiled
-            )
+            bundle = await _compile_memoized(compiled, yaml_by_agent[agent.name], sign)
             if bundle is None:
                 return None  # any agent unbuildable → keep ALL live (no partial state)
             built[agent.id] = bundle
@@ -350,12 +385,20 @@ async def backfill_bundles(
     for project_id, project_agents in pending.items():
         compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
         if await modules.is_modular(session, project_id):
-            # Per agent: each resolves its own column of the (role, agent) matrix,
-            # memoized so agents that resolve identically compile once. A bundle
-            # that can't build is skipped (agent stays bundle-less), not fatal.
+            # Resolve all agents' columns in one store read; if the project
+            # doesn't resolve, leave every agent bundle-less (consistent — same
+            # as recompile). Backfill stays best-effort only on the opa COMPILE:
+            # unlike recompile it fills the agents that compile and skips the rest,
+            # because startup backfill is opportunistic (a skipped agent falls back
+            # to pydantic on its own policy_yaml) and shouldn't fail the whole boot.
+            yaml_by_agent = await _resolved_yaml_or_none(
+                session, project_id, {a.name for a in project_agents}
+            )
+            if yaml_by_agent is None:
+                continue
             for agent in project_agents:
-                bundle = await _modular_bundle(
-                    session, project_id, sign, agent=agent.name, compiled=compiled
+                bundle = await _compile_memoized(
+                    compiled, yaml_by_agent[agent.name], sign
                 )
                 if bundle is None:
                     continue

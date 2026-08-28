@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from collections.abc import Iterable
 
 import yaml
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +21,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.ids import new_id
 from hexgate_api.models import PolicyModule, RoleBinding, utcnow
+
+logger = logging.getLogger("hexgate.platform.policy_modules")
 
 VALID_TIERS = ("boundary", "capability")
 
@@ -185,6 +189,13 @@ def _normalize_cell(stored: object) -> dict[str, list[str]]:
         return {str(agent): list(caps) for agent, caps in stored.items()}
     if isinstance(stored, list):
         return {DEFAULT_AGENT: [str(c) for c in stored]}
+    # The column is model-constrained to list|dict, so this only fires on a
+    # corrupt row (a direct DB edit, a future bug). Fail closed (the role grants
+    # nothing) but don't swallow it silently — log so check()/ops can see it.
+    logger.warning(
+        "role_binding.capabilities has unexpected shape %r; treating as empty",
+        type(stored).__name__,
+    )
     return {}
 
 
@@ -330,21 +341,34 @@ async def check(session: AsyncSession, project_id: str):
     return check_project(boundaries, capabilities, roles)
 
 
+def _bound_agents(matrix: RoleMatrixJson) -> set[str]:
+    """Every agent column present in the bindings, plus the generic ``"*"``.
+
+    The set of agents whose resolution must be validated: a named agent's column
+    can import a capability the ``"*"`` column doesn't, so validating only ``"*"``
+    would miss an unknown-capability error in a named column."""
+    return {DEFAULT_AGENT} | {agent for cells in matrix.values() for agent in cells}
+
+
 async def resolves(session: AsyncSession, project_id: str) -> bool:
-    """Whether the project's modules currently compose into a valid policy.
+    """Whether the project's modules compose into a valid policy for EVERY agent.
 
     A cheap, opa-free precondition for accepting a policy write: ``True`` only if
-    ``resolve`` succeeds. Catches the same set as the compile fail-safe — the SDK
-    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
-    from re-parsing a stored row (see ``agents.service._modular_bundle``).
+    every agent column resolves (not just ``"*"``), so a named-agent cell that
+    imports an unknown capability is rejected at write time rather than accepted
+    and then silently failing to compile. Catches the same set as the compile
+    fail-safe — the SDK link/compose errors plus ``yaml.YAMLError`` / pydantic
+    ``ValidationError`` from re-parsing a stored row (see
+    ``agents.service._modular_bundle``).
     """
     from pydantic import ValidationError
 
     from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
 
+    agents = _bound_agents(await get_roles(session, project_id))
     try:
-        await resolve(session, project_id)
+        await resolved_yaml_by_agent(session, project_id, agents)
         return True
     except (
         LinkError,
@@ -403,3 +427,23 @@ async def resolved_policy_yaml(
     """
     result = await resolve(session, project_id, agent=agent)
     return yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+
+
+async def resolved_yaml_by_agent(
+    session: AsyncSession, project_id: str, agents: Iterable[str]
+) -> dict[str, str]:
+    """Resolve several agents' policy YAML, loading modules + bindings **once**.
+
+    Compiling a modular project fans out over its agents; resolving each via
+    ``resolved_policy_yaml`` would re-read the store and re-parse every module per
+    agent. This loads the SDK inputs once and resolves each agent's column in
+    memory. Raises the SDK's link/compose errors if any agent's set doesn't
+    compose, so callers keep the last-good bundle (fail-safe)."""
+    from hexgate.security import resolve_for_project
+
+    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    out: dict[str, str] = {}
+    for agent in agents:
+        result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
+        out[agent] = yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+    return out

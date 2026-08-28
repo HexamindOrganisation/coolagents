@@ -824,6 +824,37 @@ def test_matrix_binding_resolves_per_agent(client: TestClient) -> None:
     assert "refund_order" not in generic  # unnamed agent -> "*" -> read_only only
 
 
+def test_named_agent_column_with_unknown_capability_is_rejected(
+    client: TestClient,
+) -> None:
+    # A named-agent cell importing a capability that doesn't exist must be
+    # rejected at write time — not accepted (because "*" resolves) and then
+    # silently fail to compile, leaving stored bindings diverged from bundles.
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    # Make it modular first with a valid binding.
+    assert (
+        client.put(
+            f"/v1/projects/{pid}/policy-roles",
+            json={"roles": {"member": {"*": ["read_only"]}}},
+        ).status_code
+        == 200
+    )
+    # Now a named agent imports an unknown capability — "*" still resolves, but
+    # billing_bot's column does not.
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={
+            "roles": {"member": {"*": ["read_only"], "billing_bot": ["nonexistent"]}}
+        },
+    )
+    assert r.status_code == 409, r.text
+    # Rolled back to the last valid binding.
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
+        "member": {"*": ["read_only"]}
+    }
+
+
 async def test_recompile_builds_distinct_bundles_per_agent(
     session_factory, monkeypatch
 ) -> None:

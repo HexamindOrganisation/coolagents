@@ -254,7 +254,7 @@ async def api_set_policy_roles(
 async def api_resolve_policy(
     project_id: str,
     role: str | None = None,
-    agent: str = "*",
+    agent: str = service.DEFAULT_AGENT,
     _user: User = Depends(require_org_member),
     session: AsyncSession = Depends(get_session),
 ) -> ResolvedPolicyResponse:
