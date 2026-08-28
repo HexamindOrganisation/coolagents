@@ -1,27 +1,31 @@
-"""End-to-end audit emission against a live platform + ClickHouse.
+"""End-to-end audit emission against a live Collector → Redpanda → enricher
+→ ClickHouse pipeline.
 
-Requires: `make clickhouse-up` and `make platform-api` running, and
-`HEXGATE_API_KEY` set to a token minted via the dashboard.
+Requires: the platform stack running (`make clickhouse-up`, the Collector,
+Redpanda and the enricher job — see platform/README), `HEXGATE_API_KEY` set
+to a token minted via the dashboard, and `HEXGATE_OTLP_ENDPOINT` pointing at
+the Collector's OTLP/HTTP receiver (default `http://localhost:4318/v1/traces`).
 
 Opt in with: `pytest -m integration`.
 """
 
 from __future__ import annotations
 
-import asyncio
+import logging
 import os
 
-import httpx
 import pytest
 
 import hexgate.audit as audit_mod
 from hexgate.audit import AuditEvent
 from hexgate.security.decision import Decision, DecisionOutcome
-from hexgate.tracing import _senders
+from hexgate.tracing import _senders, semconv
 
 pytestmark = pytest.mark.integration
 
-PLATFORM_URL = os.environ.get("HEXGATE_API_URL", "http://localhost:8000").rstrip("/")
+OTLP_ENDPOINT = os.environ.get(
+    "HEXGATE_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"
+)
 TOKEN = os.environ.get("HEXGATE_API_KEY")
 
 
@@ -43,32 +47,22 @@ def _event() -> AuditEvent:
     return AuditEvent(decision=d, user_id="u_test", session_id="s_test")
 
 
-async def test_wire_format_accepted_by_platform() -> None:
-    """Manual POST proves the SDK wire format matches the platform body model."""
+async def test_sender_exports_end_to_end_without_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Drives the full SDK path: configure → emit → flush. The OTLP exporter
+    reports transport/auth failures as ERROR log lines rather than raising,
+    so a clean flush plus a silent exporter logger is the acceptance check."""
     _need_token()
-    ev = _event()
-    payload = ev.as_payload()
-    assert payload["user_roles"] == ["analyst", "billing"]
-    assert payload["deciding_role"] == ""
-    async with httpx.AsyncClient(timeout=5) as client:
-        response = await client.post(
-            f"{PLATFORM_URL}/v1/audit/decisions",
-            headers={"Authorization": f"Bearer {TOKEN}"},
-            json=payload,
-        )
-    assert response.status_code == 202, f"{response.status_code}: {response.text}"
-    assert response.json()["event_id"] == str(ev.event_id)
-
-
-async def test_sender_emits_end_to_end_without_errors() -> None:
-    """Drives the full SDK path: configure → emit → drain. Confirms no raised exceptions."""
-    _need_token()
+    monkeypatch.setenv("HEXGATE_OTLP_ENDPOINT", OTLP_ENDPOINT)
     _senders._senders.clear()  # reset for a clean configure
-    sender = audit_mod.configure(TOKEN, PLATFORM_URL)
-    try:
-        sender.emit(_event())
-        results = await asyncio.gather(*sender._tasks, return_exceptions=True)  # type: ignore[attr-defined]
-        for r in results:
-            assert not isinstance(r, BaseException), f"task raised: {r}"
-    finally:
-        await audit_mod.shutdown()
+    ev = _event()
+    assert ev.span_attributes()[semconv.USER_ROLES] == ["analyst", "billing"]
+    sender = audit_mod.configure(TOKEN)
+    assert sender is not None
+    with caplog.at_level(logging.WARNING, logger="opentelemetry"):
+        try:
+            sender.emit(ev)
+        finally:
+            await audit_mod.shutdown()
+    assert caplog.records == [], [r.getMessage() for r in caplog.records]

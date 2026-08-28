@@ -1,523 +1,225 @@
-"""AuditSender behavior. Mocks the httpx.AsyncClient on the sender instance.
-
-Moved here from tests/audit/ under Design C: AuditSender is a fully generic
-sender (it only depends on ``event.as_payload()``), now living in
-hexgate.tracing._senders and shared by hexgate.audit and
-hexgate.tracing.usage — its own tests belong next to it, not under
-tests/audit/.
+"""AuditSender behavior: one event in → one finished OTel span out, laid
+out per ``hexgate.tracing.semconv``. Captures spans with an in-memory
+exporter injected through the constructor's test seam, so nothing touches
+the network.
 """
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import threading
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
 
-import httpx
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 from hexgate.audit import AuditEvent
+from hexgate.security.bans import BanEnforcementEvent
 from hexgate.security.decision import Decision, DecisionOutcome
-from hexgate.tracing._senders import AuditSender
+from hexgate.tracing import semconv
+from hexgate.tracing._senders import AuditSender, _unix_nanos
+from hexgate.tracing.usage import LlmUsageEvent
 
-_LOGGER_NAME = "hexgate.tracing._senders"
 
-
-def _event() -> AuditEvent:
+def _event(**overrides) -> AuditEvent:
     d = Decision(outcome=DecisionOutcome.DENY, agent_name="r", tool_name="t")
-    return AuditEvent(decision=d, user_id="u", session_id="s")
+    return AuditEvent(decision=d, user_id="u", session_id="s", **overrides)
 
 
-def _stub_client(status: int = 202) -> MagicMock:
-    client = MagicMock()
-    client.post = AsyncMock(return_value=MagicMock(status_code=status, text=""))
-    client.aclose = AsyncMock()
-    return client
-
-
-def _stub_sync_client(status: int = 202) -> MagicMock:
-    client = MagicMock()
-    client.post = MagicMock(return_value=MagicMock(status_code=status, text=""))
-    client.close = MagicMock()
-    return client
-
-
-async def test_emit_schedules_task_and_returns_immediately() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
-    sender.emit(_event())
-    assert len(sender._tasks) == 1
-    await asyncio.gather(*sender._tasks)
-    sender._client.post.assert_called_once()
-
-
-async def test_emit_post_carries_endpoint_and_wire_body() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
-    sender.emit(_event())
-    await asyncio.gather(*sender._tasks)
-    args, kwargs = sender._client.post.call_args
-    assert args[0] == "http://x/y"
-    assert kwargs["json"]["outcome"] == "deny"
-    assert kwargs["json"]["user_id"] == "u"
-    assert kwargs["json"]["session_id"] == "s"
-
-
-def test_constructor_sets_bearer_header() -> None:
-    """Real httpx.AsyncClient constructed in __init__ carries the bearer header."""
-    sender = AuditSender("http://x/y", "k")
-    assert sender._client.headers["Authorization"] == "Bearer k"
-
-
-def test_sync_client_uses_a_short_dedicated_connect_timeout() -> None:
-    """The sync-fallback client's connect timeout is much shorter than
-    http_timeout: its send thread is non-daemon, so a slow connect to an
-    unreachable host directly extends how long process exit can hang for a
-    run_sync()-only script that never calls hexgate.shutdown()."""
-    sender = AuditSender("http://x/y", "k", http_timeout=5.0)
-    timeout = sender._sync_client.timeout
-    assert timeout.connect == 2.0
-    assert timeout.read == 5.0
-
-
-async def test_semaphore_saturation_drops_events(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    sender = AuditSender("http://x/y", "k", max_in_flight=1)
-    await sender._semaphore.acquire()
-    try:
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            for _ in range(5):
-                sender.emit(_event())
-        assert sender._dropped == 5
-        assert any("dropped" in r.message for r in caplog.records)
-    finally:
-        sender._semaphore.release()
-
-
-async def test_503_triggers_one_retry() -> None:
-    sender = AuditSender("http://x/y", "k", http_timeout=0.01)
-    sender._client = MagicMock()
-    sender._client.post = AsyncMock(
-        side_effect=[
-            MagicMock(status_code=503, text="busy"),
-            MagicMock(status_code=202, text=""),
-        ]
+def _sender() -> tuple[AuditSender, InMemorySpanExporter]:
+    exporter = InMemorySpanExporter()
+    sender = AuditSender(
+        endpoint="https://example.invalid/v1/traces", api_key="k", exporter=exporter
     )
-    sender._client.aclose = AsyncMock()
-    sender.emit(_event())
-    await asyncio.gather(*sender._tasks)
-    assert sender._client.post.await_count == 2
+    return sender, exporter
 
 
-async def test_close_drains_in_flight_then_acloses_client() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
-    sender._sync_client = MagicMock()
+def _flush(sender: AuditSender) -> None:
+    assert sender._provider.force_flush(timeout_millis=2_000)
+
+
+# ---------------------------------------------------------------------------
+# emit(): span shape
+# ---------------------------------------------------------------------------
+
+
+def test_emit_happy_path() -> None:
+    sender, exporter = _sender()
+    ev = _event()
+
+    sender.emit(ev)
+    _flush(sender)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.instrumentation_scope.name == semconv.SCOPE_AUDIT
+    assert span.attributes[semconv.EVENT_ID] == str(ev.event_id)
+    assert span.attributes[semconv.TOOL_NAME] == "t"
+    assert span.attributes[semconv.OUTCOME] == "deny"
+
+
+def test_emit_uses_occurred_at_as_start_and_end_time() -> None:
+    """The enricher reads ``occurred_at`` from ``start_time_unix_nano``;
+    these are point-in-time events, so start == end."""
+    at = datetime(2026, 8, 28, 12, 0, 0, 123456, tzinfo=timezone.utc)
+    sender, exporter = _sender()
+
+    sender.emit(_event(occurred_at=at))
+    _flush(sender)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.start_time == _unix_nanos(at)
+    assert span.end_time == span.start_time
+    assert span.start_time == 1_787_918_400_123_456_000
+
+
+def test_emit_selects_the_tracer_by_event_scope() -> None:
+    sender, exporter = _sender()
+
     sender.emit(_event())
+    sender.emit(
+        LlmUsageEvent(
+            agent_name="a",
+            model="m",
+            input_tokens=1,
+            output_tokens=2,
+            latency_ms=3,
+            status="success",
+        )
+    )
+    sender.emit(BanEnforcementEvent(ban_type="agent", ban_id="b", agent_name="a"))
+    _flush(sender)
+
+    scopes = [s.instrumentation_scope.name for s in exporter.get_finished_spans()]
+    assert scopes == [semconv.SCOPE_AUDIT, semconv.SCOPE_USAGE, semconv.SCOPE_BANS]
+
+
+def test_emit_span_is_a_root_span_even_inside_a_callers_active_span() -> None:
+    """A customer's own OTel tracing must not become our span's parent —
+    otherwise their sampling decision would apply to our audit events."""
+    sender, exporter = _sender()
+    # An active span in the current context is what start_span() would pick
+    # up as the parent by default — regardless of which provider made it.
+    caller_exporter = InMemorySpanExporter()
+    caller_provider = TracerProvider()
+    caller_provider.add_span_processor(SimpleSpanProcessor(caller_exporter))
+    with caller_provider.get_tracer("customer").start_as_current_span("outer") as outer:
+        sender.emit(_event())
+    _flush(sender)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.parent is None
+    assert span.context.trace_id != outer.get_span_context().trace_id
+
+
+def test_emit_is_always_sampled() -> None:
+    sender, exporter = _sender()
     sender.emit(_event())
-    assert len(sender._tasks) == 2
+    _flush(sender)
+    (span,) = exporter.get_finished_spans()
+    assert span.context.trace_flags.sampled
+
+
+def test_emit_from_a_plain_thread_with_no_event_loop_is_exported() -> None:
+    """No event-loop affinity: a purely synchronous caller (pydantic_ai's
+    ``run_sync()``, a background worker thread) enqueues like any other."""
+    sender, exporter = _sender()
+
+    t = threading.Thread(target=sender.emit, args=(_event(),))
+    t.start()
+    t.join()
+    _flush(sender)
+
+    assert len(exporter.get_finished_spans()) == 1
+
+
+def test_emit_when_the_dict_fields_are_set_then_they_travel_as_json_strings() -> None:
+    d = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="r",
+        tool_name="t",
+        arguments={"path": "/x"},
+        hint={"glob": "/x/**"},
+    )
+    sender, exporter = _sender()
+    sender.emit(AuditEvent(decision=d))
+    _flush(sender)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes[semconv.ARGUMENTS] == '{"path": "/x"}'
+    assert span.attributes[semconv.HINT] == '{"glob": "/x/**"}'
+    assert semconv.ATTRIBUTES not in span.attributes  # unset → absent, not null
+
+
+def test_emit_list_fields_travel_as_native_string_arrays() -> None:
+    d = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="r",
+        tool_name="t",
+        user_roles=("a", "b"),
+        violations=("v1",),
+    )
+    sender, exporter = _sender()
+    sender.emit(AuditEvent(decision=d))
+    _flush(sender)
+
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes[semconv.USER_ROLES] == ("a", "b")
+    assert span.attributes[semconv.VIOLATIONS] == ("v1",)
+
+
+# ---------------------------------------------------------------------------
+# close()
+# ---------------------------------------------------------------------------
+
+
+async def test_close_flushes_queued_spans_then_stops_the_provider() -> None:
+    sender, exporter = _sender()
+    sender.emit(_event())
+
     await sender.close()
-    assert len(sender._tasks) == 0
-    sender._client.aclose.assert_awaited_once()
-    sender._sync_client.close.assert_called_once()
+
+    assert len(exporter.get_finished_spans()) == 1
+    assert exporter._stopped  # provider.shutdown() reached the exporter
 
 
 async def test_post_close_emit_is_noop() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
+    sender, exporter = _sender()
     await sender.close()
+
     sender.emit(_event())
-    assert len(sender._tasks) == 0
+
+    assert exporter.get_finished_spans() == ()
 
 
-async def test_network_error_logged_not_raised(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = MagicMock()
-    sender._client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
-    sender._client.aclose = AsyncMock()
-    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-        sender.emit(_event())
-        await asyncio.gather(*sender._tasks)
-    assert any("network error" in r.message for r in caplog.records)
+async def test_close_is_idempotent() -> None:
+    sender, _ = _sender()
+    await sender.close()
+    await sender.close()  # OTel's own guard makes this a logged no-op
 
 
-def test_emit_when_no_running_loop_then_falls_back_to_spawn_sync_send() -> None:
-    """No running loop and no bound loop (built outside any loop, e.g. a
-    pydantic_ai run_sync()-only caller): emit dispatches to the bounded
-    background-thread fallback instead of dropping the event."""
-    sender = AuditSender("http://x/y", "k")
-    assert sender._loop is None
-    sender._spawn_sync_send = MagicMock()
-    event = _event()
-
-    sender.emit(event)
-
-    sender._spawn_sync_send.assert_called_once_with(event)
+# ---------------------------------------------------------------------------
+# Constructor
+# ---------------------------------------------------------------------------
 
 
-def test_emit_when_call_soon_threadsafe_raises_then_falls_back_to_sync_send() -> None:
-    """Loop torn down between the is_closed() check and call_soon_threadsafe:
-    this race no longer drops the event — it falls back to the same path
-    used when there's no loop at all, instead of being swallowed silently."""
-    sender = AuditSender("http://x/y", "k")
-    assert sender._loop is None  # built outside any running loop
-    fake_loop = MagicMock()
-    fake_loop.is_closed.return_value = False
-    fake_loop.call_soon_threadsafe.side_effect = RuntimeError("loop closed mid-call")
-    sender._loop = fake_loop
-    sender._spawn_sync_send = MagicMock()
-    event = _event()
+@pytest.mark.real_span_exporter
+def test_constructor_builds_an_otlp_http_exporter_bearing_the_key() -> None:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-    sender.emit(event)  # must not raise
-
-    assert len(sender._tasks) == 0
-    sender._spawn_sync_send.assert_called_once_with(event)
-
-
-def test_spawn_sync_send_happy_path() -> None:
-    """Spawns a non-daemon background thread that sends the event via
-    _send_sync. Non-daemon is the invariant under test: a run_sync()-only
-    script commonly exits moments after emit() returns, and a daemon thread
-    would get killed before the send completes — silently reproducing the
-    exact drop this fallback exists to fix."""
-    sender = AuditSender("http://x/y", "k")
-    release = threading.Event()
-    client = MagicMock()
-
-    def _post(endpoint: str, json: dict) -> MagicMock:
-        release.wait(timeout=2)
-        return MagicMock(status_code=202, text="")
-
-    client.post = MagicMock(side_effect=_post)
-    sender._sync_client = client
-
-    sender._spawn_sync_send(_event())
-
-    matching = [t for t in threading.enumerate() if t.name == "hexgate-audit-send-sync"]
-    assert len(matching) == 1
-    assert matching[0].daemon is False
-    release.set()
-    matching[0].join(timeout=2)
-    client.post.assert_called_once()
-
-
-def test_spawn_sync_send_when_closing_then_no_thread_is_created() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._closing = True
-    before = {t.ident for t in threading.enumerate()}
-
-    sender._spawn_sync_send(_event())
-
-    assert {t.ident for t in threading.enumerate()} == before
-
-
-def test_spawn_sync_send_when_closing_flips_mid_construction_then_not_registered() -> (
-    None
-):
-    """Regression: the fast self._closing check at the top of
-    _spawn_sync_send isn't authoritative — a thread can pass it, then still
-    be constructing/registering when close() flips _closing and snapshots
-    _sync_threads moments later. The authoritative recheck happens under
-    self._sync_lock, in the same critical section close() uses, so it must
-    catch this case: freeze a caller right after it constructs its Thread
-    object (before the lock-protected recheck), flip _closing + snapshot
-    exactly as close() does, then let it proceed and confirm it backs out
-    cleanly instead of registering into a snapshot that's already been
-    taken."""
-    sender = AuditSender("http://x/y", "k")
-    constructed = threading.Event()
-    proceed = threading.Event()
-    real_thread_cls = threading.Thread
-
-    class _PausingThread(real_thread_cls):
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, **kwargs)
-            constructed.set()
-            proceed.wait(timeout=2)
-
-    with patch("hexgate.tracing._senders.threading.Thread", _PausingThread):
-        spawner = real_thread_cls(target=sender._spawn_sync_send, args=(_event(),))
-        spawner.start()
-        assert constructed.wait(timeout=2), "thread construction never happened"
-
-        # Simulate close()'s atomic flip+snapshot while the caller above is
-        # paused between constructing its thread and registering it.
-        with sender._sync_lock:
-            sender._closing = True
-            pending = list(sender._sync_threads)
-        assert pending == [], "race window: nothing registered yet"
-
-        proceed.set()
-        spawner.join(timeout=2)
-
-    assert sender._sync_threads == set()  # backed out, didn't register
-    assert sender._sync_semaphore.acquire(blocking=False)  # slot given back, not leaked
-
-
-def test_spawn_sync_send_when_saturated_then_event_is_dropped(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    """Mirrors test_semaphore_saturation_drops_events, but for the
-    thread-based fallback path: bounded the same way, by the same
-    max_in_flight value, applied to threading.Semaphore instead of
-    asyncio.Semaphore."""
-    sender = AuditSender("http://x/y", "k", max_in_flight=1)
-    sender._sync_semaphore.acquire()  # simulate one send already in flight
+    sender = AuditSender(endpoint="https://collector.example/v1/traces", api_key="k1")
     try:
-        with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-            for _ in range(5):
-                sender._spawn_sync_send(_event())
-        assert sender._sync_dropped == 5
-        assert any("dropped" in r.message for r in caplog.records)
+        exporter = sender._processor.span_exporter
+        assert isinstance(exporter, OTLPSpanExporter)
+        assert exporter._endpoint == "https://collector.example/v1/traces"
+        assert exporter._headers["Authorization"] == "Bearer k1"
+        assert exporter._timeout == 5.0
     finally:
-        sender._sync_semaphore.release()
+        sender._provider.shutdown()
 
 
-def test_send_sync_happy_path() -> None:
-    """_send_sync has no loop dependency, unlike _send, so it can be called
-    directly from the test thread — no need to spawn or join anything."""
-    sender = AuditSender("http://x/y", "k")
-    sender._sync_client = _stub_sync_client()
-
-    sender._send_sync(_event())
-
-    sender._sync_client.post.assert_called_once()
-    args, kwargs = sender._sync_client.post.call_args
-    assert args[0] == "http://x/y"
-    assert kwargs["json"]["outcome"] == "deny"
-
-
-def test_send_sync_when_status_is_503_then_no_retry(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    """Unlike the async path's _send, _send_sync does not retry on a 503:
-    this thread is non-daemon, so a retry (a full http_timeout plus jitter
-    sleep) would directly extend how long process exit hangs for a
-    run_sync()-only script that never calls hexgate.shutdown()."""
-    sender = AuditSender("http://x/y", "k", http_timeout=0.01)
-    client = MagicMock()
-    client.post = MagicMock(return_value=MagicMock(status_code=503, text="busy"))
-    sender._sync_client = client
-
-    with caplog.at_level(logging.ERROR, logger=_LOGGER_NAME):
-        sender._send_sync(_event())
-
-    assert client.post.call_count == 1
-    assert any("ingest failed" in r.message for r in caplog.records)
-
-
-def test_send_sync_when_request_error_then_logged_not_raised(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    sender = AuditSender("http://x/y", "k")
-    client = MagicMock()
-    client.post = MagicMock(side_effect=httpx.ConnectError("refused"))
-    sender._sync_client = client
-
-    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-        sender._send_sync(_event())
-
-    assert any("network error" in r.message for r in caplog.records)
-
-
-async def test_emit_from_executor_thread_routes_to_bound_loop() -> None:
-    """Off-loop emit (sync tool on a run_in_executor thread) routes to the
-    build-time loop instead of being dropped."""
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
-    assert sender._loop is asyncio.get_running_loop()  # captured at construction
-
-    loop = asyncio.get_running_loop()
-    # Emit from a worker thread, exactly as BaseTool.ainvoke runs a sync tool.
-    await loop.run_in_executor(None, sender.emit, _event())
-    # Pump the loop until the send runs. The task self-discards on completion,
-    # so the durable signal is the POST, not a transient _tasks count.
-    for _ in range(100):
-        if sender._client.post.await_count:
-            break
-        await asyncio.sleep(0)
-
-    await asyncio.gather(*sender._tasks)
-    sender._client.post.assert_called_once()
-
-
-def test_spawn_send_when_closing_then_no_task_is_created() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._closing = True
-    sender._spawn_send(_event())
-    assert len(sender._tasks) == 0
-
-
-async def test_send_when_client_is_none_then_runtimeerror_is_raised() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = None
-    with pytest.raises(RuntimeError, match="before start"):
-        await sender._send(_event())
-
-
-async def test_send_when_response_status_is_4xx_then_failure_is_logged(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = MagicMock()
-    sender._client.post = AsyncMock(
-        return_value=MagicMock(status_code=404, text="not found")
-    )
-    sender._client.aclose = AsyncMock()
-    with caplog.at_level(logging.ERROR, logger=_LOGGER_NAME):
-        sender.emit(_event())
-        await asyncio.gather(*sender._tasks)
-    assert any("ingest failed" in r.message for r in caplog.records)
-
-
-async def test_close_when_drain_times_out_then_warning_is_logged(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = _stub_client()
-    task = asyncio.create_task(asyncio.sleep(10))
-    sender._tasks.add(task)
-    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-        await sender.close(drain_timeout=0.01)
-    assert any("drain timed out" in r.message for r in caplog.records)
-    assert task.cancelled()
-
-
-async def test_close_joins_in_flight_sync_send_before_closing_the_client() -> None:
-    """Regression: close() must not tear down self._sync_client while a
-    fallback thread is still using it. A run_sync()-only script commonly
-    wraps its final cleanup in a fresh asyncio.run(hexgate.shutdown()) —
-    that reaches close() on a brand-new loop while a _send_sync() thread
-    spawned moments earlier may still be in flight, so this race is real,
-    not hypothetical."""
-    sender = AuditSender("http://x/y", "k")
-    started = threading.Event()
-    release = threading.Event()
-    client = MagicMock()
-
-    def _post(endpoint: str, json: dict) -> MagicMock:
-        started.set()
-        release.wait(timeout=2)
-        return MagicMock(status_code=202, text="")
-
-    client.post = MagicMock(side_effect=_post)
-    client.close = MagicMock()
-    sender._sync_client = client
-
-    sender._spawn_sync_send(_event())
-    assert started.wait(timeout=2), "sync send never started"
-
-    close_task = asyncio.create_task(sender.close())
-    await asyncio.sleep(0.05)  # let close() reach the join
-    assert not client.close.called, "client closed while a send was still in flight"
-
-    release.set()
-    await close_task
-
-    client.close.assert_called_once()
-    client.post.assert_called_once()
-
-
-async def test_close_when_sync_drain_times_out_then_client_is_not_closed(
-    caplog: "logging.LogCaptureFixture",
-) -> None:
-    """Unlike the async drain — where a asyncio.wait_for timeout actually
-    cancels the tasks, so aclose() never races anything still running — a
-    timed-out Thread.join() leaves the thread genuinely alive with no way
-    to cancel it. So close() must NOT close the client in this case: doing
-    so would race the still-running thread's in-flight _sync_client.post()
-    exactly like the TOCTOU this module already guards against."""
-    sender = AuditSender("http://x/y", "k")
-    hang = threading.Event()
-    client = MagicMock()
-
-    def _post(endpoint: str, json: dict) -> MagicMock:
-        hang.wait(timeout=5)
-        return MagicMock(status_code=202, text="")
-
-    client.post = MagicMock(side_effect=_post)
-    client.close = MagicMock()
-    sender._sync_client = client
-
-    sender._spawn_sync_send(_event())
-    await asyncio.sleep(0.05)  # let the thread actually start
-
-    with caplog.at_level(logging.WARNING, logger=_LOGGER_NAME):
-        await sender.close(drain_timeout=0.01)
-
-    assert any("sync drain timed out" in r.message for r in caplog.records)
-    client.close.assert_not_called()  # would race the still-running thread
-
-    hang.set()  # release the still-running thread so it doesn't outlive the test
-    for t in threading.enumerate():
-        if t.name in ("hexgate-audit-send-sync", "hexgate-audit-close-finalizer"):
-            t.join(timeout=2)
-
-
-async def test_close_when_sync_drain_times_out_then_finalizer_closes_client() -> None:
-    """The deferral above isn't a permanent leak: close() hands the timed-out
-    straggler off to a finalizer thread that blocks on it and closes the
-    client once it actually finishes — no second close() call needed.
-    shutdown() only ever calls close() once per sender (it clears the
-    registry right after), so relying on a later call would leak the client
-    for good."""
-    sender = AuditSender("http://x/y", "k")
-    hang = threading.Event()
-    client = MagicMock()
-
-    def _post(endpoint: str, json: dict) -> MagicMock:
-        hang.wait(timeout=2)
-        return MagicMock(status_code=202, text="")
-
-    client.post = MagicMock(side_effect=_post)
-    client.close = MagicMock()
-    sender._sync_client = client
-
-    sender._spawn_sync_send(_event())
-    await asyncio.sleep(0.05)
-
-    await sender.close(drain_timeout=0.01)
-    client.close.assert_not_called()
-
-    hang.set()
-    for t in threading.enumerate():
-        if t.name in ("hexgate-audit-send-sync", "hexgate-audit-close-finalizer"):
-            t.join(timeout=2)
-
-    client.close.assert_called_once()
-
-
-async def test_close_when_client_is_none_then_no_error_is_raised() -> None:
-    sender = AuditSender("http://x/y", "k")
-    sender._client = None
-    await sender.close()  # must not raise
-
-
-def test_rebuilds_loop_bound_state_across_event_loops() -> None:
-    """A sender reused across two asyncio.run() loops rebuilds its loop-bound
-    client + semaphore instead of raising 'bound to a different event loop'."""
-    sender = AuditSender("http://x/y", "k")
-    sender._new_client = _stub_client  # rebuild uses a stub, not a real client
-    sender._client = _stub_client()
-
-    async def _emit_and_drain() -> None:
-        sender.emit(_event())
-        await asyncio.gather(*sender._tasks)
-
-    asyncio.run(_emit_and_drain())
-    first_loop, first_client, first_sem = (
-        sender._loop,
-        sender._client,
-        sender._semaphore,
-    )
-
-    asyncio.run(_emit_and_drain())  # fresh loop — must not raise
-
-    assert sender._loop is not first_loop
-    assert sender._client is not first_client  # rebuilt on the new loop
-    assert sender._semaphore is not first_sem
-    sender._client.post.assert_called_once()
+def test_unix_nanos_keeps_microsecond_precision() -> None:
+    at = datetime(2026, 1, 1, 0, 0, 0, 999_999, tzinfo=timezone.utc)
+    assert _unix_nanos(at) % 1_000_000_000 == 999_999_000

@@ -30,10 +30,12 @@ it never changes, blocks, or fails the decision the agent acts on.
 │     │                            │                                   │
 │     │ returns to agent  ◄────────┘ (synchronous, authoritative)      │
 │     │                                                                │
-│     └─► AuditSender.emit(AuditEvent)   (async, best-effort)          │
-│              │  bounded concurrency, drop-on-saturation              │
+│     └─► AuditSender.emit(AuditEvent)   (one OTel span, best-effort)  │
+│              │  BatchSpanProcessor: bounded queue, drop-on-saturation│
 └──────────────┼───────────────────────────────────────────────────────┘
-               │  HTTP POST /v1/audit/decisions   (Bearer <hexgate_key>)
+               │  OTLP/HTTP POST /v1/traces   (Bearer <hexgate_key>)
+               │  → Collector → Redpanda → span-enricher job (see the
+               │    "OpenTelemetry migration design" doc)
                ▼
 ┌─────────────────────── Platform API (FastAPI) ──────────────────────┐
 │  require_project      bearer → project_id                            │
@@ -101,34 +103,45 @@ DENY              "deny"            "policy_denied"
 NEEDS_APPROVAL    "needs_approval"  "approval_required"
 ```
 
-### 2.3 Wire payload — `AuditEvent.as_payload()`
+### 2.3 Wire format — one OTel span per event, `AuditEvent.span_attributes()`
 
 `hexgate/audit.py` — `AuditEvent` wraps a `Decision` plus the caller identity
-read from the active `HexgateContext` scope (`user_id`, `session_id`). `as_payload()`
-produces a flat JSON object whose keys mirror the platform's `DecisionEvent`:
+read from the active `HexgateContext` scope (`user_id`, `session_id`). The
+sender turns it into one OpenTelemetry span under instrumentation scope
+**`hexgate.audit`**; `span_attributes()` produces the span's flat attribute
+map. Every key is a constant in `hexgate/tracing/semconv.py` — the single
+wire contract shared with the platform's span-enricher job, which decodes by
+the same names:
 
-```json
-{
-  "event_id":    "0b9c…",          // str(UUID)
-  "occurred_at": "2026-06-01T13:00:00+00:00",  // ISO 8601, tz-aware
-  "agent_name":  "example_agent",
-  "tool_name":   "read_file",
-  "outcome":     "deny",
-  "user_roles":    ["analyst", "billing"],  // every role evaluated, caller order; [] when none
-  "deciding_role": "",             // role that granted/gated it; "" on a deny
-  "error_type":  "policy_denied",  // "" for allow
-  "reason":      "denied for path",
-  "violations":  ["v1", "v2"],     // tuple → list
-  "hint":        {"glob": "/x/**"},// or null
-  "arguments":   {"path": "/etc/passwd"},  // or null; may be truncated upstream
-  "attributes":  {"department": "finance"},// caller ABAC bag (ctx.*); or null
-  "user_id":     "alice",          // "" when no request context
-  "session_id":  "sess_1"          // "" when unset
-}
+```
+scope: hexgate.audit                       (AuditEvent.SCOPE)
+start_time == end_time = occurred_at       (point-in-time event; no attribute)
+
+sec_ai.event_id       "0b9c…"              str(UUID) — the idempotency key
+sec_ai.agent_name     "example_agent"
+sec_ai.tool_name      "read_file"
+sec_ai.outcome        "deny"
+sec_ai.user_roles     ["analyst", "billing"]   native string array; [] when none
+sec_ai.deciding_role  ""                   role that granted/gated it; "" on a deny
+sec_ai.error_type     "policy_denied"      "" for allow
+sec_ai.reason         "denied for path"
+sec_ai.violations     ["v1", "v2"]         native string array, capped (§7)
+sec_ai.hint           '{"glob": "/x/**"}'  JSON *string*; absent when unset
+sec_ai.arguments      '{"path": "/etc/passwd"}'  JSON string; redacted + capped; absent when unset
+sec_ai.attributes     '{"department": "finance"}' JSON string; caller ABAC bag; absent when empty
+sec_ai.user_id        "alice"              "" when no request context
+sec_ai.session_id     "sess_1"             "" when unset
 ```
 
-Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
-**deliberately absent** from the wire payload.
+Two shape rules worth knowing: the dict fields travel as **JSON strings**
+(their platform byte caps are defined in serialized-JSON bytes, so the capped
+quantity stays the measured one), and unset optional fields are **left out**
+rather than sent as null (OTel attributes can't carry `None`; the enricher
+defaults them). `occurred_at` is the span's `start_time_unix_nano`, not an
+attribute. Server-resolved fields (`project_id`, `agent_version_id`,
+`received_at`) are **deliberately absent**: `project_id` in particular is
+derived from the bearer by the Collector's auth extension and travels as the
+Kafka record key — a self-declared project on the span is never trusted.
 
 ---
 
@@ -148,38 +161,44 @@ Server-resolved fields (`project_id`, `agent_version_id`, `received_at`) are
 
 The sender is **injected per enforcer**, not looked up globally — see §3.4.
 
-### 3.2 `AuditSender` — fire-and-forget POST
+### 3.2 `AuditSender` — one OTel span per event
 
-`hexgate/tracing/_senders.py` — shared by `hexgate.audit` (policy decisions)
-and `hexgate.tracing.usage` (LLM token usage); neither module owns it. `emit()`
-is synchronous and non-blocking; it schedules a
-background `asyncio.Task` that performs the POST. Key behaviours:
+`hexgate/tracing/_senders.py` — shared by `hexgate.audit` (policy decisions),
+`hexgate.tracing.usage` (LLM token usage) and `hexgate.security.bans` (ban
+enforcements); none of those modules owns it. One sender per `api_key` holds
+one `TracerProvider` → `BatchSpanProcessor` → `OTLPSpanExporter` chain and
+three tracers, one per instrumentation scope (`hexgate.audit` /
+`hexgate.usage` / `hexgate.bans`) — the scope name is how the platform tells
+the event types apart. `emit(event)` starts a span on the event's tracer with
+`start_time = occurred_at`, sets `event.span_attributes()`, and ends it at the
+same instant. Key behaviours:
 
-- **Bounded concurrency.** An `asyncio.Semaphore(max_in_flight=32)` caps
-  concurrent POSTs.
-- **Drop on saturation.** If the semaphore is already exhausted, `emit()`
-  increments a dropped counter and returns immediately. A warning is logged on
-  the 1st, 101st, 201st… drop (`_dropped % 100 == 1`).
-- **No event loop → skip.** If `emit()` is called with no running loop (a sync
-  entry point), it no-ops with a one-time warning. Sync agents therefore emit
-  no audit unless wrapped in `asyncio.run`.
-- **Single 503 retry.** `_send` retries once on HTTP 503 after
-  `min(http_timeout, 2.0)`s. Other `>= 400` responses are logged, not retried.
-- **Network errors swallowed.** `httpx.RequestError` is logged at WARNING and
-  dropped; it never surfaces to the agent.
-- **HTTP client:** `httpx.AsyncClient`, 5s timeout, `Authorization: Bearer
-  <api_key>` header.
+- **Never blocks, never raises for transport.** `emit()` only enqueues the
+  finished span onto the processor's in-memory queue; a worker thread batches
+  and POSTs on a timer (5s) or size trigger (512). Export failures surface as
+  the exporter's own log lines, never to the agent.
+- **Drop on saturation.** The queue is bounded (2048 spans); when full the
+  processor drops the newest and logs a warning.
+- **Thread-agnostic.** There is no event-loop affinity: `emit()` behaves the
+  same on an asyncio loop thread, in a `run_in_executor` worker, and in a
+  purely synchronous caller with no loop anywhere (pydantic_ai's `run_sync()`).
+  The old asyncio-task / sync-thread fallback machinery, and the adapters'
+  per-call `drain_pending_tasks()` hooks, are gone with it.
+- **Always sampled, always a root span.** The provider uses `ALWAYS_ON` and
+  each span starts from an empty `Context`, so a customer's own OTel tracing
+  can neither parent our spans nor apply its sampling rate to them.
+- **Retries** are the OTLP exporter's built-in backoff on 429/5xx, bounded by
+  a 5s export timeout (`DEFAULT_EXPORT_TIMEOUT`, replacing OTel's 30s default
+  so a slow platform can't hold process exit).
+- **Auth:** `Authorization: Bearer <api_key>` header on every export.
 
-### 3.3 Loop-rebinding safety
+### 3.3 Endpoint resolution
 
-asyncio primitives (the semaphore, and httpx's connection pool) bind to the
-first event loop that drives them and reject use from any other loop. Because
-the sender is a process-global, a process that runs **more than one event loop**
-(repeated `asyncio.run`, a job worker, a test suite, a notebook) would otherwise
-crash on the second loop. `AuditSender` tracks the loop it is bound to and
-**rebuilds its client + semaphore when the running loop changes**, so a reused
-sender survives loop rotation. Construction stays eager so `configure()` remains
-synchronous.
+The exporter targets `HEXGATE_OTLP_ENDPOINT` when set, else
+`<HEXGATE_API_URL>/v1/traces` (`hexgate.config.env.resolve_otlp_endpoint`).
+The dedicated variable exists because the Collector's OTLP receiver can be
+deployed on its own host/port (4318 by default) rather than behind the FastAPI
+control plane; the fallback keeps the single-host case zero-config.
 
 ### 3.4 Configuration & lifecycle
 
@@ -191,16 +210,15 @@ is a thin, decisions-specific wrapper around the shared
   inert) when no key is resolvable.
 - Resolves `base_url` from the argument or `HEXGATE_API_URL`, defaulting to
   Hexgate Cloud (`https://app.hexgate.ai`); set `http://localhost:8000` when
-  self-hosting. The endpoint is `<base_url>/v1/audit/decisions`.
-- **Keyed by `(api_key, path)`.** Senders live in a shared registry
-  `dict[tuple[str, str], AuditSender]` in `hexgate/tracing/_senders.py`, reused
-  by every event type that goes through it (currently policy decisions and LLM
-  usage — see `hexgate.tracing.usage`). Calling `configure()` again with the
-  **same** key returns the existing decisions sender (idempotent); a
-  **different** key gets its own sender with its own bearer token. Keying on
-  the pair rather than `api_key` alone is what lets one process audit several
-  tenants/keys *and* emit more than one event type per key without a usage
-  sender silently reusing (and POSTing to) the decisions endpoint.
+  self-hosting. The export endpoint follows §3.3.
+- **Keyed by `api_key`.** Senders live in a shared registry
+  `dict[str, AuditSender]` in `hexgate/tracing/_senders.py`. One sender per
+  key carries every event type — decisions, LLM usage and ban enforcements —
+  since the span's instrumentation scope, not a separate endpoint, tells them
+  apart. Calling `configure()` again with the **same** key returns the
+  existing sender (idempotent); a **different** key gets its own sender with
+  its own bearer token, which is what lets one process audit several
+  tenants/keys.
 
 Each adapter wrapper (`wrap_langchain_agent`, `wrap_openai_agent`,
 `wrap_google_agent`, `wrap_pydantic_agent`) and `factory.enforce_policy` call
@@ -229,12 +247,11 @@ There are now two clean operating modes, not three:
 | **Local** | (irrelevant) | `1`, or unset with no key | YAML / disk / builtin | suppressed |
 | **Platform-managed** | set | unset | platform fetch | emitted |
 
-A single INFO line (`sender suppressed for <path>: HEXGATE_LOCAL_MODE=1
-(...)`) is logged the first time a given path (e.g. `/v1/audit/decisions`)
-is configured with both a key and local mode active — exactly the case where
-the suppression would be surprising. The gate is logged **per path**, not
-once per process, since decisions and LLM usage each warrant their own
-first-suppression notice. The "no key anywhere" case stays quiet.
+A single INFO line (`sender suppressed: HEXGATE_LOCAL_MODE=1 (...)`) is
+logged the first time a sender is requested with both a key and local mode
+active — exactly the case where the suppression would be surprising — and
+once per process thereafter stays quiet. The "no key anywhere" case never
+logs.
 
 A separate WARNING fires from `bootstrap()` itself when both `HEXGATE_API_KEY`
 and `HEXGATE_LOCAL_POLICY` are set — that combination is almost always a
@@ -245,26 +262,34 @@ saves a later debugging detour.
 > — chat vs. serve, inner loop vs. team loop — see the
 > ["Which path do I pick?"](/two-paths) page.
 
-`async shutdown()` drains in-flight tasks and closes every sender's HTTP client
-**across the whole shared registry** — decisions and LLM usage alike. It is
-safe to call multiple times and is the recommended teardown hook; either
-`hexgate.audit.shutdown()` or `hexgate.tracing.usage.shutdown()` drains
-everything, since both delegate to the same
-`hexgate.tracing._senders.shutdown()`. Absent it, background sends still
-pending when the event loop tears down are **cancelled, not finished** —
-events emitted shortly before process exit are lost. GC closing the httpx
-client does not flush anything.
+#### Shutdown contract — host applications must flush
+
+`async shutdown()` flushes every sender's queued spans and stops its worker
+**across the whole shared registry** — decisions, LLM usage and ban
+enforcements alike. It is safe to call multiple times and is the required
+teardown hook: **the host application calls `await hexgate.audit.shutdown()`
+before exit.** Either `hexgate.audit.shutdown()` or
+`hexgate.tracing.usage.shutdown()` does it, since both delegate to
+`hexgate.tracing._senders.shutdown()`.
+
+Why it's required: normal traffic flushes itself on the processor's 5s timer,
+but the final in-flight batch only leaves the process on an explicit flush.
+The processor's worker is a **daemon thread** — it does not keep the
+interpreter alive to finish a pending export the way the old non-daemon
+fallback threads did. There is one safety net: `TracerProvider` registers an
+`atexit` hook (`shutdown_on_exit=True`) that performs the same flush, bounded
+by the export timeout, so a script that forgets still usually gets its tail
+out — but an interpreter that exits via `os._exit`, a killed worker, or a
+flush that outlives the timeout loses whatever was queued. Call `shutdown()`.
 
 | Function | Purpose |
 |----------|---------|
-| `hexgate.tracing._senders.get_or_create_sender(path, key, url)` | Get-or-create the sender for `(key, path)`. Idempotent per pair. |
-| `hexgate.tracing._senders.get_sender(path, key)` | Registry lookup by `(key, path)` (diagnostics). Prefer the injected sender. |
-| `hexgate.tracing._senders.shutdown()` | Drain + close every sender for every path. |
-| `hexgate.audit.configure(key, url)` | Decisions-specific: `get_or_create_sender("/v1/audit/decisions", key, url)`. |
-| `hexgate.audit.get_sender(key)` | Decisions-specific: `get_sender("/v1/audit/decisions", key)`. |
-| `hexgate.tracing.usage.configure_usage_sender(key, url)` | LLM-usage-specific: `get_or_create_sender("/v1/audit/llm-invocations", key, url)`. |
-| `hexgate.tracing.usage.get_usage_sender(key)` | LLM-usage-specific: `get_sender("/v1/audit/llm-invocations", key)`. |
-| `hexgate.audit.shutdown()` / `hexgate.tracing.usage.shutdown()` | Both call the shared `shutdown()`; either drains all event types. |
+| `hexgate.tracing._senders.get_or_create_sender(key, url)` | Get-or-create the sender for `key`. Idempotent per key. |
+| `hexgate.tracing._senders.get_sender(key)` | Registry lookup by `key` (diagnostics). Prefer the injected sender. |
+| `hexgate.tracing._senders.shutdown()` | Flush + stop every sender. |
+| `hexgate.audit.configure(key, url)` / `hexgate.tracing.usage.configure_usage_sender(key, url)` / `hexgate.security.bans.configure_ban_sink(key, url)` | Per-module wrappers over `get_or_create_sender(key, url)`; all three return the same sender for the same key. |
+| `hexgate.audit.get_sender(key)` / `hexgate.tracing.usage.get_usage_sender(key)` | Wrappers over `get_sender(key)`. |
+| `hexgate.audit.shutdown()` / `hexgate.tracing.usage.shutdown()` | Both call the shared `shutdown()`; either flushes all event types. |
 
 ---
 
