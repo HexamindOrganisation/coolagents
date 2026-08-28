@@ -70,14 +70,28 @@ async def _modular_bundle(
     live bundles untouched — the fail-safe in docs/adr/R-POL-002. The SDK
     resolve exceptions are imported here, on the modular path only, so a classic
     save never touches the SDK.
+
+    The except tuple also covers ``yaml.YAMLError`` / pydantic ``ValidationError``:
+    ``resolved_policy_yaml`` re-parses every stored module, and a row valid at
+    write time can later fail to parse (an SDK schema tightening, or a row edited
+    directly in the DB). Those must fold to "no bundle", not escape as a 500.
     """
+    import yaml
+    from pydantic import ValidationError
+
     from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
     from hexgate_api.features.policy_modules import service as modules
 
     try:
         policy_yaml = await modules.resolved_policy_yaml(session, project_id)
-    except (LinkError, PolicySetError, ConstraintParseError) as exc:
+    except (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        ValidationError,
+        yaml.YAMLError,
+    ) as exc:
         logger.warning(
             "modular project %s does not resolve; no bundle: %s", project_id, exc
         )
@@ -105,7 +119,7 @@ async def bundle_for_agent(
 
 async def recompile_project(
     session: AsyncSession, project_id: str, sign: Callable[[bytes], bytes]
-) -> int:
+) -> int | None:
     """Recompile every agent in a project after its modules or roles change.
 
     Modular: resolve + compile once, reusing the single bundle for all agents.
@@ -119,7 +133,13 @@ async def recompile_project(
     from its own policy and **nulls the bundle when that policy no longer
     compiles**, matching ``update_agent`` and the ``Agent.compiled_wasm``
     invariant (a broken policy drops its stale bundle so the SDK falls back to
-    pydantic rather than serving a now-wrong WASM). Returns the count touched.
+    pydantic rather than serving a now-wrong WASM).
+
+    Returns the number of agents whose bundle was set, or ``None`` when the
+    project is modular but its bundle could not be built (live bundles left
+    untouched). The ``None`` return lets a caller distinguish "nothing to do"
+    (``0``: no agents) from "could not build" — the classic→modular flip relies
+    on it to avoid leaving agents on a stale classic bundle (see the roles PUT).
     """
     from hexgate_api.features.policy_modules import service as modules
 
@@ -131,7 +151,7 @@ async def recompile_project(
     if await modules.is_modular(session, project_id):
         bundle = await _modular_bundle(session, project_id, sign)
         if bundle is None:
-            return 0  # fail-safe: leave live bundles as-is
+            return None  # can't build now: leave live bundles as-is
         for agent in agents:
             agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
             session.add(agent)
@@ -361,7 +381,19 @@ async def register_manifest(
         # Brand-new agent — seed the policy + bundle so the dashboard's
         # Policies editor has something to render and ``hexgate serve``
         # has a signed bundle to ship.
-        agent.policy_yaml = _default_policy_for_manifest(manifest)
+        #
+        # In a MODULAR project the agent enforces the shared modular bundle;
+        # policy_yaml is only the pydantic fallback if that bundle can't be
+        # built/served. Seed it deny-all (fail closed) rather than the
+        # permissive tool-derived starter, so a transient modular-compile
+        # failure can't hand the new agent more than the modules would allow.
+        from hexgate_api.features.agents.compiler import DENY_ALL_POLICY_YAML
+        from hexgate_api.features.policy_modules import service as modules
+
+        if await modules.is_modular(session, project_id):
+            agent.policy_yaml = DENY_ALL_POLICY_YAML
+        else:
+            agent.policy_yaml = _default_policy_for_manifest(manifest)
         bundle = await bundle_for_agent(session, agent, sign)
         if bundle is not None:
             agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle

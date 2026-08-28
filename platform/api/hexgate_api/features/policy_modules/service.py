@@ -163,6 +163,20 @@ async def get_roles(session: AsyncSession, project_id: str) -> dict[str, list[st
     return {row.role: list(row.capabilities) for row in rows}
 
 
+async def roles_importing(
+    session: AsyncSession, project_id: str, path: str
+) -> list[str]:
+    """Role names whose binding still imports the capability ``path``.
+
+    Used to block deleting a capability that a role still references: without
+    this the delete succeeds but the project stops resolving (the SDK linker
+    raises "role imports unknown capability"), so no new bundle is built and
+    every agent keeps the old one — still granting the deleted capability.
+    """
+    roles = await get_roles(session, project_id)
+    return sorted(role for role, caps in roles.items() if path in caps)
+
+
 async def set_roles(
     session: AsyncSession, *, project_id: str, roles: dict[str, list[str]]
 ) -> dict[str, list[str]]:
@@ -249,6 +263,32 @@ async def check(session: AsyncSession, project_id: str):
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
     return check_project(boundaries, capabilities, roles)
+
+
+async def resolves(session: AsyncSession, project_id: str) -> bool:
+    """Whether the project's modules currently compose into a valid policy.
+
+    A cheap, opa-free precondition for accepting a policy write: ``True`` only if
+    ``resolve`` succeeds. Catches the same set as the compile fail-safe — the SDK
+    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
+    from re-parsing a stored row (see ``agents.service._modular_bundle``).
+    """
+    from pydantic import ValidationError
+
+    from hexgate.security import LinkError, PolicySetError
+    from hexgate.security.constraints import ConstraintParseError
+
+    try:
+        await resolve(session, project_id)
+        return True
+    except (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        ValidationError,
+        yaml.YAMLError,
+    ):
+        return False
 
 
 # --- enforcement integration (see docs/adr/R-POL-002) ------------------------

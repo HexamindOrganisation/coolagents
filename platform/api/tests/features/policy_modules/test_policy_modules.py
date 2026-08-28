@@ -405,7 +405,7 @@ async def test_recompile_project_noop_leaves_bundles_when_unresolvable(session_f
         await pm.set_roles(s, project_id=proj.id, roles={"default": ["nonexistent"]})
 
         n = await asvc.recompile_project(s, proj.id, _dummy_sign)
-        assert n == 0
+        assert n is None  # modular but couldn't build -> signal "not built"
         await s.refresh(agent)
         assert agent.compiled_wasm == b"OLD"  # last-good bundle untouched
 
@@ -558,3 +558,135 @@ def test_identical_role_put_skips_recompile(client: TestClient, monkeypatch) -> 
     # identical re-save -> no recompile
     assert client.put(f"/v1/projects/{pid}/policy-roles", json=body).status_code == 200
     assert calls["n"] == after_change
+
+
+# --- review fixes: fail-closed on modular flips / deletes -------------------
+
+
+def test_delete_capability_still_imported_is_409(client: TestClient) -> None:
+    # Deleting a capability a role still imports must 409, not silently succeed
+    # and leave every agent enforcing the old (still-granting) bundle.
+    pid = _project(client)
+    _seed_bundle(client, pid)  # 'billing' imports read_only + payments
+    r = client.delete(f"/v1/projects/{pid}/policy-modules/capability/payments")
+    assert r.status_code == 409, r.text
+    rows = client.get(f"/v1/projects/{pid}/policy-modules").json()
+    assert any(m["path"] == "payments" for m in rows)  # not deleted
+    # Removing it from the binding first makes the delete succeed.
+    client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={"roles": {"default": ["read_only"], "billing": ["read_only"]}},
+    )
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-modules/capability/payments"
+        ).status_code
+        == 204
+    )
+
+
+def test_flip_to_modular_with_unresolvable_roles_is_rejected(
+    client: TestClient,
+) -> None:
+    # Binding a role that imports an unknown capability would flip the project
+    # modular while it can't resolve -> reject and stay classic.
+    pid = _project(client)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["nope"]}}
+    )
+    assert r.status_code == 409, r.text
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {}
+
+
+async def test_flip_to_modular_rejected_when_bundle_cannot_build(
+    session_factory, client: TestClient, monkeypatch
+) -> None:
+    # The flip resolves fine but the bundle can't compile (opa down). We must
+    # reject + roll back rather than leave is_modular True with the agent still
+    # on its now-wrong classic bundle.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.models import Agent
+
+    monkeypatch.setattr(asvc, "compile_bundle", lambda py, sign: None)  # opa "down"
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    async with session_factory() as s:
+        agent = Agent(
+            id=new_id(Agent),
+            project_id=pid,
+            name="a1",
+            agent_yaml="",
+            policy_yaml="version: 1\n",
+            system_md="",
+        )
+        agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
+            b"CLASSIC",
+            "M",
+            b"S",
+        )
+        s.add(agent)
+        await s.commit()
+
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    assert r.status_code == 409, r.text
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {}
+
+    async with session_factory() as s:
+        from sqlmodel import select
+
+        from hexgate_api.models import Agent as A
+
+        row = (await s.exec(select(A).where(A.project_id == pid))).first()
+        assert row.compiled_wasm == b"CLASSIC"  # stale classic bundle left intact
+
+
+async def test_register_into_modular_project_seeds_deny_all_fallback(
+    session_factory, monkeypatch
+) -> None:
+    # A new agent in a modular project must fall back to deny-all (not a
+    # permissive tool-derived starter) if the modular bundle can't be served.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.agents.compiler import DENY_ALL_POLICY_YAML
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.schemas import (
+        AgentFramework,
+        AgentManifest,
+        InputSchema,
+        ToolDefinition,
+    )
+
+    monkeypatch.setattr(asvc, "compile_bundle", lambda py, sign: (b"W", "M", b"S"))
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+
+        manifest = AgentManifest(
+            name="newbot",
+            framework=AgentFramework.LANGCHAIN,
+            tools=[
+                ToolDefinition(
+                    name="delete_thing",  # write-shape: permissive under the starter
+                    description=None,
+                    input_schema=InputSchema(properties={}, required=[]),
+                )
+            ],
+        )
+        _, created = await asvc.register_manifest(
+            s, proj.id, manifest, sign=_dummy_sign
+        )
+        assert created
+        agent = await asvc.get_agent(s, proj.id, "newbot")
+        assert agent is not None
+        assert agent.policy_yaml == DENY_ALL_POLICY_YAML
