@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.db import get_session
+from hexgate_api.core.locks import project_lock
 from hexgate_api.deps.org import require_org_member
 from hexgate_api.deps.project import require_project_admin
 from hexgate_api.features.policy_modules import service
@@ -33,6 +34,12 @@ from hexgate_api.schemas import (
 router = APIRouter()
 
 logger = logging.getLogger("hexgate.platform.policy_modules")
+
+
+def _norm(roles: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Order-insensitive view of a role binding, so re-saving the same imports in
+    a different order doesn't read as a change and trigger a needless recompile."""
+    return {role: sorted(caps) for role, caps in roles.items()}
 
 
 def _module_read(row: PolicyModule) -> PolicyModuleRead:
@@ -90,16 +97,23 @@ async def api_put_policy_module(
 ) -> PolicyModuleRead:
     """Create or replace one module. 422 if the tier is unknown or the content
     is not a valid policy."""
-    try:
-        row = await service.upsert_module(
-            session, project_id=project_id, tier=tier, path=path, content=body.content
-        )
-    except service.InvalidModuleError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    # Module content only affects enforcement once the project is modular; a
-    # classic library edit changes no agent, so skip the recompile there.
-    if await service.is_modular(session, project_id):
-        await _recompile_project_agents(session, project_id)
+    # Serialize the write + recompile per project so overlapping edits can't
+    # commit bundles out of order (see core.locks).
+    async with project_lock(project_id):
+        try:
+            row = await service.upsert_module(
+                session,
+                project_id=project_id,
+                tier=tier,
+                path=path,
+                content=body.content,
+            )
+        except service.InvalidModuleError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        # Module content only affects enforcement once the project is modular; a
+        # classic library edit changes no agent, so skip the recompile there.
+        if await service.is_modular(session, project_id):
+            await _recompile_project_agents(session, project_id)
     return _module_read(row)
 
 
@@ -115,29 +129,30 @@ async def api_delete_policy_module(
     _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    # Refuse to delete a capability a role binding still imports: the delete
-    # would otherwise succeed while the project stops resolving (linker: "role
-    # imports unknown capability"), so no new bundle builds and every agent
-    # keeps the old one — still granting the just-deleted capability. Make the
-    # dangling reference the caller's problem to fix first.
-    if tier == "capability":
-        used_by = await service.roles_importing(session, project_id, path)
-        if used_by:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"capability {path!r} is still imported by role(s) "
-                    f"{used_by}; remove it from those role bindings first"
-                ),
-            )
+    async with project_lock(project_id):
+        # Refuse to delete a capability a role binding still imports: the delete
+        # would otherwise succeed while the project stops resolving (linker:
+        # "role imports unknown capability"), so no new bundle builds and every
+        # agent keeps the old one — still granting the just-deleted capability.
+        # Make the dangling reference the caller's problem to fix first.
+        if tier == "capability":
+            used_by = await service.roles_importing(session, project_id, path)
+            if used_by:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"capability {path!r} is still imported by role(s) "
+                        f"{used_by}; remove it from those role bindings first"
+                    ),
+                )
 
-    deleted = await service.delete_module(
-        session, project_id=project_id, tier=tier, path=path
-    )
-    if not deleted:
-        raise HTTPException(status_code=404, detail="module not found")
-    if await service.is_modular(session, project_id):
-        await _recompile_project_agents(session, project_id)
+        deleted = await service.delete_module(
+            session, project_id=project_id, tier=tier, path=path
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="module not found")
+        if await service.is_modular(session, project_id):
+            await _recompile_project_agents(session, project_id)
     return Response(status_code=204)
 
 
@@ -160,56 +175,66 @@ async def api_set_policy_roles(
     _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
     session: AsyncSession = Depends(get_session),
 ) -> RoleBindingsRead:
-    before = await service.get_roles(session, project_id)
-    roles = await service.set_roles(session, project_id=project_id, roles=body.roles)
-    # Idempotent re-save: nothing changed, so skip the resolve + opa compile.
-    if roles == before:
-        return RoleBindingsRead(roles=roles)
-
-    now_modular = bool(roles)
-    was_modular = bool(before)
-
-    # A modular project whose bindings don't resolve (a role importing an unknown
-    # capability, a link error) must not be saved: is_modular would flip True
-    # while agents keep stale/absent enforcement, with no way to notice. Reject
-    # and restore the previous bindings so the project stays in a resolvable state.
-    if now_modular and not await service.resolves(session, project_id):
-        await service.set_roles(session, project_id=project_id, roles=before)
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "role bindings do not resolve to a valid policy; not saved "
-                "(see /policy/check for details)"
-            ),
+    # Hold the project lock across read-before → write → recompile so `before`
+    # can't go stale under a concurrent PUT (comparing a pre-write snapshot
+    # outside the lock could wrongly skip a needed recompile). See core.locks.
+    async with project_lock(project_id):
+        before = await service.get_roles(session, project_id)
+        roles = await service.set_roles(
+            session, project_id=project_id, roles=body.roles
         )
+        # Idempotent re-save (order-insensitive): nothing changed, so skip the
+        # resolve + opa compile.
+        if _norm(roles) == _norm(before):
+            return RoleBindingsRead(roles=roles)
 
-    if now_modular and not was_modular:
-        # classic→modular flip: agents currently hold policy_yaml-compiled
-        # bundles that are now wrong. Require a freshly-built modular bundle;
-        # if none can be built (e.g. opa unavailable) roll back rather than
-        # leave is_modular True with stale classic WASM in force.
-        from hexgate_api.core.keystore import keystore
-        from hexgate_api.features.agents.service import recompile_project
+        now_modular = bool(roles)
+        was_modular = bool(before)
 
-        try:
-            built = await recompile_project(session, project_id, keystore.sign)
-        except Exception:  # noqa: BLE001 — treat any compile failure as "can't build"
-            logger.exception("modular flip recompile failed for project %s", project_id)
-            built = None
-        if built is None:
+        # A modular project whose bindings don't resolve (a role importing an
+        # unknown capability, a link error) must not be saved: is_modular would
+        # flip True while agents keep stale/absent enforcement, with no way to
+        # notice. Reject and restore the previous bindings so the project stays
+        # in a resolvable state.
+        if now_modular and not await service.resolves(session, project_id):
             await service.set_roles(session, project_id=project_id, roles=before)
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "could not compile the modular policy bundle "
-                    "(is opa available?); role bindings not saved"
+                    "role bindings do not resolve to a valid policy; not saved "
+                    "(see /policy/check for details)"
                 ),
             )
-    else:
-        # Already modular (module/role tweak) or dropped back to classic — the
-        # existing best-effort fail-safe applies (keep live bundles on a
-        # transient failure; the store row is the source of truth).
-        await _recompile_project_agents(session, project_id)
+
+        if now_modular and not was_modular:
+            # classic→modular flip: agents currently hold policy_yaml-compiled
+            # bundles that are now wrong. Require a freshly-built modular bundle;
+            # if none can be built (e.g. opa unavailable) roll back rather than
+            # leave is_modular True with stale classic WASM in force.
+            from hexgate_api.core.keystore import keystore
+            from hexgate_api.features.agents.service import recompile_project
+
+            try:
+                built = await recompile_project(session, project_id, keystore.sign)
+            except Exception:  # noqa: BLE001 — any compile failure is "can't build"
+                logger.exception(
+                    "modular flip recompile failed for project %s", project_id
+                )
+                built = None
+            if built is None:
+                await service.set_roles(session, project_id=project_id, roles=before)
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "could not compile the modular policy bundle "
+                        "(is opa available?); role bindings not saved"
+                    ),
+                )
+        else:
+            # Already modular (module/role tweak) or dropped back to classic —
+            # the existing best-effort fail-safe applies (keep live bundles on a
+            # transient failure; the store row is the source of truth).
+            await _recompile_project_agents(session, project_id)
 
     return RoleBindingsRead(roles=roles)
 

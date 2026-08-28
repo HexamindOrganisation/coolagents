@@ -560,6 +560,32 @@ def test_identical_role_put_skips_recompile(client: TestClient, monkeypatch) -> 
     assert calls["n"] == after_change
 
 
+def test_reordered_role_put_skips_recompile(client: TestClient, monkeypatch) -> None:
+    # Re-saving the same imports in a different order is not a change -> no
+    # recompile (the comparison is order-insensitive).
+    import hexgate_api.features.agents.service as asvc
+
+    calls = {"n": 0}
+    real = asvc.recompile_project
+
+    async def spy(session, project_id, sign):
+        calls["n"] += 1
+        return await real(session, project_id, sign)
+
+    monkeypatch.setattr(asvc, "recompile_project", spy)
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    b1 = {"roles": {"billing": ["read_only", "payments"]}}
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=b1).status_code == 200
+    after_change = calls["n"]
+    assert after_change >= 1
+    b2 = {"roles": {"billing": ["payments", "read_only"]}}  # same set, reordered
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=b2).status_code == 200
+    assert calls["n"] == after_change  # not recompiled
+
+
 # --- review fixes: fail-closed on modular flips / deletes -------------------
 
 
