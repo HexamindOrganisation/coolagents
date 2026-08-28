@@ -14,7 +14,11 @@ Agent-level admission (`agent.run`) and reach (`agent.handoff:<t>` / `agent.tool
   - Only reach from a **Hexgate-governed source** (the resolved top-level agent) is gated; a transfer from an un-governed sub-agent is left alone (sub-agent governance is a later slice).
 - **Admission is enforced at run entry for the top-level agent**, inside the context scope so the caller's role is visible, on the OpenAI and Google runners. A non-admitted caller is refused before the run starts.
 - **Handoff depth is a per-run runaway cap, independent of reach policy.** A handoff transfers control forward, so the count of handoffs within one run is the chain depth; past `max_handoff_depth` the seam raises `HandoffDepthExceededError`. OpenAI counts on the per-run hook; Google counts per `invocation_id` on the shared plugin and clears it in `after_run_callback`.
-- **Where the framework hides the target, warn — never silently pass.** pydantic_ai (delegation inside a tool body), the native single-graph agent (no handoff seam), and agent-as-tool on OpenAI expose no target handle, so a declared block is surfaced by `warn_if_admission_unenforced` / `warn_if_reach_unenforced` at wrap time.
+- **Where a seam does not exist or the framework hides the target, warn — never silently pass.** Two distinct limits, both surfaced by `warn_if_admission_unenforced` / `warn_if_reach_unenforced` / `warn_if_tool_reach_unenforced` at wrap time rather than failing open:
+  - **The transfer concept does not exist.** pydantic_ai has no native handoff primitive (multi-agent there is agent-as-tool, done inside a tool body); the native single-graph agent has no handoff/transfer seam at all. There is nothing to intercept, by nature — not a missing hook.
+  - **The concept exists but the SDK exposes no target handle.** OpenAI `Agent.as_tool()` produces a plain function tool with no back-link to the target agent, so agent-as-tool reach cannot be resolved to a name at the seam even though the delegation is real.
+
+  This is why the coverage is uneven and must be stated, not implied: OpenAI enforces handoff reach but only *warns* on agent-as-tool; Google enforces both (its `transfer_to_agent` and `AgentTool` both carry the target); pydantic_ai and native have no transfer seam and warn.
 
 ## Why
 
@@ -34,7 +38,7 @@ Warn-and-defer keeps closed-world honest across frameworks: enforcement lands on
 
 - **Per-sub-agent / post-handoff admission** (B re-checking admission at its run entry): needs resolving sub-agent policies and handling unregistered sub-agents, so it is out of this slice. Reach from the governed source is the boundary control today.
 - **Agent-as-tool reach on OpenAI** (`Agent.as_tool`): no metadata links the produced function tool back to a target agent name at the seam, so it cannot be *enforced* — but a policy that declares a `via: tool` target now *warns* (`warn_if_tool_reach_unenforced`, gated on `declares_tool_reach()` so handoff-only policies are not spammed), so the gap is no longer silent.
-- **pydantic_ai and native reach**: no runtime target handle.
+- **pydantic_ai and native reach**: no transfer seam exists to hook (the handoff concept is absent), so there is no follow-up to "wire" — reach there would require the framework to grow a transfer primitive, or Hexgate to model delegation at a different layer.
 - **Manifest drift lint** (reach key vs declared sub-agents/handoffs): needs `AgentManifest` to carry target declarations, a cross-package change.
 
 ## Verify
