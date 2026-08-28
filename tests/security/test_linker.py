@@ -469,3 +469,55 @@ def test_default_role_synthesised_when_absent_is_deny_all():
     assert "default" in result.by_role
     assert result.policy_set.policy_for("default").tools == {}
     assert "x" in result.policy_set.policy_for("billing").tools
+
+
+# --- (role, agent) matrix: per-agent resolve (Path A) -----------------------
+
+
+def test_resolve_for_agent_uses_agent_cell_over_wildcard():
+    from hexgate.security import AgentBinding
+
+    read_only = _mod("read_only", "capability", {"view": _allow()})
+    payments = _mod("payments", "capability", {"refund": _allow()})
+    roles = {
+        "member": {
+            "*": AgentBinding(capabilities=("read_only",)),
+            "billing_bot": AgentBinding(capabilities=("read_only", "payments")),
+        }
+    }
+    lib = [read_only, payments]
+
+    # The named agent sees its own cell -> refund granted.
+    billing = resolve_for_project([], lib, roles, agent="billing_bot")
+    assert "refund" in billing.by_role["member"].effective["default"].tools
+
+    # An unnamed agent falls back to the "*" cell -> read_only only.
+    other = resolve_for_project([], lib, roles, agent="triage_bot")
+    other_tools = other.by_role["member"].effective["default"].tools
+    assert "view" in other_tools and "refund" not in other_tools
+
+
+def test_agent_cell_replaces_wildcard_so_agent_can_be_more_restricted():
+    from hexgate.security import AgentBinding
+
+    read_only = _mod("read_only", "capability", {"view": _allow()})
+    payments = _mod("payments", "capability", {"refund": _allow()})
+    roles = {
+        "member": {
+            "*": AgentBinding(capabilities=("read_only", "payments")),  # generic: both
+            "triage_bot": AgentBinding(capabilities=("read_only",)),  # restricted
+        }
+    }
+    triage = resolve_for_project([], [read_only, payments], roles, agent="triage_bot")
+    tools = triage.by_role["member"].effective["default"].tools
+    # Replace, not merge: triage_bot does NOT inherit payments from "*".
+    assert "view" in tools and "refund" not in tools
+
+
+def test_flat_roles_still_resolve_agent_independently():
+    # Legacy flat `role: [caps]` applies to every agent (the "*" cell).
+    read_only = _mod("read_only", "capability", {"view": _allow()})
+    roles = {"member": ["read_only"]}
+    for agent in ("main", "anything"):
+        res = resolve_for_project([], [read_only], roles, agent=agent)
+        assert "view" in res.by_role["member"].effective["default"].tools

@@ -40,12 +40,14 @@ from hexgate.security.models import (
     ToolPolicy,
 )
 from hexgate.security.modules import (
+    DEFAULT_AGENT,
     GRANT_MODES,
     LinkError,
     LinkResult,
     ModuleContent,
     ProjectLinkResult,
     Provenance,
+    RoleMatrix,
     RuleTrace,
 )
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME, PolicySet
@@ -73,19 +75,26 @@ def link_policy_set(
 
 
 def resolve_role_map(
-    roles: Mapping[str, Sequence[str]] | None, library: list[ModuleContent]
+    roles: RoleMatrix | Mapping[str, Sequence[str]] | None,
+    library: list[ModuleContent],
+    agent: str = DEFAULT_AGENT,
 ) -> dict[str, list[ModuleContent]]:
-    """Expand a role binding into ``{role: [capability modules]}``.
+    """Expand a role binding into ``{role: [capability modules]}`` for one agent.
 
     The one place that defines role expansion, shared by the resolver and the
     analyzer so they can never lint a different role set than what compiles.
 
+    ``agent`` is the executing agent name. Per role, its binding is the agent's
+    own cell if named, else the ``"*"`` generic cell, else empty (fail-closed) —
+    the ``(role, agent) -> (role, "*") -> deny`` fallback. A named agent's cell
+    **replaces** ``"*"`` (it does not merge), so an agent can be more restricted.
+
     ``roles is None`` (no ``roles.yaml``) means a single ``default`` importing
-    every capability — the all-compose back-compat default. An **empty** binding
-    (``{}``, a present-but-empty or typo'd ``roles.yaml``) is not the same: it
-    yields a fail-closed empty ``default``, so a mistake can't silently widen
-    access. A ``default`` bucket is always present. An unknown capability name is
-    a :class:`LinkError` (same contract from both callers).
+    every capability — the all-compose back-compat default, agent-independent. An
+    **empty** binding (``{}``, a present-but-empty or typo'd ``roles.yaml``) is
+    not the same: it yields a fail-closed empty ``default``, so a mistake can't
+    silently widen access. A ``default`` bucket is always present. An unknown
+    capability name is a :class:`LinkError` (same contract from both callers).
     """
     index: dict[str, ModuleContent] = {cap.name: cap for cap in library}
     if roles is None:
@@ -93,7 +102,13 @@ def resolve_role_map(
             DEFAULT_ROLE_NAME: [cap.name for cap in library]
         }
     else:
-        names_by_role = {name: list(sel) for name, sel in roles.items()}
+        names_by_role = {}
+        for role, cells in roles.items():
+            if isinstance(cells, Mapping):  # the (role, agent) matrix
+                binding = cells.get(agent) or cells.get(DEFAULT_AGENT)
+                names_by_role[role] = list(binding.capabilities) if binding else []
+            else:  # legacy flat `role: [names]` — agent-independent, = the "*" cell
+                names_by_role[role] = list(cells)
     names_by_role.setdefault(DEFAULT_ROLE_NAME, [])
 
     resolved: dict[str, list[ModuleContent]] = {}
@@ -103,8 +118,8 @@ def resolve_role_map(
             cap = index.get(name)
             if cap is None:
                 raise LinkError(
-                    f"role {role!r} imports unknown capability {name!r} "
-                    f"(known capabilities: {sorted(index)!r})"
+                    f"role {role!r} agent {agent!r} imports unknown capability "
+                    f"{name!r} (known capabilities: {sorted(index)!r})"
                 )
             caps.append(cap)
         resolved[role] = caps
@@ -114,35 +129,38 @@ def resolve_role_map(
 def resolve_for_project(
     boundaries: list[ModuleContent],
     library: list[ModuleContent],
-    roles: Mapping[str, Sequence[str]] | None,
+    roles: RoleMatrix | None,
     *,
-    agent_leaf: Sequence[ModuleContent] = (),
-    agent_boundaries: Sequence[ModuleContent] = (),
+    agent: str = DEFAULT_AGENT,
 ) -> ProjectLinkResult:
-    """Resolve a project into one role-keyed :class:`PolicySet`.
+    """Resolve a project into one role-keyed :class:`PolicySet`, **for one agent**.
 
-    Boundaries are role-independent: every role is folded against the same
-    ``boundaries + agent_boundaries``, so a role can only ever narrow, never
-    widen, its ceiling. A role names the **capabilities** it imports; the fold
-    (:func:`link`) is reused unchanged, once per role.
+    ``agent`` names the executing agent whose column of the ``(role, agent)``
+    matrix to resolve (defaulting to the ``"*"`` generic agent — the whole-project
+    view and the back-compat path). Each agent gets its own role-keyed result;
+    the caller folds one bundle per agent (Path A: the agent dimension is resolved
+    away here, so the compiled bundle and the engines stay role-keyed).
 
-    ``roles`` maps a role name to the capability *names* it selects (a name is a
-    :attr:`ModuleContent.name`). ``None`` (no binding at all) means a single
-    ``default`` role importing every capability — the all-compose back-compat
-    path. A ``default`` role is always present, so unroled callers get
-    fail-closed deny rather than a missing bucket.
+    Boundaries are role- *and* agent-independent global ceilings: every role is
+    folded against the same ``boundaries``, so no role or agent can widen its
+    ceiling. A ``(role, agent)`` cell names the **capabilities** it imports; the
+    fold (:func:`link`) is reused unchanged, once per role.
 
-    Every capability in the library is validated up front (:func:`_reject_capability_denies`),
-    not just the ones a role imports, so a malformed but unbound module fails
-    loudly instead of lurking until someone binds it.
+    ``roles`` is the normalized matrix (``role -> agent-or-"*" -> AgentBinding``).
+    ``None`` (no binding at all) means a single ``default`` role importing every
+    capability — the all-compose back-compat path. A ``default`` role is always
+    present, so unroled callers get fail-closed deny rather than a missing bucket.
+
+    Every capability in the library is validated up front
+    (:func:`_reject_capability_denies`), not just the ones a role imports, so a
+    malformed but unbound module fails loudly instead of lurking until bound.
     """
-    _reject_capability_denies([*library, *agent_leaf])
-    resolved = resolve_role_map(roles, library)
-    fences = [*boundaries, *agent_boundaries]
+    _reject_capability_denies(library)
+    resolved = resolve_role_map(roles, library, agent)
     by_role: dict[str, LinkResult] = {}
     effective: dict[str, AgentPolicy] = {}
     for role, caps in resolved.items():
-        result = link_policy_set(fences, [*caps, *agent_leaf])
+        result = link_policy_set(boundaries, caps)
         by_role[role] = result
         effective[role] = result.effective[DEFAULT_ROLE_NAME]
 

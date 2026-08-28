@@ -19,7 +19,13 @@ from typing import Protocol
 import yaml
 
 from hexgate.security.models import AgentPolicy
-from hexgate.security.modules import LayerKind, ModuleContent
+from hexgate.security.modules import (
+    DEFAULT_AGENT,
+    AgentBinding,
+    LayerKind,
+    ModuleContent,
+    RoleMatrix,
+)
 
 BOUNDARY_SUBDIR = ("policies", "boundaries")
 CAPABILITY_SUBDIR = ("policies", "capabilities")
@@ -61,8 +67,8 @@ def load_local_modules(
     return boundaries, capabilities
 
 
-def load_roles(root: str | Path) -> dict[str, list[str]] | None:
-    """Load the role bindings from ``<root>/roles.yaml``.
+def load_roles(root: str | Path) -> RoleMatrix | None:
+    """Load the role bindings from ``<root>/roles.yaml`` as a ``(role, agent)`` matrix.
 
     Returns ``None`` when the file is **absent** — the signal the resolver reads
     as "no roles, one default importing every capability" (all-compose
@@ -71,12 +77,20 @@ def load_roles(root: str | Path) -> dict[str, list[str]] | None:
     so a one-character mistake can't silently widen access. Boundaries are never
     listed here; a role selects capabilities only.
 
-    Shape::
+    A role maps either to a **flat** capability list (applies to any agent) or to
+    a per-agent **matrix**; both normalize to ``{agent-or-"*": AgentBinding}``::
 
         version: 1
         roles:
-          support: [read_only, refunds_small]
-          default: [read_only]
+          support: [read_only]                 # flat: sugar for {"*": [read_only]}
+          member:
+            "*": [read_only]                    # generic default for any agent
+            billing_bot:                        # a named agent, more specific
+              capabilities: [read_only, payments]
+            triage_bot: [read_only]             # agent value may also be a bare list
+
+    A named agent's binding **replaces** ``"*"`` for that agent (it does not merge),
+    so an agent can be more restricted than the role's generic baseline.
     """
     path = Path(root) / ROLES_FILE
     if not path.is_file():
@@ -103,16 +117,57 @@ def load_roles(root: str | Path) -> dict[str, list[str]] | None:
     if raw is None:
         return {}
     if not isinstance(raw, dict):
-        raise ValueError(f"{ROLES_FILE}: 'roles' must be a mapping of role -> [names]")
+        raise ValueError(f"{ROLES_FILE}: 'roles' must be a mapping of role -> binding")
 
-    roles: dict[str, list[str]] = {}
-    for role, names in raw.items():
-        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+    return {
+        str(role): _parse_role_binding(str(role), value) for role, value in raw.items()
+    }
+
+
+def _parse_role_binding(role: str, value: object) -> dict[str, AgentBinding]:
+    """Normalize one role's value into ``{agent-or-"*": AgentBinding}``.
+
+    A bare list is the flat form (the generic ``"*"`` agent); a mapping is the
+    per-agent matrix, each agent's value itself either a bare capability list or a
+    ``{capabilities: [...]}`` block.
+    """
+    if isinstance(value, list):
+        return {DEFAULT_AGENT: _agent_binding(role, DEFAULT_AGENT, value)}
+    if isinstance(value, dict):
+        return {
+            str(agent): _agent_binding(role, str(agent), cell)
+            for agent, cell in value.items()
+        }
+    raise ValueError(
+        f"{ROLES_FILE}: role {role!r} must map to a capability list or an "
+        f"agent mapping (got {type(value).__name__})"
+    )
+
+
+def _agent_binding(role: str, agent: str, cell: object) -> AgentBinding:
+    """One ``(role, agent)`` cell → :class:`AgentBinding`. ``cell`` is a bare
+    capability list or a ``{capabilities: [...]}`` mapping."""
+    if isinstance(cell, list):
+        caps = cell
+    elif isinstance(cell, dict):
+        unknown = set(cell) - {"capabilities"}
+        if unknown:
             raise ValueError(
-                f"{ROLES_FILE}: role {role!r} must map to a list of capability names"
+                f"{ROLES_FILE}: role {role!r} agent {agent!r} has unknown key(s) "
+                f"{sorted(unknown)!r} (expected 'capabilities')"
             )
-        roles[str(role)] = list(names)
-    return roles
+        caps = cell.get("capabilities", [])
+    else:
+        raise ValueError(
+            f"{ROLES_FILE}: role {role!r} agent {agent!r} must be a capability list "
+            f"or a {{capabilities: [...]}} mapping (got {type(cell).__name__})"
+        )
+    if not isinstance(caps, list) or not all(isinstance(c, str) for c in caps):
+        raise ValueError(
+            f"{ROLES_FILE}: role {role!r} agent {agent!r} capabilities must be a "
+            f"list of capability names"
+        )
+    return AgentBinding(capabilities=tuple(caps))
 
 
 def _read_dir(directory: Path, kind: LayerKind) -> list[ModuleContent]:

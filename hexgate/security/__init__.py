@@ -87,12 +87,15 @@ from hexgate.security.policy_set import (
     load_policy_set_from_dict,
 )
 from hexgate.security.modules import (
+    DEFAULT_AGENT,
+    AgentBinding,
     LayerKind,
     LinkError,
     LinkResult,
     ModuleContent,
     ProjectLinkResult,
     Provenance,
+    RoleMatrix,
     RuleTrace,
 )
 from hexgate.security.linker import (
@@ -148,6 +151,9 @@ __all__ = [
     "AgentTargetPolicy",
     "AgentVia",
     "agent_target_key",
+    "DEFAULT_AGENT",
+    "AgentBinding",
+    "RoleMatrix",
     "LayerKind",
     "LinkError",
     "LinkResult",
