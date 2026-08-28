@@ -60,6 +60,19 @@ async def get_agent(session: AsyncSession, project_id: str, name: str) -> Agent 
     return (await session.exec(stmt)).first()
 
 
+def _apply_bundle(agent: Agent, bundle: tuple[bytes, str, bytes] | None) -> None:
+    """Set an agent's three bundle columns from a compile result, or null all
+    three when ``bundle`` is ``None`` (drop a stale bundle → the SDK falls back
+    to the pydantic engine). One place so the triple can't drift when a bundle
+    column is added or its ordering changes."""
+    if bundle is None:
+        agent.compiled_wasm = None
+        agent.bundle_manifest = None
+        agent.bundle_signature = None
+    else:
+        agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
+
+
 async def _modular_bundle(
     session: AsyncSession, project_id: str, sign: Callable[[bytes], bytes]
 ) -> tuple[bytes, str, bytes] | None:
@@ -153,22 +166,16 @@ async def recompile_project(
         if bundle is None:
             return None  # can't build now: leave live bundles as-is
         for agent in agents:
-            agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
+            _apply_bundle(agent, bundle)  # same shared bundle for every agent
             session.add(agent)
             count += 1
     else:
         for agent in agents:
+            # Classic: each agent from its own policy. A policy that no longer
+            # compiles nulls the stale bundle (fall back to pydantic), never
+            # keeps a wrong one.
             bundle = await asyncio.to_thread(compile_bundle, agent.policy_yaml, sign)
-            if bundle is None:
-                # A classic agent's own policy failed to compile: drop the stale
-                # bundle (fall back to pydantic), never keep a wrong one.
-                agent.compiled_wasm = None
-                agent.bundle_manifest = None
-                agent.bundle_signature = None
-            else:
-                agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
-                    bundle
-                )
+            _apply_bundle(agent, bundle)
             session.add(agent)
             count += 1
 
@@ -254,14 +261,7 @@ async def update_agent(
 
         if not await modules.is_modular(session, project_id):
             bundle = await asyncio.to_thread(compile_bundle, agent.policy_yaml, sign)
-            if bundle is not None:
-                agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
-                    bundle
-                )
-            else:
-                agent.compiled_wasm = None
-                agent.bundle_manifest = None
-                agent.bundle_signature = None
+            _apply_bundle(agent, bundle)
 
     agent.updated_at = datetime.now(timezone.utc)
     session.add(agent)
@@ -303,9 +303,7 @@ async def backfill_bundles(
             if bundle is None:
                 continue
             for agent in project_agents:
-                agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
-                    bundle
-                )
+                _apply_bundle(agent, bundle)  # same shared bundle for every agent
                 session.add(agent)
                 count += 1
         else:
@@ -314,10 +312,8 @@ async def backfill_bundles(
                     compile_bundle, agent.policy_yaml, sign
                 )
                 if bundle is None:
-                    continue
-                agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
-                    bundle
-                )
+                    continue  # leave bundle-less (already None) — don't count
+                _apply_bundle(agent, bundle)
                 session.add(agent)
                 count += 1
     if count:
@@ -394,9 +390,7 @@ async def register_manifest(
             agent.policy_yaml = DENY_ALL_POLICY_YAML
         else:
             agent.policy_yaml = _default_policy_for_manifest(manifest)
-        bundle = await bundle_for_agent(session, agent, sign)
-        if bundle is not None:
-            agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
+        _apply_bundle(agent, await bundle_for_agent(session, agent, sign))
         # Already in session via _get_or_create_agent; the mutation flushes
         # at commit time below alongside the AgentVersion + Tool rows.
 
