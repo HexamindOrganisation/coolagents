@@ -83,16 +83,16 @@ describe("policy-module api requests", () => {
   });
 
   it("unwraps .roles on get + put", async () => {
-    const calls = capture({ roles: { default: ["read_only"] } });
+    const calls = capture({ roles: { default: { "*": ["read_only"] } } });
     const got = await api.getPolicyRoles(P);
-    expect(got).toEqual({ default: ["read_only"] });
+    expect(got).toEqual({ default: { "*": ["read_only"] } });
 
-    const put = await api.setPolicyRoles(P, { billing: ["payments"] });
-    expect(put).toEqual({ default: ["read_only"] }); // echoed stub body
+    const put = await api.setPolicyRoles(P, { billing: { "*": ["payments"] } });
+    expect(put).toEqual({ default: { "*": ["read_only"] } }); // echoed stub body
     expect(calls[1]).toMatchObject({
       url: "/v1/projects/p1/policy-roles",
       method: "PUT",
-      body: { roles: { billing: ["payments"] } },
+      body: { roles: { billing: { "*": ["payments"] } } },
     });
   });
 

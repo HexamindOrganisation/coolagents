@@ -18,24 +18,33 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-/** Serialize role bindings as the SDK's on-disk `roles.yaml` (version + map). */
+/** Serialize the (role, agent) matrix as the SDK's on-disk `roles.yaml`.
+ * A role whose only agent is the generic `"*"` renders as the flat
+ * `role: [caps]` shorthand (cleaner for the common single-agent case); a role
+ * with named agents renders the full `role: {agent: [caps]}` mapping. */
 function dumpRoles(roles: RoleBindings): string {
-  return dump({ version: 1, roles }, { flowLevel: 2, lineWidth: 100 });
+  const rendered: Record<string, string[] | Record<string, string[]>> = {};
+  for (const [role, cells] of Object.entries(roles)) {
+    const agents = Object.keys(cells);
+    rendered[role] =
+      agents.length === 1 && agents[0] === "*" ? cells["*"] : cells;
+  }
+  return dump({ version: 1, roles: rendered }, { flowLevel: 3, lineWidth: 100 });
 }
 
-/** Parse the roles.yaml buffer back to bindings. Accepts the SDK shape
- * (`{version, roles: {...}}`) or a bare `role: [caps]` map. Throws on a
- * non-mapping or a non-string-list value so Save can block. */
+/** Parse the roles.yaml buffer back to the (role, agent) matrix. Accepts the SDK
+ * wrapper (`{version, roles: {...}}`) or a bare map, and — per role — either a
+ * flat `[caps]` list (the generic `"*"` agent) or an `{agent: [caps]}` mapping.
+ * Throws on a non-mapping or a non-string-list value so Save can block. */
 function parseRoles(text: string): RoleBindings {
   const doc = load(text);
   if (doc === null || doc === undefined) return {};
   if (typeof doc !== "object" || Array.isArray(doc)) {
     throw new Error("roles.yaml must be a mapping of role -> capabilities");
   }
-  // The SDK wrapper is `{version, roles: {...}}`; a bare map is `{role: [...]}`.
+  // The SDK wrapper is `{version, roles: {...}}`; a bare map is `{role: ...}`.
   // Detect the wrapper by whether `.roles` is itself a mapping — so a bare map
-  // that legitimately has a role literally named `roles` (value is a list) is
-  // not misread as the wrapper.
+  // that legitimately has a role literally named `roles` is not misread.
   const maybeRoles = (doc as Record<string, unknown>).roles;
   const wrapped =
     typeof maybeRoles === "object" &&
@@ -46,13 +55,33 @@ function parseRoles(text: string): RoleBindings {
     throw new Error("`roles` must be a mapping of role -> capabilities");
   }
   const out: RoleBindings = {};
-  for (const [role, caps] of Object.entries(raw as Record<string, unknown>)) {
-    if (!Array.isArray(caps) || caps.some((c) => typeof c !== "string")) {
-      throw new Error(`role ${role}: capabilities must be a list of names`);
-    }
-    out[role] = caps as string[];
+  for (const [role, value] of Object.entries(raw as Record<string, unknown>)) {
+    out[role] = parseRoleValue(role, value);
   }
   return out;
+}
+
+/** One role's value → `{agent: [caps]}`. A bare list is the generic `"*"` agent;
+ * a mapping is the per-agent matrix, each agent's value a capability list. */
+function parseRoleValue(role: string, value: unknown): Record<string, string[]> {
+  const isCapList = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((c) => typeof c === "string");
+  if (isCapList(value)) return { "*": value };
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const cells: Record<string, string[]> = {};
+    for (const [agent, caps] of Object.entries(value as Record<string, unknown>)) {
+      if (!isCapList(caps)) {
+        throw new Error(
+          `role ${role}, agent ${agent}: capabilities must be a list of names`,
+        );
+      }
+      cells[agent] = caps;
+    }
+    return cells;
+  }
+  throw new Error(
+    `role ${role}: must be a capability list or an { agent: [caps] } mapping`,
+  );
 }
 
 const selKey = (sel: Selection) =>

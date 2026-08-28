@@ -233,9 +233,11 @@ export interface PolicyFolder {
   path: string;
 }
 
-/** Role -> the capability names it imports. Boundaries always apply, so they
+/** The (role, agent) matrix: role -> agent-or-"*" -> the capability names it
+ * imports. `"*"` is the generic agent (applies to any agent not named); a named
+ * agent's cell replaces `"*"` for that agent. Boundaries always apply, so they
  * carry no binding. An empty map means the project is still classic. */
-export type RoleBindings = Record<string, string[]>;
+export type RoleBindings = Record<string, Record<string, string[]>>;
 
 /** One analyzer lint over the composed project. `source`/`tier`/`tool`/`role`
  * locate it; a null `role` is a project-wide concern. */
@@ -278,6 +280,8 @@ export type PolicyTestOutcome = "allow" | "deny" | "approval_required";
 
 export interface PolicyTestRequest {
   role: string;
+  /** The executing agent whose column to test against; defaults to "main". */
+  agent?: string;
   tool: string;
   args?: Record<string, unknown>;
   attributes?: Record<string, unknown> | null;
