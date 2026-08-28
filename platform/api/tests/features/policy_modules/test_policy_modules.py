@@ -716,3 +716,72 @@ async def test_register_into_modular_project_seeds_deny_all_fallback(
         agent = await asvc.get_agent(s, proj.id, "newbot")
         assert agent is not None
         assert agent.policy_yaml == DENY_ALL_POLICY_YAML
+
+
+def test_identical_module_put_skips_recompile(client: TestClient, monkeypatch) -> None:
+    # Re-PUTting byte-identical module content must not pay a recompile; a real
+    # content change still does.
+    import hexgate_api.features.agents.service as asvc
+
+    calls = {"n": 0}
+    real = asvc.recompile_project
+
+    async def spy(session, project_id, sign):
+        calls["n"] += 1
+        return await real(session, project_id, sign)
+
+    monkeypatch.setattr(asvc, "recompile_project", spy)
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )  # modular now
+    base = calls["n"]
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)  # identical
+    assert calls["n"] == base  # no recompile
+    _put_module(
+        client,
+        pid,
+        "capability",
+        "read_only",
+        "tools:\n  view_orders: { mode: allow }\n  list_orders: { mode: allow }\n",
+    )  # changed
+    assert calls["n"] == base + 1
+
+
+async def test_classic_recompile_memoizes_identical_policies(
+    session_factory, monkeypatch
+) -> None:
+    # Classic recompile shells out to opa once per DISTINCT policy, not once per
+    # agent — agents that share a policy compile a single time.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.models import Agent
+
+    calls = {"n": 0}
+
+    def fake(policy_yaml, sign):
+        calls["n"] += 1
+        return (b"W", "M", b"S")
+
+    monkeypatch.setattr(asvc, "compile_bundle", fake)
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s, policy_yaml="version: 1\n# same\n")
+        for name in ("a2", "a3"):
+            s.add(
+                Agent(
+                    id=new_id(Agent),
+                    project_id=proj.id,
+                    name=name,
+                    agent_yaml="",
+                    policy_yaml="version: 1\n# same\n",
+                    system_md="",
+                )
+            )
+        await s.commit()
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 3  # all three agents got a bundle
+        assert calls["n"] == 1  # ...from a single opa compile (memoized)

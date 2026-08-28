@@ -60,6 +60,24 @@ async def get_agent(session: AsyncSession, project_id: str, name: str) -> Agent 
     return (await session.exec(stmt)).first()
 
 
+async def _compile_memoized(
+    cache: dict[str, tuple[bytes, str, bytes] | None],
+    policy_yaml: str,
+    sign: Callable[[bytes], bytes],
+) -> tuple[bytes, str, bytes] | None:
+    """Compile ``policy_yaml`` once per distinct policy within a fan-out.
+
+    A classic recompile/backfill runs opa once per agent, serially — but agents
+    routinely share a policy (the seeds especially), so identical policies were
+    recompiled N times, delaying startup readiness. Memoize by ``sha256`` of the
+    policy text so each distinct policy shells out to opa at most once per call.
+    """
+    key = hashlib.sha256(policy_yaml.encode("utf-8")).hexdigest()
+    if key not in cache:
+        cache[key] = await asyncio.to_thread(compile_bundle, policy_yaml, sign)
+    return cache[key]
+
+
 def _apply_bundle(agent: Agent, bundle: tuple[bytes, str, bytes] | None) -> None:
     """Set an agent's three bundle columns from a compile result, or null all
     three when ``bundle`` is ``None`` (drop a stale bundle → the SDK falls back
@@ -170,11 +188,12 @@ async def recompile_project(
             session.add(agent)
             count += 1
     else:
+        compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
         for agent in agents:
-            # Classic: each agent from its own policy. A policy that no longer
-            # compiles nulls the stale bundle (fall back to pydantic), never
-            # keeps a wrong one.
-            bundle = await asyncio.to_thread(compile_bundle, agent.policy_yaml, sign)
+            # Classic: each agent from its own policy (memoized per distinct
+            # policy). A policy that no longer compiles nulls the stale bundle
+            # (fall back to pydantic), never keeps a wrong one.
+            bundle = await _compile_memoized(compiled, agent.policy_yaml, sign)
             _apply_bundle(agent, bundle)
             session.add(agent)
             count += 1
@@ -307,10 +326,9 @@ async def backfill_bundles(
                 session.add(agent)
                 count += 1
         else:
+            compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
             for agent in project_agents:
-                bundle = await asyncio.to_thread(
-                    compile_bundle, agent.policy_yaml, sign
-                )
+                bundle = await _compile_memoized(compiled, agent.policy_yaml, sign)
                 if bundle is None:
                     continue  # leave bundle-less (already None) — don't count
                 _apply_bundle(agent, bundle)

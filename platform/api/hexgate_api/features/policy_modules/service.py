@@ -85,6 +85,17 @@ async def _get_module(
     ).first()
 
 
+async def get_module_hash(
+    session: AsyncSession, project_id: str, tier: str, path: str
+) -> str | None:
+    """The stored module's ``content_hash``, or ``None`` if it doesn't exist.
+
+    Lets a caller tell a real content change from a byte-identical re-PUT and
+    skip the (expensive) recompile when nothing changed."""
+    row = await _get_module(session, project_id, tier, path)
+    return row.content_hash if row is not None else None
+
+
 async def upsert_module(
     session: AsyncSession,
     *,

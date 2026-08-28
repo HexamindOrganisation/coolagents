@@ -100,6 +100,7 @@ async def api_put_policy_module(
     # Serialize the write + recompile per project so overlapping edits can't
     # commit bundles out of order (see core.locks).
     async with project_lock(project_id):
+        prev_hash = await service.get_module_hash(session, project_id, tier, path)
         try:
             row = await service.upsert_module(
                 session,
@@ -110,9 +111,12 @@ async def api_put_policy_module(
             )
         except service.InvalidModuleError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # Module content only affects enforcement once the project is modular; a
-        # classic library edit changes no agent, so skip the recompile there.
-        if await service.is_modular(session, project_id):
+        # Recompile only when the content actually changed and the project is
+        # modular: a byte-identical re-PUT, or any edit to a classic library,
+        # changes no agent, so don't pay a resolve + opa compile for it.
+        if row.content_hash != prev_hash and await service.is_modular(
+            session, project_id
+        ):
             await _recompile_project_agents(session, project_id)
     return _module_read(row)
 
