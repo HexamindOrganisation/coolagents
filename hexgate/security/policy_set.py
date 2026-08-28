@@ -47,7 +47,6 @@ from hexgate.security.models import (
     is_agent_reach_key,
 )
 
-
 DEFAULT_ROLE_NAME = "default"
 
 

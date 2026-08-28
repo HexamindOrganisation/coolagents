@@ -24,9 +24,8 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import yaml
-
     import marimo as mo
+    import yaml
 
     from hexgate import HexgateContext
     from hexgate.security import (

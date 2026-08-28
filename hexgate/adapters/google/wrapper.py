@@ -18,8 +18,8 @@ from google.adk.agents import BaseAgent
 from hexgate.adapters.google.tools import wrap_tools
 from hexgate.approvals import ApprovalHandler
 from hexgate.guards.types import build_pipeline
-from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.agent_gate import warn_if_admission_unenforced
+from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
 
 if TYPE_CHECKING:
