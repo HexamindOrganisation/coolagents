@@ -565,6 +565,7 @@ def _main_resolve(args: argparse.Namespace) -> int:
     """Resolve the local project into effective policy per role and print it."""
     from hexgate.security import (
         LinkError,
+        effective_policy_by_role,
         load_local_modules,
         load_roles,
         resolve_for_project,
@@ -619,12 +620,7 @@ def _main_resolve(args: argparse.Namespace) -> int:
         # load_policy_set_from_dict / `hexgate policy build`. A bare top-level
         # role-keyed mapping would be read as a single flat AgentPolicy, and the
         # role keys silently dropped, compiling a deny-everything bundle.
-        payload = {
-            "roles": {
-                role: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
-                for role, lr in sorted(result.by_role.items())
-            }
-        }
+        payload = {"roles": effective_policy_by_role(result)}
         roles_shown = sorted(result.by_role)
 
     text = yaml.safe_dump(payload, sort_keys=False)

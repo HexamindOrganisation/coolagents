@@ -149,6 +149,24 @@ def resolve_for_project(
     return ProjectLinkResult(policy_set=PolicySet(effective), by_role=by_role)
 
 
+def effective_policy_by_role(
+    result: ProjectLinkResult, roles: Sequence[str] | None = None
+) -> dict[str, dict]:
+    """Role -> effective-policy JSON dict, in a canonical (sorted) role order.
+
+    The single serializer shared by ``hexgate policy resolve`` and the platform's
+    resolved-policy YAML, so the same project emits identical bytes from either
+    (the two used to iterate ``by_role`` in different orders — CLI sorted, the
+    platform in insertion order — quietly breaking that parity). ``roles``
+    narrows to a subset in the given order; ``None`` yields every role, sorted.
+    """
+    names = sorted(result.by_role) if roles is None else list(roles)
+    return {
+        name: result.by_role[name].effective[DEFAULT_ROLE_NAME].model_dump(mode="json")
+        for name in names
+    }
+
+
 def _reject_capability_denies(capabilities: Sequence[ModuleContent]) -> None:
     """A capability that denies is a config error, checked over the WHOLE library.
 

@@ -314,16 +314,14 @@ async def is_modular(session: AsyncSession, project_id: str) -> bool:
 def roles_json(result, role: str | None = None) -> dict:
     """The effective policy per role, as JSON-able dicts.
 
-    One place for the role-keying + ``DEFAULT_ROLE_NAME`` detail, shared by the
-    ``/policy/resolve`` endpoint and the compile path. ``role`` narrows to a
+    Delegates to the SDK's ``effective_policy_by_role`` so the resolve endpoint
+    and the compile path serialize a project the same way ``hexgate policy
+    resolve`` does — same role order (sorted), same bytes. ``role`` narrows to a
     single role (the resolve endpoint's ``?role=``); ``None`` returns all.
     """
-    from hexgate.security import DEFAULT_ROLE_NAME
+    from hexgate.security import effective_policy_by_role
 
-    items = result.by_role.items() if role is None else [(role, result.by_role[role])]
-    return {
-        r: lr.effective[DEFAULT_ROLE_NAME].model_dump(mode="json") for r, lr in items
-    }
+    return effective_policy_by_role(result, None if role is None else [role])
 
 
 async def resolved_policy_yaml(session: AsyncSession, project_id: str) -> str:
