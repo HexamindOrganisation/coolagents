@@ -28,6 +28,7 @@
               "concepts/policy-decision",
               "concepts/guards",
               "concepts/user-scope",
+              "concepts/agent-level-enforcement",
               "concepts/signed-bundles",
               "concepts/audit-trail",
               "concepts/mcp",

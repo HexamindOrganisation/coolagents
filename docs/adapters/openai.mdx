@@ -94,6 +94,22 @@ if __name__ == "__main__":
 
 `run_sync` and `run_streamed` work the same way.
 
+## Agent-level enforcement
+
+Beyond tool calls, `HexgateRunner` enforces [agent-level policy](/concepts/agent-level-enforcement):
+**admission** (may this caller run the agent) at run entry, and **handoff reach**
+(`agent.handoff:<name>`) at the SDK's `on_handoff` seam — a denied handoff is
+vetoed before the target runs. Set `HexgateRunner(max_handoff_depth=N)` to cap a
+runaway handoff chain.
+
+<Warning>
+**Agent-as-tool reach is not enforced on OpenAI.** `Agent.as_tool()` produces a
+plain function tool with no link back to the target agent, so the
+`agent.tool:<name>` reach key can't be resolved here — a policy that declares one
+logs a warning at setup. Gate a sub-agent-as-tool by its **tool name** instead
+(an ordinary `tools:` rule), which works normally.
+</Warning>
+
 ## Runnable example
 
 `examples/devops_openai.py` — `HexgateRunner` (OpenAI Agents SDK) end-to-end.

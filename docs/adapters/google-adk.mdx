@@ -112,6 +112,15 @@ if __name__ == "__main__":
   executes inside `propagate_attributes(user_id=..., session_id=...,
   metadata={"user_roles": ...}, tags=["google.runner.run.<agent_name>"])`.
 
+## Agent-level enforcement
+
+The Google runner has the fullest [agent-level](/concepts/agent-level-enforcement)
+coverage, because ADK expresses both delegation modes as tool calls. It enforces
+**admission** at run entry, and **reach** at `before_tool_callback` for both
+`transfer_to_agent` (handoff, `agent.handoff:<name>`) and `AgentTool`
+(agent-as-tool, `agent.tool:<name>`) — a denied delegation is refused before it
+runs. Set `HexgateRunner(max_handoff_depth=N)` to cap a runaway handoff chain.
+
 ## Runnable example
 
 `examples/devops_google.py` — `HexgateRunner` (Google ADK) end-to-end with

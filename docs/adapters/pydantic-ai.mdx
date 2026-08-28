@@ -96,6 +96,18 @@ if __name__ == "__main__":
   the caller identity. Global tracing is enabled via `Agent.instrument_all()` on
   construction.
 
+## Agent-level enforcement
+
+<Note>
+pydantic_ai has **no native handoff primitive** — multi-agent here is
+agent-as-tool, where one agent is called from inside another's tool. So there is
+no transfer seam for Hexgate to gate: a declared [`agents` or `admission`
+block](/concepts/agent-level-enforcement) logs a warning at setup rather than
+enforcing. Gate a sub-agent-as-tool by its **tool name** with an ordinary
+`tools:` rule, which works normally. Admission and reach enforcement on this
+adapter are planned follow-ups.
+</Note>
+
 ## Runnable example
 
 `examples/devops_pydantic_ai.py` — `wrap_pydantic_agent` (Pydantic AI) end-to-end.
