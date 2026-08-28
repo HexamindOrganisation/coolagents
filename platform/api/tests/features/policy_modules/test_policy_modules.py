@@ -824,6 +824,16 @@ def test_matrix_binding_resolves_per_agent(client: TestClient) -> None:
     assert "refund_order" not in generic  # unnamed agent -> "*" -> read_only only
 
 
+def test_default_agent_sentinel_matches_sdk() -> None:
+    # The platform keeps its own "*" constant (to avoid importing the SDK at
+    # module load); guard against it drifting from the SDK's DEFAULT_AGENT.
+    from hexgate.security import DEFAULT_AGENT as SDK_DEFAULT_AGENT
+
+    from hexgate_api.features.policy_modules.service import DEFAULT_AGENT
+
+    assert DEFAULT_AGENT == SDK_DEFAULT_AGENT
+
+
 def test_named_agent_column_with_unknown_capability_is_rejected(
     client: TestClient,
 ) -> None:

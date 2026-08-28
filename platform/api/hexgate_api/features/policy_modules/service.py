@@ -341,13 +341,27 @@ async def check(session: AsyncSession, project_id: str):
     return check_project(boundaries, capabilities, roles)
 
 
-def _bound_agents(matrix: RoleMatrixJson) -> set[str]:
-    """Every agent column present in the bindings, plus the generic ``"*"``.
+def compose_error_types() -> tuple[type[BaseException], ...]:
+    """Exceptions meaning "the module set doesn't compose right now".
 
-    The set of agents whose resolution must be validated: a named agent's column
-    can import a capability the ``"*"`` column doesn't, so validating only ``"*"``
-    would miss an unknown-capability error in a named column."""
-    return {DEFAULT_AGENT} | {agent for cells in matrix.values() for agent in cells}
+    The single source of truth shared by the write-time guard (:func:`resolves`)
+    and the compile fail-safe (``agents.service``), so they can't drift on which
+    errors fold to "keep the last-good bundle" versus escape as a 500 — the SDK
+    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
+    from re-parsing a stored row. SDK imports stay lazy so this module loads
+    without the SDK."""
+    from pydantic import ValidationError
+
+    from hexgate.security import LinkError, PolicySetError
+    from hexgate.security.constraints import ConstraintParseError
+
+    return (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        ValidationError,
+        yaml.YAMLError,
+    )
 
 
 async def resolves(session: AsyncSession, project_id: str) -> bool:
@@ -356,27 +370,19 @@ async def resolves(session: AsyncSession, project_id: str) -> bool:
     A cheap, opa-free precondition for accepting a policy write: ``True`` only if
     every agent column resolves (not just ``"*"``), so a named-agent cell that
     imports an unknown capability is rejected at write time rather than accepted
-    and then silently failing to compile. Catches the same set as the compile
-    fail-safe — the SDK link/compose errors plus ``yaml.YAMLError`` / pydantic
-    ``ValidationError`` from re-parsing a stored row (see
-    ``agents.service._modular_bundle``).
-    """
-    from pydantic import ValidationError
+    and then silently failing to compile. Resolves only (no YAML serialization) —
+    it needs the resolution not to raise, not the bytes."""
+    from hexgate.security import resolve_for_project
 
-    from hexgate.security import LinkError, PolicySetError
-    from hexgate.security.constraints import ConstraintParseError
-
-    agents = _bound_agents(await get_roles(session, project_id))
+    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    agents = {DEFAULT_AGENT}
+    if roles:
+        agents |= {agent for cells in roles.values() for agent in cells}
     try:
-        await resolved_yaml_by_agent(session, project_id, agents)
+        for agent in agents:
+            resolve_for_project(boundaries, capabilities, roles, agent=agent)
         return True
-    except (
-        LinkError,
-        PolicySetError,
-        ConstraintParseError,
-        ValidationError,
-        yaml.YAMLError,
-    ):
+    except compose_error_types():
         return False
 
 

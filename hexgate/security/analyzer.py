@@ -37,6 +37,7 @@ from hexgate.security.linker import (
     resolve_role_map,
 )
 from hexgate.security.modules import (
+    DEFAULT_AGENT,
     GRANT_MODES,
     LayerKind,
     LinkError,
@@ -125,14 +126,46 @@ def check_project(
     """Resolve a project and lint every role. See :func:`check` for the single-role
     form. A hard failure folds into one ``error`` lint, same contract as ``check``.
 
-    Lints the generic (``"*"``) agent view — the baseline every agent shares.
-    Per-agent lint refinement (tagging by executing agent) is a follow-up.
+    Soft lints (dead-grant, drift, ...) run over the generic (``"*"``) agent
+    view — the baseline every agent shares; per-agent soft-lint refinement is a
+    follow-up. Hard **link errors** are surfaced for every named agent column too,
+    so a named-agent cell importing an unknown capability is visible on ``check``
+    (not just rejected at write time / silently fail-closed at serve time).
     """
     try:
         result = resolve_for_project(boundaries, library, roles)
     except (LinkError, PolicySetError, ConstraintParseError) as exc:
         return [PolicyLint("link-error", "error", str(exc))]
-    return analyze_project(result, boundaries, library, roles, manifest=manifest)
+    lints = analyze_project(result, boundaries, library, roles, manifest=manifest)
+    lints += _named_agent_link_errors(boundaries, library, roles)
+    return lints
+
+
+def _named_agent_link_errors(
+    boundaries: list[ModuleContent],
+    library: list[ModuleContent],
+    roles: RoleMatrix | None,
+) -> list[PolicyLint]:
+    """A ``link-error`` lint per named-agent column that doesn't resolve.
+
+    ``check_project`` resolves the ``"*"`` column for its soft lints; this covers
+    the hard-error case for named columns (an unknown-capability import in
+    ``roles: {member: {billing_bot: [nope]}}``), which ``"*"`` never touches."""
+    if not isinstance(roles, Mapping):
+        return []
+    named = {
+        agent
+        for cells in roles.values()
+        if isinstance(cells, Mapping)
+        for agent in cells
+    } - {DEFAULT_AGENT}
+    lints: list[PolicyLint] = []
+    for agent in sorted(named):
+        try:
+            resolve_for_project(boundaries, library, roles, agent=agent)
+        except (LinkError, PolicySetError, ConstraintParseError) as exc:
+            lints.append(PolicyLint("link-error", "error", f"agent {agent!r}: {exc}"))
+    return lints
 
 
 def analyze_project(

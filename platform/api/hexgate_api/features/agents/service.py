@@ -124,24 +124,13 @@ async def _modular_bundle(
     write time can later fail to parse (an SDK schema tightening, or a row edited
     directly in the DB). Those must fold to "no bundle", not escape as a 500.
     """
-    import yaml
-    from pydantic import ValidationError
-
-    from hexgate.security import LinkError, PolicySetError
-    from hexgate.security.constraints import ConstraintParseError
     from hexgate_api.features.policy_modules import service as modules
 
     try:
         policy_yaml = await modules.resolved_policy_yaml(
             session, project_id, agent=agent
         )
-    except (
-        LinkError,
-        PolicySetError,
-        ConstraintParseError,
-        ValidationError,
-        yaml.YAMLError,
-    ) as exc:
+    except modules.compose_error_types() as exc:
         logger.warning(
             "modular project %s agent %r does not resolve; no bundle: %s",
             project_id,
@@ -162,25 +151,14 @@ async def _resolved_yaml_or_none(
     """Resolve every named agent's policy YAML in one store read (fan-out helper).
 
     Returns ``None`` (never raises) if the project doesn't compose for some agent —
-    the R-POL-002 fail-safe, so callers keep live bundles. Mirrors
-    :func:`_modular_bundle`'s except set. Resolving here (once) rather than per
-    agent avoids re-reading the store + re-parsing every module N times."""
-    import yaml
-    from pydantic import ValidationError
-
-    from hexgate.security import LinkError, PolicySetError
-    from hexgate.security.constraints import ConstraintParseError
+    the R-POL-002 fail-safe, so callers keep live bundles. Resolving here (once)
+    rather than per agent avoids re-reading the store + re-parsing every module N
+    times."""
     from hexgate_api.features.policy_modules import service as modules
 
     try:
         return await modules.resolved_yaml_by_agent(session, project_id, agent_names)
-    except (
-        LinkError,
-        PolicySetError,
-        ConstraintParseError,
-        ValidationError,
-        yaml.YAMLError,
-    ) as exc:
+    except modules.compose_error_types() as exc:
         logger.warning(
             "modular project %s does not resolve; no bundles: %s", project_id, exc
         )
