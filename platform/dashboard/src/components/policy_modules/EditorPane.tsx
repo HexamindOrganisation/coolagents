@@ -45,11 +45,14 @@ function parseRoles(text: string): RoleBindings {
   if (typeof doc !== "object" || Array.isArray(doc)) {
     throw new Error("roles.yaml must be a mapping of role -> capabilities");
   }
-  // The SDK wrapper is `{version, roles: {...}}`; a bare map is `{role: ...}`.
-  // Detect the wrapper by whether `.roles` is itself a mapping — so a bare map
-  // that legitimately has a role literally named `roles` is not misread.
-  const maybeRoles = (doc as Record<string, unknown>).roles;
+  // The SDK wrapper is `{version: <number>, roles: {...}}`. Require a NUMERIC
+  // `version` to detect it — otherwise a bare map whose role is literally named
+  // `roles` and bound to a per-agent mapping would be misread as the wrapper (a
+  // role value can now be a mapping, so "roles is a mapping" alone is ambiguous).
+  const d = doc as Record<string, unknown>;
+  const maybeRoles = d.roles;
   const wrapped =
+    typeof d.version === "number" &&
     typeof maybeRoles === "object" &&
     maybeRoles !== null &&
     !Array.isArray(maybeRoles);

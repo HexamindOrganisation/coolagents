@@ -457,7 +457,9 @@ class PolicyTestRequest(BaseModel):
     """A tool call to evaluate against the resolved policy for ``role`` + ``agent``."""
 
     role: str
-    agent: str = "main"  # the executing agent's column of the (role, agent) matrix
+    # The executing agent's column of the (role, agent) matrix; "*" (the generic
+    # column) by default, matching /policy/resolve, so the editor's panels agree.
+    agent: str = "*"
     tool: str
     args: dict = Field(default_factory=dict)
     attributes: Optional[dict] = None

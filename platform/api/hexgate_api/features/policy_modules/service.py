@@ -761,7 +761,7 @@ async def test_policy(
     *,
     role: str,
     tool: str,
-    agent: str = "main",
+    agent: str = DEFAULT_AGENT,
     args: dict,
     attributes: dict | None = None,
     draft_module: tuple[str, str, str] | None = None,
@@ -824,7 +824,11 @@ async def move_module(
                 # reassign (not in-place) so SQLAlchemy tracks the JSON change;
                 # rename the capability in every agent column that imports it.
                 b.capabilities = {
-                    agent: [new_path if c == path else c for c in caps]
+                    # dedupe (order-preserving): if a cell already imported
+                    # new_path, renaming path->new_path would double it.
+                    agent: list(
+                        dict.fromkeys(new_path if c == path else c for c in caps)
+                    )
                     for agent, caps in cells.items()
                 }
                 session.add(b)

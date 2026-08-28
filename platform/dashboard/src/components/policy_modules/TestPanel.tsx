@@ -70,7 +70,7 @@ export function TestPanel({
 }) {
   const roleNames = useMemo(() => Object.keys(roles).sort(), [roles]);
   const [role, setRole] = useState<string>(roleNames[0] ?? "");
-  const [agent, setAgent] = useState<string>("main");
+  const [agent, setAgent] = useState<string>("*");
   const [call, setCall] = useState<string>(SAMPLE);
   const [parseError, setParseError] = useState<string | null>(null);
   const test = useTestPolicy(projectId);
@@ -78,11 +78,11 @@ export function TestPanel({
   // Keep a valid role selected as bindings load / change.
   const effectiveRole = roleNames.includes(role) ? role : (roleNames[0] ?? "");
 
-  // Agent names the bindings mention (besides the generic "*"), for autocomplete.
+  // The generic "*" column plus every agent the bindings name, for autocomplete.
   const knownAgents = useMemo(() => {
-    const names = new Set<string>(["main"]);
+    const names = new Set<string>(["*"]);
     for (const cells of Object.values(roles)) {
-      for (const a of Object.keys(cells)) if (a !== "*") names.add(a);
+      for (const a of Object.keys(cells)) names.add(a);
     }
     return [...names].sort();
   }, [roles]);
@@ -116,7 +116,7 @@ export function TestPanel({
     setParseError(null);
     test.mutate({
       role: effectiveRole,
-      agent: agent.trim() || "main",
+      agent: agent.trim() || "*",
       tool: parsed.tool,
       args: (parsed.args as Record<string, unknown>) ?? {},
       attributes: (parsed.attributes as Record<string, unknown>) ?? null,
@@ -156,7 +156,8 @@ export function TestPanel({
         <span className="text-muted-foreground">
           Executing agent{" "}
           <span className="text-muted-foreground/70">
-            (falls back to <span className="font-mono">*</span> if unnamed)
+            (<span className="font-mono">*</span> = the generic column; a named
+            agent uses its own)
           </span>
         </span>
         <input
@@ -164,7 +165,7 @@ export function TestPanel({
           onChange={(e) => setAgent(e.target.value)}
           disabled={disabled}
           list="test-known-agents"
-          placeholder="main"
+          placeholder="*"
           className="h-8 rounded-md border border-border bg-background px-2 text-sm font-mono focus:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
         />
         <datalist id="test-known-agents">
