@@ -4,7 +4,11 @@ import asyncio
 import logging
 from datetime import datetime
 
-from clickhouse_connect.driver.exceptions import ClickHouseError, OperationalError
+from clickhouse_connect.driver.exceptions import (
+    ClickHouseError,
+    OperationalError,
+    ProgrammingError,
+)
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -78,6 +82,14 @@ async def ingest_llm_invocation(
         )
     except OperationalError as exc:  # transient transport failure — retryable
         _log.warning("llm invocation insert failed (transient): %s", exc)
+        raise _audit_unavailable()
+    except ProgrammingError as exc:
+        # Schema behind this build: the driver rejects our column names before
+        # sending. 503, not 422 — the event is fine, and 422 would make the
+        # SDK discard a record the migration would let through. Startup
+        # normally catches this (this module's verify_schema, run via
+        # core.clickhouse.verify_all in main.py's lifespan).
+        _log.error("llm invocation insert impossible against current schema: %s", exc)
         raise _audit_unavailable()
     except ClickHouseError as exc:  # storage rejected the row — retry won't help
         _log.error("llm invocation insert rejected by ClickHouse: %s", exc)

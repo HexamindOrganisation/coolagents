@@ -543,6 +543,17 @@ class DecisionEvent(AuditEnvelope):
     # against. Advisory: contextvar-sourced and client-assertable, exactly like
     # ``role`` and ``user_id``.
     attributes: Optional[dict] = None
+    # Run attribution — same advisory + client-assertable tier as user_id /
+    # user_roles. Populated from hexgate/security/enforcer.py's run_ns dict;
+    # an SDK that doesn't yet send it, and a decision made outside a run
+    # scope, omit run_id here and the platform substitutes the zero UUID at
+    # insert time (core.clickhouse.ZERO_RUN_ID) — never NULL.
+    run_id: Optional[UUID] = None
+    run_tool_calls: int = Field(default=0, ge=0)
+    run_llm_calls: int = Field(default=0, ge=0)
+    run_denials: int = Field(default=0, ge=0)
+    run_total_tokens: int = Field(default=0, ge=0)
+    run_elapsed_ms: int = Field(default=0, ge=0)
 
 
 class LlmInvocationEvent(AuditEnvelope):
@@ -558,6 +569,9 @@ class LlmInvocationEvent(AuditEnvelope):
     latency_ms: int = Field(ge=0, le=UINT32_MAX)
     status: str = Field(default="success", max_length=64)
     error_code: str = Field(default="", max_length=64)
+    # Run attribution — same tier and same zero-UUID-at-insert-time
+    # substitution as DecisionEvent.run_id.
+    run_id: Optional[UUID] = None
 
 
 class DecisionAccepted(BaseModel):

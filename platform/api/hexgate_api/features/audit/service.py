@@ -20,7 +20,12 @@ from collections.abc import Sequence
 
 from clickhouse_connect.driver.client import Client
 
-from hexgate_api.core.clickhouse import BatchItem, insert_batch, verify_written_columns
+from hexgate_api.core.clickhouse import (
+    ZERO_RUN_ID,
+    BatchItem,
+    insert_batch,
+    verify_written_columns,
+)
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import (
     AnomalySeverity,
@@ -76,6 +81,12 @@ _DECISION_COLUMNS = [
     "attributes",
     "user_roles",
     "deciding_role",
+    "run_id",
+    "run_tool_calls",
+    "run_llm_calls",
+    "run_denials",
+    "run_total_tokens",
+    "run_elapsed_ms",
 ]
 
 # async_insert batches small inserts; wait_for_async_insert=1 blocks until flush
@@ -138,6 +149,12 @@ def _decision_row(
         attributes_json,
         user_roles,
         event.deciding_role,
+        event.run_id or ZERO_RUN_ID,
+        event.run_tool_calls,
+        event.run_llm_calls,
+        event.run_denials,
+        event.run_total_tokens,
+        event.run_elapsed_ms,
     ]
 
 

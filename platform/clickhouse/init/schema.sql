@@ -37,7 +37,19 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.policy_decision
     -- same shape whatever wrote it. No DEFAULT: these columns have existed
     -- since the first CREATE, so nothing needs a read-time rescue.
     user_roles          Array(LowCardinality(String)) COMMENT 'Distinct roles evaluated for this call, caller order; advisory + client-assertable',
-    deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied'
+    deciding_role       LowCardinality(String) DEFAULT '' COMMENT 'Role whose policy granted/gated the call; empty when every role denied',
+
+    -- Run attribution (advisory + client-assertable, same tier as user_id /
+    -- user_roles). Zero UUID / zero counters means "not attributed to a run
+    -- scope by the SDK that sent this row" — a truthful default until the
+    -- SDK starts stamping the run_ns namespace read once per decision
+    -- (hexgate/security/enforcer.py). See plans/run-state/run-state-schema.md §7.
+    run_id              UUID     DEFAULT toUUID('00000000-0000-0000-0000-000000000000') COMMENT 'RunFacts.id; zero when the decision was made outside a run scope or by an SDK that does not yet send it',
+    run_tool_calls      UInt32   DEFAULT 0 COMMENT 'run.tool_calls at decision time',
+    run_llm_calls       UInt32   DEFAULT 0 COMMENT 'run.llm_calls at decision time',
+    run_denials         UInt32   DEFAULT 0 COMMENT 'run.denials at decision time',
+    run_total_tokens    UInt32   DEFAULT 0 COMMENT 'run.total_tokens at decision time',
+    run_elapsed_ms      UInt32   DEFAULT 0 COMMENT 'run.elapsed_seconds * 1000 at decision time'
 )
 -- ReplacingMergeTree: SDK retries (same event_id) collapse on background
 -- merges — eventual dedup; exact counts use FINAL or count(DISTINCT event_id).
@@ -95,7 +107,9 @@ CREATE TABLE IF NOT EXISTS hexgate_audit.llm_invocation
     output_tokens       UInt32,
     latency_ms          UInt32 DEFAULT 0,
     status              LowCardinality(String) DEFAULT 'success',
-    error_code          LowCardinality(String) DEFAULT ''
+    error_code          LowCardinality(String) DEFAULT '',
+
+    run_id              UUID DEFAULT toUUID('00000000-0000-0000-0000-000000000000') COMMENT 'RunFacts.id of the run this LLM call belongs to; zero when outside a run scope or from an SDK that does not yet send it'
 )
 ENGINE = ReplacingMergeTree(received_at)
 PARTITION BY toYYYYMM(received_at)
