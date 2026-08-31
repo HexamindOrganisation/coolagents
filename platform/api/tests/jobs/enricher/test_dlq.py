@@ -6,7 +6,12 @@ import base64
 import json
 
 from hexgate.tracing import semconv
-from hexgate_api.jobs.enricher.dlq import record_envelope, span_envelope
+from hexgate_api.jobs.enricher.dlq import (
+    _ATTRIBUTES_CAP_BYTES,
+    _RAW_VALUE_CAP_BYTES,
+    record_envelope,
+    span_envelope,
+)
 from tests.jobs.enricher.conftest import decision_attrs, make_span
 
 
@@ -108,3 +113,35 @@ def test_when_a_record_is_undecodable_then_envelope_carries_base64() -> None:
     payload = json.loads(raw)
     assert payload["scope"] is None
     assert base64.b64decode(payload["record_value_base64"]) == raw_value
+    assert payload["record_value_truncated"] is False
+
+
+def test_when_the_raw_value_exceeds_the_cap_then_dlq_stores_a_prefix() -> None:
+    # base64 inflates by ~33%, so an uncapped near-1MB record would build an
+    # envelope the producer can never send — a permanent failure on the very
+    # path meant to absorb bad input.
+    raw_value = b"\xfe" * (_RAW_VALUE_CAP_BYTES + 1)
+    raw = record_envelope(
+        error="undecodable OTLP payload",
+        error_class="decode",
+        project_id="proj_1",
+        topic="hexgate.otlp.raw",
+        partition=2,
+        offset=99,
+        raw_value=raw_value,
+    )
+    payload = json.loads(raw)
+    stored = base64.b64decode(payload["record_value_base64"])
+    assert stored == raw_value[:_RAW_VALUE_CAP_BYTES]
+    assert payload["record_value_truncated"] is True
+
+
+def test_when_span_attributes_exceed_the_cap_then_dlq_stores_a_preview() -> None:
+    # Rejected spans skip the accepted path's 8 KiB argument cap
+    # (enforcement.py), so the envelope applies its own.
+    attrs = decision_attrs(
+        **{semconv.ARGUMENTS: json.dumps({"blob": "x" * (2 * _ATTRIBUTES_CAP_BYTES)})}
+    )
+    attributes = _envelope_attributes(attrs)
+    assert attributes["_truncated"] is True
+    assert len(json.dumps(attributes).encode("utf-8")) <= _ATTRIBUTES_CAP_BYTES

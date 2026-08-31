@@ -392,6 +392,25 @@ async def test_when_a_dlq_send_fails_then_it_is_retried_and_committed_once(
     assert consumer.commits == 1
 
 
+async def test_when_a_dlq_envelope_is_too_large_then_dropped_and_committed(
+    make_job,
+) -> None:
+    """MessageSizeTooLargeError is client-side and permanent: no retry can
+    ever land the envelope, so it is dropped (the source record still holds
+    the original bytes) and the poll completes instead of wedging."""
+    from aiokafka.errors import MessageSizeTooLargeError
+
+    job, clickhouse, consumer, producer, calls = make_job(
+        send_side_effect=[MessageSizeTooLargeError()]
+    )
+
+    await job._process_poll([_one_bad_span_record()])
+
+    assert calls == ["dlq", "commit"]  # one attempt, no retry loop
+    assert producer.sent == []  # dropped, not delivered
+    assert consumer.commits == 1
+
+
 async def test_when_stop_is_requested_mid_dlq_outage_then_no_commit(
     monkeypatch, make_job
 ) -> None:

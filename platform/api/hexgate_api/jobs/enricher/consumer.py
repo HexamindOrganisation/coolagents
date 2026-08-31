@@ -16,11 +16,10 @@ import asyncio
 import logging
 import signal
 from collections.abc import Awaitable, Callable
-from functools import partial
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from aiokafka.errors import CommitFailedError
+from aiokafka.errors import CommitFailedError, MessageSizeTooLargeError
 from clickhouse_connect.driver.client import Client
 
 from hexgate_api.core.clickhouse import BatchItem, get_clickhouse, verify_all
@@ -314,13 +313,26 @@ class EnricherJob:
         # for good once the offset commits, so a send failure halts here too.
         # Per message, so a mid-list failure re-sends only what is left.
         for key, envelope in dlq_messages:
-            send = partial(
-                self._producer.send_and_wait,
-                self._settings.redpanda_dlq_topic,
-                envelope,
-                key=key,
-            )
-            if not await self._retry_until_acked(send, "DLQ send"):
+
+            async def _send(
+                key: bytes | None = key, envelope: bytes = envelope
+            ) -> None:
+                try:
+                    await self._producer.send_and_wait(
+                        self._settings.redpanda_dlq_topic, envelope, key=key
+                    )
+                except MessageSizeTooLargeError:
+                    # Client-side and permanent — no retry can ever land it,
+                    # and blocking the partition over a diagnostic envelope
+                    # inverts the DLQ's purpose. Backstop only: dlq.py caps
+                    # envelopes well under the producer limit.
+                    _log.error(
+                        "DLQ envelope over the producer size limit (%d bytes); "
+                        "dropped — the source record still holds the original",
+                        len(envelope),
+                    )
+
+            if not await self._retry_until_acked(_send, "DLQ send"):
                 return
 
         try:

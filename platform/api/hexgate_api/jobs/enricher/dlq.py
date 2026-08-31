@@ -21,7 +21,7 @@ from typing import Any
 
 from opentelemetry.proto.trace.v1.trace_pb2 import Span
 
-from hexgate.audit import SENSITIVE_ARG_KEY_RE, redact
+from hexgate.audit import SENSITIVE_ARG_KEY_RE, redact, truncate_json
 from hexgate.tracing import semconv
 from hexgate_api.jobs.enricher.decode import attrs_dict
 
@@ -30,6 +30,15 @@ from hexgate_api.jobs.enricher.decode import attrs_dict
 # with its secret-bearing keys unread.
 _JSON_DICT_KEYS = (semconv.ARGUMENTS, semconv.HINT, semconv.ATTRIBUTES)
 _UNPARSEABLE = "[UNPARSEABLE]"
+
+# Both variable-size fields are capped well below the producer's 1 MiB
+# default max_request_size: an envelope the producer itself cannot send
+# fails client-side on every attempt and would wedge the very partition
+# the DLQ exists to protect. The caps are diagnostic previews, not the
+# record of truth — ``_source`` locates the original bytes while the raw
+# topic's retention lasts.
+_ATTRIBUTES_CAP_BYTES = 32 * 1024
+_RAW_VALUE_CAP_BYTES = 64 * 1024
 
 
 def _source(topic: str, partition: int, offset: int) -> dict[str, Any]:
@@ -55,7 +64,9 @@ def _redacted_attributes(span: Span) -> dict[str, Any]:
             except ValueError:
                 parsed = None
             attributes[key] = parsed if isinstance(parsed, dict) else _UNPARSEABLE
-    return redact(attributes, pattern=SENSITIVE_ARG_KEY_RE)
+    return truncate_json(
+        redact(attributes, pattern=SENSITIVE_ARG_KEY_RE), cap=_ATTRIBUTES_CAP_BYTES
+    )
 
 
 def span_envelope(
@@ -112,6 +123,9 @@ def record_envelope(
         "scope": None,
         "project_id": project_id,
         "source": _source(topic, partition, offset),
-        "record_value_base64": base64.b64encode(raw_value).decode("ascii"),
+        "record_value_base64": base64.b64encode(
+            raw_value[:_RAW_VALUE_CAP_BYTES]
+        ).decode("ascii"),
+        "record_value_truncated": len(raw_value) > _RAW_VALUE_CAP_BYTES,
     }
     return json.dumps(payload).encode("utf-8")
