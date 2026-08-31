@@ -127,10 +127,13 @@ class GoogleServeDriver:
 
         ``len(agent_input) <= 1`` marks the first message of a conversation
         (including right after a dashboard reset clears ChatState), so a new
-        session id there resets ADK's memory in lockstep with the UI.
+        session id there resets ADK's memory in lockstep with the UI. The
+        previous session is evicted so a long-lived serve process doesn't
+        accumulate abandoned sessions across resets.
         """
         turns = len(agent_input) if isinstance(agent_input, (list, tuple)) else 0
         if self._session_id is None or turns <= 1:
+            await self._evict_current_session()
             self._session_id = str(uuid4())
         key = (user_id, self._session_id)
         if key not in self._created:
@@ -139,6 +142,21 @@ class GoogleServeDriver:
             )
             self._created.add(key)
         return self._session_id
+
+    async def _evict_current_session(self) -> None:
+        """Delete the current conversation's session(s) from the ADK store."""
+        if self._session_id is None:
+            return
+        for user_id, session_id in list(self._created):
+            if session_id != self._session_id:
+                continue
+            try:
+                await self._session_service.delete_session(
+                    app_name=self._app_name, user_id=user_id, session_id=session_id
+                )
+            except Exception:  # noqa: BLE001 — best-effort cleanup, never fatal
+                pass
+            self._created.discard((user_id, session_id))
 
     async def astream(
         self, agent_input: Any, ctx: HexgateContext | None, query: str

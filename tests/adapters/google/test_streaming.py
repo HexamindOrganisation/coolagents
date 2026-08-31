@@ -131,6 +131,32 @@ async def test_error_code_event_emits_error() -> None:
     assert isinstance(out[-1], RunEndEvent)
 
 
+async def test_session_evicted_on_new_conversation(
+    monkeypatch: Any,
+) -> None:
+    """A new conversation mints a fresh ADK session and evicts the previous one,
+    so a long-lived serve process doesn't leak sessions across resets."""
+    from hexgate.adapters.google.streaming import GoogleServeDriver
+
+    class _StubRunner:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+    monkeypatch.setattr("hexgate.adapters.google.runner.HexgateRunner", _StubRunner)
+
+    driver = GoogleServeDriver(agent=object(), app_name="app")
+
+    first = await driver._ensure_session("u", ["only-one"])  # turns<=1 → new
+    same = await driver._ensure_session("u", ["a", "b", "c"])  # continue
+    assert same == first
+    assert ("u", first) in driver._created
+
+    fresh = await driver._ensure_session("u", ["reset"])  # turns<=1 → new + evict
+    assert fresh != first
+    assert ("u", first) not in driver._created  # old one evicted
+    assert ("u", fresh) in driver._created
+
+
 async def test_full_sequence_brackets_run() -> None:
     out = await _collect(
         [

@@ -96,7 +96,10 @@ class StreamAccumulator:
         self.tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
         # Synthesized ids for a tool call that carries no id (e.g. hosted
         # computer/shell calls). Reused FIFO at tool-end so start↔end share a
-        # tool_id and correlate in ChatState.
+        # tool_id and correlate in ChatState. This assumes id-less calls
+        # complete in order; all three frameworks supply real ids for function
+        # tools, so the FIFO only ever covers rare hosted calls, which are
+        # effectively sequential in practice.
         self._pending_callless: list[str] = []
         self.steps: list[TextStep | ReasoningStep | ToolCallStep] = []
         self.message_parts: list[str] = []

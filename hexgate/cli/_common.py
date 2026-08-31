@@ -375,13 +375,8 @@ def _build_openai_serve_runtime(
     from hexgate.adapters.openai.runner import HexgateRunner
     from hexgate.adapters.openai.streaming import astream_openai
     from hexgate.runtime import HexgateContext
-    from hexgate.tracing.langfuse import get_langfuse_handler
 
     runner = HexgateRunner(approval_handler=approval_handler)
-    handler = get_langfuse_handler(
-        session_id="hexgate-serve",
-        tags=["hexgate", "hexgate-serve", agent_name],
-    )
 
     def _astream(agent_input: Any, ctx: Any, query: str) -> AsyncIterator[StreamEvent]:
         # The runner requires a context to open its enforcement scope; with no
@@ -395,28 +390,24 @@ def _build_openai_serve_runtime(
             query=query,
         )
 
-    return AgentRuntime(
-        agent=agent_obj,
-        handler=handler,
-        agent_name=agent_name,
-        agent_source="hexgate",
-        model=settings.model,
-        tools_by_name={
-            getattr(t, "name", getattr(t, "__name__", "tool")): t
-            for t in getattr(agent_obj, "tools", [])
-        },
-        astream_normalized=_astream,
+    return _serve_runtime_envelope(
+        agent_obj=agent_obj, agent_name=agent_name, settings=settings, astream=_astream
     )
 
 
-def _serve_runtime_over_driver(
-    *, agent_obj: Any, agent_name: str, settings: Settings, driver: Any
+def _serve_runtime_envelope(
+    *,
+    agent_obj: Any,
+    agent_name: str,
+    settings: Settings,
+    astream: "ServeStreamFn",
 ) -> AgentRuntime:
-    """Assemble the ``AgentRuntime`` envelope for a driver-backed framework.
+    """Assemble the ``AgentRuntime`` envelope shared by every framework adapter.
 
-    Google and Pydantic each own a stateful driver (ADK session / pydantic
-    history) whose ``astream`` is the streaming seam; the runtime envelope is
-    otherwise identical to the OpenAI path.
+    OpenAI binds a closure; Google and Pydantic bind a stateful driver's
+    ``astream`` method (ADK session / pydantic history). Everything else — the
+    langfuse handler, ``tools_by_name``, the runtime fields — is identical, so it
+    lives here once.
     """
     from hexgate.tracing.langfuse import get_langfuse_handler
 
@@ -434,7 +425,7 @@ def _serve_runtime_over_driver(
             getattr(t, "name", getattr(t, "__name__", "tool")): t
             for t in getattr(agent_obj, "tools", [])
         },
-        astream_normalized=driver.astream,
+        astream_normalized=astream,
     )
 
 
@@ -456,8 +447,11 @@ def _build_google_serve_runtime(
     driver = GoogleServeDriver(
         agent=agent_obj, app_name=agent_name, approval_handler=approval_handler
     )
-    return _serve_runtime_over_driver(
-        agent_obj=agent_obj, agent_name=agent_name, settings=settings, driver=driver
+    return _serve_runtime_envelope(
+        agent_obj=agent_obj,
+        agent_name=agent_name,
+        settings=settings,
+        astream=driver.astream,
     )
 
 
@@ -476,8 +470,11 @@ def _build_pydantic_serve_runtime(
     from hexgate.adapters.pydantic_ai.streaming import PydanticServeDriver
 
     driver = PydanticServeDriver(agent=agent_obj, approval_handler=approval_handler)
-    return _serve_runtime_over_driver(
-        agent_obj=agent_obj, agent_name=agent_name, settings=settings, driver=driver
+    return _serve_runtime_envelope(
+        agent_obj=agent_obj,
+        agent_name=agent_name,
+        settings=settings,
+        astream=driver.astream,
     )
 
 
