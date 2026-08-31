@@ -109,13 +109,8 @@ def evaluate_tool_call(
 
     try:
         check_constraints(
-            # Policy-level first: a run-budget denial reads better in a deny
-            # reason than an argument one ("run budget exhausted" before
-            # "amount too high"), and check_constraints reports the first
-            # failure. Order is all this choice affects — every constraint
-            # must pass either way. Reached only after the deny
-            # short-circuit above, so a policy-level constraint can narrow a
-            # grant but never resurrect a denied tool.
+            # Policy-level first, so a run-budget denial is the one reported.
+            # Order is all it affects — every constraint must pass either way.
             [*policy.constraints, *tool_policy.constraints],
             arguments,
             tool_name,

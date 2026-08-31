@@ -142,8 +142,7 @@ def test_validate_reports_constraint_error_at_the_policy_level(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A policy-level constraint has no tool of its own, so it is reported
-    under ``<policy>`` — same friendly localization as ``<default>``, instead
-    of a raw schema ValidationError."""
+    under ``<policy>`` rather than as a raw schema ValidationError."""
     bad = tmp_path / "bad.yaml"
     bad.write_text(
         "version: 1\nroles:\n  default:\n    constraints:\n      - args.amount ~~ 50\n",

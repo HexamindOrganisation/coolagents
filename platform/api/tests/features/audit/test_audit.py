@@ -141,12 +141,8 @@ def test_negative_run_counter_rejected() -> None:
 
 
 def test_sdk_payload_validates_in_a_run_scope() -> None:
-    """The cross-package contract, asserted against the real SDK.
-
-    The SDK's own suite can only check its idea of the wire shape; this is the
-    only test where both halves meet. Names and types must line up or the
-    field is silently dropped — DecisionEvent does not forbid extras.
-    """
+    """The cross-package contract, asserted against the real SDK — the only
+    test where both halves of the wire shape meet."""
     from hexgate.audit import AuditEvent
     from hexgate.security.decision import Decision, DecisionOutcome, RunAttribution
 
@@ -177,13 +173,9 @@ def test_sdk_payload_validates_in_a_run_scope() -> None:
 
 
 def test_sdk_payload_validates_outside_a_run_scope() -> None:
-    """The regression guard for the whole feature's worst failure mode.
-
-    A decision made outside a run scope sends ``run_id: None``. If the SDK ever
-    sent "" instead, this raises — and in production that ValidationError is a
-    422 the sender discards, losing the entire audit record rather than just
-    the attribution.
-    """
+    """A decision outside a run scope sends ``run_id: None``. Were the SDK to
+    send "" instead, this raises — and in production that is a 422 the sender
+    discards, losing the entire record."""
     from hexgate.audit import AuditEvent
     from hexgate.security.decision import Decision, DecisionOutcome
 

@@ -1032,9 +1032,8 @@ _POLICY_LEVEL_PAYLOAD = {
 
 def test_policy_level_constraint_lands_in_every_rule() -> None:
     """Three _gated_rules call sites: the per-tool loop, the agent.run opt-in
-    admission rule, and the default_policy catch-all. The middle one is the
-    easy miss — its policy comes from a fallback constant, not the document —
-    and missing it denies admission on pydantic while allowing it on WASM."""
+    rule, and the default_policy catch-all. Missing the middle one allows on
+    WASM what pydantic denies."""
     rego = compile_to_rego(_POLICY_LEVEL_PAYLOAD)
 
     listed, admission, catch_all = (block for block in rego.split("allow if {")[1:])
@@ -1046,9 +1045,8 @@ def test_policy_level_constraint_lands_in_every_rule() -> None:
 
 
 def test_policy_level_constraint_emits_a_violation_rule_per_tool() -> None:
-    """Each violation rule carries its own tool guard, so one policy-level
-    constraint on N rule heads emits N membership rules — inherent, and the
-    deny reason names the raw constraint string either way."""
+    """Each violation rule carries its own tool guard, so one constraint on N
+    rule heads emits N membership rules."""
     rego = compile_to_rego(_POLICY_LEVEL_PAYLOAD)
 
     assert rego.count("violations contains `run.tool_calls < 3`") == 3
@@ -1072,9 +1070,8 @@ def test_policy_level_constraints_precede_the_tools_own() -> None:
 
 
 def test_an_empty_policy_level_list_renders_byte_identically() -> None:
-    """The bundle-hash guard, stated directly rather than only via the golden
-    file: every project recompiling and changing source_hash on upgrade is a
-    support conversation nobody needs."""
+    """The bundle-hash guard: otherwise every project's source_hash moves on
+    upgrade."""
     without = {"roles": {"default": {"tools": {"t": {"mode": "allow"}}}}}
     with_empty = {
         "roles": {"default": {"constraints": [], "tools": {"t": {"mode": "allow"}}}}

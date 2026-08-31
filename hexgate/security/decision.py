@@ -179,9 +179,7 @@ _ERROR_TYPE_BY_OUTCOME: dict[DecisionOutcome, str] = {
 }
 
 
-# ``run.elapsed_seconds`` is a float; the platform column is UInt32
-# milliseconds (platform/clickhouse/init/schema.sql, policy_decision), typed so
-# a distribution query buckets predictably. Convert once, here.
+# ``run.elapsed_seconds`` is a float; the platform column is UInt32 ms.
 _MILLISECONDS_PER_SECOND = 1000
 
 
@@ -189,15 +187,8 @@ _MILLISECONDS_PER_SECOND = 1000
 class RunAttribution:
     """The run a decision belongs to, in the shape the audit wire wants.
 
-    Built from :meth:`~hexgate.runtime.run_facts.RunFacts.as_namespace`, which
-    :meth:`~hexgate.security.enforcer.PolicyEnforcer.decide` reads once per
-    decision so the record and the verdict cannot disagree about the same run.
-    Bounded integers and a UUID string — not caller data, so it is neither
-    redacted nor capped on its way out (see ``audit.AuditEvent.as_payload``).
-
-    ``run_id`` is ``""`` for a decision made outside a run scope, matching
-    ``run_facts.DETACHED.id``. That is an in-process signal only: the wire
-    field is ``UUID | None``, so :meth:`as_payload_fields` sends ``None``.
+    ``run_id`` is ``""`` outside a run scope, matching ``run_facts.DETACHED``.
+    An in-process signal only — the wire field is ``UUID | None``.
     """
 
     run_id: str = ""
@@ -211,10 +202,7 @@ class RunAttribution:
     def from_namespace(cls, run: Mapping[str, Any] | None) -> "RunAttribution":
         """Project the ``run.*`` namespace onto the five persisted counters.
 
-        A subset by design: the namespace also carries ``agent``,
-        ``approvals``, ``errors``, ``calls_of_this_tool``, ``tools_used`` and
-        the token split, none of which has a column yet. Adding one later is a
-        DEFAULT-ed column plus a line here.
+        A subset: the other paths have no column yet.
         """
         if not run:
             return DETACHED_RUN
@@ -232,10 +220,8 @@ class RunAttribution:
     def as_payload_fields(self) -> dict[str, Any]:
         """Wire fields for the platform's ``DecisionEvent``.
 
-        ``run_id`` is ``None``, never ``""``: the platform types it
-        ``UUID | None`` and rejects an empty string with a 422, which the SDK
-        sender drops rather than retries — so a decision made outside a run
-        scope would lose its whole audit record, not just its attribution.
+        ``run_id`` is ``None``, never ``""``: the platform 422s on an empty
+        string and the sender drops a 4xx, losing the whole record.
         """
         return {
             "run_id": self.run_id or None,
@@ -247,10 +233,7 @@ class RunAttribution:
         }
 
 
-# Shared zero value: a decision with no run scope behind it. Safe as a
-# module-level singleton because the class is frozen — unlike
-# ``run_facts.DETACHED``, which needs a write-dropping flag to play the same
-# role for a mutable accumulator.
+# A decision with no run scope behind it. Safe to share: the class is frozen.
 DETACHED_RUN: Final[RunAttribution] = RunAttribution()
 
 
@@ -278,12 +261,9 @@ class Decision:
     # audit sender (redacted + capped in ``audit.as_payload``); deliberately
     # still absent from ``as_error_payload`` — the model must never see it.
     attributes: dict[str, Any] | None = None
-    # The run this decision belongs to. Persisted by the audit sender
-    # untouched — bounded integers and a UUID, not caller data — and
-    # deliberately absent from ``as_error_payload`` for the same reason
-    # ``attributes`` is: the model must not learn how close it is to its
-    # budget. Surfacing budget pressure to the agent is its own design
-    # decision, not something to ship by accident here.
+    # The run this decision belongs to. Persisted untouched (bounded ints and a
+    # UUID, not caller data); absent from ``as_error_payload`` like
+    # ``attributes`` — the model must not learn how close it is to its budget.
     run: RunAttribution = DETACHED_RUN
 
     @classmethod
@@ -300,12 +280,7 @@ class Decision:
         run: RunAttribution = DETACHED_RUN,
     ) -> "Decision":
         """Lift an engine :class:`Verdict` into a host-facing decision, stamping
-        on the context the engine doesn't know.
-
-        ``run`` defaults to :data:`DETACHED_RUN` rather than being required: a
-        decision built with no run context is a legitimate state (a direct
-        ``decide()``, a bypassed entry point), and defaulting keeps every
-        existing caller valid."""
+        on the context the engine doesn't know."""
         return cls(
             outcome=verdict.outcome,
             agent_name=agent_name,

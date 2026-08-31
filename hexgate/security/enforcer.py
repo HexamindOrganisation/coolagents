@@ -159,9 +159,8 @@ class PolicyEnforcer:
             deciding_role=deciding_role,
             arguments=args_snapshot,
             attributes=attrs_snapshot,
-            # Projected from the same snapshot the verdict was evaluated
-            # against, never a second read: the audit record and the decision
-            # must not describe different counter values for one call.
+            # The same snapshot the verdict saw, never a second read: the
+            # record and the decision must not disagree about the run.
             run=RunAttribution.from_namespace(run_snapshot),
         )
 

@@ -932,11 +932,9 @@ def test_run_none_namespace_fails_closed_both_engines() -> None:
 # ---------------------------------------------------------------------------
 # Policy-level constraints — applied to every tool, on both engines
 #
-# The drift risk is structural: the pydantic engine prepends them to whatever
-# get_tool_policy resolved, which is one code path for every tool key. The Rego
-# compiler emits a rule *per* tool key from three separate call sites, and the
-# easiest one to forget is the synthetic agent.run admission rule, whose policy
-# comes from a fallback constant rather than the document.
+# The drift risk is structural: pydantic has one code path for every tool key,
+# while the Rego compiler emits a rule per key from three call sites. The
+# easiest to forget is agent.run, whose policy comes from a fallback constant.
 # ---------------------------------------------------------------------------
 
 _POLICY_LEVEL_POLICY = {
@@ -985,6 +983,6 @@ _POLICY_LEVEL_POLICY = {
 def test_policy_level_constraint_parity(
     tool: str, args: dict, run: dict, expect: str
 ) -> None:
-    """The constraint is inherited from a mixin, so this also covers the union
-    merge reaching the Rego compiler through the resolved PolicySet."""
+    """Inherited from a mixin, so this also covers the union merge reaching the
+    Rego compiler through the resolved PolicySet."""
     _assert_parity(_POLICY_LEVEL_POLICY, None, tool, args, expect, run=run)

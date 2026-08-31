@@ -1,14 +1,8 @@
 """Policy-level ``constraints:`` — the list that applies to every tool.
 
-``default_policy.constraints`` only reaches tools that fall *through* to the
-default, so a run-wide circuit breaker on a role that lists ten tools would
-have to be repeated ten times. This field is written once and applies
-everywhere, which makes three properties load-bearing and each is pinned here:
-
-  * it reaches every tool key, including the synthetic ``agent.run``;
-  * it can only *narrow* — a denied tool stays denied, never resurrected;
-  * it unions across ``inherits`` instead of overriding, so a child cannot
-    silently drop a mixin's fence.
+Three properties are load-bearing, one section each: it reaches every tool key
+including the synthetic ``agent.run``; it can only *narrow*; and it unions
+across ``inherits`` rather than overriding.
 """
 
 from __future__ import annotations
@@ -43,12 +37,8 @@ def _outcome(policy: AgentPolicy, tool: str, tool_calls: int) -> str:
 
 @pytest.mark.parametrize("tool", ["read_file", "not_listed_anywhere", "agent.run"])
 def test_applies_to_every_reachable_tool(tool: str) -> None:
-    """A listed tool, a fall-through tool, and the synthetic admission key.
-
-    ``agent.run`` matters because its policy comes from a fallback constant
-    (``_ADMISSION_OPT_IN_ALLOW``), not from the document — easy to leave out of
-    a per-tool loop on one engine and not the other.
-    """
+    """``agent.run`` matters because its policy comes from a fallback constant,
+    not the document — easy to miss in a per-tool loop on one engine only."""
     policy = _policy()
 
     assert _outcome(policy, tool, tool_calls=1) == "allow"
@@ -62,8 +52,7 @@ def test_deny_reason_names_the_policy_level_constraint() -> None:
 
 
 def test_evaluated_before_the_tools_own_constraints() -> None:
-    """Order decides only which violation is reported first; a run-budget
-    denial reads better than an argument one."""
+    """Order decides only which violation is reported first."""
     policy = _policy(
         tools={"refund": {"mode": "allow", "constraints": ["args.amount <= 50"]}}
     )
@@ -93,14 +82,12 @@ def test_the_tools_own_constraints_still_apply() -> None:
 
 
 def test_never_resurrects_a_denied_tool() -> None:
-    """``mode: deny`` short-circuits before constraints, so a satisfied
-    policy-level constraint cannot turn a deny into an allow."""
+    """``mode: deny`` short-circuits before constraints."""
     assert _outcome(_policy(), "delete_all", tool_calls=0) == "deny"
 
 
 def test_never_resurrects_an_unlisted_reach_key() -> None:
-    """Reach keys are closed-world: a permissive default (and now a satisfied
-    policy-level constraint) must not grant an unlisted handoff."""
+    """Reach keys are closed-world — nothing here may grant an unlisted one."""
     assert _outcome(_policy(), "agent.handoff:billing", tool_calls=0) == "deny"
 
 
@@ -120,8 +107,8 @@ def _resolved(policy_map: dict[str, dict], role: str) -> AgentPolicy:
 
 
 def test_unions_across_inherits_rather_than_overriding() -> None:
-    """Trap 2. Override would let ``inherits: [read_only]`` silently *remove*
-    the mixin's cap — fail-open on a security restriction."""
+    """Override would let ``inherits: [read_only]`` silently remove the mixin's
+    cap — fail-open on a security restriction."""
     resolved = _resolved(
         {
             "read_only": {"is_mixin": True, "constraints": ["run.tool_calls < 50"]},
@@ -138,12 +125,9 @@ def test_unions_across_inherits_rather_than_overriding() -> None:
 
 
 def test_an_inherited_constraint_actually_denies() -> None:
-    """Trap 1, asserted by *evaluating* rather than by inspecting the field.
-
-    ``_resolve_inheritance`` builds its return value by naming fields, so a
-    field left out is dropped for every role using ``inherits:`` — and a
-    dropped constraint is fail-open. A field-equality assertion alone would
-    also pass against a merge that built the list but never applied it.
+    """``_resolve_inheritance`` names its fields, so one left out is dropped for
+    every role using ``inherits:`` — fail-open. Asserted by *evaluating*: a
+    field check alone would pass a merge that built the list but never used it.
     """
     resolved = _resolved(
         {
@@ -165,8 +149,7 @@ def test_an_inherited_constraint_actually_denies() -> None:
 
 
 def test_deduplicated_on_a_diamond() -> None:
-    """A predicate inherited by two paths is evaluated once, and named once in
-    a deny reason."""
+    """A predicate inherited by two paths is evaluated once."""
     resolved = _resolved(
         {
             "base": {"is_mixin": True, "constraints": ["run.tool_calls < 50"]},
@@ -184,8 +167,7 @@ def test_deduplicated_on_a_diamond() -> None:
 
 
 def test_a_role_without_inherits_is_untouched() -> None:
-    """The no-inherits early return skips the merge entirely, so it is a
-    separate path from the union above."""
+    """The no-inherits early return skips the merge — a separate path."""
     resolved = _resolved(
         {"default": {"constraints": ["run.tool_calls < 3"]}}, "default"
     )

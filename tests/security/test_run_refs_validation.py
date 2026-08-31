@@ -172,9 +172,7 @@ def test_policy_set_construction_accepts_a_registered_run_path() -> None:
 
 # --- policy-level constraints ----------------------------------------------
 #
-# Policy-level constraints are where a run cap is most likely to be written —
-# that is what the field is for — so the linter has to reach them or its whole
-# rationale is undone at exactly the wrong spot.
+# Where a run cap is most likely to be written, so the linter has to reach it.
 
 
 def _policy_level(*constraints: str) -> AgentPolicy:
@@ -201,8 +199,7 @@ def test_known_path_accepted_at_the_policy_level() -> None:
 
 
 def test_inherited_policy_level_constraint_is_validated() -> None:
-    """The validators run on the *resolved* map, so a bad reference cannot hide
-    in a mixin the child never restates."""
+    """Validation runs on the resolved map, so a bad ref cannot hide in a mixin."""
     from hexgate.security.policy_set import load_policy_map
 
     with pytest.raises(PolicySetError, match="unknown run.\\* path 'tool_call'"):

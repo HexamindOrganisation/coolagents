@@ -210,13 +210,13 @@ def test_decide_outside_a_run_scope_is_detached() -> None:
     enforcer.decide("read_file", {})
 
     # Value-equal, not the singleton: DETACHED still projects a populated
-    # all-zero namespace, so from_namespace builds a fresh equal instance.
+    # all-zero namespace.
     assert sender.events[0].decision.run == DETACHED_RUN
     assert sender.events[0].as_payload()["run_id"] is None
 
 
 def test_two_invocations_stamp_two_distinct_run_ids() -> None:
-    """Catches a scope opened once at construction instead of per invocation."""
+    """Catches a scope opened once at construction, not per invocation."""
     sender = _CapturingSender()
     enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
 
@@ -229,12 +229,8 @@ def test_two_invocations_stamp_two_distinct_run_ids() -> None:
 
 
 def test_stamped_counters_are_the_ones_the_verdict_saw() -> None:
-    """One read per decide(), shared by the fold and the record.
-
-    A second get_run_facts() read for the audit stamp would let the row claim a
-    counter value no role ever evaluated against — the record and the decision
-    disagreeing about the same call.
-    """
+    """One read per decide(), shared by the fold and the record: a second read
+    would let the row claim a value no role evaluated against."""
     sender = _CapturingSender()
     seen: list[Mapping[str, Any] | None] = []
 

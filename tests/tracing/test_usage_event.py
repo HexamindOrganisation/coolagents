@@ -74,9 +74,8 @@ def test_as_payload_when_occurred_at_defaults_then_occurred_at_has_utc_offset() 
 
 
 def test_as_payload_sends_null_run_id_never_empty_string() -> None:
-    """``LlmInvocationEvent.run_id`` is ``UUID | None`` on the platform: an
-    empty string is a 422, which the sender drops without retrying — losing the
-    usage record for every model call made outside a run scope."""
+    """An empty string is not a UUID: the platform 422s and the sender drops
+    it, losing the record for every model call made outside a run scope."""
     assert _event().as_payload()["run_id"] is None
 
 

@@ -781,12 +781,8 @@ def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
 
 
 def test_sdk_usage_payload_validates_both_in_and_out_of_a_run_scope() -> None:
-    """The cross-package contract for llm_invocation.run_id.
-
-    Same failure mode as the decision path: ``run_id`` is ``UUID | None``, so a
-    "" from the SDK is a 422 the sender discards — the usage record lost, not
-    just its attribution.
-    """
+    """Same failure mode as the decision path: a "" from the SDK is a 422 the
+    sender discards, losing the record."""
     import uuid as _uuid
 
     from hexgate.tracing.usage import LlmUsageEvent

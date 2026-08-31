@@ -697,13 +697,8 @@ async def test_post_halt_records_both_the_allow_and_the_guard_denial() -> None:
 
 @pytest.mark.asyncio
 async def test_pre_halt_carries_the_enclosing_run_id() -> None:
-    """A halt and the call it interrupts must share a run_id.
-
-    ``_record_halt`` exists so a guard-blocked call leaves the same trail a
-    policy denial does. Stamping the run only in ``PolicyEnforcer.decide``
-    would break that: a per-run timeline would show the run's tool calls but
-    not the guard that stopped it — the one row that explains the ending.
-    """
+    """A halt and the call it interrupts must share a run_id, or a per-run
+    timeline shows the tool calls but not the guard that stopped them."""
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
 
@@ -715,8 +710,8 @@ async def test_pre_halt_carries_the_enclosing_run_id() -> None:
 
 @pytest.mark.asyncio
 async def test_post_halt_counts_the_tool_that_already_ran() -> None:
-    """A post-guard halt withholds the result; the side effect happened, so the
-    call stays counted. Both recorded decisions belong to the same run."""
+    """A post-guard halt withholds the result, but the side effect happened —
+    so the call stays counted."""
     enf, inv = FakeEnforcer(), RecordingInvoke("val")
     pipe = _pipe(post=[lambda call, out: Halt(reason="withheld")])
 
@@ -739,7 +734,7 @@ async def test_halt_outside_a_run_scope_is_detached() -> None:
 
 
 def test_sync_halt_carries_the_enclosing_run_id() -> None:
-    """The sync path mirrors the async one; both build the same Decision."""
+    """The sync path builds the same Decision as the async one."""
     enf, inv = FakeEnforcer(), RecordingInvoke()
     pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
 

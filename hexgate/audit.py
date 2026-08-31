@@ -223,12 +223,8 @@ class AuditEvent:
             "attributes": attributes,
             "user_id": self.user_id,
             "session_id": self.session_id,
-            # Neither redacted nor capped: five bounded counters and a UUID
-            # produced by the SDK's own accumulator, not by caller data — the
-            # same reasoning as the role fields above. Spread from one method
-            # so the platform's field names live in a single place
-            # (RunAttribution.as_payload_fields), reviewable against
-            # DecisionEvent as a unit. Note run_id is None, never "", there.
+            # Neither redacted nor capped — SDK counters, not caller data.
+            # Spread so the platform's field names live in one place.
             **d.run.as_payload_fields(),
         }
 

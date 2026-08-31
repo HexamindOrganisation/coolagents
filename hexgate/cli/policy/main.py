@@ -524,7 +524,7 @@ def _iter_raw_constraints(payload: dict) -> "list[tuple[str, str, str]]":
     Handles both document shapes: inline-roles (``payload["roles"]``) and the
     flat single-policy form (tools at the top level → the ``default`` role).
     Constraints with no tool of their own are labelled ``<policy>``
-    (policy-level, applying to every tool) or ``<default>`` (the catch-all).
+    (policy-level) or ``<default>`` (the catch-all).
     Defensive against partially-malformed payloads — non-dict tools/specs are
     skipped so the schema validator downstream reports them.
     """
@@ -545,10 +545,9 @@ def _iter_raw_constraints(payload: dict) -> "list[tuple[str, str, str]]":
     for role, spec in specs:
         if not isinstance(spec, dict):
             continue
-        # The role's policy-level constraints and its catch-all both carry
-        # expressions with no tool of their own — report a bad one under a
-        # named bucket instead of letting the schema load raise a raw,
-        # unlocalized ValidationError.
+        # Policy-level and catch-all constraints have no tool of their own —
+        # report a bad one under a named bucket instead of letting the schema
+        # load raise a raw, unlocalized ValidationError.
         _emit(role, "<policy>", spec)
         _emit(role, "<default>", spec.get("default_policy"))
         tools = spec.get("tools")

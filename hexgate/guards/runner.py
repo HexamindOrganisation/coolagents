@@ -174,11 +174,9 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
     ``guard_denied`` so it is distinguishable from a real policy denial to both
     the model and any trail consumer.
 
-    The run facts are read here rather than threaded down from ``decide()``: a
-    pre-guard halt fires before any decision snapshot exists, and a post-guard
-    halt fires after the call was counted, so the counters have legitimately
-    moved. Both readings are truthful at the moment they are taken, which is
-    what the audit row claims.
+    Run facts are read here, not threaded down from ``decide()``: a pre-guard
+    halt fires before any snapshot exists, and a post-guard halt fires after
+    the call was counted.
     """
     # A guard halt has no policy-deciding role (the guard decided, not a role),
     # so deciding_role stays None; user_roles carries the caller's roles.
@@ -189,9 +187,8 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
         tool_name=call.tool_name,
         user_roles=user_roles,
         arguments=dict(call.args),
-        # Same run as the tool call decided a moment earlier, so a halt and the
-        # decision it interrupts share a run_id — otherwise a per-run timeline
-        # loses exactly the row explaining why the run stopped.
+        # Shares a run_id with the decision it interrupts, so a per-run
+        # timeline keeps the row explaining why the run stopped.
         run=RunAttribution.from_namespace(get_run_facts().as_namespace(call.tool_name)),
     )
     if halt.outcome is DecisionOutcome.DENY:

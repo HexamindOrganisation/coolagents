@@ -382,13 +382,9 @@ def _drift(
       * a boundary deny's arg typo inverts (``not(<missing> ...)`` folds to allow)
         -> fail-open -> error; other arg drift -> warning.
 
-    Policy-level ``constraints`` are deliberately not walked: they have no tool
-    to check ``args.*`` against, and checking them against every tool would
-    make an ``args.*`` policy-level constraint unwritable — a new restriction
-    unrelated to arg drift. Such a constraint is a smell (it denies every tool
-    lacking that argument) but it fails *closed*, so the first test run finds
-    it. Module composition rejects the field outright anyway (see
-    ``linker._MODULE_COMPOSABLE_FIELDS``), so this pipeline never sees one.
+    Policy-level ``constraints`` are not walked: they have no tool to check
+    ``args.*`` against, and ``link()`` rejects the field in a module anyway, so
+    this pipeline never sees one.
     """
     tool_props: dict[str, set[str]] = {
         t.name: set(t.input_schema.properties) for t in manifest.tools

@@ -286,8 +286,7 @@ def _rules_for_role(
     """
     effective = policy.effective_tools
     listed = sorted(effective)
-    # Applied to every rule this role emits, mirroring the pydantic engine,
-    # where they are prepended to whatever get_tool_policy resolved.
+    # Applied to every rule this role emits, mirroring the pydantic engine.
     policy_constraints = list(policy.constraints)
     out: list[str] = []
     for tool_name in listed:
@@ -319,11 +318,9 @@ def _rules_for_role(
                 BaseToolPolicy(mode="allow"),
                 AGENT_RUN_TOOL,
                 helpers,
-                # Admission is a tool key like any other on the pydantic path
-                # (_ADMISSION_OPT_IN_ALLOW goes through the same
-                # check_constraints call), so the policy-level constraints
-                # apply here too. Omitting them would deny admission on
-                # pydantic while allowing it on WASM.
+                # Admission is a tool key like any other on the pydantic path,
+                # so the policy-level constraints apply here too — omitting
+                # them would allow on WASM what pydantic denies.
                 policy_constraints=policy_constraints,
             )
         )
@@ -397,10 +394,8 @@ def _gated_rules(
     ``<default>``) for constraint parse errors.
 
     ``policy_constraints`` are the role's policy-level constraints, applied to
-    every tool. Required and keyword-only on purpose: there are three call
-    sites and a missed one is engine drift (the pydantic engine applies them
-    unconditionally), which is silent — a required parameter turns it into a
-    TypeError the first Rego test triggers.
+    every tool. Required and keyword-only: there are three call sites, and a
+    missed one is silent engine drift rather than a crash.
 
     ``deny`` mode emits nothing — absence of a rule IS the deny.
     """
@@ -422,10 +417,8 @@ def _gated_rules(
     head = "allow" if tool_policy.mode == "allow" else "requires_approval"
 
     # Parse all constraints up-front — surfaces bad grammar at compile time.
-    # Policy-level first, matching evaluate_tool_call's order. An empty
-    # policy-level list makes this exactly ``tool_policy.constraints``, so the
-    # rendered module is byte-identical to one compiled before this field
-    # existed — every project's source_hash stays put on upgrade.
+    # Policy-level first, matching evaluate_tool_call. An empty list renders
+    # byte-identically to before the field existed, so no source_hash moves.
     parsed: list[tuple[str, Node]] = []
     for raw_constraint in (*policy_constraints, *tool_policy.constraints):
         try:

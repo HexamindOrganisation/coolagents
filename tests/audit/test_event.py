@@ -385,13 +385,10 @@ def test_as_payload_carries_run_attribution() -> None:
 
 
 def test_as_payload_sends_null_run_id_never_empty_string() -> None:
-    """The regression guard for the whole feature's worst failure mode.
+    """The regression guard for this feature's worst failure mode.
 
-    ``DecisionEvent.run_id`` is ``UUID | None`` on the platform. Pydantic does
-    not coerce "" to a UUID, FastAPI maps the ValidationError to 422, and the
-    SDK sender discards any >=400 without retrying — so an empty string would
-    lose the entire audit record for every decision made outside a run scope,
-    which is precisely the population an auditor most wants to see.
+    "" is not a UUID, so FastAPI 422s and the sender discards without retrying
+    — losing the entire record for every decision made outside a run scope.
     """
     wire = AuditEvent(decision=_decision()).as_payload()
 
@@ -401,8 +398,7 @@ def test_as_payload_sends_null_run_id_never_empty_string() -> None:
 
 
 def test_as_payload_does_not_redact_or_truncate_run_fields() -> None:
-    """Bounded integers and a UUID from the SDK's own accumulator — not caller
-    data, so they pass through like the role fields do."""
+    """SDK counters, not caller data — they pass through like the role fields."""
     wire = AuditEvent(
         decision=_decision(run=_run(tool_calls=10**6, total_tokens=10**7))
     ).as_payload()
@@ -412,12 +408,10 @@ def test_as_payload_does_not_redact_or_truncate_run_fields() -> None:
 
 
 def test_as_payload_key_set_is_the_wire_contract() -> None:
-    """Mirrors DecisionEvent (platform/api/hexgate_api/schemas.py).
+    """Mirrors DecisionEvent, asserted as a set rather than field by field.
 
-    Asserted as a set, not field by field: DecisionEvent does not set
-    ``extra="forbid"``, so a key the platform does not know is silently
-    dropped rather than rejected. A field added to Decision without a column,
-    or renamed on either side, has to fail here or it fails nowhere.
+    The platform does not set ``extra="forbid"``, so an unknown key is dropped
+    silently. A field added without a column has to fail here or fail nowhere.
     """
     wire = AuditEvent(decision=_decision(run=_run())).as_payload()
 
@@ -447,8 +441,7 @@ def test_as_payload_key_set_is_the_wire_contract() -> None:
 
 
 def test_as_payload_run_fields_are_json_serializable() -> None:
-    """The sender posts ``json=payload``; a non-JSON value would raise inside
-    the emit task, where it is logged and the event lost."""
+    """The sender posts ``json=payload``; a non-JSON value is logged and lost."""
     wire = AuditEvent(decision=_decision(run=_run())).as_payload()
 
     assert json.loads(json.dumps(wire))["run_id"] == wire["run_id"]

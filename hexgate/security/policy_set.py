@@ -23,8 +23,7 @@ Inheritance semantics: left-to-right merge — ``inherits: [A, B]`` resolves
 to ``merge(A, merge(B, self))``, where ``merge`` deep-merges the ``tools``
 maps (child entries override parent entries by tool name) and replaces
 scalar fields (``default_policy``) with the child's value when set.
-Policy-level ``constraints`` are the exception: they union across the chain,
-so a child cannot drop a fence a mixin declared.
+Policy-level ``constraints`` are the exception: they union across the chain.
 
 Mixin policies (``is_mixin: true``) can only be referenced via ``inherits``
 — they're never picked as the effective policy for any context scope.
@@ -159,11 +158,8 @@ def _raw_constraints(
 ) -> Iterator[str]:
     """Every constraint string a role evaluates, policy-level first.
 
-    Mirrors the order in :func:`~hexgate.security.policy.evaluate_tool_call`,
-    so the first reference a validator rejects is the first one a call would
-    have hit. ``tools`` is a parameter because the two validators walk
-    different tool views — const refs cover the lowered ``agent.*`` keys in
-    ``effective_tools``, run refs only the authored ``tools``.
+    ``tools`` is a parameter because the two validators walk different views:
+    const refs cover the lowered ``agent.*`` keys, run refs only authored ones.
     """
     yield from policy.constraints
     for tool_policy in (*tools, policy.default_policy):
@@ -421,13 +417,10 @@ def _resolve_inheritance(
     with explicit precedence: ``self`` wins, then later parents, then
     earlier parents.
 
-    ``constraints`` is the one exception: policy-level constraints **union**
-    across the chain instead of overriding. A parent's constraint is a fence
-    the child inherits, so letting ``inherits: [read_only]`` replace the
-    mixin's run cap would silently remove it — fail-open on a security
-    restriction. Union can only narrow, which is the fail-closed direction.
-    Deduplicated, first-seen order, so diamond inheritance does not evaluate
-    the same predicate twice.
+    ``constraints`` is the one exception: it **unions** across the chain, since
+    letting a child replace a mixin's cap would silently remove it. Union can
+    only narrow. Deduplicated in first-seen order, so a diamond does not
+    evaluate the same predicate twice.
     """
     if name in chain:
         raise PolicySetError(f"cyclic inheritance: {' -> '.join(chain + [name])}")
@@ -467,9 +460,7 @@ def _resolve_inheritance(
     merged_tools.update(own.tools)
     merged_agents.update(own.agents)
     merged_consts.update(own.consts)
-    # Union, not override — the one field here that accumulates. See the
-    # docstring: a child replacing a parent's policy-level constraint would
-    # silently drop a fence, and dropping a restriction is fail-open.
+    # Union, not override — the one field here that accumulates (see docstring).
     _extend_unique(merged_constraints, own.constraints)
     if "default_policy" in own.model_fields_set:
         merged_default = own.default_policy

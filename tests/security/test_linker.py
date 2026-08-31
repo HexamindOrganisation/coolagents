@@ -319,12 +319,10 @@ def test_link_rejects_admission_block_in_module() -> None:
 
 
 def test_link_rejects_policy_level_constraints_in_module() -> None:
-    """The fold composes ``.tools`` only, so a role-wide fence authored in a
-    module would be silently dropped — fail-open. ``_MODULE_COMPOSABLE_FIELDS``
-    rejects it automatically, which is the point of the allowlist: a field
-    added to AgentPolicy fails closed until composition learns it. Pinned here
-    so nobody adds ``constraints`` to that set without teaching ``link()`` to
-    fold it (and deciding which layer may set a role-wide fence)."""
+    """The fold composes ``.tools`` only, so a role-wide fence in a module would
+    be silently dropped. ``_MODULE_COMPOSABLE_FIELDS`` rejects it for free;
+    pinned so nobody adds it to that set without teaching ``link()`` to fold
+    it."""
     mod = ModuleContent(
         name="d",
         kind="boundary",

@@ -207,8 +207,8 @@ def test_token_cap_trails_the_turn_that_exceeded_it() -> None:
 
 
 def test_emit_stamps_the_enclosing_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    """llm_invocation rows must join to the policy_decision rows of the same
-    invocation, so the run has to reach the event, not just the counters."""
+    """llm_invocation rows join to the policy_decision rows of the same run, so
+    the run_id has to reach the event, not just the counters."""
     sender = _FakeSender()
     monkeypatch.setattr(
         usage_mod, "configure_usage_sender", lambda api_key=None: sender
@@ -238,8 +238,7 @@ def test_emit_outside_a_run_scope_sends_no_run_id(
 def test_emit_attributes_tokens_and_the_run_id_to_the_same_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One get_run_facts() read: the tokens recorded and the run they are
-    attributed to are the same object, structurally rather than incidentally."""
+    """One get_run_facts() read, so the tokens and the run_id share an object."""
     sender = _FakeSender()
     monkeypatch.setattr(
         usage_mod, "configure_usage_sender", lambda api_key=None: sender
