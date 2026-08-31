@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from hexgate.runtime.context import get_current_context
+from hexgate.runtime.run_facts import get_run_facts
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
 from hexgate.tracing._senders import shutdown as _shutdown_all
@@ -66,11 +67,26 @@ def emit_llm_usage(
     unhandled exception (Google's ``PluginManager``) or doesn't guard the
     call at all (OpenAI's run loop, Pydantic AI's inline call site); a
     failure here must not fail the agent run whose usage it's reporting.
-    No-op when no sender is configured for ``api_key`` (no key resolvable,
-    or ``HEXGATE_LOCAL_MODE`` is on) — mirrors ``PolicyEnforcer.decide()``'s
-    audit emission, which is likewise silent when its sender is ``None``.
+    Two effects, and only the second is conditional: the tokens are always
+    recorded into the active run's facts (feeding the ``run.*`` token budget),
+    then the event is emitted if a sender is configured for ``api_key``. With
+    no key resolvable, or ``HEXGATE_LOCAL_MODE`` on, the emission is silent —
+    mirroring ``PolicyEnforcer.decide()``'s audit, which is likewise silent
+    when its sender is ``None``.
+
+    A recorder exception is swallowed with everything else here, so a
+    ``RunFacts`` bug costs a token count rather than the agent run. The
+    counters are best-effort by nature already: they trail the model by one
+    turn, since tokens are only known once it has responded.
     """
     try:
+        # Record into RunFacts BEFORE the sender check. Below the `return` this
+        # line is dead in local mode and for any run without an API key: every
+        # token path would stay 0, and `run.total_tokens < 200000` against a
+        # permanent 0 ALLOWS — a silently fail-open budget shipped as a working
+        # feature. A token cap has to work with no platform attached.
+        get_run_facts().record_llm_usage(input_tokens, output_tokens)
+
         sender = configure_usage_sender(api_key)
         if sender is None:
             return
