@@ -6,6 +6,7 @@ the network.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime, timezone
 
@@ -194,6 +195,25 @@ async def test_post_close_emit_is_noop() -> None:
     assert exporter.get_finished_spans() == ()
 
 
+async def test_close_forwards_the_export_timeout_to_processor_shutdown() -> None:
+    """OTel's own default would let shutdown block for 30s against an
+    unreachable collector; the sender's processor must pass our 5s bound
+    down to the wrapped ``BatchProcessor`` instead."""
+    sender, _ = _sender()
+    batch = sender._processor._batch_processor
+    captured: list[float] = []
+    original = batch.shutdown
+
+    def spying_shutdown(timeout_millis: float = 30_000) -> None:
+        captured.append(timeout_millis)
+        original(timeout_millis=timeout_millis)
+
+    batch.shutdown = spying_shutdown
+    await sender.close()
+
+    assert captured == [5_000]
+
+
 async def test_close_is_idempotent() -> None:
     sender, _ = _sender()
     await sender.close()
@@ -223,3 +243,37 @@ def test_constructor_builds_an_otlp_http_exporter_bearing_the_key() -> None:
 def test_unix_nanos_keeps_microsecond_precision() -> None:
     at = datetime(2026, 1, 1, 0, 0, 0, 999_999, tzinfo=timezone.utc)
     assert _unix_nanos(at) % 1_000_000_000 == 999_999_000
+
+
+# ---------------------------------------------------------------------------
+# emit(): drop-on-saturation detection
+# ---------------------------------------------------------------------------
+
+
+def test_sender_reads_the_processor_queue_internals() -> None:
+    """Pins the OTel private attributes emit() depends on for drop
+    detection: an opentelemetry-sdk upgrade that renames them must fail
+    here, loudly, rather than silently disable the saturation warning."""
+    sender, _ = _sender()
+    batch = sender._processor._batch_processor
+    assert sender._span_queue is batch._queue
+    assert sender._max_queue_size == batch._max_queue_size
+    assert sender._span_queue.maxlen == sender._max_queue_size
+
+
+def test_when_queue_saturated_then_drops_are_counted_and_first_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sender, _ = _sender()
+    # Shrink the cap emit() checks against; saturating the real 2048-span
+    # deque would need a stalled worker and thousands of emits.
+    sender._max_queue_size = 8
+
+    with caplog.at_level(logging.WARNING, logger="hexgate.tracing._senders"):
+        for _ in range(10):
+            sender.emit(_event())
+
+    assert sender._dropped_events == 2  # emits 9 and 10 saw a full queue
+    saturated = [r for r in caplog.records if "saturated" in r.getMessage()]
+    assert len(saturated) == 1  # first drop logs; the next waits for #10
+    assert "1 events dropped" in saturated[0].getMessage()

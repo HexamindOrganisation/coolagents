@@ -120,8 +120,8 @@ def get_usage_sender(api_key: str | None = None) -> AuditSender | None:
 
 
 async def shutdown() -> None:
-    """Drain in-flight emits and close every sender in the shared registry
-    (decisions and LLM usage alike). Safe to call multiple times;
-    equivalent to :func:`hexgate.audit.shutdown` — either name drains the
-    whole shared registry."""
+    """Flush queued events and stop every sender in the shared registry —
+    decisions, LLM usage and ban enforcements alike. Safe to call multiple
+    times; equivalent to :func:`hexgate.audit.shutdown` — either name
+    flushes the whole shared registry."""
     await _shutdown_all()

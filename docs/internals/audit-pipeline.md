@@ -177,8 +177,12 @@ same instant. Key behaviours:
   finished span onto the processor's in-memory queue; a worker thread batches
   and POSTs on a timer (5s) or size trigger (512). Export failures surface as
   the exporter's own log lines, never to the agent.
-- **Drop on saturation.** The queue is bounded (2048 spans); when full the
-  processor drops the newest and logs a warning.
+- **Drop on saturation.** The queue is bounded (2048 spans); when full, each
+  new span silently evicts the oldest queued one (a bounded deque — OTel
+  gives no signal), so `emit()` detects the eviction itself and logs a
+  rate-limited warning (first drop, then every 10th). The warning stays on
+  the stdlib logger, never OTLP: it must reach stderr precisely when the
+  OTLP pipeline is the thing that's failing.
 - **Thread-agnostic.** There is no event-loop affinity: `emit()` behaves the
   same on an asyncio loop thread, in a `run_in_executor` worker, and in a
   purely synchronous caller with no loop anywhere (pydantic_ai's `run_sync()`).
@@ -408,8 +412,9 @@ SETTINGS index_granularity = 8192;
   synchronously rather than being acked-then-dropped — an audit log must not
   silently lose acknowledged rows.
 - **Dedup:** `async_insert_deduplicate` plus the unique `event_id` provides
-  idempotency across SDK retries (the single 503 retry, or any at-least-once
-  delivery): re-POSTing the same `event_id` does not create a duplicate row.
+  idempotency across SDK retries (the exporter's backoff retries, or any
+  at-least-once delivery): re-sending the same `event_id` does not create a
+  duplicate row.
 
 ---
 
@@ -419,7 +424,7 @@ SETTINGS index_granularity = 8192;
   transmitted to the platform and stored (compressed) for up to 90 days. The
   default `base_url` is **plaintext `http://localhost:8000`**; production
   deployments must set `HEXGATE_API_URL` to a TLS endpoint.
-- **Default key-name redaction, always on.** `AuditEvent.as_payload()` replaces
+- **Default key-name redaction, always on.** `AuditEvent.span_attributes()` replaces
   values whose key matches `password|passwd|secret|token|api[-_]?key|
   credential|authorization` (case-insensitive, recursive into nested
   dicts/lists) with `"[REDACTED]"` before transmission. **This is a seatbelt,
@@ -433,7 +438,7 @@ SETTINGS index_granularity = 8192;
   `authorization_tier` or `access_token_scope` would leave the `ctx.*`-driven
   deny they caused unexplainable, defeating the reason the bag is persisted at
   all. A key named exactly `token` still reads as a secret and is blanked.
-- **SDK truncation at the platform cap.** `as_payload()` measures `arguments`
+- **SDK truncation at the platform cap.** `span_attributes()` measures `arguments`
   as the platform does (JSON, `default=str`); over 8 KiB it replaces the dict
   with `{"_truncated": true, "original_bytes": N, "preview": <JSON prefix>}`
   sized to fit the cap. Lossy, but the event is stored — the platform
@@ -499,12 +504,11 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 | Failure | SDK behaviour | Agent impact |
 |---------|---------------|--------------|
 | No api_key configured | `configure()` returns `None`; no sender injected | none (audit inert) |
-| No running event loop | `emit()` no-ops, one-time warning | none |
-| Sender saturated | event dropped, periodic warning | none |
-| Platform returns 503 | one retry, then network-error log | none |
-| Platform returns 413/422/400 | logged as ingest error (`>= 400`) | none |
-| Network unreachable | `RequestError` logged, dropped | none |
-| Event loop rotates | client + semaphore rebuilt transparently | none |
+| Sender saturated | oldest queued span evicted, rate-limited warning | none |
+| Collector returns 429/5xx | exporter backoff-retries within the 5s export deadline, then drops the batch with a log | none |
+| Collector returns other 4xx | export failure logged, batch dropped | none |
+| Network unreachable | export failure logged after the 5s deadline, batch dropped | none |
+| Process exits with spans queued | atexit hook flushes, bounded by the 5s shutdown timeout | exit delayed ≤ 5s |
 
 | Failure | Platform behaviour |
 |---------|--------------------|
@@ -527,9 +531,7 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
    allow/deny lists, no `ctx.*` allowlist, no `redact` callable yet.
 3. **Default transport is plaintext HTTP** — safe only for localhost; require
    TLS via `HEXGATE_API_URL` elsewhere.
-4. **Sync agents emit nothing** — `emit()` requires a running loop; sync entry
-   points silently produce no audit.
-5. **Schema evolution** — `init/schema.sql` runs once; there is no migration
+4. **Schema evolution** — `init/schema.sql` runs once; there is no migration
    runner wired up yet. Interim convention: a DDL change also lands a
    hand-applied statement in `platform/clickhouse/migrations/`, run in filename
    order via `make clickhouse-cli` **before** deploying the API that references
@@ -537,17 +539,17 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
    truthfully — the multi-role columns — no migration ships and the volume is
    recreated instead (`make clickhouse-reset`). A boot-time gap raises
    `SchemaOutOfDate`, which points the operator at both paths.
-6. **At-least-once, not exactly-once end to end** — the SDK can drop on
+5. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.
-7. **Write path is unscoped within a project** — `POST /v1/audit/decisions`
+6. **Write path is unscoped within a project** — `POST /v1/audit/decisions`
    authorizes via `require_project` (signature + project resolution only); any
    valid SDK bearer for the project can write audit, fetch policy, and register
    agents interchangeably. The biscuit attenuation primitive already exists
    (`platform/api/biscuits.py`); an `emit_audit` scope fact + endpoint check is
    the natural fix. Note existing minted tokens won't carry the fact — needs a
    deprecation window or re-mint.
-8. **No rate limit or volume alerting on ingest** — an exfiltrated key can
+7. **No rate limit or volume alerting on ingest** — an exfiltrated key can
    flood the log to bury real activity. Needs a per-project token bucket
    (`429 + Retry-After`; the SDK already logs-and-drops on ≥400) plus an
    ingest-volume-per-project alert.

@@ -65,6 +65,29 @@ def _unix_nanos(moment: datetime) -> int:
     return epoch_seconds * 1_000_000_000 + moment.microsecond * 1_000
 
 
+class _BoundedShutdownProcessor(BatchSpanProcessor):
+    """``BatchSpanProcessor`` whose ``shutdown()`` is bounded by our export
+    timeout instead of OTel's 30s default.
+
+    The parent constructor's ``export_timeout_millis`` is dead upstream —
+    stored, never read (see the TODO at
+    https://github.com/open-telemetry/opentelemetry-python/issues/4555) —
+    and ``TracerProvider.shutdown()`` reaches the wrapped processor's
+    ``shutdown()`` with no timeout argument, so it falls back to a 30 000 ms
+    default. Every slow exit path (``AuditSender.close()`` and the
+    provider's atexit hook) funnels through this one method; overriding it
+    bounds them all."""
+
+    def __init__(
+        self, exporter: SpanExporter, *, shutdown_timeout_millis: float
+    ) -> None:
+        super().__init__(exporter)
+        self._shutdown_timeout_millis = shutdown_timeout_millis
+
+    def shutdown(self) -> None:
+        self._batch_processor.shutdown(timeout_millis=self._shutdown_timeout_millis)
+
+
 class AuditSender:
     """Span emitter for a single ``api_key``: one ``TracerProvider`` feeding
     one ``BatchSpanProcessor`` → ``OTLPSpanExporter`` pair, with one tracer
@@ -76,9 +99,10 @@ class AuditSender:
     own worker thread batches and POSTs on a timer or size trigger. That
     holds equally on an asyncio loop thread, in a ``run_in_executor`` worker
     and in a purely synchronous caller with no loop anywhere — there is no
-    event-loop affinity to manage. A saturated queue drops the newest spans
-    (the processor logs a warning) rather than growing an unbounded backlog,
-    same policy as before.
+    event-loop affinity to manage. A saturated queue stays bounded by
+    evicting the *oldest* queued span to admit the new one — silently,
+    inside the deque, with no signal from OTel — so ``emit()`` detects the
+    eviction itself and logs a rate-limited warning.
 
     ``exporter`` is an injection seam for tests; production callers leave
     it ``None`` and get an OTLP/HTTP exporter bearing the key.
@@ -98,9 +122,16 @@ class AuditSender:
         self._closing = False
         if exporter is None:
             exporter = self._new_exporter()
-        self._processor = BatchSpanProcessor(
-            exporter, export_timeout_millis=export_timeout * 1000
+        self._processor = _BoundedShutdownProcessor(
+            exporter, shutdown_timeout_millis=export_timeout * 1000
         )
+        # The processor's bounded deque and its cap, reached through OTel
+        # private attributes (pinned by a unit test, so an opentelemetry-sdk
+        # upgrade that moves them fails loudly). emit() reads them to detect
+        # drop-on-saturation, which the deque performs silently.
+        self._span_queue = self._processor._batch_processor._queue
+        self._max_queue_size = self._processor._batch_processor._max_queue_size
+        self._dropped_events = 0
         # ALWAYS_ON, not the default parent-based sampler: a customer running
         # their own OTel tracing sets sampling decisions on *their* spans, and
         # a parent-based sampler here would inherit them — a 1% trace sample
@@ -139,6 +170,19 @@ class AuditSender:
         problem (those surface as the exporter's own log lines)."""
         if self._closing:
             return
+        # A full queue evicts its oldest span on append with no signal — OTel
+        # deliberately never logs on that path. The warning stays on the
+        # stdlib logger: it must reach stderr precisely when the OTLP
+        # pipeline is the thing that's failing, so it can never travel over
+        # OTLP itself. The count is approximate under concurrent emits.
+        if len(self._span_queue) >= self._max_queue_size:
+            self._dropped_events += 1
+            if self._dropped_events == 1 or self._dropped_events % 10 == 0:
+                _log.warning(
+                    "audit span queue saturated; %d events dropped so far "
+                    "(oldest evicted first)",
+                    self._dropped_events,
+                )
         tracer = self._tracers[event.SCOPE]
         at = _unix_nanos(event.occurred_at)
         # start == end: these are point-in-time events, and the enricher reads

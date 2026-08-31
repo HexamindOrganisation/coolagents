@@ -279,9 +279,10 @@ class BanGate:
     async def check_async(self, context: HexgateContext | None) -> None:
         """Async check: fetch off-loop, decide + emit + raise on the loop.
 
-        The emit must stay on the loop — the fire-and-forget ``AuditSender``
-        only adopts a running loop on its on-loop path, so emitting from the
-        ``to_thread`` worker would drop the event.
+        The sender is thread-agnostic — emitting from the ``to_thread``
+        worker would deliver fine — so the on-loop placement of decide/emit
+        is about raising :class:`AgentBannedError` in the caller's context,
+        not about delivery.
         """
         bans = await asyncio.to_thread(self._current)
         self._decide(bans, context)
