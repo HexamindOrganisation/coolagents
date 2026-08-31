@@ -11,7 +11,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable
+
+    from hexgate.agents.factory import AgentInput
+    from hexgate.runtime import HexgateContext
     from hexgate.security.enforcer import DecisionObserver
+    from hexgate.streaming import StreamEvent
+
+    # The framework-agnostic serve streaming seam: given the turn's input, the
+    # caller's (optional) attenuation context, and the user query, yield
+    # normalized StreamEvents. Bound per framework in
+    # ``build_runtime_from_local_agent`` so ``hexgate serve`` stays framework-blind.
+    ServeStreamFn = Callable[
+        ["AgentInput", "HexgateContext | None", str], "AsyncIterator[StreamEvent]"
+    ]
 
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -36,6 +49,10 @@ class AgentRuntime:
     agent_source: str
     model: str
     tools_by_name: dict[str, object]
+    # Serve-only: the per-framework normalized streaming seam. ``None`` for
+    # runtimes built by ``build_runtime`` (terminal chat), which streams via
+    # ``stream_agent`` directly; set by ``build_runtime_from_local_agent``.
+    astream_normalized: "ServeStreamFn | None" = None
 
 
 def build_runtime(
@@ -192,24 +209,17 @@ def build_runtime_from_local_agent(
          to ``/v1/agents``. Idempotent — server short-circuits when the
          content_hash hasn't changed. Print "Registered" / "unchanged" so
          the operator sees what just happened.
-      3. Fetch the cloud's policy YAML for this agent name via the bearer
-         GET ``/v1/agents/{name}`` route. The operator may have edited it
-         in the dashboard since last register; we pick up that edit.
-      4. ``enforce_policy(agent_obj, policy, approval_handler=...)`` —
-         wraps the LOCAL agent's tools with the cloud's policy. Local
-         code stays authoritative for code (tools / model / prompt);
-         platform is authoritative for policy.
+      3. Dispatch on ``manifest.framework`` to a per-framework builder that
+         wires enforcement + a normalized streaming seam
+         (``AgentRuntime.astream_normalized``). ``hexgate serve`` itself stays
+         framework-blind — it only calls that seam.
 
-    Returns an :class:`AgentRuntime` whose ``agent`` is the policy-wrapped
-    HexgateAgent and ``agent_name`` is the manifest's name (matches what
-    we'll announce to the relay's ``hello`` message).
+    Returns an :class:`AgentRuntime` whose ``agent_name`` is the manifest's name
+    (matches what we'll announce to the relay's ``hello`` message).
     """
-    from hexgate.agents.factory import enforce_policy
     from hexgate.cli.register.register import post_manifest
-    from hexgate.cloud.client import HexgateClient, HexgateConfig
     from hexgate.manifest import create_manifest
-    from hexgate.security.binding import platform_policy_from_payload
-    from hexgate.tracing.langfuse import get_langfuse_handler
+    from hexgate.manifest.models import AgentFramework
 
     manifest = create_manifest(agent_obj, description=description)
     agent_name = manifest.name
@@ -229,6 +239,45 @@ def build_runtime_from_local_agent(
                 f"[dim]ℹ Agent[/] [cyan]{agent_name}[/] "
                 f"[dim]already registered (manifest unchanged)[/]"
             )
+
+    if manifest.framework == AgentFramework.HEXGATE:
+        return _build_hexgate_serve_runtime(
+            settings,
+            agent_obj=agent_obj,
+            agent_name=agent_name,
+            approval_handler=approval_handler,
+        )
+    if manifest.framework == AgentFramework.OPENAI:
+        return _build_openai_serve_runtime(
+            settings,
+            agent_obj=agent_obj,
+            agent_name=agent_name,
+            approval_handler=approval_handler,
+        )
+    raise NotImplementedError(
+        f"hexgate serve does not yet support {manifest.framework.value} agents "
+        "— supported frameworks are native (hexgate) and OpenAI. "
+        "Google ADK and Pydantic AI serve support is planned."
+    )
+
+
+def _build_hexgate_serve_runtime(
+    settings: Settings,
+    *,
+    agent_obj: Any,
+    agent_name: str,
+    approval_handler: ApprovalHandler | None,
+) -> AgentRuntime:
+    """Build the serve runtime for a native (LangChain) HexgateAgent.
+
+    Fetches the platform's (possibly dashboard-edited) policy, wraps the local
+    agent's tools with it, and binds a ``stream_agent`` streaming seam. Local
+    code stays authoritative for tools/model/prompt; the platform for policy.
+    """
+    from hexgate.agents.factory import enforce_policy, stream_agent
+    from hexgate.cloud.client import HexgateClient, HexgateConfig
+    from hexgate.security.binding import platform_policy_from_payload
+    from hexgate.tracing.langfuse import get_langfuse_handler
 
     config = HexgateConfig.from_env()
     client = HexgateClient(config)
@@ -266,6 +315,21 @@ def build_runtime_from_local_agent(
         tags=["hexgate", "hexgate-serve", agent_name],
     )
 
+    def _astream(agent_input: Any, ctx: Any, query: str) -> AsyncIterator[StreamEvent]:
+        # stream_agent reads the ambient HexgateContext and derives its own
+        # query; open the caller's attenuation scope around it when present,
+        # else run with no scope (default role) exactly as before.
+        async def _gen() -> AsyncIterator[StreamEvent]:
+            if ctx is None:
+                async for event in stream_agent(enforced, handler, agent_input):
+                    yield event
+            else:
+                async with ctx:
+                    async for event in stream_agent(enforced, handler, agent_input):
+                        yield event
+
+        return _gen()
+
     return AgentRuntime(
         agent=enforced,
         handler=handler,
@@ -276,6 +340,58 @@ def build_runtime_from_local_agent(
             getattr(t, "name", getattr(t, "__name__", "tool")): t
             for t in getattr(enforced, "tools", [])
         },
+        astream_normalized=_astream,
+    )
+
+
+def _build_openai_serve_runtime(
+    settings: Settings,
+    *,
+    agent_obj: Any,
+    agent_name: str,
+    approval_handler: ApprovalHandler | None,
+) -> AgentRuntime:
+    """Build the serve runtime for an OpenAI Agents SDK agent.
+
+    Unlike the native path, the OpenAI ``HexgateRunner`` fetches and hot-reloads
+    its own per-run policy binding (ETag/304) and enforces the ban gate, so we
+    build the runner once and bind a normalized streaming seam over it — no
+    ``enforce_policy`` here, the runner owns enforcement.
+    """
+    from hexgate.adapters.openai.runner import HexgateRunner
+    from hexgate.adapters.openai.streaming import astream_openai
+    from hexgate.runtime import HexgateContext
+    from hexgate.tracing.langfuse import get_langfuse_handler
+
+    runner = HexgateRunner(approval_handler=approval_handler)
+    handler = get_langfuse_handler(
+        session_id="hexgate-serve",
+        tags=["hexgate", "hexgate-serve", agent_name],
+    )
+
+    def _astream(agent_input: Any, ctx: Any, query: str) -> AsyncIterator[StreamEvent]:
+        # The runner requires a context to open its enforcement scope; with no
+        # dashboard attenuation, run as an anonymous default-role caller (empty
+        # user_id, no roles), mirroring the native path's no-scope default.
+        return astream_openai(
+            runner,
+            agent_obj,
+            agent_input,
+            hexgate_context=ctx or HexgateContext(user_id=""),
+            query=query,
+        )
+
+    return AgentRuntime(
+        agent=agent_obj,
+        handler=handler,
+        agent_name=agent_name,
+        agent_source="hexgate",
+        model=settings.model,
+        tools_by_name={
+            getattr(t, "name", getattr(t, "__name__", "tool")): t
+            for t in getattr(agent_obj, "tools", [])
+        },
+        astream_normalized=_astream,
     )
 
 
