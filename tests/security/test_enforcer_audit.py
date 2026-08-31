@@ -22,6 +22,7 @@ class _StubEngine:
         tool: str,
         args: Mapping[str, Any],
         attributes: Mapping[str, Any] | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> Verdict:
         return Verdict(outcome=DecisionOutcome.DENY, reason="stub")
 
@@ -149,6 +150,7 @@ async def test_audited_decision_carries_the_full_role_set_and_deciding_role() ->
             tool: str,
             args: Mapping[str, Any],
             attributes: Mapping[str, Any] | None = None,
+            run: Mapping[str, Any] | None = None,
         ) -> Verdict:
             if role == "billing":
                 return Verdict(outcome=DecisionOutcome.ALLOW)

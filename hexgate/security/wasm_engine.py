@@ -217,17 +217,26 @@ class WasmPolicy:
         tool: str,
         args: dict[str, Any],
         ctx: dict[str, Any] | None = None,
+        run: dict[str, Any] | None = None,
     ) -> RegoVerdict:
         """Evaluate one tool-call decision.
 
-        Composes ``input = {role, tool, args, ctx}``, runs the entrypoint, and
-        returns the parsed ``RegoVerdict``. ``ctx`` is the caller's ABAC bag,
-        read by compiled ``input.ctx.*`` conditions; it mirrors the pydantic
-        engine's ``ctx`` context key. The eval is hermetic — heap is reset
-        before the call so repeated decisions don't accumulate state.
+        Composes ``input = {role, tool, args, ctx, run}``, runs the entrypoint,
+        and returns the parsed ``RegoVerdict``. ``ctx`` is the caller's ABAC
+        bag, read by compiled ``input.ctx.*`` conditions; ``run`` is the
+        invocation's fact record, read by ``input.run.*`` ones. Both mirror the
+        pydantic engine's context keys of the same name. The eval is hermetic —
+        heap is reset before the call so repeated decisions don't accumulate
+        state.
         """
         return self.evaluate(
-            {"role": role, "tool": tool, "args": args, "ctx": ctx or {}}
+            {
+                "role": role,
+                "tool": tool,
+                "args": args,
+                "ctx": ctx or {},
+                "run": run or {},
+            }
         )
 
     def evaluate(self, input_obj: dict[str, Any]) -> RegoVerdict:

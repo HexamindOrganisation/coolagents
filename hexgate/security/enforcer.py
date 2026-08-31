@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_context
 from hexgate.runtime.roles import resolve_role_set
+from hexgate.runtime.run_facts import get_run_facts
 from hexgate.security.decision import Decision, PolicyEngine, combine_role_verdicts
 from hexgate.tracing._senders import AuditSender
 
@@ -129,6 +130,19 @@ class PolicyEnforcer:
             _snapshot(attributes, deep=retained) if attributes is not None else None
         )
 
+        # Feeds the ``run.*`` namespace. Read once, not once per role:
+        # ``as_namespace`` is not idempotent across time (``elapsed_seconds``
+        # moves, and a parallel tool call may increment a counter mid-fold), so
+        # N reads would let role 1 and role 3 disagree about the same run — and
+        # ``combine_role_verdicts`` is permissive, so the disagreement would
+        # resolve as the most permissive snapshot rather than the one that was
+        # true at decision time.
+        #
+        # Not snapshotted like ``args`` / ``attributes``: it is a dict this call
+        # just built out of immutable scalars plus one fresh list, and nothing
+        # else holds a reference to it.
+        run_snapshot = get_run_facts().as_namespace(tool_name)
+
         verdict, deciding_role = combine_role_verdicts(
             roles,
             lambda role: self.policy.evaluate(
@@ -136,6 +150,7 @@ class PolicyEnforcer:
                 tool=tool_name,
                 args=args_snapshot,
                 attributes=attrs_snapshot,
+                run=run_snapshot,
             ),
         )
         decision = Decision.from_verdict(

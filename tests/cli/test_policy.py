@@ -1143,3 +1143,157 @@ def test_validate_clean_role_policy_has_no_warning(
 
     assert rc == 0
     assert "permissive-default" not in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# `policy test --run-facts` — dry-running a circuit breaker at its threshold
+# ---------------------------------------------------------------------------
+
+
+_RUN_GATED_POLICY = """\
+version: 1
+tools:
+  search:
+    mode: allow
+    constraints:
+      - run.elapsed_seconds < 300
+"""
+
+
+def _run_gated(tmp_path: Path) -> str:
+    p = tmp_path / "run.yaml"
+    p.write_text(_RUN_GATED_POLICY, encoding="utf-8")
+    return str(p)
+
+
+def test_test_defaults_to_a_started_run_rather_than_a_missing_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No --run-facts must not mean "no run namespace": a run.* ref with
+    nothing behind it fails closed, so the dry-run would DENY what production
+    allows — the failure --role and --attributes each had once."""
+    rc = _main_test(
+        _ns(
+            source=_run_gated(tmp_path),
+            role="default",
+            tool="search",
+            args="{}",
+            engine="pydantic",
+        )
+    )
+    assert rc == 0
+    assert "ALLOW" in capsys.readouterr().out
+
+
+def test_test_run_facts_fires_the_cap(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=_run_gated(tmp_path),
+            role="default",
+            tool="search",
+            args="{}",
+            run_facts='{"elapsed_seconds": 400}',
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "DENY" in out
+    assert "run.elapsed_seconds < 300" in out
+
+
+@needs_opa
+def test_test_run_facts_agrees_across_engines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The dry-run's whole purpose: both engines decide the same, so a policy
+    tested here behaves the same once shipped as a signed bundle."""
+    source = _run_gated(tmp_path)
+    codes = [
+        _main_test(
+            _ns(
+                source=source,
+                role="default",
+                tool="search",
+                args="{}",
+                run_facts='{"elapsed_seconds": 400}',
+                engine=engine,
+            )
+        )
+        for engine in ("pydantic", "wasm")
+    ]
+    assert codes == [1, 1]
+
+
+def test_test_rejects_non_json_run_facts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=_run_gated(tmp_path),
+            role="default",
+            tool="search",
+            args="{}",
+            run_facts="not json",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--run-facts is not valid JSON" in capsys.readouterr().err
+
+
+def test_test_rejects_non_object_run_facts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = _main_test(
+        _ns(
+            source=_run_gated(tmp_path),
+            role="default",
+            tool="search",
+            args="{}",
+            run_facts="[1, 2]",
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    assert "--run-facts must be a JSON object (dict)" in capsys.readouterr().err
+
+
+def test_test_rejects_unknown_run_fact_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A typo must not silently leave the real counter at zero — the cap would
+    not fire and the dry-run would report a pass it never demonstrated."""
+    rc = _main_test(
+        _ns(
+            source=_run_gated(tmp_path),
+            role="default",
+            tool="search",
+            args="{}",
+            run_facts='{"elapsed_secondz": 400}',
+            engine="pydantic",
+        )
+    )
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown run.* path(s) ['elapsed_secondz']" in err
+    assert "elapsed_seconds" in err  # the registry, so the fix is visible
+
+
+def test_test_reports_an_unknown_run_path_in_the_policy_itself(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The load-time linter reaches the CLI: without it the typo'd path resolves
+    to nothing and denies every call, blaming a constraint that looks right."""
+    p = tmp_path / "typo.yaml"
+    p.write_text(
+        _RUN_GATED_POLICY.replace("run.elapsed_seconds", "run.elapsed_secondz"),
+        encoding="utf-8",
+    )
+    rc = _main_test(
+        _ns(source=str(p), role="default", tool="search", args="{}", engine="pydantic")
+    )
+    assert rc == 1
+    assert "unknown run.* path 'elapsed_secondz'" in capsys.readouterr().err

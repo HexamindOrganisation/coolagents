@@ -186,3 +186,29 @@ def test_bypassed_methods_run_detached() -> None:
     assert method == "batch"
     assert run_id == ""  # DETACHED
     assert agent == ""
+
+
+def test_a_counter_cap_permits_on_a_bypassed_method() -> None:
+    """The consequence of the bypass above, spelled out at the decision level.
+
+    ``DETACHED`` reads zeros, so ``run.tool_calls < 1`` evaluates ``0 < 1`` and
+    **allows** — where before the ``run`` namespace existed the same constraint
+    denied (a missing ref fails closed). That is a real widening of what gets
+    through on ``batch`` and on any tool dispatching guarded work to a raw
+    thread pool.
+
+    It is the deliberate trade: fail *open* on counters for a boundary that was
+    never wired, rather than brick an agent. Pinned so the trade stays a
+    decision rather than a discovery.
+    """
+    from hexgate.security.enforcer import PolicyEnforcer
+    from hexgate.security.models import AgentPolicy
+    from hexgate.security.policy_set import PolicySet
+
+    policy = AgentPolicy.model_validate(
+        {"tools": {"t": {"mode": "allow", "constraints": ["run.tool_calls < 1"]}}}
+    )
+    enforcer = PolicyEnforcer(PolicySet({"default": policy}), agent_name=_AGENT_NAME)
+
+    assert get_run_facts() is DETACHED
+    assert enforcer.decide("t", {}).allowed

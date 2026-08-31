@@ -36,6 +36,7 @@ from hexgate.security.constraints import (
     Ref,
     check_constraints,
     evaluate_constraint,
+    iter_cmp_operands,
     parse_constraint,
 )
 
@@ -806,6 +807,80 @@ def test_bare_ctx_identifier_is_rejected_at_parse() -> None:
 
 
 # ---------------------------------------------------------------------------
+# run.* — the invocation's own fact record, mirroring Rego's input.run
+# ---------------------------------------------------------------------------
+
+
+def test_check_exposes_run_facts_under_run_namespace() -> None:
+    run = {"agent": "billing", "tool_calls": 3, "elapsed_seconds": 12.5}
+    check_constraints(
+        ['run.agent == "billing"', "run.tool_calls < 20", "run.elapsed_seconds < 300"],
+        {},
+        "refund",
+        run=run,
+    )
+    with pytest.raises(PolicyDeniedError, match="run.tool_calls"):
+        check_constraints(["run.tool_calls < 3"], {}, "refund", run=run)
+
+
+def test_check_missing_run_path_fails_closed() -> None:
+    """A ``run.*`` ref the namespace does not carry denies, same as any missing
+    ref. This is why the SDK passes the detached record's zeros rather than
+    nothing when a decision happens outside a run scope."""
+    with pytest.raises(PolicyDeniedError, match="run.tool_calls"):
+        check_constraints(["run.tool_calls < 20"], {}, "refund", run={"agent": "a"})
+
+
+def test_check_no_run_namespace_denies_run_constraint() -> None:
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(["run.tool_calls < 20"], {}, "t", run=None)
+
+
+def test_check_run_cross_type_ordered_fails_closed() -> None:
+    """A stringly-typed counter against a numeric gate fails closed, matching
+    the WASM engine's type guard."""
+    with pytest.raises(PolicyDeniedError):
+        check_constraints(["run.tool_calls < 20"], {}, "t", run={"tool_calls": "3"})
+
+
+def test_check_run_list_path_supports_count_and_quantifiers() -> None:
+    """The three shapes the load-time linter leaves alone — and the only
+    correct ways to read a list-valued path."""
+    run = {"tools_used": ["shell", "search"]}
+    check_constraints(["count(run.tools_used) <= 6"], {}, "t", run=run)
+    check_constraints(['any(run.tools_used, . == "shell")'], {}, "t", run=run)
+    check_constraints(['every(run.tools_used, . != "delete")'], {}, "t", run=run)
+
+
+def test_run_list_path_with_not_in_silently_passes() -> None:
+    """The footgun the linter exists to reject, pinned as behaviour: ``not in``
+    asks whether the *left* value is an element of the right list, and a list is
+    never an element of a list of strings — so the exclusion never fires. If
+    this ever starts raising, the linter's Rule C can be dropped."""
+    check_constraints(
+        ['run.tools_used not in ["shell"]'],
+        {},
+        "t",
+        run={"tools_used": ["shell"]},
+    )
+
+
+def test_bare_run_identifier_is_rejected_at_parse() -> None:
+    """``run`` alone is not a fact — only the dotted ``run.<name>`` form is
+    valid. The load-time linter relies on this: it only checks depth 2 and up."""
+    with pytest.raises(ConstraintParseError):
+        parse_constraint('run == "x"')
+
+
+def test_membership_against_a_run_ref_is_rejected_at_parse() -> None:
+    """``"shell" in run.tools_used`` reads naturally but the grammar requires a
+    literal or a const on the right of ``in``. Pinned so the linter's Rule C can
+    keep assuming a list-valued ref only ever appears on the left."""
+    with pytest.raises(ConstraintParseError, match="list literal"):
+        parse_constraint('"shell" in run.tools_used')
+
+
+# ---------------------------------------------------------------------------
 # Named constants (2f) — consts.<name>
 # ---------------------------------------------------------------------------
 
@@ -915,3 +990,45 @@ def test_parse_rejects_bool_inside_quantifier_body() -> None:
     # Deferred: boolean composition inside a quantifier body (both engines).
     with pytest.raises(ConstraintParseError, match="quantifier body"):
         parse_constraint("every(args.items, .a == 1 or .b == 2)")
+
+
+# ---------------------------------------------------------------------------
+# iter_cmp_operands — operator + side, which iter_arg_refs discards
+# ---------------------------------------------------------------------------
+
+
+def test_iter_cmp_operands_yields_both_sides_with_the_operator() -> None:
+    node = parse_constraint("args.max >= args.min")
+    assert [(op, side) for _, op, side in iter_cmp_operands(node)] == [
+        (">=", "left"),
+        (">=", "right"),
+    ]
+
+
+def test_iter_cmp_operands_keeps_count_wrapped() -> None:
+    """The reason this exists: ``iter_arg_refs`` unwraps ``Count`` to the inner
+    path, so a caller cannot tell the legitimate ``count(x) <= 6`` from the
+    silently-wrong ``x <= 6`` when ``x`` is list-valued."""
+    (left, _, _), _ = iter_cmp_operands(parse_constraint("count(args.files) <= 6"))
+    assert isinstance(left, Count)
+
+
+def test_iter_cmp_operands_skips_a_quantifier_collection_but_walks_its_body() -> None:
+    """A quantifier's collection is required to be a list, so it is never in a
+    scalar position; only its body carries comparisons."""
+    operands = list(iter_cmp_operands(parse_constraint("every(args.items, .n <= 5)")))
+    assert [op for _, op, _ in operands] == ["<=", "<="]
+    assert all(
+        not isinstance(o, Ref) or o.path != ("args", "items") for o, _, _ in operands
+    )
+
+
+def test_iter_cmp_operands_recurses_through_boolean_composition() -> None:
+    node = parse_constraint("not (args.a == 1 or args.b <= 2)")
+    assert {op for _, op, _ in iter_cmp_operands(node)} == {"==", "<="}
+
+
+def test_iter_cmp_operands_yields_nothing_for_a_string_call() -> None:
+    """``startswith(args.p, "src/")`` takes a single typed argument, not a
+    comparison pair — so there is no scalar position to police."""
+    assert not list(iter_cmp_operands(parse_constraint('startswith(args.p, "src/")')))
