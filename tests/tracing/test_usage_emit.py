@@ -108,13 +108,8 @@ def test_emit_llm_usage_passes_api_key_to_configure_usage_sender(
 
 
 def test_records_tokens_without_a_sender(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The regression guard for the ordering of this function's two effects.
-
-    Below the sender check, this line is dead in local mode and for any run
-    without an API key — every token path would stay 0, and
-    ``run.total_tokens < 200000`` against a permanent 0 ALLOWS. A silently
-    fail-open budget, shipped as a working feature.
-    """
+    """A token cap must work in local mode too — recording below the sender
+    check would leave every token path at a permanent 0."""
     from hexgate.runtime.run_facts import run_scope
 
     monkeypatch.setattr(usage_mod, "configure_usage_sender", lambda api_key=None: None)
@@ -168,13 +163,8 @@ def test_llm_calls_counts_requests_and_sums_tokens(
 def test_a_recorder_exception_does_not_break_the_run_or_the_emit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The function's contract is "never raises": every adapter calls it from a
-    framework hook that either re-raises or does not guard the call at all. So a
-    RunFacts bug costs a token count, not the agent run it is reporting on.
-
-    The emit must still happen — the accounting failure is local to the
-    recorder, and dropping the platform event too would compound it.
-    """
+    """``emit_llm_usage`` never raises, so a RunFacts bug costs a token count,
+    not the agent run — but the swallowed exception also aborts the emit."""
     from hexgate.runtime import run_facts as run_facts_mod
     from hexgate.runtime.run_facts import run_scope
 
@@ -191,19 +181,12 @@ def test_a_recorder_exception_does_not_break_the_run_or_the_emit(
     with run_scope("a"):
         emit_llm_usage("agent", "gpt-4o", 10, 20, api_key="k")  # must not raise
 
-    # ...but the swallowed exception aborts the rest of the try block, so the
-    # emit is lost too. Documented here rather than silently accepted: the
-    # alternative is a second try/except on the hot path for a case that only
-    # fires on an SDK bug.
-    assert fake_sender.events == []
+    assert fake_sender.events == []  # the emit is lost too — accepted trade-off
 
 
 def test_token_cap_trails_the_turn_that_exceeded_it() -> None:
-    """Token lag, as a test. Tokens are known only after the model responds, so
-    a token constraint bounds *prior* turns: the turn that blew the budget still
-    gets its tool calls, and the cap fires on the next decision. Inherent to the
-    ordering of a model turn, not a bug — but nobody should read
-    ``run.total_tokens < 200000`` as a hard ceiling."""
+    """Tokens are known only after the model responds, so a token constraint
+    bounds prior turns: the cap fires on the *next* decision, not this one."""
     from hexgate.runtime.run_facts import run_scope
     from hexgate.security.enforcer import PolicyEnforcer
     from hexgate.security.models import AgentPolicy

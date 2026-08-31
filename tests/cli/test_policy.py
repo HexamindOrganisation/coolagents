@@ -1169,9 +1169,7 @@ def _run_gated(tmp_path: Path) -> str:
 def test_test_defaults_to_a_started_run_rather_than_a_missing_one(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """No --run-facts must not mean "no run namespace": a run.* ref with
-    nothing behind it fails closed, so the dry-run would DENY what production
-    allows — the failure --role and --attributes each had once."""
+    """No --run-facts must not deny closed like a missing namespace would."""
     rc = _main_test(
         _ns(
             source=_run_gated(tmp_path),
@@ -1208,8 +1206,6 @@ def test_test_run_facts_fires_the_cap(
 def test_test_run_facts_agrees_across_engines(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The dry-run's whole purpose: both engines decide the same, so a policy
-    tested here behaves the same once shipped as a signed bundle."""
     source = _run_gated(tmp_path)
     codes = [
         _main_test(
@@ -1264,8 +1260,6 @@ def test_test_rejects_non_object_run_facts(
 def test_test_rejects_unknown_run_fact_path(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A typo must not silently leave the real counter at zero — the cap would
-    not fire and the dry-run would report a pass it never demonstrated."""
     rc = _main_test(
         _ns(
             source=_run_gated(tmp_path),
@@ -1285,8 +1279,7 @@ def test_test_rejects_unknown_run_fact_path(
 def test_test_reports_an_unknown_run_path_in_the_policy_itself(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The load-time linter reaches the CLI: without it the typo'd path resolves
-    to nothing and denies every call, blaming a constraint that looks right."""
+    """The load-time linter reaches the CLI, not just direct PolicySet use."""
     p = tmp_path / "typo.yaml"
     p.write_text(
         _RUN_GATED_POLICY.replace("run.elapsed_seconds", "run.elapsed_secondz"),

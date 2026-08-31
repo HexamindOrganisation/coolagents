@@ -216,14 +216,10 @@ def _record_halt(
 def _record_run_decision(outcome: DecisionOutcome) -> None:
     """Accrue a non-allow decision to the run's facts.
 
-    Denials and approval gates are separate counters, so both stay honest: a
-    denied call never consumes the tool budget a legitimate caller is bounded
-    by, and an approval that is never granted consumes nothing either. Whether
-    a gated call then runs is :func:`_record_run_execution`'s business.
-
-    The ``DecisionOutcome`` branch lives here rather than on ``RunFacts``:
-    ``hexgate.runtime`` is the lower layer and must not import
-    ``hexgate.security``, and this module already has the enum.
+    Denials and approval gates are separate counters: a denied call consumes no
+    tool budget, and neither does an approval that's never granted. The enum
+    branch lives here (not on ``RunFacts``) so ``hexgate.runtime`` never
+    imports ``hexgate.security``.
     """
     facts = get_run_facts()
     if outcome is DecisionOutcome.DENY:
@@ -233,12 +229,9 @@ def _record_run_decision(outcome: DecisionOutcome) -> None:
 
 
 def _record_run_execution(tool_name: str, *, failed: bool = False) -> None:
-    """Count a tool that actually ran, whether it returned or raised.
-
-    Called around ``invoke`` and therefore *before* the post-guards: a
-    post-guard halt withholds the result, but the side effect already happened,
-    so it must not un-count the call.
-    """
+    """Count a tool that ran, whether it returned or raised. Called around
+    ``invoke``, before the post-guards — a post-guard halt must not un-count a
+    call whose side effect already happened."""
     facts = get_run_facts()
     facts.record_execution(tool_name)
     if failed:
@@ -358,8 +351,7 @@ async def run_guarded_async(
             outcome = await _call_guard_async(guard, call)
             if isinstance(outcome, Halt):
                 halt_decision = _halt_to_decision(outcome, call)
-                # Recorded before the approval branch: a pre-guard halt is a
-                # denial or a gate either way, and the tool has not run.
+                # The tool hasn't run yet, whatever this halt's outcome is.
                 _record_run_decision(halt_decision.outcome)
                 if await _halt_approved_async(outcome, call, approval_handler):
                     # A granted guard approval is audited too, mirroring how
@@ -388,9 +380,7 @@ async def run_guarded_async(
         # must not silently satisfy the policy's separate requirement.
         decision = enforcer.decide(call.tool_name, call.args)
         if not decision.allowed:
-            # Before the approval resolution: this counts the gate *firing* —
-            # that a privileged call needed a human. Whether they said yes is
-            # counted by the execution recorder below.
+            # Counts the gate firing; whether it's granted is a separate count.
             _record_run_decision(decision.outcome)
             approved = (
                 decision.outcome is DecisionOutcome.NEEDS_APPROVAL
@@ -407,10 +397,6 @@ async def run_guarded_async(
 
     try:
         raw = await invoke(dict(call.args))
-        # Counted after the decision and only on a non-deny, so
-        # ``run.tool_calls < 20`` means "20 permitted executions" and reads the
-        # way everyone expects. The assignment above never completes when the
-        # tool raises, so the except block owns that path.
         _record_run_execution(call.tool_name)
     except Exception as exc:
         _record_run_execution(call.tool_name, failed=True)

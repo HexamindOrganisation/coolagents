@@ -38,15 +38,12 @@ as a ref to an absent field. ``matches`` is an RE2 regex and is
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
 
-Besides ``args.*``, four fact families are in scope. Three describe the caller:
-``role`` and ``tool`` (mirroring Rego's ``input.role`` / ``input.tool``) and
-``ctx.<key>``, the caller's ABAC attributes (``input.ctx``). The fourth,
-``run.<name>``, describes the invocation itself — how many tools have run, how
-long it has been going, how many tokens it has spent (``input.run``). E.g.
-``role == "admin"``, ``tool == "refund_order"``,
-``ctx.department == "finance"``, or ``run.tool_calls < 20``. A missing
-``ctx.<key>`` or ``run.<name>`` fails closed like any absent ref, so the caller
-supplies a zeroed ``run`` namespace rather than omitting it.
+Besides ``args.*``, four fact families are in scope: ``role`` and ``tool``
+(mirroring Rego's ``input.role`` / ``input.tool``), ``ctx.<key>`` (the
+caller's ABAC attributes, ``input.ctx``), and ``run.<name>`` (the invocation's
+own facts — tool calls, elapsed time, tokens — ``input.run``). E.g.
+``role == "admin"`` or ``run.tool_calls < 20``. A missing ``ctx.<key>`` or
+``run.<name>`` fails closed like any absent ref.
 
 Concrete examples (all of these parse and evaluate today):
 
@@ -582,17 +579,11 @@ RIGHT = "right"
 def iter_cmp_operands(node: Node):
     """Yield ``(operand, op, side)`` for every comparison operand in a node.
 
-    Sibling of :func:`iter_arg_refs`, which discards both the operator and the
-    side and unwraps ``count()`` — so it cannot tell the legitimate
-    ``count(x) <= 6`` from the silently-wrong ``x <= 6`` when ``x`` is a list.
-    Operands are yielded verbatim: a :class:`Count` stays a :class:`Count`, so
-    a caller can distinguish it from a bare :class:`Ref`.
-
-    A quantifier's *collection* is not a comparison operand and is not yielded
-    (``any(x, ...)`` requires a list and is always correct over one); its body
-    is recursed into, as are ``and`` / ``or`` / ``not``. :class:`Call`
-    arguments are likewise not yielded — the string functions take a single
-    typed argument, not a comparison pair.
+    Unlike :func:`iter_arg_refs`, keeps the operator and side and doesn't
+    unwrap ``count()`` — needed to tell ``count(x) <= 6`` (fine) from
+    ``x <= 6`` (silently wrong if ``x`` is a list). A quantifier's collection
+    is not yielded (only its body is recursed into); neither is a ``Call``
+    argument.
     """
     if isinstance(node, Cmp):
         yield node.left, node.op, LEFT
@@ -915,16 +906,11 @@ def check_constraints(
     nodes. Source strings are parsed once per call here for simplicity —
     caches can be added later if profiling demands it.
 
-    ``role`` and the tool name are exposed to constraints as top-level
-    ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
-    ``consts`` supplies the policy's named constants for ``consts.<name>``.
-    ``attributes`` are the caller's ABAC bag, exposed under the ``ctx.<key>``
-    namespace and mirroring Rego's ``input.ctx``. ``run`` is the current
-    invocation's fact record (:meth:`~hexgate.runtime.run_facts.RunFacts.as_namespace`),
-    exposed under ``run.<path>`` and mirroring Rego's ``input.run``. A missing
-    ``ctx.<key>`` or ``run.<path>`` resolves to ``_MISSING`` and fails closed,
-    exactly like any other ref — so a caller that omits either turns every
-    constraint over it into a denial.
+    ``role`` and the tool name are exposed as top-level ``role`` / ``tool``
+    facts, mirroring Rego's ``input.role`` / ``input.tool``. ``consts``
+    supplies ``consts.<name>``. ``attributes`` and ``run`` are exposed under
+    ``ctx.<key>`` / ``run.<path>``, mirroring ``input.ctx`` / ``input.run``. A
+    missing ``ctx.<key>`` or ``run.<path>`` fails closed like any other ref.
     """
     if not constraints:
         return

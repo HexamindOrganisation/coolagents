@@ -829,15 +829,9 @@ def _main_test(args: argparse.Namespace) -> int:
 
 
 def _resolve_run_facts(raw: str, tool: str) -> dict[str, Any]:
-    """Parse ``--run-facts`` over a zeroed run.
-
-    Zeros rather than an empty dict: a ``run.*`` ref with no value behind it
-    fails closed, so an unset path would make the dry-run deny where production
-    allows — the failure this function's siblings for ``role`` and
-    ``attributes`` already had once each.
-
-    Raises :class:`ValueError` with a printable message; the caller renders it.
-    """
+    """Parse ``--run-facts`` over a zeroed run, so an unset path reads zero
+    rather than failing the dry-run closed. Raises :class:`ValueError` with a
+    printable message; the caller renders it."""
     try:
         parsed: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -914,10 +908,8 @@ def _test_via_pydantic(
 
     def evaluate(role: str | None) -> Verdict:
         policy: AgentPolicy = policy_set.policy_for(role)
-        # Forward role AND attributes AND run so role-scoped (role == "admin"),
-        # ctx.* and run.* constraints decide the same as the wasm path and
-        # production — omitting any of them here makes `policy test` fail closed
-        # on rules production allows.
+        # Forward role/attributes/run so their constraints decide the same as
+        # production — omitting any makes the dry-run fail closed.
         return evaluate_tool_call(
             policy, tool, tool_args, role=role, attributes=attributes, run=run
         )

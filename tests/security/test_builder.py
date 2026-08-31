@@ -226,9 +226,7 @@ def test_assert_allows_raises_on_wrong_outcome() -> None:
 
 
 def test_assert_helpers_default_to_a_started_run_not_a_missing_one() -> None:
-    """A ``run.*`` ref with no namespace behind it fails closed, so passing
-    nothing would turn a caller's whole suite red the moment they added a cap
-    to their policy. Zeros are what a run's first call actually sees."""
+    """``run=None`` models a fresh run's zeros, not a fail-closed absence."""
     policy = PolicyBuilder().allow("refund", when=["run.elapsed_seconds < 300"]).build()
     assert_allows(policy, "refund")
 
@@ -241,13 +239,9 @@ def test_assert_helpers_accept_an_explicit_run_namespace() -> None:
 
 
 def test_run_namespace_fills_every_registered_path() -> None:
-    """An unmentioned path reads its zero rather than failing closed."""
     assert set(run_namespace()) == KNOWN_RUN_PATHS
 
 
 def test_run_namespace_rejects_an_unregistered_path() -> None:
-    """A typo would otherwise leave the real counter at 0, the cap would not
-    fire, and the assertion would fail for a reason that looks like a policy
-    bug."""
     with pytest.raises(ValueError, match="unknown run.* path"):
         run_namespace(definitely_not_a_path=1)

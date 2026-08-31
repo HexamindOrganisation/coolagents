@@ -920,15 +920,10 @@ _RUN_POLICY = {
     ],
 )
 def test_run_fact_parity(tool: str, run: dict, expect: str) -> None:
-    """A float from a monotonic clock compared against an integer literal is the
-    shape every time budget takes, so the numeric guard has to agree across
-    engines or a policy tested in `hexgate chat` denies differently in prod."""
+    """Elapsed time is a float compared against an integer literal — the shape
+    every time budget takes, so the numeric guard must agree across engines."""
     _assert_parity(_RUN_POLICY, "default", tool, {}, expect, run=run)
 
 
 def test_run_none_namespace_fails_closed_both_engines() -> None:
-    """No run namespace at all → every run.* ref misses and denies. This is what
-    a decision outside a run scope would look like if the SDK passed nothing;
-    it passes the detached record's zeros instead, which is a different (and
-    deliberately permissive) thing."""
     _assert_parity(_RUN_POLICY, "default", "identity", {}, "deny", run=None)

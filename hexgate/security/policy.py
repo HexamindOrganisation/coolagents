@@ -163,11 +163,8 @@ def authorize_tool_call(
 
     Thin raise-on-deny wrapper over :func:`evaluate_tool_call`, kept for
     callers (the CLI, direct API users) that prefer the exception contract.
-    ``role`` is forwarded so ``role``-scoped constraints see the caller's
-    role — omitting it here would diverge from the WASM engine, which always
-    receives ``input.role``. ``attributes`` and ``run`` are forwarded for the
-    same reason: ``ctx.*`` constraints must see the caller's ABAC bag, and
-    ``run.*`` constraints the current invocation's facts.
+    ``role``, ``attributes`` and ``run`` are all forwarded so their respective
+    constraints see the same inputs the WASM engine always receives.
     """
     _raise_for_verdict(
         evaluate_tool_call(

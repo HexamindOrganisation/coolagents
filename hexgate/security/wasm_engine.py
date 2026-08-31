@@ -221,13 +221,10 @@ class WasmPolicy:
     ) -> RegoVerdict:
         """Evaluate one tool-call decision.
 
-        Composes ``input = {role, tool, args, ctx, run}``, runs the entrypoint,
-        and returns the parsed ``RegoVerdict``. ``ctx`` is the caller's ABAC
-        bag, read by compiled ``input.ctx.*`` conditions; ``run`` is the
-        invocation's fact record, read by ``input.run.*`` ones. Both mirror the
-        pydantic engine's context keys of the same name. The eval is hermetic —
-        heap is reset before the call so repeated decisions don't accumulate
-        state.
+        Composes ``input = {role, tool, args, ctx, run}`` and runs the
+        entrypoint. ``ctx`` and ``run`` mirror the pydantic engine's context
+        keys, read by compiled ``input.ctx.*`` / ``input.run.*`` conditions.
+        Hermetic — heap is reset before each call.
         """
         return self.evaluate(
             {

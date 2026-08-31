@@ -12,8 +12,7 @@ code (or YAML) can be exercised in a pytest suite:
 ``policy`` may be an :class:`AgentPolicy` (single role) or a :class:`PolicySet`
 (role-aware — pass ``role=``).
 
-A ``run.*`` cap is asserted by supplying the run's facts, which
-:func:`run_namespace` builds:
+Assert a ``run.*`` cap by supplying the run's facts via :func:`run_namespace`:
 
     assert_denies(policy, "refund", run=run_namespace(tool_calls=20))
 """
@@ -34,17 +33,10 @@ Policy = AgentPolicy | PolicySet
 
 
 def run_namespace(tool: str = "", **facts: Any) -> dict[str, Any]:
-    """Build a ``run`` namespace with ``facts`` applied over a zeroed run.
+    """A ``run`` namespace with ``facts`` applied over a zeroed run.
 
-    For asserting that a cap fires without having to drive a real agent:
-
-        assert_denies(policy, "refund", run=run_namespace(tool_calls=20))
-
-    Every registered path is present, so an unmentioned one reads its zero
-    rather than fetching closed. An unregistered keyword raises: a typo like
-    ``tool_call=20`` would otherwise leave ``tool_calls`` at 0, the cap would
-    not fire, and the assertion would fail for a reason that looks like a
-    policy bug.
+    Raises on an unregistered keyword — a typo like ``tool_call=20`` would
+    otherwise leave the real counter at 0 and the cap would never fire.
     """
     unknown = sorted(set(facts) - KNOWN_RUN_PATHS)
     if unknown:
@@ -56,12 +48,8 @@ def run_namespace(tool: str = "", **facts: Any) -> dict[str, Any]:
 
 
 def _zeroed_run(tool: str) -> dict[str, Any]:
-    """A run that has just started — what a policy assertion actually models.
-
-    Zeros rather than ``None``: a ``run.*`` ref with no namespace behind it
-    resolves to ``_MISSING`` and fails closed, so passing nothing would turn a
-    caller's whole suite red the moment they added a cap to their policy.
-    """
+    """A freshly-started run — the default so an unset ``run.*`` cap reads
+    zero instead of failing closed."""
     return RunFacts(id=str(uuid4()), agent="").as_namespace(tool)
 
 
@@ -116,9 +104,7 @@ def assert_allows(
 ) -> None:
     """Assert the policy ALLOWS this call.
 
-    ``attributes`` supplies the caller's ABAC bag for ``ctx.*`` constraints and
-    ``run`` the invocation's facts for ``run.*`` ones, mirroring what
-    :class:`HexgateContext` and the active run scope carry at runtime. ``run``
+    ``attributes`` and ``run`` feed ``ctx.*`` and ``run.*`` constraints; ``run``
     defaults to a freshly-started run — see :func:`run_namespace` to set one."""
     _check(policy, tool, args, role, attributes, run, DecisionOutcome.ALLOW)
 

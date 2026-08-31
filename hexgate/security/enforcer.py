@@ -130,17 +130,10 @@ class PolicyEnforcer:
             _snapshot(attributes, deep=retained) if attributes is not None else None
         )
 
-        # Feeds the ``run.*`` namespace. Read once, not once per role:
-        # ``as_namespace`` is not idempotent across time (``elapsed_seconds``
-        # moves, and a parallel tool call may increment a counter mid-fold), so
-        # N reads would let role 1 and role 3 disagree about the same run — and
-        # ``combine_role_verdicts`` is permissive, so the disagreement would
-        # resolve as the most permissive snapshot rather than the one that was
-        # true at decision time.
-        #
-        # Not snapshotted like ``args`` / ``attributes``: it is a dict this call
-        # just built out of immutable scalars plus one fresh list, and nothing
-        # else holds a reference to it.
+        # Feeds the ``run.*`` namespace. Read once, not per role: elapsed_seconds
+        # moves and counters can change mid-fold, so N reads could let roles
+        # disagree about the same run. No snapshot needed — this dict is
+        # freshly built and held nowhere else.
         run_snapshot = get_run_facts().as_namespace(tool_name)
 
         verdict, deciding_role = combine_role_verdicts(

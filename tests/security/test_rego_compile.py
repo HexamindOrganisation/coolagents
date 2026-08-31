@@ -1005,15 +1005,11 @@ def _run_rego(constraint: str) -> str:
 
 
 def test_run_fact_prefixes_input() -> None:
-    """``run.agent`` renders as ``input.run.agent`` — no compiler special-case.
-    Asserted rather than assumed: ``_render`` is namespace-agnostic today, and a
-    future special-case would break run.* silently on the WASM engine only."""
+    """``run.agent`` renders as ``input.run.agent`` — no compiler special-case."""
     assert 'input.run.agent == "billing"' in _run_rego('run.agent == "billing"')
 
 
 def test_run_ordered_constraint_emits_type_guard() -> None:
-    """A time budget is a float against an integer literal, so the guard has to
-    be there or the two engines disagree on a wrong-typed fact."""
     rego = _run_rego("run.elapsed_seconds < 300")
     assert "is_number(input.run.elapsed_seconds)" in rego
     assert "input.run.elapsed_seconds < 300" in rego

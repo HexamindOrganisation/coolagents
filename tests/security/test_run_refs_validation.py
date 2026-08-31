@@ -1,13 +1,9 @@
 """Load-time validation of ``run.*`` references.
 
-Every rule here guards a failure the runtime reports as an ordinary constraint
-denial, so the operator sees "constraint failed" and nothing that points at the
-real cause. Two of the three are silent deny-alls; the third is worse — a
-security predicate that never fires.
-
-The registries are injected rather than read from ``run_facts``: the list rule
-must be exercised before any list-valued path is registered, and a test that
-waits for one would ship the fail-open guard unverified.
+Each rule guards a failure that would otherwise deny (or, for the list rule,
+silently pass) at runtime with no hint of the real cause. Registries are
+injected rather than read from ``run_facts`` so the list rule is testable
+before any list-valued path is registered.
 """
 
 from __future__ import annotations
@@ -53,8 +49,8 @@ def _validate(*constraints: str, policy: AgentPolicy | None = None) -> None:
 
 
 def test_unknown_run_path_is_rejected() -> None:
-    """Verified runtime behaviour without this rule: ``run.tool_call < 5``
-    (singular) parses, resolves to _MISSING, and denies every call forever."""
+    """Without this rule, a typo like ``run.tool_call`` (singular) would
+    resolve to missing and deny every call forever."""
     with pytest.raises(PolicySetError) as exc:
         _validate("run.tool_call < 5")
 
@@ -72,8 +68,6 @@ def test_known_run_paths_are_accepted() -> None:
 
 
 def test_run_refs_are_validated_on_the_default_policy_too() -> None:
-    """``default_policy`` is where a run-wide circuit breaker is actually
-    written, so skipping it would leave the common case unvalidated."""
     with pytest.raises(PolicySetError, match="unknown run.* path"):
         _validate(policy=_default_policy("run.nope < 5"))
 
@@ -88,8 +82,8 @@ def test_a_policy_without_run_refs_is_unaffected() -> None:
 
 
 def test_deeper_run_path_is_rejected() -> None:
-    """``run.id.value`` passes Rule A — ``id`` is registered — but walks into a
-    string at the second hop and misses, denying silently."""
+    """``run.id.value`` passes Rule A (``id`` is registered) but walks into a
+    string and misses."""
     with pytest.raises(PolicySetError) as exc:
         _validate('run.id.value == "x"')
 
@@ -98,10 +92,8 @@ def test_deeper_run_path_is_rejected() -> None:
 
 
 def test_bare_run_is_a_parse_error_not_a_ref() -> None:
-    """The grammar already rejects it — a bare identifier is only a fact
-    (``role`` / ``tool``). Pinned here because the whole namespace rests on it:
-    if ``run`` alone ever became a legal ref, Rule B would need to cover depth 1
-    too."""
+    """Rule B only checks depth 2+; this pins that a bare ``run`` never
+    reaches it."""
     from hexgate.security.constraints import ConstraintParseError, parse_constraint
 
     with pytest.raises(ConstraintParseError, match="bare identifier"):
@@ -133,9 +125,6 @@ _ILLEGAL_LIST_SHAPES = [
 
 @pytest.mark.parametrize("constraint", _LEGAL_LIST_SHAPES)
 def test_legal_list_shapes_are_accepted(constraint: str) -> None:
-    """The accept half matters as much as the reject half: ``count(...)`` is the
-    documented breadth cap, and a rule that flagged it would make the only
-    correct spelling unusable."""
     _validate(constraint)
 
 
@@ -146,9 +135,8 @@ def test_illegal_list_shapes_are_rejected(constraint: str) -> None:
 
 
 def test_not_in_message_names_the_silent_pass_and_the_fix() -> None:
-    """The fail-open one. ``run.tools_used not in ["shell"]`` evaluates True for
-    every call, so this message is the only signal the operator gets that their
-    exclusion is a no-op."""
+    """``not in`` against a list-valued path evaluates True for every call —
+    the message is the only signal the exclusion is a no-op."""
     with pytest.raises(PolicySetError) as exc:
         _validate('run.tools_used not in ["shell"]')
 
@@ -174,8 +162,6 @@ def test_a_scalar_path_is_unaffected_by_the_list_rule() -> None:
 
 
 def test_policy_set_construction_rejects_an_unknown_run_path() -> None:
-    """Construction time, not evaluation time, so the pydantic engine and the
-    Rego compiler agree on whether a policy is valid."""
     with pytest.raises(PolicySetError, match="unknown run.* path"):
         PolicySet({DEFAULT_ROLE_NAME: _policy("run.definitely_not_a_path < 5")})
 

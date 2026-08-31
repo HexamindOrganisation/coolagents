@@ -31,9 +31,8 @@ class _RecordingEngine:
     def __init__(self, verdict: Verdict) -> None:
         self.verdict = verdict
         self.calls: list[dict[str, Any]] = []
-        # Kept out of ``calls`` so the exact-equality assertions above stay
-        # readable; identity is recorded rather than a copy, because whether
-        # every role saw the *same* namespace object is the contract.
+        # Separate from ``calls`` (kept readable) and by identity, not copy:
+        # whether every role saw the *same* namespace object is the contract.
         self.runs: list[Mapping[str, Any] | None] = []
 
     def evaluate(
@@ -402,7 +401,6 @@ def test_enforcer_attributes_gate_real_pydantic_engine() -> None:
 
 
 def test_enforcer_forwards_run_facts_to_engine() -> None:
-    """The active run's facts reach the engine as the ``run`` namespace."""
     from hexgate.runtime.run_facts import run_scope
 
     engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
@@ -419,10 +417,7 @@ def test_enforcer_forwards_run_facts_to_engine() -> None:
 
 
 def test_enforcer_reads_run_facts_once_per_decision() -> None:
-    """One read for the whole role fold. ``as_namespace`` is not idempotent
-    across time, and ``combine_role_verdicts`` is permissive — so N reads would
-    resolve a disagreement between roles as the most permissive snapshot rather
-    than the one true at decision time."""
+    """One read for the whole role fold, not one per role — see enforcer.py."""
     from hexgate.runtime.context import HexgateContext
     from hexgate.runtime.run_facts import run_scope
 
@@ -439,10 +434,7 @@ def test_enforcer_reads_run_facts_once_per_decision() -> None:
 
 
 def test_enforcer_outside_a_run_scope_forwards_detached_zeros() -> None:
-    """A decision with no run scope carries the detached record's zeros, and
-    ``run.id == ""`` is the signal that it happened outside a run. Counter caps
-    therefore *pass* here rather than denying — fail-open on an unwired
-    boundary, deliberately."""
+    """``run.id == ""`` is the signal a decision happened outside a run."""
     engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
 
     PolicyEnforcer(engine, agent_name="a").decide("t", {})
@@ -454,8 +446,6 @@ def test_enforcer_outside_a_run_scope_forwards_detached_zeros() -> None:
 
 
 def test_run_constraint_decides_through_the_real_engine() -> None:
-    """The read path end to end: a ``run.*`` constraint on a real PolicySet
-    resolves against the live scope instead of failing closed."""
     from hexgate.runtime.run_facts import run_scope
 
     policy = AgentPolicy.model_validate(
@@ -474,9 +464,8 @@ def test_run_constraint_decides_through_the_real_engine() -> None:
 
 
 def test_run_constraint_denies_outside_a_scope_when_it_names_identity() -> None:
-    """Fail-open applies to *counters*, not identity: ``run.agent`` is ``""``
-    on the detached record, so an identity predicate still denies. Only the
-    zero-valued counters read permissively."""
+    """Fail-open applies to zero-valued counters, not identity: ``run.agent``
+    is ``""`` on the detached record, so an identity predicate still denies."""
     policy = AgentPolicy.model_validate(
         {"tools": {"search": {"mode": "allow", "constraints": ['run.agent == "a"']}}}
     )

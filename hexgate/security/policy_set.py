@@ -59,12 +59,9 @@ from hexgate.security.models import (
 DEFAULT_ROLE_NAME = "default"
 
 _RUN_ROOT = "run"
-# ``run.<name>`` — the namespace is flat, so anything deeper walks into a
-# scalar and misses.
-_RUN_PATH_SEGMENTS = 2
+_RUN_PATH_SEGMENTS = 2  # the namespace is flat: run.<name>
 _ORDERED_OPS = frozenset({"<", "<=", ">", ">="})
-# Operators whose operands must be scalars. ``==`` / ``!=`` are absent: list
-# equality is well-defined on both engines, merely useless in practice.
+# ==/!= excluded: list equality is well-defined, just not useful here.
 _SCALAR_ONLY_OPS = _ORDERED_OPS | {"in", "not in"}
 
 
@@ -177,8 +174,6 @@ def _validate_const_refs(policies: Mapping[str, AgentPolicy]) -> None:
 
 
 def _sdk_version() -> str:
-    """The running SDK version, for the "this build knows N paths" half of an
-    unknown-path message. Read at call time (an error path), not at import."""
     try:
         return version("hexgate")
     except PackageNotFoundError:  # pragma: no cover - editable installs always resolve
@@ -186,7 +181,7 @@ def _sdk_version() -> str:
 
 
 def _run_paths_in(node: Node):
-    """Yield every ``run``-rooted path in a node, whatever its position."""
+    """Every ``run``-rooted path in a node, whatever its position."""
     for path in iter_arg_refs(node):
         if path and path[0] == _RUN_ROOT:
             yield path
@@ -200,28 +195,16 @@ def _validate_run_refs(
 ) -> None:
     """Reject a ``run.*`` reference this SDK cannot answer, or answers silently.
 
-    Sibling of :func:`_validate_const_refs`: same construction-time failure, and
-    the same reason for running here rather than at evaluation — the pydantic
-    engine and the Rego compiler must agree on whether a policy is valid, and
-    ``compile_to_rego`` takes a :class:`PolicySet`.
+    Sibling of :func:`_validate_const_refs` — same construction-time check, same
+    reason (pydantic and the Rego compiler must agree a policy is valid).
 
-    Three rules, each guarding a failure the runtime reports as an ordinary
-    constraint denial:
+    Two failure modes, both otherwise silent: an unknown or too-deep path
+    (``run.tool_call``, ``run.id.value``) resolves to missing and denies every
+    call; a list-valued path used as a scalar (``run.tools_used not in [...]``)
+    can silently *pass* every call instead.
 
-    * **Unknown path.** ``run.tool_call < 20`` (singular) resolves to
-      ``_MISSING`` and denies every call, blaming a constraint the operator
-      believes is correct.
-    * **Wrong depth.** ``run.id.value`` passes the first rule — ``id`` is
-      registered — but walks into a string and misses. ``run.*`` is exactly two
-      segments.
-    * **List path in a scalar position.** The only fail-*open* one:
-      ``run.tools_used not in ["shell"]`` asks whether a list is an element of a
-      list of strings, which is never true, so ``not in`` is always ``True`` and
-      the exclusion the operator wrote never fires. Ordered operators over a
-      list fail the type guard instead and deny everything.
-
-    The registries are parameters rather than module reads so the list rule can
-    be exercised before any list-valued path is registered.
+    Registries are parameters, not module reads, so the list rule is testable
+    before any list-valued path is registered.
     """
     for role, policy in policies.items():
         for tool_policy in (*policy.tools.values(), policy.default_policy):
@@ -253,27 +236,23 @@ def _reject_list_paths_in_scalar_position(
     node: Node, role: str, raw: str, list_paths: frozenset[str]
 ) -> None:
     for operand, op, side in iter_cmp_operands(node):
-        # A Count is the correct way to use a list here, and it is a distinct
-        # operand type — so matching on Ref alone exempts it without a special
-        # case. Quantifier collections never reach here at all.
+        # Ref-only: a Count is the correct way to use a list here.
         if not isinstance(operand, Ref) or op not in _SCALAR_ONLY_OPS:
             continue
         if len(operand.path) != _RUN_PATH_SEGMENTS or operand.path[0] != _RUN_ROOT:
             continue
         if operand.path[1] not in list_paths:
             continue
-        # ``in`` / ``not in`` only accept a literal or a const on the right, so
-        # a list-valued ref can only ever be their left operand.
+        # in/not in only accept a literal or const on the right, so a
+        # list-valued ref can only ever be their left operand.
         if op in _ORDERED_OPS or side == LEFT:
             name = ".".join(operand.path)
             effect = (
-                "which silently passes"
-                if op == "not in"
-                else "which silently fails every call"
+                "silently passes" if op == "not in" else "silently fails every call"
             )
             raise PolicySetError(
                 f"role {role!r}: constraint {raw!r} uses the list-valued path "
-                f"{name!r} with {op!r}, {effect}. Use: "
+                f"{name!r} with {op!r}, which {effect}. Use: "
                 f'not any({name}, . == "<value>")'
             )
 

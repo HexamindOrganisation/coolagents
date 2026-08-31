@@ -373,16 +373,9 @@ async def test_error_payload_omits_role_on_deny() -> None:
 
 @pytest.mark.asyncio
 async def test_run_tool_call_cap_latches_after_its_budget() -> None:
-    """The acceptance test for the whole feature.
-
-    A policy caps the run at three tool calls; the agent wants five. Calls 1-3
-    execute, 4-5 are refused, and the reason names the constraint the operator
-    wrote — so "why did my agent stop?" is answerable from the deny alone.
-
-    The cap *latches*: ``run.tool_calls`` only ever increases, so once ``< 3``
-    is false it stays false. That is what makes it a circuit breaker rather
-    than a gate that flaps back open.
-    """
+    """The acceptance test for the whole feature: a policy caps the run at
+    three tool calls; the agent wants five. Calls 1-3 execute, 4-5 are
+    refused naming the constraint, and the cap latches rather than flapping."""
     from hexgate.runtime.run_facts import run_scope
 
     guarded = GuardedTool.wrap(
@@ -413,9 +406,8 @@ async def test_run_tool_call_cap_latches_after_its_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_run_per_tool_cap_is_tool_name_free() -> None:
-    """``run.calls_of_this_tool`` caps each tool separately without naming any
-    of them — which is what makes it usable against MCP servers whose tool set
-    is not known when the policy is written."""
+    """``run.calls_of_this_tool`` caps each tool separately without naming
+    any — usable against tool sets not known when the policy is written."""
     from hexgate.runtime.run_facts import run_scope
 
     spec = {

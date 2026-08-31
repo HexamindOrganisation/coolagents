@@ -1,21 +1,10 @@
 """What each path through the runner accrues to ``run.*``.
 
-The counters *are* the semantics, and the semantics are what a policy author
-reasons about when they write ``run.tool_calls < 20``. So this is a table over
-every terminal path, run against both the sync and async runners — which are
-line-for-line mirrors, and whose drift is the failure mode this file guards.
-
-The invariants the table encodes:
-
-  * A tool counts when it **executes**, after the decision and never on a deny.
-    ``run.tool_calls < 20`` therefore permits exactly 20 executions.
-  * A denied call consumes no tool budget. It accrues to ``run.denials``, which
-    a policy bounds separately — otherwise a misbehaving agent burns a
-    legitimate caller's budget by being refused.
-  * An approval gate counts on the *decision*; execution counts separately, so
-    an approval never granted consumes nothing.
-  * A pre-guard halt is not a tool call — the tool never ran. A *post*-guard
-    halt is: the tool ran and only the result is withheld.
+Run against both sync and async runners, which are line-for-line mirrors —
+drift between them is the failure mode this file guards. A tool counts on
+execution, never on deny; a denied call accrues to ``run.denials`` instead; an
+approval gate counts on the decision, execution separately; a pre-guard halt
+is not a tool call, a post-guard halt still is.
 """
 
 from __future__ import annotations
@@ -119,9 +108,6 @@ async def test_allowed_call_counts_one_execution(path: str) -> None:
 @_BOTH
 @pytest.mark.asyncio
 async def test_tool_that_raises_counts_an_execution_and_an_error(path: str) -> None:
-    """A failed call consumed budget just as a successful one did — the model
-    can retry it, and an agent looping on a broken tool is exactly what
-    ``run.errors < 5`` is for."""
     with run_scope("a") as facts:
         with pytest.raises(RuntimeError):
             await _drive(path, enforcer=FakeEnforcer(), invoke=_Raises())
@@ -156,8 +142,6 @@ async def test_granted_approval_counts_the_gate_and_the_execution(path: str) -> 
 async def test_refused_approval_counts_the_gate_but_not_an_execution(
     path: str,
 ) -> None:
-    """An approval never granted must not consume the cap — which is why the
-    write site is the runner and not ``decide``."""
     with run_scope("a") as facts:
         await _drive(
             path,
@@ -198,8 +182,7 @@ async def test_granted_pre_guard_approval_halt_proceeds_and_counts_both(
 @_BOTH
 @pytest.mark.asyncio
 async def test_post_guard_halt_still_counts_the_execution(path: str) -> None:
-    """The tool ran; only the result is withheld. Un-counting it would let an
-    agent spend an unbounded number of side effects behind a redacting guard."""
+    """The tool ran; only the result is withheld."""
     with run_scope("a") as facts:
         await _drive(
             path,
@@ -213,9 +196,6 @@ async def test_post_guard_halt_still_counts_the_execution(path: str) -> None:
 @_BOTH
 @pytest.mark.asyncio
 async def test_post_guard_halt_does_not_double_count_the_tool(path: str) -> None:
-    """Guard against the obvious mis-wiring: recording the execution after the
-    post-guards instead of around ``invoke`` would count a halted call twice
-    and make a guarded pipeline burn budget at double rate."""
     with run_scope("a") as facts:
         await _drive(
             path,
@@ -235,8 +215,6 @@ async def test_post_guard_halt_does_not_double_count_the_tool(path: str) -> None
 @_BOTH
 @pytest.mark.asyncio
 async def test_calls_of_this_tool_is_per_tool_across_a_run(path: str) -> None:
-    """``run.calls_of_this_tool < 5`` is the tool-name-free per-tool cap, so it
-    must read the tool being decided, not the run total."""
     enforcer = FakeEnforcer()
     with run_scope("a") as facts:
         for _ in range(3):
@@ -268,8 +246,6 @@ async def test_tools_used_is_first_use_ordered_and_deduplicated(path: str) -> No
 @_BOTH
 @pytest.mark.asyncio
 async def test_recording_outside_a_run_scope_is_a_no_op(path: str) -> None:
-    """A boundary that was never wired must not brick the agent, and must not
-    accumulate onto the process-wide detached record either."""
     from hexgate.runtime.run_facts import DETACHED
 
     before = DETACHED.tool_calls
@@ -287,17 +263,9 @@ _CONCURRENCY = 8
 
 @pytest.mark.asyncio
 async def test_parallel_overshoot_is_bounded_by_concurrency() -> None:
-    """A run cap is a circuit breaker, not a quota.
-
-    Counting *after* execution means N concurrent calls all read the same
-    pre-increment snapshot, so a cap of K permits up to ``K - 1 + N``
-    executions. Inherent: making the decision atomic would need
-    reserve-at-decide / release-on-deny, which breaks monotonicity and with it
-    the latching property that makes the cap a circuit breaker at all.
-
-    The bound is asserted, never an exact count — how many actually race is
-    scheduler-dependent, and an exact assertion would flake.
-    """
+    """N concurrent calls all read the same pre-increment snapshot, so a cap of
+    K permits up to K-1+N executions. Assert the bound, not an exact count —
+    scheduling decides how many actually race."""
     import asyncio
 
     executed = 0
@@ -353,9 +321,8 @@ async def test_parallel_overshoot_is_bounded_by_concurrency() -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_runs_do_not_share_facts() -> None:
-    """Two runs in one process, in parallel tasks: each sees only its own tool
-    calls. Catches a contextvar leak, which would make one caller's budget
-    bound another's."""
+    """Catches a contextvar leak that would make one caller's budget bound
+    another's."""
     import asyncio
 
     seen: list[RunFacts] = []

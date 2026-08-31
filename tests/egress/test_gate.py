@@ -112,15 +112,9 @@ async def test_approval_required_without_handler_denies() -> None:
 
 
 async def test_egress_decision_records_no_run_facts() -> None:
-    """``egress_guard`` is one per process — the proxy mutates the global
-    HTTP_PROXY vars and refuses nesting, and ``Gate`` captures a single
-    HexgateContext at construction. So an egress decision is not inside any run
-    scope, and there is no correlation to put it in one: a tool's httpx call
-    reaches the proxy as a TCP connection carrying no invocation identifier.
-
-    Pinned as behaviour so a later attempt to attribute egress to a run starts
-    from a red test rather than a silent semantic change.
-    """
+    """``egress_guard`` is one per process with no per-run correlation, so a
+    decision here is never inside a run scope. Pinned so a later attempt to
+    attribute egress to a run starts from a red test."""
     from hexgate.runtime.run_facts import run_scope
 
     gate = Gate(_enforcer("allow"), _agent())
@@ -138,11 +132,8 @@ async def test_egress_decision_records_no_run_facts() -> None:
 
 
 async def test_egress_run_constraint_reads_the_detached_zeros() -> None:
-    """The other half of §0.3: because the decision happens outside a run, a
-    counter cap on an egress policy reads zeros and therefore *permits*. That is
-    the deliberate fail-open on an unattributable boundary — a fail-closed
-    reading would brick every egress request the moment a run.* cap appeared in
-    a shared default policy."""
+    """A counter cap on an egress policy reads zeros and therefore permits —
+    the deliberate fail-open on an unattributable boundary."""
     gate = Gate(_enforcer("allow", ["run.tool_calls < 1"]), _agent())
 
     result = await gate.check(connect_to_args("ok.example.com", 443))
