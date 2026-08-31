@@ -122,7 +122,7 @@ def insert_llm_invocations_batch(
     """
     insert_batch(
         clickhouse_client,
-        "llm_invocation",
+        LLM_INVOCATION_TABLE,
         _LLM_INVOCATION_COLUMNS,
         _llm_invocation_row,
         items,
