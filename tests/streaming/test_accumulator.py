@@ -138,6 +138,35 @@ def test_error_emits_run_start_then_error_no_run_end() -> None:
     assert not any(isinstance(e, RunEndEvent) for e in out)
 
 
+def test_finish_closes_an_open_tool_call() -> None:
+    # A run that ends after a tool start with no matching end must not leave the
+    # tool stuck at STARTED in ChatState.
+    acc = _Acc("q")
+    acc.emit_tool_start("c1", "refund", {"amount": 5})
+    out = acc.finish()
+    ends = [e for e in out if isinstance(e, ToolEndEvent)]
+    assert len(ends) == 1
+    assert ends[0].tool_id == "c1"
+    assert ends[0].state == ToolCallState.FAILED
+
+
+def test_error_closes_an_open_tool_call() -> None:
+    acc = _Acc("q")
+    acc.emit_tool_start("c1", "refund", {})
+    out = acc.error("boom")
+    ends = [e for e in out if isinstance(e, ToolEndEvent)]
+    assert len(ends) == 1 and ends[0].state == ToolCallState.FAILED
+
+
+def test_completed_tool_is_not_reclosed_on_finish() -> None:
+    acc = _Acc("q")
+    acc.emit_tool_start("c1", "t", {})
+    acc.emit_tool_end("c1", "ok")
+    out = acc.finish()
+    # Only the run-end; the already-ended tool is not closed again.
+    assert not any(isinstance(e, ToolEndEvent) for e in out)
+
+
 async def _aiter(items: list[Any]) -> AsyncIterator[Any]:
     for item in items:
         yield item

@@ -39,70 +39,58 @@ if TYPE_CHECKING:
 class _GoogleRunAccumulator(StreamAccumulator):
     """Map ADK ``Event``s onto the shared accumulator."""
 
-    def __init__(self, query: str) -> None:
-        super().__init__(query)
-        # Whether any partial (streamed) text/reasoning was seen this run, so the
-        # non-partial aggregate can be used as a fallback when nothing streamed.
-        self._text_streamed = False
-        self._reasoning_streamed = False
-
     def consume(self, event: Any) -> list[StreamEvent]:
         emitted: list[StreamEvent] = []
 
         error_code = getattr(event, "error_code", None)
         if error_code:
+            # A non-terminal ErrorEvent, mirroring how the LangChain adapter
+            # surfaces a mid-run tool error. ADK sets error_code on terminal
+            # finish reasons (safety/blocked), so in practice no content follows.
             message = getattr(event, "error_message", None) or str(error_code)
             emitted.extend(self.emit_error(message))
 
-        # Text and tools are gated on ``partial`` in opposite directions to
-        # dedupe the SSE double-emit: progressive SSE marks every intermediate
-        # chunk partial=True (streamed text, and function-call chunks with an
-        # empty id) and re-emits the whole thing in a partial=False aggregate.
-        # Take text from the partials (streaming) and tools only from the
-        # aggregate (complete call, stable id), mirroring ADK's own flow
-        # ("skip partial function call events", base_llm_flow).
-        if getattr(event, "partial", False):
-            for is_thought, text in self._text_parts(event):
-                if is_thought:
-                    self._reasoning_streamed = True
-                    emitted.extend(
-                        self.emit_delta("reasoning", BlockType.REASONING, text)
-                    )
-                else:
-                    self._text_streamed = True
-                    emitted.extend(self.emit_delta("text", BlockType.TEXT, text))
-            return emitted
-
-        get_calls = getattr(event, "get_function_calls", None)
-        for call in (get_calls() if callable(get_calls) else None) or []:
-            # Pass the id as-is (None when empty) so the shared FIFO correlates
-            # id-less calls; never fall back to the tool name, which would make
-            # two calls to the same tool collide on one id.
-            emitted.extend(
-                self.emit_tool_start(
-                    getattr(call, "id", None),
-                    getattr(call, "name", None) or "tool",
-                    dict(getattr(call, "args", None) or {}),
-                )
-            )
-
-        get_responses = getattr(event, "get_function_responses", None)
-        for response in (get_responses() if callable(get_responses) else None) or []:
-            emitted.extend(
-                self.emit_tool_end(
-                    getattr(response, "id", None),
-                    getattr(response, "response", None),
-                )
-            )
-
-        # Fallback: a turn whose text arrived only in the aggregate (no partial
-        # chunks, e.g. a short answer or non-progressive streaming) still needs
-        # to render, so emit aggregate text/reasoning we didn't already stream.
+        # Text/reasoning: emit only the not-yet-seen suffix of each part. This
+        # dedupes progressive SSE's double-emit (the partial=False aggregate
+        # re-sends the whole segment the partials already streamed → suffix is
+        # empty), renders aggregate-only text (no partials → the whole thing is
+        # the suffix), and keeps a text preamble ahead of a tool call in the
+        # same event, all without partial/aggregate branching for text.
         for is_thought, text in self._text_parts(event):
-            if is_thought and not self._reasoning_streamed:
-                emitted.extend(self.emit_delta("reasoning", BlockType.REASONING, text))
-            elif not is_thought and not self._text_streamed:
-                emitted.extend(self.emit_delta("text", BlockType.TEXT, text))
+            key = "reasoning" if is_thought else "text"
+            block_type = BlockType.REASONING if is_thought else BlockType.TEXT
+            seen = self.current_block_text(key)
+            delta = text[len(seen) :] if text.startswith(seen) else text
+            if delta:
+                emitted.extend(self.emit_delta(key, block_type, delta))
+
+        # Tools only from the non-partial aggregate: progressive SSE marks
+        # intermediate function-call chunks partial=True (empty id, partial
+        # args) and re-emits the complete call in the aggregate, so taking them
+        # only here mirrors ADK's own "skip partial function call events" flow.
+        if not getattr(event, "partial", False):
+            get_calls = getattr(event, "get_function_calls", None)
+            for call in (get_calls() if callable(get_calls) else None) or []:
+                # id as-is (None when empty) so the shared FIFO correlates
+                # id-less calls; never fall back to the name, which would make
+                # two calls to the same tool collide on one id.
+                emitted.extend(
+                    self.emit_tool_start(
+                        getattr(call, "id", None),
+                        getattr(call, "name", None) or "tool",
+                        dict(getattr(call, "args", None) or {}),
+                    )
+                )
+            get_responses = getattr(event, "get_function_responses", None)
+            for response in (
+                get_responses() if callable(get_responses) else None
+            ) or []:
+                emitted.extend(
+                    self.emit_tool_end(
+                        getattr(response, "id", None),
+                        getattr(response, "response", None),
+                    )
+                )
 
         return emitted
 

@@ -142,6 +142,55 @@ async def test_aggregate_only_text_is_emitted() -> None:
     assert run_end.result.message == "the whole answer"
 
 
+async def test_duplicate_aggregate_text_is_not_repeated() -> None:
+    # Two non-partial events each carrying the whole text (no tool boundary):
+    # suffix-dedup renders it once, not twice.
+    out = await _collect([_text("Hello", partial=False), _text("Hello", partial=False)])
+    deltas = [e.text for e in out if isinstance(e, BlockDeltaEvent)]
+    assert deltas == ["Hello"]
+    run_end = next(e for e in out if isinstance(e, RunEndEvent))
+    assert run_end.result.message == "Hello"
+
+
+async def test_streamed_preamble_then_aggregate_final_renders_the_suffix() -> None:
+    # Partials stream a preamble, then the aggregate carries preamble + final
+    # answer; only the new suffix (the final answer) is emitted, and nothing is
+    # dropped.
+    out = await _collect(
+        [
+            _text("Let me check. ", partial=True),
+            _text("Let me check. Done.", partial=False),
+        ]
+    )
+    deltas = [e.text for e in out if isinstance(e, BlockDeltaEvent)]
+    assert deltas == ["Let me check. ", "Done."]
+    run_end = next(e for e in out if isinstance(e, RunEndEvent))
+    assert run_end.result.message == "Let me check. Done."
+
+
+async def test_text_preamble_renders_before_tool_in_same_aggregate() -> None:
+    # One aggregate event holding both a text preamble and a function call:
+    # the text must render before the tool call.
+    preamble_and_call = _event(
+        parts=[SimpleNamespace(text="Looking it up", thought=False)],
+        calls=[SimpleNamespace(id="c1", name="lookup", args={})],
+        partial=False,
+    )
+    out = await _collect([preamble_and_call, _response("c1", "lookup", "ok")])
+    text_idx = next(i for i, e in enumerate(out) if isinstance(e, BlockDeltaEvent))
+    tool_idx = next(i for i, e in enumerate(out) if isinstance(e, ToolStartEvent))
+    assert text_idx < tool_idx
+
+
+async def test_run_ending_mid_tool_closes_the_tool() -> None:
+    # A function call with no matching response before the stream ends must not
+    # leave the tool stuck at STARTED (base _close_open_tools, via the ADK path).
+    out = await _collect([_call("c1", "refund_order", {})])
+    end = next(e for e in out if isinstance(e, ToolEndEvent))
+    assert end.tool_id == "c1"
+    assert end.state == ToolCallState.FAILED
+
+
 async def test_function_response_ok_false_marks_failed() -> None:
     out = await _collect(
         [

@@ -101,6 +101,9 @@ class StreamAccumulator:
         # tools, so the FIFO only ever covers rare hosted calls, which are
         # effectively sequential in practice.
         self._pending_callless: list[str] = []
+        # Tool calls started but not yet ended, so a run that finishes (or errors)
+        # mid-tool can close them instead of leaving them stuck at STARTED.
+        self._open_tools: dict[str, tuple[str, dict[str, Any]]] = {}
         self.steps: list[TextStep | ReasoningStep | ToolCallStep] = []
         self.message_parts: list[str] = []
 
@@ -131,6 +134,12 @@ class StreamAccumulator:
         return [self._run_start()] if not self.started else []
 
     # -- text / reasoning blocks ---------------------------------------------
+
+    def current_block_text(self, key: str) -> str:
+        """The text accumulated so far in the open block for ``key`` (``""`` if
+        none is open). Lets an adapter emit only a not-yet-seen suffix."""
+        block = self.blocks.get(key)
+        return "".join(block.parts) if block else ""
 
     def emit_delta(
         self, key: str, block_type: BlockType, text: str
@@ -207,6 +216,7 @@ class StreamAccumulator:
             call_id = str(uuid4())
             self._pending_callless.append(call_id)
         self.tool_calls[call_id] = (tool_name, arguments)
+        self._open_tools[call_id] = (tool_name, arguments)
         emitted.append(
             ToolStartEvent(
                 **self._node(),
@@ -238,6 +248,7 @@ class StreamAccumulator:
                 else str(uuid4())
             )
         tool_name, arguments = self.tool_calls.get(call_id, ("tool", {}))
+        self._open_tools.pop(call_id, None)
         inferred_state, summary = _tool_end_state(output)
         state = state_override or inferred_state
         self.steps.append(
@@ -268,6 +279,37 @@ class StreamAccumulator:
             ErrorEvent(**self._node(), sequence=self._next_sequence(), message=message)
         ]
 
+    def _close_open_tools(self) -> list[StreamEvent]:
+        """Close any tool call still open when the run ends, so the dashboard
+        doesn't leave it stuck at STARTED. Marks it FAILED (the tool never
+        returned — a guard halt, a fatal stream error, or a pending hosted
+        call)."""
+        emitted: list[StreamEvent] = []
+        for call_id, (tool_name, arguments) in list(self._open_tools.items()):
+            summary = "run ended before the tool completed"
+            self.steps.append(
+                ToolCallStep(
+                    **self._node(),
+                    sequence=self._next_sequence(),
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    state=ToolCallState.FAILED,
+                    output_summary=summary,
+                )
+            )
+            emitted.append(
+                ToolEndEvent(
+                    **self._node(),
+                    sequence=self._next_sequence(),
+                    tool_id=call_id,
+                    tool_name=tool_name,
+                    state=ToolCallState.FAILED,
+                    output_summary=summary,
+                )
+            )
+        self._open_tools.clear()
+        return emitted
+
     # -- dispatch + terminals -------------------------------------------------
 
     def consume(self, event: Any) -> list[StreamEvent]:
@@ -289,6 +331,7 @@ class StreamAccumulator:
         """Flush open blocks and emit the terminal run-end event."""
         emitted = self._ensure_started()
         emitted.extend(self.finalize_blocks())
+        emitted.extend(self._close_open_tools())
         result = AgentRunResult(
             run_id=self.run_id,
             root_run_id=self.run_id,
@@ -313,6 +356,7 @@ class StreamAccumulator:
         """
         emitted = self._ensure_started()
         emitted.extend(self.finalize_blocks())
+        emitted.extend(self._close_open_tools())
         emitted.append(
             ErrorEvent(**self._node(), sequence=self._next_sequence(), message=message)
         )
