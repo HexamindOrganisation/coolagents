@@ -347,15 +347,17 @@ def _apply_decision_observer(
 def _apply_approval_handler(
     agent: AgentGraph, approval_handler: ApprovalHandler | None
 ) -> AgentGraph:
-    """Re-stamp every :class:`GuardedTool` on ``agent`` with ``approval_handler``.
+    """Re-stamp ``approval_handler`` onto ``agent``'s tools and admission gate.
 
     For code-registered agents whose factories ran ``enforce_policy``
-    internally and never saw the CLI's approval callback. Pass the
-    ``GuardedTool`` itself (not its inner tool) so the idempotent
-    re-wrap branch preserves the existing enforcer. Logs a warning
-    when the agent has no ``GuardedTool`` tools (e.g. registered agent
-    backed by a non-LangChain framework) so the caller knows the
-    handler was silently dropped.
+    internally and never saw the CLI's approval callback. Re-wraps every
+    :class:`GuardedTool` (passing the ``GuardedTool`` itself, not its inner
+    tool, so the idempotent re-wrap preserves the existing enforcer) and
+    rebuilds the admission gate with the handler too — the gate is independent
+    of tools, so it must pick up the handler even for a tool-less agent gated
+    purely by ``admission``. Logs a warning when the agent has no
+    ``GuardedTool`` tools (e.g. a non-LangChain framework) so the caller knows
+    tool approval prompts will not fire; admission approval still works.
     """
     import logging
 

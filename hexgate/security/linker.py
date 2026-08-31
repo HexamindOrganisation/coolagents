@@ -412,7 +412,12 @@ def _fold_tool(
         if tp is not None and tp.mode in GRANT_MODES:
             grants.append((cap, tp))
     if not grants:
-        return None
+        # Same reasoning as the ceiling-shadow branch above: for an ordinary tool
+        # omission IS the implicit deny, but an ungranted agent key must stay an
+        # explicit deny — dropping it removes agent.run/agent.<via>: from the
+        # resolved policy, so declares_admission()/declares_reach() reads it as
+        # absent and disengages the gate (admit everyone) instead of denying.
+        return BaseToolPolicy(mode="deny") if is_agent_key(tool) else None
     contributors.extend(_prov(cap) for cap, _ in grants)
 
     mode = (

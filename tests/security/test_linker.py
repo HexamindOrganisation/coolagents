@@ -344,6 +344,27 @@ def test_ceiling_shadowed_admission_stays_a_deny_not_dropped() -> None:
     assert effective.effective_tools["agent.run"].mode == "deny"
 
 
+def test_admission_declared_with_no_grant_stays_a_deny_not_dropped() -> None:
+    # The twin of the shadow case: a floor boundary declares admission but no
+    # capability grants agent.run, so the fold's no-grants branch is hit. For an
+    # ordinary tool that omission is the implicit deny; an agent key must instead
+    # stay an explicit deny, or declares_admission() would read it absent and
+    # disengage the gate (admit everyone) rather than deny.
+    boundary = ModuleContent(
+        name="b",
+        kind="boundary",
+        policy=AgentPolicy(
+            default_policy=BaseToolPolicy(mode="allow"),  # floor, not a ceiling
+            admission=BaseToolPolicy(mode="allow"),
+        ),
+        source="b.yaml",
+        content_hash="hash-b",
+    )
+    effective, _ = link([boundary], [])  # no capability grants agent.run
+    assert "agent.run" in effective.effective_tools
+    assert effective.effective_tools["agent.run"].mode == "deny"
+
+
 def test_capability_agents_deny_is_a_link_error() -> None:
     # Capabilities grant only, agent keys included: a capability that denies a
     # lowered agent key is a config error, same as a capability tool deny.

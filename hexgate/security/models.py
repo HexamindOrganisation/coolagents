@@ -77,18 +77,21 @@ def agent_target_key(via: AgentVia, target: str) -> str:
 def is_agent_reach_key(name: str) -> bool:
     """True for an ``agent.tool:`` / ``agent.handoff:`` reach key.
 
-    Reach is closed-world: an unlisted reach key denies regardless of
-    ``default_policy``. Admission (``agent.run``) is *not* a reach key — it is
-    opt-in, so its absence admits — hence the two are checked separately."""
+    Distinguishes reach keys from admission (``agent.run``) for callers that gate
+    the two differently at the seam. Both are closed-world at the engine
+    (R-AGENT-002): an unlisted agent key denies regardless of ``default_policy``.
+    Opt-in survives only as the gate's ``declares_admission()`` / ``declares_reach()``
+    engagement check, not as an admit-on-absence fallback."""
     return name.startswith(AGENT_REACH_PREFIXES)
 
 
 def is_agent_key(name: str) -> bool:
     """True for any synthetic agent-level key (``agent.run`` or a reach key).
 
-    Used to reserve the ``agent.*`` namespace from authored tools. Enforcement
-    splits the two: :func:`is_agent_reach_key` for the closed-world reach keys,
-    ``agent.run`` for opt-in admission."""
+    Used to reserve the ``agent.*`` namespace from authored tools. Both admission
+    and reach are closed-world at the engine (R-AGENT-002); :func:`is_agent_reach_key`
+    only separates the two for callers that need to tell a handoff/tool reach from
+    admission (e.g. per-adapter warnings), not because they enforce differently."""
     return name == AGENT_RUN_TOOL or is_agent_reach_key(name)
 
 
@@ -135,9 +138,11 @@ class AgentPolicy(BaseModel):
 
     Both lower into synthetic tool keys via :attr:`effective_tools`, which both
     policy engines read, so agent-level rules evaluate through the identical
-    decision path as tools with no engine change. A target not named in ``agents``
-    falls to ``default_policy`` (deny by default), so a listed-``agents`` policy is
-    closed-world for free; the runtime gate refines that fallback in a later PR.
+    decision path as tools with no engine change. Agent keys are closed-world
+    (R-AGENT-002): an unlisted ``agent.run`` / ``agent.<via>:<target>`` denies at
+    the engine rather than falling to ``default_policy``. Whether a gate fires at
+    all is a separate, opt-in signal derived per run from whether the policy
+    declares the block (``declares_admission()`` / ``declares_reach()``).
     """
 
     # frozen: policies are immutable after load (inheritance builds fresh
