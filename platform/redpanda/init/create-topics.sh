@@ -51,9 +51,9 @@ create_topic() {
 # survive a brief consumer outage/redeploy.
 create_topic hexgate.otlp.raw 259200000 # 3 days
 
-# Intended for permanently-rejected events (unfixable validation,
-# unresolvable agent_version_id) reaching the enrichment job — once that
-# job and the ingestion Collector exist. Neither does yet, and this
+# Permanently-rejected events from the enrichment job: undecodable
+# payloads, keyless records, spans failing validation. NOT unresolvable
+# agent_version_id — those insert with "" like the HTTP ingest does. This
 # broker has no auth in front of it at all (PLAINTEXT, no ACLs): today,
 # anything that can reach it can write here directly. Nothing currently
 # enforces "auth rejections never reach this topic" as an actual
