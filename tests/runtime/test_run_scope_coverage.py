@@ -1,19 +1,13 @@
 """Every run entry point must open a ``run_scope``.
 
-A missed boundary is a *silent fail-open*, not a loud failure: outside a scope
-``get_run_facts()`` returns ``DETACHED``, which reads zeros, so a policy
-carrying ``run.tool_calls < 20`` would pass forever. Nothing else in the suite
-would notice.
+A missed boundary is a *silent fail-open*: outside a scope ``get_run_facts()``
+returns ``DETACHED``, which reads zeros, so ``run.tool_calls < 20`` would pass
+forever and nothing else in the suite would notice.
 
-So this file has two halves. :func:`_boundaries` **derives** the expected set
-from method signatures, which is what catches an entry point added later
-without a scope. ``SCOPE_SITES`` then pins where each one opens it, since some
-boundaries delegate to a helper and the native ambient path has no
-``hexgate_context`` parameter to derive from.
-
-The source-text assertions are deliberate. A behavioural equivalent needs a
-live agent fixture per framework, and the thing being guarded against is a
-line of code that is missing.
+Hence two halves: :func:`_boundaries` derives the expected set from method
+signatures, catching an entry point added later; ``SCOPE_SITES`` pins where each
+opens it. The source-text assertions are deliberate — what is guarded against is a
+missing line of code.
 """
 
 from __future__ import annotations
@@ -27,16 +21,13 @@ import pytest
 _CONTEXT_PARAM = "hexgate_context"
 _OPENS_SCOPE = "run_scope("
 _JOINS_SCOPE = "use_run_facts("
-# The langchain and pydantic_ai adapters delegate _abind/_bind to these shared
-# helpers (hexgate.adapters._common) rather than calling run_scope() inline —
-# see test_shared_bind_helpers_open_a_scope, which pins that abind/bind
-# themselves call run_scope(), so a per-site check on either spelling is
-# still sufficient.
+# langchain and pydantic_ai delegate _abind/_bind to these shared helpers instead
+# of calling run_scope() inline; test_shared_bind_helpers_open_a_scope pins that
+# the helpers do open one.
 _DELEGATES_TO_SHARED_BIND = ("abind(", "bind(")
 
-# The four framework adapters take the caller's HexgateContext explicitly, so
-# their run boundaries are derivable (see _boundaries). The native HexgateAgent
-# is ambient — it reads the contextvar — so it is listed but excluded there.
+# These four take the caller's HexgateContext explicitly, so their boundaries are
+# derivable. The native HexgateAgent is ambient, so it is pinned but not derived.
 _DERIVABLE = [
     ("hexgate.adapters.langchain.agent", "HexgateLangchainAgent"),
     ("hexgate.adapters.openai.runner", "HexgateRunner"),
@@ -85,10 +76,8 @@ def _load(module_name: str, class_name: str) -> Any:
 
 def _boundaries(cls: type) -> set[str]:
     """Public methods taking a ``hexgate_context`` keyword — i.e. run boundaries.
-
-    Derived rather than listed so that adding an entry point without wiring a
-    scope fails, instead of quietly passing because nobody updated a constant.
-    """
+    Derived, not listed, so a new entry point cannot pass by nobody updating a
+    constant."""
     found: set[str] = set()
     for name, member in inspect.getmembers(cls, callable):
         if name.startswith("_"):
@@ -108,12 +97,9 @@ def _source_of(module_name: str, class_name: str, symbol: str) -> str:
 
 @pytest.mark.parametrize(("module_name", "class_name"), _DERIVABLE)
 def test_every_adapter_boundary_is_covered(module_name: str, class_name: str) -> None:
-    """The guard against a *future* unwired entry point.
-
-    If someone adds a run method taking ``hexgate_context`` and does not add it
-    to SCOPE_SITES, this fails — rather than the boundary silently running
-    detached, where every ``run.*`` cap reads zero and passes.
-    """
+    """The guard against a *future* unwired entry point: a new method taking
+    ``hexgate_context`` and missing from SCOPE_SITES fails here, rather than
+    silently running detached."""
     listed = {
         method
         for module, klass, method, _ in SCOPE_SITES
@@ -142,9 +128,8 @@ def test_scope_is_opened_for_every_boundary(
 
 
 def test_shared_bind_helpers_open_a_scope() -> None:
-    """Every boundary that delegates (``_DELEGATES_TO_SHARED_BIND`` above)
-    trusts that the helper it calls actually opens one. Pin that trust here,
-    once, instead of re-deriving it per call site."""
+    """Delegating boundaries trust the helper to open the scope; pin that once
+    here rather than per call site."""
     from hexgate.adapters import _common
 
     for name in ("abind", "bind"):
@@ -157,8 +142,7 @@ def test_shared_bind_helpers_open_a_scope() -> None:
 
 
 def test_scope_opens_after_the_ban_check() -> None:
-    """A refused invocation is not a run: the ban gate must fire before the
-    scope opens, or a banned caller mints run facts nothing ever reads."""
+    """A refused invocation is not a run, so the ban gate must fire first."""
     source = _source_of(
         "hexgate.adapters.langchain.agent", "HexgateLangchainAgent", "ainvoke"
     )
@@ -166,10 +150,9 @@ def test_scope_opens_after_the_ban_check() -> None:
 
 
 def test_run_streamed_rejoins_rather_than_mints() -> None:
-    """``Runner.run_streamed`` hands tools to a background task that snapshots
-    the contextvars, then returns. The consumer-side iterator has to re-bind
-    that same object; minting there would split one invocation across two run
-    ids, and every cap would read half the truth."""
+    """``run_streamed`` hands tools to a background task that snapshots the
+    contextvars, so the consumer-side iterator must re-bind the same object —
+    minting would split one invocation across two run ids."""
     source = _source_of(
         "hexgate.adapters.openai.runner", "HexgateRunner", "run_streamed"
     )
@@ -182,8 +165,7 @@ def test_run_streamed_rejoins_rather_than_mints() -> None:
 
 
 def test_run_sync_keeps_the_loop_drain_inside_the_scope() -> None:
-    """``_drain_default_loop`` exists to pump a late fire-and-forget audit or
-    usage send. Draining outside the scope would attribute those tokens to no
-    run at all."""
+    """The drain pumps a late fire-and-forget audit or usage send; outside the
+    scope those tokens would belong to no run."""
     source = _source_of("hexgate.adapters.openai.runner", "HexgateRunner", "run_sync")
     assert source.index(_OPENS_SCOPE) < source.index("_drain_default_loop()")

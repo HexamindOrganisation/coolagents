@@ -1,13 +1,11 @@
 """Behavioural companion to ``test_run_scope_coverage``.
 
-The coverage tests assert a ``run_scope(`` call exists in the right place.
-These assert what it *does* when an adapter actually runs: one run id per
-invocation, a fresh one next time, none at all when the run was refused, and
-none on the entry points that deliberately bypass the wrapper.
+Where those assert a ``run_scope(`` call exists, these assert what it does when an
+adapter runs: one run id per invocation, a fresh one next time, none when the run
+was refused, none on the entry points that bypass the wrapper.
 
-Uses the langchain proxy because it needs no framework fixture — a recording
-stand-in for the compiled graph is enough, and the graph body runs in the same
-context a guarded tool would.
+Uses the langchain proxy since it needs no framework fixture — a recording graph
+stand-in runs in the same context a guarded tool would.
 """
 
 from __future__ import annotations
@@ -30,11 +28,8 @@ def _context() -> HexgateContext:
 
 
 class _FactsRecordingGraph:
-    """Stands in for the compiled graph, capturing the run facts it ran under.
-
-    A guarded tool would see exactly this — the graph body executes inside the
-    scope the proxy opened.
-    """
+    """Stands in for the compiled graph, capturing the facts it ran under — what a
+    guarded tool would see, since the body runs inside the proxy's scope."""
 
     name = "facts-recording-graph"
 
@@ -143,8 +138,7 @@ def test_each_invocation_gets_a_distinct_run_id() -> None:
 
 
 def test_streaming_keeps_one_run_across_chunks() -> None:
-    """Every chunk of one stream belongs to the same run — a per-chunk id would
-    mean a cap reset itself mid-stream."""
+    """One run across every chunk; a per-chunk id would reset a cap mid-stream."""
     graph = _FactsRecordingGraph()
     list(_proxy(graph).stream({"messages": []}, hexgate_context=_context()))
 
@@ -171,8 +165,7 @@ def test_scope_closes_after_the_invocation() -> None:
 
 
 def test_ban_refusal_opens_no_scope() -> None:
-    """A refused invocation is not a run: the ban gate fires before the scope,
-    so nothing runs and no facts are minted."""
+    """A refused invocation is not a run: nothing runs, no facts are minted."""
     graph = _FactsRecordingGraph()
     proxy = _proxy(graph, ban_gate=_banning_gate())
 
@@ -184,9 +177,8 @@ def test_ban_refusal_opens_no_scope() -> None:
 
 
 def test_bypassed_methods_run_detached() -> None:
-    """``batch`` reaches the wrapped graph through ``__getattr__``, so it gets
-    neither the ban gate nor a run scope. Documented, not fixed — pinned here so
-    the bypass stays known."""
+    """``batch`` reaches the graph through ``__getattr__``, so it gets neither the
+    ban gate nor a scope. Pinned so the bypass stays known."""
     graph = _FactsRecordingGraph()
     _proxy(graph).batch([{"messages": []}])
 

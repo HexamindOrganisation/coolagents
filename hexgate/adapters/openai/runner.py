@@ -314,10 +314,9 @@ class HexgateRunner:
         )
 
         with hexgate_context.sync_scope():
-            # The scope must be open around run_streamed(): it spawns the agent
-            # loop as a background task that snapshots the contextvars at
-            # creation, and that task is where tools fire. The task's snapshot
-            # keeps the facts alive after this block exits.
+            # Scope must be open around run_streamed(): it snapshots the
+            # contextvars into the background task where tools fire, and that
+            # snapshot keeps the facts alive after this block exits.
             with run_scope(agent.name) as run_facts:
                 with self._propagate(hexgate_context, agent.name):
                     result = Runner.run_streamed(
@@ -332,8 +331,8 @@ class HexgateRunner:
 
         async def _stream_events_with_scope():
             async with hexgate_context:
-                # Re-bind the facts the background task snapshotted rather than
-                # minting a second run: one invocation must have one run id.
+                # Re-bind the snapshotted facts, not a second run: one
+                # invocation must have one run id.
                 with use_run_facts(run_facts):
                     with self._propagate(hexgate_context, agent.name):
                         async for event in original_stream_events():

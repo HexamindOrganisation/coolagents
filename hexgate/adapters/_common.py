@@ -20,10 +20,8 @@ from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 # values are dropped too). Only bites on an unusually large role list.
 _MAX_METADATA_CHARS = 200
 
-# Fallback when a wrapped agent has no name. Shared so that a nameless agent's
-# audit events (agent_name=...) and its run facts (run.agent) agree on what it
-# is called — two independent literals drifting apart would silently split one
-# agent's trail across two labels.
+# Fallback when a wrapped agent has no name. Shared so a nameless agent's audit
+# events and its run facts agree on the label, rather than drifting apart.
 DEFAULT_AGENT_NAME = "default"
 
 
@@ -81,13 +79,10 @@ def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, An
 async def abind(
     context: HexgateContext, agent_name: str, propagate_kwargs: dict[str, Any]
 ) -> AsyncIterator[None]:
-    """Async run boundary shared by every adapter proxy: identity scope, run
-    facts, then Langfuse propagation — in that order, so the run's facts are
-    live for the whole block a tool call executes in.
+    """Async run boundary shared by every adapter proxy: identity scope, run facts,
+    then Langfuse propagation, so the facts are live wherever a tool call executes.
 
-    ``propagate_kwargs`` is computed by the caller (via
-    :func:`langfuse_propagate_kwargs`), not here, since its ``tag`` embeds the
-    calling method's name.
+    The caller passes ``propagate_kwargs`` because its tag embeds their method name.
     """
     async with context:
         with run_scope(agent_name):
