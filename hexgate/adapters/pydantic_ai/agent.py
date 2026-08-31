@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
 
-from langfuse import get_client, propagate_attributes
+from langfuse import get_client
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRun, AgentRunResult
 from pydantic_ai.result import StreamedRunResult
 
-from hexgate.adapters._common import langfuse_propagate_kwargs
+from hexgate.adapters._common import abind, bind, langfuse_propagate_kwargs
 from hexgate.adapters.pydantic_ai.usage import emit_run_usage
-from hexgate.runtime import HexgateContext, run_scope
+from hexgate.runtime import HexgateContext
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -73,21 +73,14 @@ class HexgatePydanticAgent:
     def _propagate_kwargs(self, context: HexgateContext, method: str) -> dict[str, Any]:
         return langfuse_propagate_kwargs(context, f"pydantic_ai.agent.{method}")
 
-    @asynccontextmanager
-    async def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
-        """Async HexgateContext scope + run facts + Langfuse propagation."""
-        async with context:
-            with run_scope(self._agent_name):
-                with propagate_attributes(**self._propagate_kwargs(context, method)):
-                    yield
+    def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
+        """Async HexgateContext scope + run facts + Langfuse propagation.
+        See :func:`hexgate.adapters._common.abind`."""
+        return abind(context, self._agent_name, self._propagate_kwargs(context, method))
 
-    @contextmanager
     def _bind(self, context: HexgateContext, method: str) -> Iterator[None]:
-        """Sync HexgateContext scope + run facts + Langfuse propagation."""
-        with context.sync_scope():
-            with run_scope(self._agent_name):
-                with propagate_attributes(**self._propagate_kwargs(context, method)):
-                    yield
+        """Sync mirror of :meth:`_abind`."""
+        return bind(context, self._agent_name, self._propagate_kwargs(context, method))
 
     async def run(
         self,

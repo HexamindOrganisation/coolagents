@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager, contextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Literal
 
 from langchain_core.runnables import RunnableConfig
-from langfuse import get_client, propagate_attributes
+from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
-from hexgate.adapters._common import langfuse_propagate_kwargs
+from hexgate.adapters._common import (
+    DEFAULT_AGENT_NAME,
+    abind,
+    bind,
+    langfuse_propagate_kwargs,
+)
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
-from hexgate.runtime import HexgateContext, run_scope
+from hexgate.runtime import HexgateContext
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -36,7 +40,7 @@ class HexgateLangchainAgent:
         agent: CompiledStateGraph,
         api_key: str,
         tool_names: list[str],
-        agent_name: str = "default",
+        agent_name: str = DEFAULT_AGENT_NAME,
         binding: PolicyBinding | None = None,
         ban_gate: BanGate | None = None,
     ) -> None:
@@ -74,21 +78,14 @@ class HexgateLangchainAgent:
     def _propagate_kwargs(self, context: HexgateContext, method: str) -> dict[str, Any]:
         return langfuse_propagate_kwargs(context, f"langchain.agent.{method}")
 
-    @asynccontextmanager
-    async def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
-        """Async run boundary — identity scope, run facts, Langfuse propagation."""
-        async with context:
-            with run_scope(self._agent_name):
-                with propagate_attributes(**self._propagate_kwargs(context, method)):
-                    yield
+    def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
+        """Async run boundary — identity scope, run facts, Langfuse propagation.
+        See :func:`hexgate.adapters._common.abind`."""
+        return abind(context, self._agent_name, self._propagate_kwargs(context, method))
 
-    @contextmanager
     def _bind(self, context: HexgateContext, method: str) -> Iterator[None]:
         """Sync mirror of :meth:`_abind`."""
-        with context.sync_scope():
-            with run_scope(self._agent_name):
-                with propagate_attributes(**self._propagate_kwargs(context, method)):
-                    yield
+        return bind(context, self._agent_name, self._propagate_kwargs(context, method))
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
         """Append the Hexgate callback handlers to ``config['callbacks']``."""

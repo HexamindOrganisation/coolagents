@@ -35,6 +35,7 @@ from langgraph.store.base import BaseStore
 from pydantic import BaseModel
 
 # BC re-export — canonical home is hexgate.approvals (framework-agnostic).
+from hexgate.adapters._common import DEFAULT_AGENT_NAME
 from hexgate.approvals import ApprovalHandler  # noqa: F401 — re-export
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import (
@@ -57,11 +58,6 @@ LangChainAgentGraph: TypeAlias = CompiledStateGraph
 ToolSpec: TypeAlias = BaseTool | Callable[..., Any] | dict[str, Any]
 AgentState: TypeAlias = dict[str, Any]
 AgentInput: TypeAlias = str | Sequence[object] | Mapping[str, object] | BaseModel
-# Fallback when the agent was built without a ``name``. Shared by the enforcer
-# (which stamps it on every audit event) and the run scope, so a nameless
-# agent's decisions and its run facts agree on what it is called.
-DEFAULT_AGENT_NAME = "default"
-
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful assistant built on a tool-using agent runtime.\n\n"
     "Your job is to answer clearly and directly, using the tools available to "
@@ -378,7 +374,9 @@ class HexgateAgent:
         # (only hexgate_client, attached post-init by _bind_policy). If one is added,
         # thread it through here too, or usage events will keep silently resolving
         # from HEXGATE_API_KEY instead of the caller's explicit key.
-        self._usage_handler = HexgateUsageCallbackHandler(agent_name=name or "default")
+        self._usage_handler = HexgateUsageCallbackHandler(
+            agent_name=name or DEFAULT_AGENT_NAME
+        )
 
     def _with_usage_callback(self, config: dict[str, Any]) -> dict[str, Any]:
         """Append the usage callback handler to ``config['callbacks']``."""

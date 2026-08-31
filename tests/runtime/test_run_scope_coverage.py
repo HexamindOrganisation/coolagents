@@ -27,6 +27,12 @@ import pytest
 _CONTEXT_PARAM = "hexgate_context"
 _OPENS_SCOPE = "run_scope("
 _JOINS_SCOPE = "use_run_facts("
+# The langchain and pydantic_ai adapters delegate _abind/_bind to these shared
+# helpers (hexgate.adapters._common) rather than calling run_scope() inline —
+# see test_shared_bind_helpers_open_a_scope, which pins that abind/bind
+# themselves call run_scope(), so a per-site check on either spelling is
+# still sufficient.
+_DELEGATES_TO_SHARED_BIND = ("abind(", "bind(")
 
 # The four framework adapters take the caller's HexgateContext explicitly, so
 # their run boundaries are derivable (see _boundaries). The native HexgateAgent
@@ -125,11 +131,29 @@ def test_scope_is_opened_for_every_boundary(
     module_name: str, class_name: str, method: str, symbol: str
 ) -> None:
     source = _source_of(module_name, class_name, symbol)
-    assert _OPENS_SCOPE in source, (
-        f"{module_name}.{class_name}.{method} does not open a run scope "
-        f"(expected it in {symbol!r}). An unscoped boundary reads DETACHED, "
-        f"so every run.* constraint silently passes."
+    opens_directly = _OPENS_SCOPE in source
+    delegates = any(marker in source for marker in _DELEGATES_TO_SHARED_BIND)
+    assert opens_directly or delegates, (
+        f"{module_name}.{class_name}.{method} does not open a run scope, "
+        f"directly or via the shared abind/bind helpers (expected it in "
+        f"{symbol!r}). An unscoped boundary reads DETACHED, so every run.* "
+        f"constraint silently passes."
     )
+
+
+def test_shared_bind_helpers_open_a_scope() -> None:
+    """Every boundary that delegates (``_DELEGATES_TO_SHARED_BIND`` above)
+    trusts that the helper it calls actually opens one. Pin that trust here,
+    once, instead of re-deriving it per call site."""
+    from hexgate.adapters import _common
+
+    for name in ("abind", "bind"):
+        source = inspect.getsource(getattr(_common, name))
+        assert _OPENS_SCOPE in source, (
+            f"hexgate.adapters._common.{name} no longer opens a run scope; "
+            f"every adapter boundary delegating to it would silently run "
+            f"detached."
+        )
 
 
 def test_scope_opens_after_the_ban_check() -> None:

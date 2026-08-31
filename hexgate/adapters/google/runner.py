@@ -17,7 +17,11 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
+from hexgate.adapters._common import (
+    DEFAULT_AGENT_NAME,
+    drain_pending_tasks,
+    langfuse_propagate_kwargs,
+)
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
@@ -73,7 +77,7 @@ class HexgateRunner:
             session_service=session_service,
             **runner_kwargs,
         )
-        self._agent_name = getattr(agent, "name", "default")
+        self._agent_name = getattr(agent, "name", DEFAULT_AGENT_NAME)
         self._ban_gate = resolve_ban_gate(
             self._agent_name, api_key=self.api_key, client=client
         )

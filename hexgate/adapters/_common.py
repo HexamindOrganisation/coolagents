@@ -7,15 +7,24 @@ import surface.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, AsyncIterator, Iterator
 
-from hexgate.runtime import HexgateContext
+from langfuse import propagate_attributes
+
+from hexgate.runtime import HexgateContext, run_scope
 from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 
 # Langfuse silently drops a propagated metadata value over 200 chars, so the
 # joined role list is truncated to fit (with an ASCII ellipsis — non-ASCII
 # values are dropped too). Only bites on an unusually large role list.
 _MAX_METADATA_CHARS = 200
+
+# Fallback when a wrapped agent has no name. Shared so that a nameless agent's
+# audit events (agent_name=...) and its run facts (run.agent) agree on what it
+# is called — two independent literals drifting apart would silently split one
+# agent's trail across two labels.
+DEFAULT_AGENT_NAME = "default"
 
 
 def drain_pending_tasks(
@@ -66,3 +75,32 @@ def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, An
         "session_id": context.session_id,
         "metadata": {"user_roles": roles},
     }
+
+
+@asynccontextmanager
+async def abind(
+    context: HexgateContext, agent_name: str, propagate_kwargs: dict[str, Any]
+) -> AsyncIterator[None]:
+    """Async run boundary shared by every adapter proxy: identity scope, run
+    facts, then Langfuse propagation — in that order, so the run's facts are
+    live for the whole block a tool call executes in.
+
+    ``propagate_kwargs`` is computed by the caller (via
+    :func:`langfuse_propagate_kwargs`), not here, since its ``tag`` embeds the
+    calling method's name.
+    """
+    async with context:
+        with run_scope(agent_name):
+            with propagate_attributes(**propagate_kwargs):
+                yield
+
+
+@contextmanager
+def bind(
+    context: HexgateContext, agent_name: str, propagate_kwargs: dict[str, Any]
+) -> Iterator[None]:
+    """Sync mirror of :func:`abind`."""
+    with context.sync_scope():
+        with run_scope(agent_name):
+            with propagate_attributes(**propagate_kwargs):
+                yield
