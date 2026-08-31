@@ -163,6 +163,35 @@ They're most useful with `or` — "under the limit, **or** an admin":
 - args.amount <= consts.max_refund or role == "admin"
 ```
 
+## Stopping a run that's gone wrong
+
+Everything above judges one call in isolation. `run.*` judges the **invocation
+so far**, which is how you stop an agent stuck in a loop rather than one asking
+for something it shouldn't:
+
+```yaml
+default_policy:
+  mode: allow
+  constraints:
+    - run.tool_calls < 20         # at most 20 tools per invocation
+    - run.elapsed_seconds < 300   # at most 5 minutes
+    - run.errors < 5              # give up after 5 failures
+```
+
+Put these on `default_policy` and they apply to every tool that falls through to
+it. The counters only ever go up within a run, so once a cap trips it stays
+tripped — a circuit breaker, not a gate that flaps.
+
+Test one at its threshold without running an agent:
+
+```bash
+hexgate policy test policy.yaml --role default --tool search \
+  --run-facts '{"tool_calls": 20}'
+```
+
+The [constraints reference](/policy/constraints#run-facts-run) lists all 13
+paths and the handful of places the count can lag reality.
+
 ## A worked example
 
 A support agent that can email customers and issue refunds, with a stricter
