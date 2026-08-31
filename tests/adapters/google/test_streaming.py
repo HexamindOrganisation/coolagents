@@ -146,15 +146,75 @@ async def test_session_evicted_on_new_conversation(
 
     driver = GoogleServeDriver(agent=object(), app_name="app")
 
-    first = await driver._ensure_session("u", ["only-one"])  # turns<=1 → new
-    same = await driver._ensure_session("u", ["a", "b", "c"])  # continue
+    first = await driver._ensure_session("u", ["only-one"], None)  # turns<=1 → new
+    same = await driver._ensure_session("u", ["a", "b", "c"], None)  # continue
     assert same == first
     assert ("u", first) in driver._created
 
-    fresh = await driver._ensure_session("u", ["reset"])  # turns<=1 → new + evict
+    fresh = await driver._ensure_session("u", ["reset"], None)  # turns<=1 → new + evict
     assert fresh != first
     assert ("u", first) not in driver._created  # old one evicted
     assert ("u", fresh) in driver._created
+
+
+async def test_partial_function_call_is_deduped() -> None:
+    # Progressive SSE emits a function call in partial chunks AND the aggregate;
+    # only the non-partial aggregate should produce a tool start.
+    out = await _collect(
+        [
+            _event(calls=[SimpleNamespace(id="c1", name="t", args={})], partial=True),
+            _event(calls=[SimpleNamespace(id="c1", name="t", args={})], partial=False),
+        ]
+    )
+    starts = [e for e in out if isinstance(e, ToolStartEvent)]
+    assert len(starts) == 1
+
+
+async def test_explicit_session_id_is_honored(monkeypatch: Any) -> None:
+    from hexgate.adapters.google.streaming import GoogleServeDriver
+
+    class _StubRunner:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+    monkeypatch.setattr("hexgate.adapters.google.runner.HexgateRunner", _StubRunner)
+    driver = GoogleServeDriver(agent=object(), app_name="app")
+
+    sid = await driver._ensure_session("u", ["a", "b", "c"], "playground-sess")
+    assert sid == "playground-sess"  # honored, not minted
+    assert ("u", "playground-sess") in driver._created
+
+
+async def test_astream_carries_ttl_and_honors_session_id(monkeypatch: Any) -> None:
+    from hexgate.adapters.google.streaming import GoogleServeDriver
+    from hexgate.runtime import HexgateContext
+
+    captured: dict[str, Any] = {}
+
+    class _StubRunner:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
+        async def run_async(
+            self, *, new_message: Any, hexgate_context: Any, **_k: Any
+        ) -> AsyncIterator[Any]:
+            captured["ctx"] = hexgate_context
+            if False:  # pragma: no cover — empty async generator
+                yield None
+
+    monkeypatch.setattr("hexgate.adapters.google.runner.HexgateRunner", _StubRunner)
+    driver = GoogleServeDriver(agent=object(), app_name="app")
+
+    ctx = HexgateContext(
+        user_id="alice", user_roles=["billing"], session_id="sess-9", ttl_seconds=42
+    )
+    _ = [e async for e in driver.astream(["hi"], ctx, "hi")]
+
+    run_ctx = captured["ctx"]
+    assert run_ctx.user_id == "alice"
+    assert run_ctx.user_roles == ["billing"]
+    assert run_ctx.session_id == "sess-9"  # honored, not overwritten by an ADK uuid
+    assert run_ctx.ttl_seconds == 42  # carried through, not dropped
 
 
 async def test_full_sequence_brackets_run() -> None:

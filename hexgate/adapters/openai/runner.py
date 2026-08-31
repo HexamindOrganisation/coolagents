@@ -11,7 +11,7 @@ import asyncio
 import warnings
 from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import nest_asyncio
 from agents import (
@@ -305,6 +305,75 @@ class HexgateRunner:
         if ban_gate is not None:
             # Before run_streamed spawns its task, so a banned run yields nothing.
             ban_gate.check(hexgate_context)
+        return self._launch_streamed(
+            agent,
+            input,
+            binding=binding,
+            hexgate_context=hexgate_context,
+            run_config=run_config,
+            hooks=hooks,
+            kwargs=kwargs,
+        )
+
+    async def arun_streamed(
+        self,
+        agent: Agent,
+        input: str | list[TResponseInputItem] | RunState[TContext],
+        *,
+        hexgate_context: HexgateContext,
+        run_config: RunConfig | None = None,
+        hooks: RunHooks | None = None,
+        **kwargs,
+    ) -> RunResultStreaming:
+        """Async-friendly ``run_streamed`` for callers already on an event loop.
+
+        ``run_streamed`` refreshes the policy binding and ban gate with blocking
+        sync HTTP; on an asyncio loop that freezes the loop thread (which, under
+        ``hexgate serve``, would stall the approval-reply and ping/pong frames
+        the per-frame dispatch depends on). This awaits the async variants
+        first, then launches ``Runner.run_streamed`` on-loop. It stays on-loop
+        rather than ``to_thread`` because ``run_streamed`` returns immediately
+        and spawns the agent loop as an ``asyncio.create_task`` that must inherit
+        both this running loop and the active contextvar scope.
+        """
+        self._setup_observability()
+        binding = self._binding_for(agent)
+        await binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            await ban_gate.check_async(hexgate_context)
+        return self._launch_streamed(
+            agent,
+            input,
+            binding=binding,
+            hexgate_context=hexgate_context,
+            run_config=run_config,
+            hooks=hooks,
+            kwargs=kwargs,
+        )
+
+    def _launch_streamed(
+        self,
+        agent: Agent,
+        input: str | list[TResponseInputItem] | RunState[TContext],
+        *,
+        binding: PolicyBinding,
+        hexgate_context: HexgateContext,
+        run_config: RunConfig | None,
+        hooks: RunHooks | None,
+        kwargs: dict[str, Any],
+    ) -> RunResultStreaming:
+        """Wrap the agent, launch ``Runner.run_streamed`` inside the context
+        scope, and re-wrap ``stream_events`` to re-enter it. Shared by the sync
+        ``run_streamed`` and async ``arun_streamed`` after each has refreshed the
+        binding + ban gate in its own way.
+
+        ``run_streamed`` returns sync but spawns the agent loop as a background
+        task that snapshots the current contextvars at creation; tools fire
+        there, not in ``stream_events``. So the scope must be active around the
+        ``run_streamed`` call for the task to inherit it; the wrapped iterator
+        re-opens it for exit/audit semantics.
+        """
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,

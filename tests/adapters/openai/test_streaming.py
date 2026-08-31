@@ -228,3 +228,41 @@ async def test_callless_tool_start_end_share_tool_id() -> None:
     end = next(e for e in out if isinstance(e, ToolEndEvent))
     assert start.tool_id == end.tool_id
     assert end.tool_name == "shell"
+
+
+async def test_astream_openai_uses_async_run_streamed() -> None:
+    # serve must drive the runner off-loop via arun_streamed (await), never the
+    # blocking sync run_streamed, or the serve event loop stalls per turn.
+    from hexgate.adapters.openai.streaming import astream_openai
+    from hexgate.runtime import HexgateContext
+
+    calls = {"arun": 0, "run": 0}
+
+    class _Result:
+        async def stream_events(self) -> AsyncIterator[Any]:
+            if False:  # pragma: no cover — empty async generator
+                yield None
+
+    class _Runner:
+        async def arun_streamed(self, agent: Any, inp: Any, **_k: Any) -> _Result:
+            calls["arun"] += 1
+            return _Result()
+
+        def run_streamed(self, *_a: Any, **_k: Any) -> _Result:
+            calls["run"] += 1  # pragma: no cover — must not be reached
+            return _Result()
+
+    out = [
+        e
+        async for e in astream_openai(
+            _Runner(),
+            object(),
+            [],
+            hexgate_context=HexgateContext(user_id=""),
+            query="q",
+        )
+    ]
+    assert calls == {"arun": 1, "run": 0}
+    # Still produces a bracketed (empty) run.
+    assert out[0].event_type == EventType.RUN_START
+    assert out[-1].event_type == EventType.RUN_END

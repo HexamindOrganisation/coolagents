@@ -132,11 +132,13 @@ async def astream_openai(
 ) -> AsyncIterator[StreamEvent]:
     """Stream a policy-enforced OpenAI agent as normalized ``StreamEvent``s.
 
-    ``runner.run_streamed`` opens the :class:`HexgateContext` scope internally
-    (its wrapped ``stream_events()`` re-enters it), refreshes the cached policy
-    binding for this run, and enforces the ban gate before spawning the agent
-    loop — so this driver only wires the raw stream into the normalizer.
+    Uses ``arun_streamed`` (not ``run_streamed``) so the per-run policy refresh
+    and ban check happen off the event loop via ``await`` — a blocking sync
+    refresh here would freeze the serve loop and stall approval/ping frames. The
+    runner opens the :class:`HexgateContext` scope internally (its wrapped
+    ``stream_events()`` re-enters it), so this driver only wires the raw stream
+    into the normalizer.
     """
-    result = runner.run_streamed(agent, input, hexgate_context=hexgate_context)
+    result = await runner.arun_streamed(agent, input, hexgate_context=hexgate_context)
     async for event in normalize_openai_events(result.stream_events(), query=query):
         yield event
