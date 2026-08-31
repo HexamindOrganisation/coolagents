@@ -94,17 +94,6 @@ async def _get_module(
     ).first()
 
 
-async def get_module_hash(
-    session: AsyncSession, project_id: str, tier: str, path: str
-) -> str | None:
-    """The stored module's ``content_hash``, or ``None`` if it doesn't exist.
-
-    Lets a caller tell a real content change from a byte-identical re-PUT and
-    skip the (expensive) recompile when nothing changed."""
-    row = await _get_module(session, project_id, tier, path)
-    return row.content_hash if row is not None else None
-
-
 async def get_module_peek(
     session: AsyncSession, project_id: str, tier: str, path: str
 ) -> tuple[str | None, str | None]:
@@ -381,21 +370,17 @@ def compose_error_types() -> tuple[type[BaseException], ...]:
     )
 
 
-def _resolves_with(boundaries, capabilities, roles) -> bool:
-    """Whether ``boundaries + capabilities`` compose for EVERY agent column of
-    ``roles`` (not just ``"*"``, so a named-agent cell importing an unknown
-    capability is caught). Resolves only — no YAML serialization."""
+def _resolve_all_agents(boundaries, capabilities, roles) -> None:
+    """Resolve EVERY agent column of ``roles`` (not just ``"*"``, so a named-agent
+    cell importing an unknown capability is caught). Raises the SDK compose errors
+    on failure; resolves only (no YAML serialization)."""
     from hexgate.security import resolve_for_project
 
     agents = {DEFAULT_AGENT}
     if roles:
         agents |= {agent for cells in roles.values() for agent in cells}
-    try:
-        for agent in agents:
-            resolve_for_project(boundaries, capabilities, roles, agent=agent)
-        return True
-    except compose_error_types():
-        return False
+    for agent in agents:
+        resolve_for_project(boundaries, capabilities, roles, agent=agent)
 
 
 def normalize_roles(
@@ -410,9 +395,15 @@ async def resolves(session: AsyncSession, project_id: str) -> bool:
 
     A cheap, opa-free precondition for accepting a write that edits a MODULE
     (the bindings are already stored). ``True`` only if every agent column
-    resolves."""
-    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
-    return _resolves_with(boundaries, capabilities, roles)
+    resolves. ``_sdk_inputs`` is inside the ``try`` because it re-parses every
+    stored module — a row that no longer parses is a compose failure (→ False →
+    409), not a 500."""
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+        _resolve_all_agents(boundaries, capabilities, roles)
+        return True
+    except compose_error_types():
+        return False
 
 
 async def resolves_proposed(
@@ -420,9 +411,52 @@ async def resolves_proposed(
 ) -> bool:
     """Whether the STORED modules compose with the PROPOSED role bindings, for
     every agent — validated in memory **before** writing, so an invalid binding
-    is never briefly visible via a concurrent GET and no rollback is needed."""
-    boundaries, capabilities, _stored = await _sdk_inputs(session, project_id)
-    return _resolves_with(boundaries, capabilities, _to_role_matrix(proposed))
+    is never briefly visible via a concurrent GET and no rollback is needed.
+    ``_sdk_inputs`` is inside the ``try`` for the same reason as :func:`resolves`."""
+    try:
+        boundaries, capabilities, _stored = await _sdk_inputs(session, project_id)
+        _resolve_all_agents(boundaries, capabilities, _to_role_matrix(proposed))
+        return True
+    except compose_error_types():
+        return False
+
+
+def _draft_module_content(tier: str, path: str, content: str):
+    """A :class:`ModuleContent` from an unsaved draft (hash recomputed, not stored)."""
+    from hexgate.security import ModuleContent
+
+    return ModuleContent(
+        name=path,
+        kind=tier,
+        policy=_parse_policy(content),  # raises on invalid YAML / schema
+        source=f"{tier}/{path}",
+        content_hash=_content_hash(content),
+    )
+
+
+async def resolves_with_module(
+    session: AsyncSession, project_id: str, tier: str, path: str, content: str
+) -> bool:
+    """Whether the project still resolves with this DRAFT module overlaid, without
+    writing it — validated in memory **before** the write, so a resolution-breaking
+    edit (e.g. a capability with a deny) is rejected without a commit-then-rollback
+    window a concurrent GET could observe.
+
+    Raises :class:`InvalidModuleError` if the content isn't a valid policy (the
+    caller maps that to 422); returns ``False`` only when the content is valid but
+    the project no longer composes with it (→ 409)."""
+    _validate_policy_yaml(content)  # → InvalidModuleError (422) on malformed content
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+        overlay = _draft_module_content(tier, path, content)
+        if tier == "boundary":
+            boundaries = [m for m in boundaries if m.name != path] + [overlay]
+        else:
+            capabilities = [m for m in capabilities if m.name != path] + [overlay]
+        _resolve_all_agents(boundaries, capabilities, roles)
+        return True
+    except compose_error_types():
+        return False
 
 
 # --- enforcement integration (see docs/adr/R-POL-002) ------------------------

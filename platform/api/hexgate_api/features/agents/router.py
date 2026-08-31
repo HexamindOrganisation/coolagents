@@ -354,10 +354,19 @@ async def api_register_agent(
     """
     from hexgate_api.core.keystore import keystore
     from hexgate_api.core.locks import project_lock
+    from hexgate_api.features.agents.service import get_agent
 
-    # Hold the project lock: a first-time register compiles + writes a bundle,
-    # so it must not interleave with recompile_project and commit out of order.
-    async with project_lock(project_id):
+    # Only a FIRST registration compiles + writes a bundle; re-registering an
+    # existing agent just snapshots the manifest (no compile). Take the project
+    # lock only in that case — otherwise a fleet redeploy's no-op re-registers
+    # (`hexgate serve` auto-registers on startup) would all queue behind the lock
+    # and any in-flight recompile for nothing.
+    if await get_agent(session, project_id, body.manifest.name) is None:
+        async with project_lock(project_id):
+            version, created = await register_manifest(
+                session, project_id, body.manifest, sign=keystore.sign
+            )
+    else:
         version, created = await register_manifest(
             session, project_id, body.manifest, sign=keystore.sign
         )

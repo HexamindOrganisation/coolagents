@@ -104,9 +104,34 @@ async def api_put_policy_module(
     # Serialize the write + recompile per project so overlapping edits can't
     # commit bundles out of order (see core.locks).
     async with project_lock(project_id):
-        prev_content, prev_hash = await service.get_module_peek(
+        _prev_content, prev_hash = await service.get_module_peek(
             session, project_id, tier, path
         )
+        modular = await service.is_modular(session, project_id)
+        # Validate the edit BEFORE writing: an edit that breaks composition (e.g.
+        # a capability with a deny, which the linker rejects) must not be accepted
+        # silently — agents would keep the old bundle while the store held an
+        # uncomposable module. Validating the draft in memory first means the
+        # store is never briefly written with a broken module (no commit-then-
+        # rollback window a concurrent GET could observe). Same pattern as the
+        # roles PUT. Only for modular projects — a classic library edit changes
+        # no agent, so composition doesn't gate it.
+        if modular:
+            try:
+                composes = await service.resolves_with_module(
+                    session, project_id, tier, path, body.content
+                )
+            except service.InvalidModuleError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            if not composes:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"module {path!r} would break the project's policy "
+                        "resolution; not saved (see /policy/check for details)"
+                    ),
+                )
+
         try:
             row = await service.upsert_module(
                 session,
@@ -120,33 +145,7 @@ async def api_put_policy_module(
         # Recompile only when the content actually changed and the project is
         # modular: a byte-identical re-PUT, or any edit to a classic library,
         # changes no agent, so don't pay a resolve + opa compile for it.
-        if row.content_hash != prev_hash and await service.is_modular(
-            session, project_id
-        ):
-            # An edit that breaks composition (e.g. a capability with a deny, which
-            # the linker rejects) must not be accepted silently: agents would keep
-            # the old bundle while the store holds an uncomposable module. Reject
-            # and restore the previous content (or delete a newly-created module).
-            if not await service.resolves(session, project_id):
-                if prev_content is None:
-                    await service.delete_module(
-                        session, project_id=project_id, tier=tier, path=path
-                    )
-                else:
-                    await service.upsert_module(
-                        session,
-                        project_id=project_id,
-                        tier=tier,
-                        path=path,
-                        content=prev_content,
-                    )
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        f"module {path!r} would break the project's policy "
-                        "resolution; not saved (see /policy/check for details)"
-                    ),
-                )
+        if modular and row.content_hash != prev_hash:
             await _recompile_project_agents(session, project_id)
     return _module_read(row)
 

@@ -948,3 +948,29 @@ def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> 
         for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
     }
     assert ("capability", "bad") not in paths
+
+
+async def test_resolves_false_on_unparseable_stored_module(session_factory) -> None:
+    # A stored module that no longer parses must make resolves() return False
+    # (→ 409 on a write), never raise (→ 500). Regression guard: _sdk_inputs
+    # re-parses stored modules and must be inside resolves()' try.
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        # Valid YAML, but a list — not a valid AgentPolicy (model_validate raises).
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="- not\n- a\n- policy\n",
+                content_hash="x",
+            )
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["broken"]})
+        await s.commit()
+        assert await pm.resolves(s, proj.id) is False  # must not raise
