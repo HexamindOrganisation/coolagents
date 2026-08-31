@@ -138,6 +138,24 @@ def test_validate_reports_constraint_error_in_default_policy(
     assert "no recognised operator" in err
 
 
+def test_validate_reports_constraint_error_at_the_policy_level(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A policy-level constraint has no tool of its own, so it is reported
+    under ``<policy>`` — same friendly localization as ``<default>``, instead
+    of a raw schema ValidationError."""
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "version: 1\nroles:\n  default:\n    constraints:\n      - args.amount ~~ 50\n",
+        encoding="utf-8",
+    )
+    rc = _main_validate(_ns(source=str(bad)))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "default → <policy>" in err
+    assert "no recognised operator" in err
+
+
 def test_validate_catches_undefined_const_like_build(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
