@@ -109,6 +109,35 @@ async def test_when_an_insert_fails_then_whole_batch_retried_and_committed_once(
     assert consumer.commits == 1
 
 
+async def test_when_version_resolve_fails_then_retried_and_committed(
+    monkeypatch, make_job
+) -> None:
+    """Postgres gets the same halt-with-backoff posture as ClickHouse and the
+    DLQ: a transient failure retries inside the cycle instead of escaping
+    run() into a backoff-free restart loop."""
+    import hexgate_api.jobs.enricher.consumer as consumer_mod
+
+    job, clickhouse, consumer, producer, calls = make_job()
+    attempts = 0
+
+    async def _flaky_resolve(pairs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ConnectionError("pool exhausted")
+        return {pair: "" for pair in pairs}
+
+    monkeypatch.setattr(consumer_mod, "resolve_versions", _flaky_resolve)
+
+    await job._process_poll(
+        [_record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])])]
+    )
+
+    assert attempts == 2
+    assert calls == ["insert", "commit"]  # resolve retried, then a normal cycle
+    assert consumer.commits == 1
+
+
 async def test_when_one_span_is_invalid_then_siblings_insert_and_dlq_receives_it(
     make_job,
 ) -> None:

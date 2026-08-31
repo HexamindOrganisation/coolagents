@@ -279,9 +279,18 @@ class EnricherJob:
                 seen_event_ids.add((project_id, event.event_id))
                 events.append((event, project_id))
 
-        versions = await resolve_versions(
-            {(project_id, event.agent_name) for event, project_id in events}
-        )
+        # Postgres is infra exactly like ClickHouse and the DLQ below: a
+        # connection failure or exhausted pool halts this partition with
+        # backoff instead of escaping run() into a restart loop.
+        pairs = {(project_id, event.agent_name) for event, project_id in events}
+        versions: dict[tuple[str, str], str] = {}
+
+        async def _resolve() -> None:
+            nonlocal versions
+            versions = await resolve_versions(pairs)
+
+        if not await self._retry_until_acked(_resolve, "agent version resolve"):
+            return
         decisions = [
             BatchItem(
                 event,
