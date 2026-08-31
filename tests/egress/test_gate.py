@@ -104,3 +104,48 @@ async def test_approval_required_without_handler_denies() -> None:
     gate = Gate(_enforcer("approval_required"), _agent())
     result = await gate.check(connect_to_args("any.example.com", 443))
     assert not result.allowed
+
+
+# ---------------------------------------------------------------------------
+# run.* — egress sits above every run, and records nothing
+# ---------------------------------------------------------------------------
+
+
+async def test_egress_decision_records_no_run_facts() -> None:
+    """``egress_guard`` is one per process — the proxy mutates the global
+    HTTP_PROXY vars and refuses nesting, and ``Gate`` captures a single
+    HexgateContext at construction. So an egress decision is not inside any run
+    scope, and there is no correlation to put it in one: a tool's httpx call
+    reaches the proxy as a TCP connection carrying no invocation identifier.
+
+    Pinned as behaviour so a later attempt to attribute egress to a run starts
+    from a red test rather than a silent semantic change.
+    """
+    from hexgate.runtime.run_facts import run_scope
+
+    gate = Gate(_enforcer("allow"), _agent())
+
+    with run_scope("a") as facts:
+        result = await gate.check(connect_to_args("ok.example.com", 443))
+
+    assert result.allowed
+    assert (facts.tool_calls, facts.denials, facts.approvals, facts.errors) == (
+        0,
+        0,
+        0,
+        0,
+    )
+
+
+async def test_egress_run_constraint_reads_the_detached_zeros() -> None:
+    """The other half of §0.3: because the decision happens outside a run, a
+    counter cap on an egress policy reads zeros and therefore *permits*. That is
+    the deliberate fail-open on an unattributable boundary — a fail-closed
+    reading would brick every egress request the moment a run.* cap appeared in
+    a shared default policy."""
+    gate = Gate(_enforcer("allow", ["run.tool_calls < 1"]), _agent())
+
+    result = await gate.check(connect_to_args("ok.example.com", 443))
+
+    assert result.allowed
+    assert result.decision.outcome.value == "allow"

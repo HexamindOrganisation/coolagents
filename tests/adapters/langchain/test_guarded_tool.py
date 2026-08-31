@@ -364,3 +364,76 @@ async def test_error_payload_omits_role_on_deny() -> None:
 
     assert "role" not in result["error"]
     assert "user_roles" not in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# run.* — the circuit breaker, end to end through a real adapter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_tool_call_cap_latches_after_its_budget() -> None:
+    """The acceptance test for the whole feature.
+
+    A policy caps the run at three tool calls; the agent wants five. Calls 1-3
+    execute, 4-5 are refused, and the reason names the constraint the operator
+    wrote — so "why did my agent stop?" is answerable from the deny alone.
+
+    The cap *latches*: ``run.tool_calls`` only ever increases, so once ``< 3``
+    is false it stays false. That is what makes it a circuit breaker rather
+    than a gate that flaps back open.
+    """
+    from hexgate.runtime.run_facts import run_scope
+
+    guarded = GuardedTool.wrap(
+        _make_async_tool(),
+        enforcer=_enforcer(
+            {
+                "default_policy": {"mode": "deny"},
+                "tools": {
+                    "echo": {"mode": "allow", "constraints": ["run.tool_calls < 3"]}
+                },
+            }
+        ),
+    )
+
+    with run_scope("a") as facts:
+        results = [await guarded._arun(text=str(n)) for n in range(5)]
+
+    executed = [r for r in results if not isinstance(r, dict)]
+    refused = [r for r in results if isinstance(r, dict)]
+
+    assert len(executed) == 3
+    assert len(refused) == 2
+    assert facts.tool_calls == 3
+    assert all("run.tool_calls < 3" in r["error"]["message"] for r in refused)
+    # Denied calls did not consume the budget they were refused by.
+    assert facts.denials == 2
+
+
+@pytest.mark.asyncio
+async def test_run_per_tool_cap_is_tool_name_free() -> None:
+    """``run.calls_of_this_tool`` caps each tool separately without naming any
+    of them — which is what makes it usable against MCP servers whose tool set
+    is not known when the policy is written."""
+    from hexgate.runtime.run_facts import run_scope
+
+    spec = {
+        "default_policy": {
+            "mode": "allow",
+            "constraints": ["run.calls_of_this_tool < 2"],
+        }
+    }
+    enforcer = _enforcer(spec)
+    echo = GuardedTool.wrap(_make_async_tool("echo"), enforcer=enforcer)
+    other = GuardedTool.wrap(_make_async_tool("other"), enforcer=enforcer)
+
+    with run_scope("a") as facts:
+        assert not isinstance(await echo._arun(text="1"), dict)
+        assert not isinstance(await echo._arun(text="2"), dict)
+        assert isinstance(await echo._arun(text="3"), dict)  # echo is spent...
+        assert not isinstance(await other._arun(text="1"), dict)  # ...other is not
+
+    assert facts.tool_calls == 3
+    assert facts.as_namespace("echo")["calls_of_this_tool"] == 2
+    assert facts.as_namespace("other")["calls_of_this_tool"] == 1
