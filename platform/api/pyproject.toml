@@ -56,6 +56,12 @@ dev = [
     "ruff>=0.8",
 ]
 
+[tool.ruff.lint]
+# Self-contained so ruff does not inherit the repo-root config. The SDK's root
+# pyproject enables isort (I); platform/api keeps ruff's default rules for now
+# (its own isort pass is a follow-up), and declaring any [tool.ruff] table here
+# stops config inheritance from the root.
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
