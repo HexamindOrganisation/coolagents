@@ -179,19 +179,24 @@ async def api_update_agent(
     session: AsyncSession = Depends(get_session),
 ) -> AgentRead:
     from hexgate_api.core.keystore import keystore
+    from hexgate_api.core.locks import project_lock
 
     await ensure_default_project(session)
-    agent = await update_agent(
-        session,
-        project_id,
-        name,
-        agent_yaml=body.agent_yaml,
-        policy_yaml=body.policy_yaml,
-        system_md=body.system_md,
-        # Compile + sign the policy into a WASM bundle at save time, using
-        # the platform's root key (same key that signs biscuits).
-        sign=keystore.sign,
-    )
+    # Hold the project lock: this compiles + writes a bundle, so it must not
+    # interleave with recompile_project (a concurrent policy write) and commit
+    # out of order. See core.locks.
+    async with project_lock(project_id):
+        agent = await update_agent(
+            session,
+            project_id,
+            name,
+            agent_yaml=body.agent_yaml,
+            policy_yaml=body.policy_yaml,
+            system_md=body.system_md,
+            # Compile + sign the policy into a WASM bundle at save time, using
+            # the platform's root key (same key that signs biscuits).
+            sign=keystore.sign,
+        )
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
     return _agent_read(agent)
@@ -348,10 +353,14 @@ async def api_register_agent(
     edits are preserved.
     """
     from hexgate_api.core.keystore import keystore
+    from hexgate_api.core.locks import project_lock
 
-    version, created = await register_manifest(
-        session, project_id, body.manifest, sign=keystore.sign
-    )
+    # Hold the project lock: a first-time register compiles + writes a bundle,
+    # so it must not interleave with recompile_project and commit out of order.
+    async with project_lock(project_id):
+        version, created = await register_manifest(
+            session, project_id, body.manifest, sign=keystore.sign
+        )
     response.status_code = 201 if created else 200
     return RegisterAgentResponse(
         agent_id=version.agent_id,

@@ -105,6 +105,17 @@ async def get_module_hash(
     return row.content_hash if row is not None else None
 
 
+async def get_module_peek(
+    session: AsyncSession, project_id: str, tier: str, path: str
+) -> tuple[str | None, str | None]:
+    """``(content, content_hash)`` of the stored module, or ``(None, None)``.
+
+    One read, so a caller can both detect a real change (compare the hash) and
+    restore the prior content if an edit turns out to break the project."""
+    row = await _get_module(session, project_id, tier, path)
+    return (row.content, row.content_hash) if row is not None else (None, None)
+
+
 async def upsert_module(
     session: AsyncSession,
     *,
@@ -297,26 +308,32 @@ def _to_module_content(row: PolicyModule):
     )
 
 
-async def _sdk_inputs(session: AsyncSession, project_id: str):
+def _to_role_matrix(matrix: RoleMatrixJson):
+    """The stored JSON matrix (``role -> agent -> [caps]``) → the SDK's RoleMatrix
+    (AgentBinding cells), or ``None`` when empty.
+
+    No role bindings maps to ``None``, not ``{}``: the SDK reads ``None`` as "no
+    roles, one default importing every capability" (the all-compose behaviour the
+    local ``hexgate policy resolve`` and docs/adr/R-POL-001 document), whereas
+    ``{}`` is a present-but-empty binding that fail-closes. The platform has no
+    typo-able roles file, so "no bindings" is the no-roles case, not the empty one.
+    """
     from hexgate.security import AgentBinding
 
-    rows = await list_modules(session, project_id)
-    boundaries = [_to_module_content(r) for r in rows if r.tier == "boundary"]
-    capabilities = [_to_module_content(r) for r in rows if r.tier == "capability"]
-    # Convert the stored JSON matrix into the SDK's RoleMatrix (AgentBinding cells).
-    # No role bindings maps to None, not {}: the SDK reads None as "no roles, one
-    # default importing every capability" (the all-compose behaviour the local
-    # `hexgate policy resolve` and docs/adr/R-POL-001 document), whereas {} is a
-    # present-but-empty binding that fail-closes. The platform has no typo-able
-    # roles file, so "no bindings" is the no-roles case, not the empty one.
-    matrix = await get_roles(session, project_id)
-    roles = {
+    return {
         role: {
             agent: AgentBinding(capabilities=tuple(caps))
             for agent, caps in cells.items()
         }
         for role, cells in matrix.items()
     } or None
+
+
+async def _sdk_inputs(session: AsyncSession, project_id: str):
+    rows = await list_modules(session, project_id)
+    boundaries = [_to_module_content(r) for r in rows if r.tier == "boundary"]
+    capabilities = [_to_module_content(r) for r in rows if r.tier == "capability"]
+    roles = _to_role_matrix(await get_roles(session, project_id))
     return boundaries, capabilities, roles
 
 
@@ -364,17 +381,12 @@ def compose_error_types() -> tuple[type[BaseException], ...]:
     )
 
 
-async def resolves(session: AsyncSession, project_id: str) -> bool:
-    """Whether the project's modules compose into a valid policy for EVERY agent.
-
-    A cheap, opa-free precondition for accepting a policy write: ``True`` only if
-    every agent column resolves (not just ``"*"``), so a named-agent cell that
-    imports an unknown capability is rejected at write time rather than accepted
-    and then silently failing to compile. Resolves only (no YAML serialization) —
-    it needs the resolution not to raise, not the bytes."""
+def _resolves_with(boundaries, capabilities, roles) -> bool:
+    """Whether ``boundaries + capabilities`` compose for EVERY agent column of
+    ``roles`` (not just ``"*"``, so a named-agent cell importing an unknown
+    capability is caught). Resolves only — no YAML serialization."""
     from hexgate.security import resolve_for_project
 
-    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
     agents = {DEFAULT_AGENT}
     if roles:
         agents |= {agent for cells in roles.values() for agent in cells}
@@ -384,6 +396,33 @@ async def resolves(session: AsyncSession, project_id: str) -> bool:
         return True
     except compose_error_types():
         return False
+
+
+def normalize_roles(
+    roles: RoleMatrixJson | dict[str, list[str]],
+) -> RoleMatrixJson:
+    """A flat-or-matrix role binding → the matrix JSON shape (flat → ``"*"``)."""
+    return {role: _normalize_cell(cells) for role, cells in roles.items()}
+
+
+async def resolves(session: AsyncSession, project_id: str) -> bool:
+    """Whether the project's STORED modules + bindings compose for every agent.
+
+    A cheap, opa-free precondition for accepting a write that edits a MODULE
+    (the bindings are already stored). ``True`` only if every agent column
+    resolves."""
+    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    return _resolves_with(boundaries, capabilities, roles)
+
+
+async def resolves_proposed(
+    session: AsyncSession, project_id: str, proposed: RoleMatrixJson
+) -> bool:
+    """Whether the STORED modules compose with the PROPOSED role bindings, for
+    every agent — validated in memory **before** writing, so an invalid binding
+    is never briefly visible via a concurrent GET and no rollback is needed."""
+    boundaries, capabilities, _stored = await _sdk_inputs(session, project_id)
+    return _resolves_with(boundaries, capabilities, _to_role_matrix(proposed))
 
 
 # --- enforcement integration (see docs/adr/R-POL-002) ------------------------

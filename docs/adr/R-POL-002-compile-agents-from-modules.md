@@ -8,7 +8,7 @@
 A project is **modular** iff it has at least one role binding. Follows from R-POL-001; this ADR covers how a modular project's agents are enforced.
 
 - A modular agent's signed bundle MUST be compiled from the project's *resolved* role-keyed policy (`resolve` → inline-`roles:` YAML → `build_signed_bundle`), not from `agent.policy_yaml`. A classic project (no bindings) MUST keep compiling from `policy_yaml`, unchanged.
-- Editing a module or a role binding MUST recompile every agent in the project (fan-out). The project resolves once; the single bundle is reused for all its agents (they are identical until agent-scoped modules exist).
+- Editing a module or a role binding MUST recompile every agent in the project (fan-out). Each agent is resolved for its own column of the `(role, agent)` matrix and compiled to its **own** bundle; agents that resolve to identical policy share a single `opa` compile (memoized). *(This superseded the original single-shared-bundle design once the `(role, agent)` matrix landed — see `agent-policy-dimension-design.md`.)*
 - A recompile that can't resolve, or resolves but can't compile (e.g. `opa` absent), MUST leave existing bundles untouched. A broken or work-in-progress edit MUST NOT blank agents that were working.
 - Modular MUST be inferred from the presence of a role binding. There MUST NOT be a `policy_mode` column in this phase.
 - The serve path MUST NOT change: the bundle stays on the `Agent` row and the SDK fetches it as today.
@@ -19,14 +19,16 @@ Enforcement has to come from the composed modules, or the whole module system is
 
 Inferring modular from a role binding, rather than adding a `policy_mode` column, is deliberate on two counts. First, it needs no migration: the platform has no Alembic, and `create_all` can add tables but not columns to a populated DB, so a column would force that decision now for no functional gain. Second, binding a role is the meaningful opt-in — you have decided which roles map to which capabilities. Uploading a capability or boundary module alone must *not* flip enforcement, or dropping in a single boundary would resolve every agent to a deny-all default and brick them.
 
-Fan-out is required because the policy is project-level: one module edit changes every agent's effective policy, so every agent must recompile. Reusing one resolved bundle for all of them keeps that to a single `opa` call per edit.
+Fan-out is required because the policy is project-level: one module edit changes every agent's effective policy, so every agent must recompile. Each agent resolves its own `(role, agent)` column into its own bundle; agents whose columns resolve identically are compiled once (memoized), so a project whose agents all share the generic `*` column still pays a single `opa` call per edit.
 
-Leaving bundles untouched on an unresolvable edit is the safety property. The alternative — clearing bundles when the project doesn't resolve — turns a typo in the dashboard into an outage across every agent in the project. Failing safe means the last good policy keeps enforcing while `check` surfaces the problem. This is why the write endpoints do not reject an unresolvable edit: the store can hold a work-in-progress state, but only a clean resolve replaces what is enforced.
+Leaving *compiled bundles* untouched when an edit can't **build** (e.g. `opa` absent) is the safety property: clearing bundles on a transient build failure would turn it into an enforcement outage across every agent. Failing safe means the last good bundle keeps enforcing while `check` surfaces the problem.
+
+A later refinement tightened this: a write whose result is **semantically unresolvable** (a role importing an unknown capability, a capability with a `deny`) is now **rejected at write time** (409), not silently stored. The roles PUT validates the proposed bindings *before* writing; the module PUT/DELETE reject and roll back an edit that breaks resolution. So the store no longer holds an uncomposable state that keeps the old bundle with no signal — only a *transient* build failure (opa down) leaves the last-good bundle in place.
 
 ## Consequences
 
 - No schema change, no migration. Additive code only.
-- All modular agents in a project share one bundle (redundant bytes on each row). Deduping into a per-project bundle is a later optimization, not needed for correctness.
+- Each modular agent compiles to its own bundle from its `(role, agent)` column; agents that resolve to the same policy dedupe the `opa` compile (memoized). *(Originally all agents shared one bundle; the `(role, agent)` matrix made bundles per-agent so each carries only its own authority.)*
 - For a modular agent, `agent.policy_yaml` is no longer what's enforced (the resolved modules are). The dashboard must edit modules, not per-agent `policy_yaml`, for modular projects.
 - A saved-but-unresolvable project keeps enforcing its last good bundle; the divergence is visible through `check`, never silent.
 

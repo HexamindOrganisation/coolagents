@@ -233,8 +233,22 @@ async def recompile_project(
             session.add(agent)
             count += 1
     else:
+        from hexgate_api.features.agents.compiler import DENY_ALL_POLICY_YAML
+
         compiled: dict[str, tuple[bytes, str, bytes] | None] = {}
         for agent in agents:
+            # An agent registered while the project was modular kept a deny-all
+            # policy_yaml as its fail-closed fallback; on a revert to classic that
+            # fallback becomes the ENFORCED policy. Fail-closed (safe), but the
+            # operator should re-author it — surface it rather than silently
+            # compiling deny-all. (See docs/adr/R-POL-002.)
+            if agent.policy_yaml == DENY_ALL_POLICY_YAML:
+                logger.warning(
+                    "agent %s in project %s reverted to classic with a deny-all "
+                    "fallback policy; edit its policy to grant tools",
+                    agent.name,
+                    project_id,
+                )
             # Classic: each agent from its own policy (memoized per distinct
             # policy). A policy that no longer compiles nulls the stale bundle
             # (fall back to pydantic), never keeps a wrong one.

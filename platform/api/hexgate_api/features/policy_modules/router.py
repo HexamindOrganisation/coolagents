@@ -104,7 +104,9 @@ async def api_put_policy_module(
     # Serialize the write + recompile per project so overlapping edits can't
     # commit bundles out of order (see core.locks).
     async with project_lock(project_id):
-        prev_hash = await service.get_module_hash(session, project_id, tier, path)
+        prev_content, prev_hash = await service.get_module_peek(
+            session, project_id, tier, path
+        )
         try:
             row = await service.upsert_module(
                 session,
@@ -121,6 +123,30 @@ async def api_put_policy_module(
         if row.content_hash != prev_hash and await service.is_modular(
             session, project_id
         ):
+            # An edit that breaks composition (e.g. a capability with a deny, which
+            # the linker rejects) must not be accepted silently: agents would keep
+            # the old bundle while the store holds an uncomposable module. Reject
+            # and restore the previous content (or delete a newly-created module).
+            if not await service.resolves(session, project_id):
+                if prev_content is None:
+                    await service.delete_module(
+                        session, project_id=project_id, tier=tier, path=path
+                    )
+                else:
+                    await service.upsert_module(
+                        session,
+                        project_id=project_id,
+                        tier=tier,
+                        path=path,
+                        content=prev_content,
+                    )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"module {path!r} would break the project's policy "
+                        "resolution; not saved (see /policy/check for details)"
+                    ),
+                )
             await _recompile_project_agents(session, project_id)
     return _module_read(row)
 
@@ -188,24 +214,23 @@ async def api_set_policy_roles(
     # outside the lock could wrongly skip a needed recompile). See core.locks.
     async with project_lock(project_id):
         before = await service.get_roles(session, project_id)
-        roles = await service.set_roles(
-            session, project_id=project_id, roles=body.roles
-        )
+        proposed = service.normalize_roles(body.roles)
         # Idempotent re-save (order-insensitive): nothing changed, so skip the
-        # resolve + opa compile.
-        if _norm(roles) == _norm(before):
-            return RoleBindingsRead(roles=roles)
+        # write + resolve + opa compile.
+        if _norm(proposed) == _norm(before):
+            return RoleBindingsRead(roles=before)
 
-        now_modular = bool(roles)
+        now_modular = bool(proposed)
         was_modular = bool(before)
 
-        # A modular project whose bindings don't resolve (a role importing an
-        # unknown capability, a link error) must not be saved: is_modular would
-        # flip True while agents keep stale/absent enforcement, with no way to
-        # notice. Reject and restore the previous bindings so the project stays
-        # in a resolvable state.
-        if now_modular and not await service.resolves(session, project_id):
-            await service.set_roles(session, project_id=project_id, roles=before)
+        # Validate the PROPOSED bindings BEFORE writing them: a modular project
+        # whose bindings don't resolve (a role importing an unknown capability, a
+        # link error) must not be saved. Validating in memory first means an
+        # invalid binding is never briefly visible to a concurrent GET, and no
+        # rollback of the store is needed.
+        if now_modular and not await service.resolves_proposed(
+            session, project_id, proposed
+        ):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -213,6 +238,8 @@ async def api_set_policy_roles(
                     "(see /policy/check for details)"
                 ),
             )
+
+        roles = await service.set_roles(session, project_id=project_id, roles=proposed)
 
         if now_modular and not was_modular:
             # classic→modular flip: agents currently hold policy_yaml-compiled
