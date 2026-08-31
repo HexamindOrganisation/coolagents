@@ -68,16 +68,28 @@ def warn_if_admission_unenforced(
     )
 
 
-class AgentNotAdmittedError(Exception):
+class AgentNotAdmittedError(RuntimeError):
     """Raised at run entry when admission policy refuses this caller.
 
-    Carries the :class:`Decision` so the caller can inspect the reason; the
-    message is the model-safe rendering (arguments and attributes withheld).
+    Subclasses ``RuntimeError`` to join the other hexgate refusals
+    (:class:`~hexgate.security.errors.PolicyDeniedError`,
+    :class:`~hexgate.security.errors.ApprovalRequiredError`,
+    :class:`~hexgate.security.errors.AgentBannedError`), so ``except RuntimeError``
+    catches this one too. Carries the :class:`Decision` so the caller can inspect
+    the reason.
+
+    Admission is caller-facing (it fires before the model runs, so there is no
+    tool result to render into), so the message is admission-specific rather than
+    the model-facing tool rendering: it never claims a "tool" was involved.
     """
 
     def __init__(self, decision: Decision) -> None:
         self.decision = decision
-        super().__init__(decision.as_error_message())
+        reason = f": {decision.reason}" if decision.reason else ""
+        super().__init__(
+            f"admission denied for agent {decision.agent_name!r}; this caller may "
+            f"not run it{reason}. The run did not start."
+        )
 
 
 class AgentGate:

@@ -364,3 +364,30 @@ def test_enforce_policy_none_clears_a_prior_admission_gate() -> None:
     assert guarded._agent_gate is not None
     unguarded = guarded.enforce_policy(None)
     assert unguarded._agent_gate is None
+
+
+@pytest.mark.asyncio
+async def test_apply_approval_handler_rewires_admission_gate() -> None:
+    # Regression: _apply_approval_handler must rebuild the admission gate with the
+    # handler, not only the tools. Without it, an `admission: approval_required`
+    # policy always fails closed on a CLI/registered agent even though the caller
+    # wired an interactive handler (the gate keeps its original handler=None).
+    from hexgate.agents import loader
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.agent_gate import AgentNotAdmittedError
+
+    agent, _ = factory.create_agent(model="openai:gpt-5.4", tools=[echo], name="a")
+    guarded = agent.enforce_policy(
+        AgentPolicy(admission=BaseToolPolicy(mode="approval_required"))
+    )
+    ctx = HexgateContext(user_id="u", user_roles=["support"])
+
+    # No handler wired yet → approval-required admission fails closed.
+    async with ctx:
+        with pytest.raises(AgentNotAdmittedError):
+            await guarded._agent_gate.check_admission_async()
+
+    # Apply the CLI handler → the gate is rebuilt with it → admission is approvable.
+    handled = loader._apply_approval_handler(guarded, approval_handler=True)
+    async with ctx:
+        await handled._agent_gate.check_admission_async()  # does not raise

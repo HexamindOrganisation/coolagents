@@ -383,6 +383,7 @@ async def test_hexgate_agent_astream_raises_before_first_event_when_banned() -> 
         with pytest.raises(AgentBannedError):
             async for _ in agent.astream_events({}, {}, version="v2"):
                 pass
+    assert graph.astream_event_calls == []  # banned → the graph never streamed
 
 
 def _admission_gate(mode: str):
