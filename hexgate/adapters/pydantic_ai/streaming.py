@@ -87,6 +87,9 @@ class _PydanticRunAccumulator(StreamAccumulator):
         outcome = getattr(result, "outcome", None)
         if outcome is not None:  # ToolReturnPart — explicit success/failed/denied
             output = getattr(result, "content", None)
+            # A 'denied' outcome collapses to FAILED: the StreamEvent contract
+            # has no dedicated DENIED tool state today, so approval/policy
+            # denials render like a failure (fidelity limit, not a bug).
             state = (
                 ToolCallState.COMPLETED
                 if outcome == "success"
@@ -115,6 +118,11 @@ class _PydanticRunAccumulator(StreamAccumulator):
             )
         if kind == "function_tool_result":
             return self._tool_result(getattr(event, "result", None))
+        # Builtin/hosted-tool events (web search, code execution) are not
+        # rendered: they run provider-side, aren't hexgate-enforced, and their
+        # event shape is in flux (deprecated ``builtin_tool_*`` events vs. newer
+        # ``BuiltinToolCallPart`` parts). Only ``@agent.tool`` function calls,
+        # which go through the policy enforcer, are surfaced.
         return []
 
 
