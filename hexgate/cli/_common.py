@@ -254,10 +254,24 @@ def build_runtime_from_local_agent(
             agent_name=agent_name,
             approval_handler=approval_handler,
         )
+    if manifest.framework == AgentFramework.GOOGLE:
+        return _build_google_serve_runtime(
+            settings,
+            agent_obj=agent_obj,
+            agent_name=agent_name,
+            approval_handler=approval_handler,
+        )
+    if manifest.framework == AgentFramework.PYDANTIC_AI:
+        return _build_pydantic_serve_runtime(
+            settings,
+            agent_obj=agent_obj,
+            agent_name=agent_name,
+            approval_handler=approval_handler,
+        )
+    # Unreachable in practice — create_manifest only yields the frameworks above
+    # (raw LangGraph is rejected there). Kept as a defensive guard.
     raise NotImplementedError(
-        f"hexgate serve does not yet support {manifest.framework.value} agents "
-        "— supported frameworks are native (hexgate) and OpenAI. "
-        "Google ADK and Pydantic AI serve support is planned."
+        f"hexgate serve does not support {manifest.framework.value} agents"
     )
 
 
@@ -392,6 +406,78 @@ def _build_openai_serve_runtime(
             for t in getattr(agent_obj, "tools", [])
         },
         astream_normalized=_astream,
+    )
+
+
+def _serve_runtime_over_driver(
+    *, agent_obj: Any, agent_name: str, settings: Settings, driver: Any
+) -> AgentRuntime:
+    """Assemble the ``AgentRuntime`` envelope for a driver-backed framework.
+
+    Google and Pydantic each own a stateful driver (ADK session / pydantic
+    history) whose ``astream`` is the streaming seam; the runtime envelope is
+    otherwise identical to the OpenAI path.
+    """
+    from hexgate.tracing.langfuse import get_langfuse_handler
+
+    handler = get_langfuse_handler(
+        session_id="hexgate-serve",
+        tags=["hexgate", "hexgate-serve", agent_name],
+    )
+    return AgentRuntime(
+        agent=agent_obj,
+        handler=handler,
+        agent_name=agent_name,
+        agent_source="hexgate",
+        model=settings.model,
+        tools_by_name={
+            getattr(t, "name", getattr(t, "__name__", "tool")): t
+            for t in getattr(agent_obj, "tools", [])
+        },
+        astream_normalized=driver.astream,
+    )
+
+
+def _build_google_serve_runtime(
+    settings: Settings,
+    *,
+    agent_obj: Any,
+    agent_name: str,
+    approval_handler: ApprovalHandler | None,
+) -> AgentRuntime:
+    """Build the serve runtime for a Google ADK agent.
+
+    The ``GoogleServeDriver`` owns the ADK runner (which fetches + hot-reloads
+    its own policy binding and enforces the ban gate) and the in-memory session
+    that carries conversation history — so no ``enforce_policy`` here.
+    """
+    from hexgate.adapters.google.streaming import GoogleServeDriver
+
+    driver = GoogleServeDriver(
+        agent=agent_obj, app_name=agent_name, approval_handler=approval_handler
+    )
+    return _serve_runtime_over_driver(
+        agent_obj=agent_obj, agent_name=agent_name, settings=settings, driver=driver
+    )
+
+
+def _build_pydantic_serve_runtime(
+    settings: Settings,
+    *,
+    agent_obj: Any,
+    agent_name: str,
+    approval_handler: ApprovalHandler | None,
+) -> AgentRuntime:
+    """Build the serve runtime for a Pydantic AI agent.
+
+    ``wrap_pydantic_agent`` (inside the driver) resolves + refreshes the policy
+    binding and installs the ban gate, so no ``enforce_policy`` here.
+    """
+    from hexgate.adapters.pydantic_ai.streaming import PydanticServeDriver
+
+    driver = PydanticServeDriver(agent=agent_obj, approval_handler=approval_handler)
+    return _serve_runtime_over_driver(
+        agent_obj=agent_obj, agent_name=agent_name, settings=settings, driver=driver
     )
 
 
