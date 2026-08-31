@@ -39,6 +39,13 @@ if TYPE_CHECKING:
 class _GoogleRunAccumulator(StreamAccumulator):
     """Map ADK ``Event``s onto the shared accumulator."""
 
+    def __init__(self, query: str) -> None:
+        super().__init__(query)
+        # Whether any partial (streamed) text/reasoning was seen this run, so the
+        # non-partial aggregate can be used as a fallback when nothing streamed.
+        self._text_streamed = False
+        self._reasoning_streamed = False
+
     def consume(self, event: Any) -> list[StreamEvent]:
         emitted: list[StreamEvent] = []
 
@@ -55,24 +62,25 @@ class _GoogleRunAccumulator(StreamAccumulator):
         # aggregate (complete call, stable id), mirroring ADK's own flow
         # ("skip partial function call events", base_llm_flow).
         if getattr(event, "partial", False):
-            content = getattr(event, "content", None)
-            for part in getattr(content, "parts", None) or []:
-                text = getattr(part, "text", None)
-                if not text:
-                    continue
-                if getattr(part, "thought", False):
+            for is_thought, text in self._text_parts(event):
+                if is_thought:
+                    self._reasoning_streamed = True
                     emitted.extend(
                         self.emit_delta("reasoning", BlockType.REASONING, text)
                     )
                 else:
+                    self._text_streamed = True
                     emitted.extend(self.emit_delta("text", BlockType.TEXT, text))
             return emitted
 
         get_calls = getattr(event, "get_function_calls", None)
         for call in (get_calls() if callable(get_calls) else None) or []:
+            # Pass the id as-is (None when empty) so the shared FIFO correlates
+            # id-less calls; never fall back to the tool name, which would make
+            # two calls to the same tool collide on one id.
             emitted.extend(
                 self.emit_tool_start(
-                    getattr(call, "id", None) or getattr(call, "name", None),
+                    getattr(call, "id", None),
                     getattr(call, "name", None) or "tool",
                     dict(getattr(call, "args", None) or {}),
                 )
@@ -82,12 +90,32 @@ class _GoogleRunAccumulator(StreamAccumulator):
         for response in (get_responses() if callable(get_responses) else None) or []:
             emitted.extend(
                 self.emit_tool_end(
-                    getattr(response, "id", None) or getattr(response, "name", None),
+                    getattr(response, "id", None),
                     getattr(response, "response", None),
                 )
             )
 
+        # Fallback: a turn whose text arrived only in the aggregate (no partial
+        # chunks, e.g. a short answer or non-progressive streaming) still needs
+        # to render, so emit aggregate text/reasoning we didn't already stream.
+        for is_thought, text in self._text_parts(event):
+            if is_thought and not self._reasoning_streamed:
+                emitted.extend(self.emit_delta("reasoning", BlockType.REASONING, text))
+            elif not is_thought and not self._text_streamed:
+                emitted.extend(self.emit_delta("text", BlockType.TEXT, text))
+
         return emitted
+
+    @staticmethod
+    def _text_parts(event: Any) -> list[tuple[bool, str]]:
+        """Return ``(is_thought, text)`` for each non-empty text part."""
+        content = getattr(event, "content", None)
+        parts: list[tuple[bool, str]] = []
+        for part in getattr(content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                parts.append((bool(getattr(part, "thought", False)), text))
+        return parts
 
 
 async def normalize_google_events(
@@ -131,34 +159,28 @@ class GoogleServeDriver:
         self._session_id: str | None = None
         self._created: set[tuple[str, str]] = set()
 
-    async def _ensure_session(
-        self, user_id: str, agent_input: Any, explicit: str | None
-    ) -> str:
-        """Return the ADK session id to run under, creating it if new.
+    async def _ensure_session(self, user_id: str, agent_input: Any) -> str:
+        """Return the internal ADK session id, minting a fresh one at
+        conversation start.
 
-        When the Playground supplies a ``session_id`` (via attenuation) it is
-        honored as-is, so the same id lands in ADK and in the audit row and a
-        conversation stays correlatable across frameworks. Otherwise a fresh id
-        is minted at conversation start (``len(agent_input) <= 1`` — the first
-        message, including right after a dashboard reset clears ChatState),
-        resetting ADK memory in lockstep with the UI; the previous minted
+        This id keys ADK's conversation store only; it is deliberately kept out
+        of the caller-facing ``HexgateContext.session_id`` (see :meth:`astream`).
+        ``len(agent_input) <= 1`` marks the first message of a conversation
+        (including right after a dashboard reset clears ChatState), so a new id
+        there resets ADK memory in lockstep with the UI, and the previous
         session is evicted so a long-lived process doesn't accumulate sessions.
         """
-        if explicit is not None:
-            session_id = explicit
-        else:
-            turns = len(agent_input) if isinstance(agent_input, (list, tuple)) else 0
-            if self._session_id is None or turns <= 1:
-                await self._evict_current_session()
-                self._session_id = str(uuid4())
-            session_id = self._session_id
-        key = (user_id, session_id)
+        turns = len(agent_input) if isinstance(agent_input, (list, tuple)) else 0
+        if self._session_id is None or turns <= 1:
+            await self._evict_current_session()
+            self._session_id = str(uuid4())
+        key = (user_id, self._session_id)
         if key not in self._created:
             await self._session_service.create_session(
-                app_name=self._app_name, user_id=user_id, session_id=session_id
+                app_name=self._app_name, user_id=user_id, session_id=self._session_id
             )
             self._created.add(key)
-        return session_id
+        return self._session_id
 
     async def _evict_current_session(self) -> None:
         """Delete the current conversation's session(s) from the ADK store."""
@@ -181,17 +203,17 @@ class GoogleServeDriver:
         from google.adk.agents.run_config import RunConfig, StreamingMode
         from google.genai import types
 
-        # ADK needs a non-empty user id; normalize identity + guarantee a
-        # session id, carrying the caller's role/attributes/ttl through for
-        # policy + attenuation. A Playground-supplied session_id is honored so
-        # audit rows stay correlatable; otherwise one is minted per conversation.
+        # The ADK session (conversation memory) is managed internally and kept
+        # separate from the caller-facing context: the caller's own session_id
+        # passes through to audit unchanged (correlatable across frameworks),
+        # while the minted ADK id is handed to run_async via its own parameter.
+        # Role/attributes/ttl carry through for policy + attenuation.
         user_id = ctx.user_id if ctx and ctx.user_id else "serve"
-        explicit_session = ctx.session_id if ctx and ctx.session_id else None
-        session_id = await self._ensure_session(user_id, agent_input, explicit_session)
+        adk_session_id = await self._ensure_session(user_id, agent_input)
         run_ctx = HexgateContext(
             user_id=user_id,
             user_roles=list(ctx.user_roles) if ctx else [],
-            session_id=session_id,
+            session_id=ctx.session_id if ctx else None,
             ttl_seconds=ctx.ttl_seconds if ctx else None,
             attributes=dict(ctx.attributes) if ctx else {},
         )
@@ -201,6 +223,7 @@ class GoogleServeDriver:
             async for event in self._runner.run_async(
                 new_message=new_message,
                 hexgate_context=run_ctx,
+                session_id=adk_session_id,
                 run_config=RunConfig(streaming_mode=StreamingMode.SSE),
             ):
                 yield event

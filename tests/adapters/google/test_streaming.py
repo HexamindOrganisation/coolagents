@@ -93,14 +93,53 @@ async def test_function_call_becomes_tool_start() -> None:
     assert start.arguments == {"amount": 5}
 
 
-async def test_missing_call_id_falls_back_to_name() -> None:
+async def test_missing_call_id_correlates_via_fifo() -> None:
+    # An id-less call/response pair correlates through the shared FIFO (a
+    # synthesized id), not the tool name (which would collide across calls).
     out = await _collect(
         [_call(None, "lookup", {}), _response(None, "lookup", {"ok": True})]
     )
     start = next(e for e in out if isinstance(e, ToolStartEvent))
     end = next(e for e in out if isinstance(e, ToolEndEvent))
-    assert start.tool_id == "lookup"
-    assert end.tool_id == "lookup"  # correlated by name when id is absent
+    assert start.tool_id == end.tool_id
+    assert start.tool_name == "lookup"
+    assert end.tool_name == "lookup"
+
+
+async def test_two_idless_calls_to_same_tool_do_not_collide() -> None:
+    # Two id-less calls to the same tool in one aggregate must get distinct
+    # tool_ids (FIFO), not collide on the shared name.
+    out = await _collect(
+        [
+            _event(
+                calls=[
+                    SimpleNamespace(id=None, name="t", args={"n": 1}),
+                    SimpleNamespace(id=None, name="t", args={"n": 2}),
+                ]
+            ),
+            _event(
+                responses=[
+                    SimpleNamespace(id=None, name="t", response="a"),
+                    SimpleNamespace(id=None, name="t", response="b"),
+                ]
+            ),
+        ]
+    )
+    starts = [e for e in out if isinstance(e, ToolStartEvent)]
+    ends = [e for e in out if isinstance(e, ToolEndEvent)]
+    assert len({s.tool_id for s in starts}) == 2  # distinct, not collided
+    # FIFO pairs start[i] with end[i].
+    assert [s.tool_id for s in starts] == [e.tool_id for e in ends]
+
+
+async def test_aggregate_only_text_is_emitted() -> None:
+    # A turn whose text arrives only in the non-partial aggregate (no partial
+    # chunks) must still render.
+    out = await _collect([_text("the whole answer", partial=False)])
+    deltas = [e for e in out if isinstance(e, BlockDeltaEvent)]
+    assert [d.text for d in deltas] == ["the whole answer"]
+    run_end = next(e for e in out if isinstance(e, RunEndEvent))
+    assert run_end.result.message == "the whole answer"
 
 
 async def test_function_response_ok_false_marks_failed() -> None:
@@ -146,12 +185,12 @@ async def test_session_evicted_on_new_conversation(
 
     driver = GoogleServeDriver(agent=object(), app_name="app")
 
-    first = await driver._ensure_session("u", ["only-one"], None)  # turns<=1 → new
-    same = await driver._ensure_session("u", ["a", "b", "c"], None)  # continue
+    first = await driver._ensure_session("u", ["only-one"])  # turns<=1 → new
+    same = await driver._ensure_session("u", ["a", "b", "c"])  # continue
     assert same == first
     assert ("u", first) in driver._created
 
-    fresh = await driver._ensure_session("u", ["reset"], None)  # turns<=1 → new + evict
+    fresh = await driver._ensure_session("u", ["reset"])  # turns<=1 → new + evict
     assert fresh != first
     assert ("u", first) not in driver._created  # old one evicted
     assert ("u", fresh) in driver._created
@@ -170,22 +209,13 @@ async def test_partial_function_call_is_deduped() -> None:
     assert len(starts) == 1
 
 
-async def test_explicit_session_id_is_honored(monkeypatch: Any) -> None:
-    from hexgate.adapters.google.streaming import GoogleServeDriver
-
-    class _StubRunner:
-        def __init__(self, **_kw: Any) -> None:
-            pass
-
-    monkeypatch.setattr("hexgate.adapters.google.runner.HexgateRunner", _StubRunner)
-    driver = GoogleServeDriver(agent=object(), app_name="app")
-
-    sid = await driver._ensure_session("u", ["a", "b", "c"], "playground-sess")
-    assert sid == "playground-sess"  # honored, not minted
-    assert ("u", "playground-sess") in driver._created
-
-
-async def test_astream_carries_ttl_and_honors_session_id(monkeypatch: Any) -> None:
+async def test_astream_decouples_audit_session_from_adk_session(
+    monkeypatch: Any,
+) -> None:
+    # The caller's session_id + ttl pass through to the audit context unchanged,
+    # while the ADK session id is minted internally and handed to run_async via
+    # its own parameter (so audit stays correlatable and ADK memory is managed
+    # separately).
     from hexgate.adapters.google.streaming import GoogleServeDriver
     from hexgate.runtime import HexgateContext
 
@@ -196,9 +226,15 @@ async def test_astream_carries_ttl_and_honors_session_id(monkeypatch: Any) -> No
             pass
 
         async def run_async(
-            self, *, new_message: Any, hexgate_context: Any, **_k: Any
+            self,
+            *,
+            new_message: Any,
+            hexgate_context: Any,
+            session_id: Any = None,
+            **_k: Any,
         ) -> AsyncIterator[Any]:
             captured["ctx"] = hexgate_context
+            captured["adk_session_id"] = session_id
             if False:  # pragma: no cover — empty async generator
                 yield None
 
@@ -213,8 +249,10 @@ async def test_astream_carries_ttl_and_honors_session_id(monkeypatch: Any) -> No
     run_ctx = captured["ctx"]
     assert run_ctx.user_id == "alice"
     assert run_ctx.user_roles == ["billing"]
-    assert run_ctx.session_id == "sess-9"  # honored, not overwritten by an ADK uuid
+    assert run_ctx.session_id == "sess-9"  # caller's id → audit, unchanged
     assert run_ctx.ttl_seconds == 42  # carried through, not dropped
+    # ADK gets a minted id, distinct from the caller-facing session id.
+    assert captured["adk_session_id"] and captured["adk_session_id"] != "sess-9"
 
 
 async def test_full_sequence_brackets_run() -> None:
