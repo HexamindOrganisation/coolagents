@@ -11,7 +11,12 @@ import pytest
 from hexgate.tracing import semconv
 from hexgate_api.jobs.enricher.coerce import SpanRejected
 from hexgate_api.jobs.enricher.mapping import map_span
-from hexgate_api.schemas import BanEnforcementEvent, DecisionEvent, LlmInvocationEvent
+from hexgate_api.schemas import (
+    UINT32_MAX,
+    BanEnforcementEvent,
+    DecisionEvent,
+    LlmInvocationEvent,
+)
 from tests.jobs.enricher.conftest import (
     ban_attrs,
     decision_attrs,
@@ -102,6 +107,15 @@ def test_when_occurred_at_is_in_the_future_then_span_rejected() -> None:
             semconv.SCOPE_AUDIT, make_span(decision_attrs(), start_ns=future_ns), {}
         )
     assert exc.value.error_class == "out_of_window"
+
+
+def test_when_latency_exceeds_uint32_then_span_rejected() -> None:
+    # A UInt32-overflowing value (e.g. latency emitted in ns) must be rejected
+    # to the DLQ here, not fail permanently at ClickHouse insert time.
+    attrs = usage_attrs(**{semconv.LATENCY_MS: UINT32_MAX + 1})
+    with pytest.raises(SpanRejected) as exc:
+        map_span(semconv.SCOPE_USAGE, make_span(attrs), {})
+    assert exc.value.error_class == "validation"
 
 
 def test_when_tokens_arrive_as_strings_then_coerced_to_int() -> None:

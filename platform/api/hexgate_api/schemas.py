@@ -12,6 +12,9 @@ from pydantic import (
     model_validator,
 )
 
+# Ceiling for counters stored in ClickHouse UInt32 columns (schema.sql).
+UINT32_MAX = 2**32 - 1
+
 
 # ---------------------------------------------------------------------------
 # M3 Phase 4 — Organization wire shapes
@@ -538,9 +541,13 @@ class LlmInvocationEvent(AuditEnvelope):
     """One LLM invocation; mirrors the llm_invocation table."""
 
     model: str = Field(min_length=1, max_length=256)
-    input_tokens: int = Field(ge=0)
-    output_tokens: int = Field(ge=0)
-    latency_ms: int = Field(ge=0)
+    # The upper bound mirrors the UInt32 columns in schema.sql. Without it an
+    # over-range value (e.g. latency sent in ns) passes validation and only
+    # fails at insert time — a permanent ClickHouse error the enricher would
+    # retry forever instead of rejecting the span to the DLQ.
+    input_tokens: int = Field(ge=0, le=UINT32_MAX)
+    output_tokens: int = Field(ge=0, le=UINT32_MAX)
+    latency_ms: int = Field(ge=0, le=UINT32_MAX)
     status: str = Field(default="success", max_length=64)
     error_code: str = Field(default="", max_length=64)
 
