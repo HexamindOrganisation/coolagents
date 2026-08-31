@@ -111,35 +111,34 @@ class _FakeWebSocket:
 
 
 class _FakeRuntime:
-    """Runtime stand-in — what `_handle_message` reads off ``context.runtime``.
-
-    Records the ``(input, ctx, query)`` the serve loop threads into the
-    framework streaming seam. Post-refactor, serve's job is to parse
-    ``user_attenuation`` and hand the resulting context to the seam; opening
-    the HexgateContext scope is each framework closure's own responsibility.
-    """
+    """Runtime stand-in — what `_handle_message` reads off ``context.runtime``."""
 
     def __init__(self) -> None:
         self.agent_name = "fake-agent"
         self.agent = object()
         self.handler = object()
-        self.received: dict[str, Any] = {}
-
-    async def astream_normalized(self, agent_input: object, ctx: object, query: str):
-        self.received["input"] = agent_input
-        self.received["ctx"] = ctx
-        self.received["query"] = query
-        if False:
-            yield None  # pragma: no cover — empty async generator
 
 
 @pytest.mark.asyncio
-async def test_handle_message_chat_threads_attenuation_context_to_seam(
+async def test_handle_message_chat_with_attenuation_enters_user_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A chat payload with ``user_attenuation`` reaches the seam as a parsed context."""
-    runtime = _FakeRuntime()
-    context = ServeContext(runtime=runtime, state=ChatState(), api_key="")
+    """A chat payload with ``user_attenuation`` enters a HexgateContext scope around stream_agent."""
+    captured: dict[str, Any] = {"user_during_stream": None}
+
+    async def fake_stream_agent(
+        agent: object, handler: object, input: object, **kw: Any
+    ):
+        captured["user_during_stream"] = get_current_context()
+        if False:
+            yield None  # pragma: no cover
+
+    monkeypatch.setattr(serve, "stream_agent", fake_stream_agent)
+
+    # ``api_key`` is required on ServeContext post-Phase-6 (used to
+    # build the WS bearer subprotocol). _handle_message doesn't touch
+    # it, so a placeholder is fine for these unit-level tests.
+    context = ServeContext(runtime=_FakeRuntime(), state=ChatState(), api_key="")
     ws = _FakeWebSocket()
 
     await serve._handle_message(
@@ -155,37 +154,62 @@ async def test_handle_message_chat_threads_attenuation_context_to_seam(
         },
     )
 
-    ctx: HexgateContext | None = runtime.received["ctx"]
-    assert ctx is not None
-    assert ctx.user_id == "alice"
-    assert ctx.user_roles == ["billing"]
-    # The user's message is threaded as the query for the run-start event.
-    assert runtime.received["query"] == "refund 30"
-    # serve itself never opens a scope now — it stays clean.
+    captured_user: HexgateContext | None = captured["user_during_stream"]
+    assert captured_user is not None
+    assert captured_user.user_id == "alice"
+    assert captured_user.user_roles == ["billing"]
+
+    # After the handler returns the scope must be cleanly popped.
     assert get_current_context() is None
 
 
 @pytest.mark.asyncio
-async def test_handle_message_chat_without_attenuation_passes_none_context(
+async def test_handle_message_chat_without_attenuation_runs_with_no_user(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Messages without ``user_attenuation`` reach the seam with ``ctx=None``."""
-    runtime = _FakeRuntime()
-    context = ServeContext(runtime=runtime, state=ChatState(), api_key="")
+    """Backward-compat: messages without ``user_attenuation`` see no HexgateContext scope."""
+    captured: dict[str, Any] = {"user_during_stream": "sentinel"}
+
+    async def fake_stream_agent(
+        agent: object, handler: object, input: object, **kw: Any
+    ):
+        captured["user_during_stream"] = get_current_context()
+        if False:
+            yield None  # pragma: no cover
+
+    monkeypatch.setattr(serve, "stream_agent", fake_stream_agent)
+
+    # ``api_key`` is required on ServeContext post-Phase-6 (used to
+    # build the WS bearer subprotocol). _handle_message doesn't touch
+    # it, so a placeholder is fine for these unit-level tests.
+    context = ServeContext(runtime=_FakeRuntime(), state=ChatState(), api_key="")
     ws = _FakeWebSocket()
 
     await serve._handle_message(context, ws, {"type": "chat", "message": "hello"})
 
-    assert runtime.received["ctx"] is None
+    assert captured["user_during_stream"] is None
 
 
 @pytest.mark.asyncio
-async def test_handle_message_malformed_attenuation_passes_none_context(
+async def test_handle_message_malformed_attenuation_runs_without_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A malformed ``user_attenuation`` payload still runs the turn with ``ctx=None``."""
-    runtime = _FakeRuntime()
-    context = ServeContext(runtime=runtime, state=ChatState(), api_key="")
+    """A malformed user_attenuation payload still lets the turn run (no scope)."""
+    captured: dict[str, Any] = {"user_during_stream": "sentinel"}
+
+    async def fake_stream_agent(
+        agent: object, handler: object, input: object, **kw: Any
+    ):
+        captured["user_during_stream"] = get_current_context()
+        if False:
+            yield None  # pragma: no cover
+
+    monkeypatch.setattr(serve, "stream_agent", fake_stream_agent)
+
+    # ``api_key`` is required on ServeContext post-Phase-6 (used to
+    # build the WS bearer subprotocol). _handle_message doesn't touch
+    # it, so a placeholder is fine for these unit-level tests.
+    context = ServeContext(runtime=_FakeRuntime(), state=ChatState(), api_key="")
     ws = _FakeWebSocket()
 
     await serve._handle_message(
@@ -194,11 +218,11 @@ async def test_handle_message_malformed_attenuation_passes_none_context(
         {
             "type": "chat",
             "message": "hello",
-            "user_attenuation": "not-a-dict",  # ignored → ctx None
+            "user_attenuation": "not-a-dict",  # ignored, no scope
         },
     )
 
-    assert runtime.received["ctx"] is None
+    assert captured["user_during_stream"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +336,6 @@ async def test_serve_loop_aborts_when_marker_not_echoed(
 
 
 from hexgate.cli._common import build_runtime_from_local_agent, load_spec  # noqa: E402  — section-scoped import keeps phase-7 tests visually grouped
-from hexgate.manifest.models import AgentFramework  # noqa: E402  — section-scoped
 
 
 def test_load_spec_resolves_module_attr_form() -> None:
@@ -360,15 +383,13 @@ def _patched_runtime_deps(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """
     captured: dict[str, Any] = {}
 
+    # Pre-built manifest the test rebuilds the spy responses around.
+    fake_manifest_obj = type("FakeManifest", (), {"name": "customer_bot"})()
+
     def fake_create_manifest(agent_obj: Any, *, description: str | None = None):
         captured["create_manifest_called_with"] = agent_obj
         captured["description"] = description
-        # Framework drives dispatch in build_runtime_from_local_agent; default
-        # to the native path, tests override via ``captured["framework"]``.
-        framework = captured.get("framework", AgentFramework.HEXGATE)
-        return type(
-            "FakeManifest", (), {"name": "customer_bot", "framework": framework}
-        )()
+        return fake_manifest_obj
 
     def fake_post_manifest(manifest: Any, *, timeout: float = 5.0) -> dict:
         captured["posted_manifest"] = manifest
@@ -558,161 +579,3 @@ def test_build_runtime_attaches_platform_policy_source_for_per_turn_refresh(
     assert isinstance(kwargs["source"], PlatformPolicySource), (
         f"expected PlatformPolicySource, got {type(kwargs['source']).__name__}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Framework dispatch — serve builds the right runtime per manifest.framework
-# ---------------------------------------------------------------------------
-
-
-def test_build_runtime_native_binds_streaming_seam(
-    _patched_runtime_deps: dict[str, Any],
-) -> None:
-    """The native (hexgate) path binds an ``astream_normalized`` seam.
-
-    serve streams exclusively through this seam, so a runtime built
-    without one would raise at the first chat turn.
-    """
-    runtime = build_runtime_from_local_agent(
-        _stub_settings(),
-        agent_obj=object(),
-        description=None,
-        approval_handler=None,
-        auto_register=False,
-        console=Console(),
-    )
-    assert runtime.astream_normalized is not None
-
-
-def test_build_runtime_openai_uses_runner_and_skips_enforce(
-    _patched_runtime_deps: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An OpenAI agent builds a HexgateRunner and binds the OpenAI seam.
-
-    The OpenAI runner owns enforcement (it fetches + hot-reloads its own
-    binding per run), so the native ``enforce_policy`` / ``get_agent``
-    path must NOT run for an OpenAI agent.
-    """
-    captured = _patched_runtime_deps
-    captured["framework"] = AgentFramework.OPENAI
-
-    class _FakeRunner:
-        def __init__(self, *, approval_handler: Any = None) -> None:
-            captured["runner_approval_handler"] = approval_handler
-
-    monkeypatch.setattr("hexgate.adapters.openai.runner.HexgateRunner", _FakeRunner)
-
-    sentinel_agent = object()
-    handler = object()
-    runtime = build_runtime_from_local_agent(
-        _stub_settings(),
-        agent_obj=sentinel_agent,
-        description=None,
-        approval_handler=handler,
-        auto_register=False,
-        console=Console(),
-    )
-
-    # The OpenAI runner was constructed with the serve approval handler.
-    assert captured["runner_approval_handler"] is handler
-    # The runtime wraps the raw OpenAI agent and binds a streaming seam.
-    assert runtime.agent is sentinel_agent
-    assert runtime.astream_normalized is not None
-    assert runtime.agent_name == "customer_bot"
-    # The native policy-fetch path did NOT run for OpenAI.
-    assert "get_agent_name" not in captured
-    assert "enforced_agent" not in captured
-
-
-def test_build_runtime_google_uses_driver_and_skips_enforce(
-    _patched_runtime_deps: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Google agent builds a GoogleServeDriver and binds its seam, skipping
-    the native policy-fetch path (the ADK runner owns enforcement)."""
-    captured = _patched_runtime_deps
-    captured["framework"] = AgentFramework.GOOGLE
-
-    class _FakeDriver:
-        def __init__(
-            self,
-            *,
-            agent: Any,
-            app_name: str,
-            approval_handler: Any = None,
-            api_key: Any = None,
-        ) -> None:
-            captured["google_agent"] = agent
-            captured["google_app_name"] = app_name
-            captured["google_approval"] = approval_handler
-
-        async def astream(self, *_a: Any, **_k: Any):
-            if False:  # pragma: no cover — empty async generator
-                yield None
-
-    monkeypatch.setattr(
-        "hexgate.adapters.google.streaming.GoogleServeDriver", _FakeDriver
-    )
-
-    sentinel_agent = object()
-    handler = object()
-    runtime = build_runtime_from_local_agent(
-        _stub_settings(),
-        agent_obj=sentinel_agent,
-        description=None,
-        approval_handler=handler,
-        auto_register=False,
-        console=Console(),
-    )
-
-    assert captured["google_agent"] is sentinel_agent
-    assert captured["google_app_name"] == "customer_bot"
-    assert captured["google_approval"] is handler
-    assert runtime.agent is sentinel_agent
-    assert runtime.astream_normalized is not None
-    assert "get_agent_name" not in captured
-    assert "enforced_agent" not in captured
-
-
-def test_build_runtime_pydantic_uses_driver_and_skips_enforce(
-    _patched_runtime_deps: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A Pydantic AI agent builds a PydanticServeDriver and binds its seam,
-    skipping the native policy-fetch path (wrap_pydantic_agent owns it)."""
-    captured = _patched_runtime_deps
-    captured["framework"] = AgentFramework.PYDANTIC_AI
-
-    class _FakeDriver:
-        def __init__(
-            self, *, agent: Any, approval_handler: Any = None, api_key: Any = None
-        ) -> None:
-            captured["pydantic_agent"] = agent
-            captured["pydantic_approval"] = approval_handler
-
-        async def astream(self, *_a: Any, **_k: Any):
-            if False:  # pragma: no cover — empty async generator
-                yield None
-
-    monkeypatch.setattr(
-        "hexgate.adapters.pydantic_ai.streaming.PydanticServeDriver", _FakeDriver
-    )
-
-    sentinel_agent = object()
-    handler = object()
-    runtime = build_runtime_from_local_agent(
-        _stub_settings(),
-        agent_obj=sentinel_agent,
-        description=None,
-        approval_handler=handler,
-        auto_register=False,
-        console=Console(),
-    )
-
-    assert captured["pydantic_agent"] is sentinel_agent
-    assert captured["pydantic_approval"] is handler
-    assert runtime.agent is sentinel_agent
-    assert runtime.astream_normalized is not None
-    assert "get_agent_name" not in captured
-    assert "enforced_agent" not in captured
