@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
-from hexgate.runtime.run_facts import KNOWN_RUN_PATHS, RunFacts
+from hexgate.runtime.run_facts import KNOWN_RUN_PATHS, RUN_PATH_TYPES, RunFacts
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.models import AgentPolicy
 from hexgate.security.policy import evaluate_tool_call
@@ -36,7 +36,9 @@ def run_namespace(tool: str = "", **facts: Any) -> dict[str, Any]:
     """A ``run`` namespace with ``facts`` applied over a zeroed run.
 
     Raises on an unregistered keyword — a typo like ``tool_call=20`` would
-    otherwise leave the real counter at 0 and the cap would never fire.
+    otherwise leave the real counter at 0 and the cap would never fire — and on
+    a wrong-typed value, which fails the comparison closed and is then
+    indistinguishable from the cap firing for real.
     """
     unknown = sorted(set(facts) - KNOWN_RUN_PATHS)
     if unknown:
@@ -44,7 +46,30 @@ def run_namespace(tool: str = "", **facts: Any) -> dict[str, Any]:
             f"unknown run.* path(s) {unknown} "
             f"(this build knows: {', '.join(sorted(KNOWN_RUN_PATHS))})"
         )
+    for name, value in facts.items():
+        _check_run_value(name, value)
     return {**_zeroed_run(tool), **facts}
+
+
+def _check_run_value(name: str, value: Any) -> None:
+    """Raise unless ``value`` has the shape ``run.<name>`` projects."""
+    expected = RUN_PATH_TYPES[name]
+    if not _matches_run_type(value, expected):
+        raise ValueError(
+            f"run.{name} expects {expected.__name__}, got "
+            f"{type(value).__name__} ({value!r})"
+        )
+
+
+def _matches_run_type(value: Any, expected: type) -> bool:
+    # bool is an int subclass, but ``{"tool_calls": true}`` is a JSON typo
+    # rather than a count, so it satisfies no numeric path.
+    if isinstance(value, bool):
+        return expected is bool
+    # An int is an acceptable float (``elapsed_seconds=300``), not vice versa.
+    if expected is float:
+        return type(value) in (int, float)
+    return type(value) is expected
 
 
 def _zeroed_run(tool: str) -> dict[str, Any]:

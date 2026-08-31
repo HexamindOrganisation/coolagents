@@ -228,14 +228,27 @@ def _record_run_decision(outcome: DecisionOutcome) -> None:
         facts.record_approval()
 
 
-def _record_run_execution(tool_name: str, *, failed: bool = False) -> None:
-    """Count a tool that ran, whether it returned or raised. Called around
-    ``invoke``, before the post-guards — a post-guard halt must not un-count a
-    call whose side effect already happened."""
-    facts = get_run_facts()
-    facts.record_execution(tool_name)
-    if failed:
-        facts.record_error()
+def _record_run_execution(tool_name: str) -> None:
+    """Count a tool that is about to run.
+
+    Recorded immediately *before* ``invoke``, not after it returns, and this
+    ordering is what makes a ``run.tool_calls`` cap hold under parallel tool
+    calls. ``enforcer.decide()`` and this call have no ``await`` between them,
+    so on an event loop the read-then-increment is atomic: a fan-out of N
+    concurrent calls sees N distinct counter values. Recording after ``invoke``
+    instead let every concurrent call read the same pre-increment counter, and
+    a cap of 5 admitted all 50 of a 50-way ``asyncio.gather``.
+
+    Counting before dispatch also keeps the post-guard contract: a post-guard
+    halt must not un-count a call whose side effect already happened.
+    """
+    get_run_facts().record_execution(tool_name)
+
+
+def _record_run_error() -> None:
+    """Count a tool that raised. Separate from :func:`_record_run_execution`,
+    which has already counted the call by the time ``invoke`` can raise."""
+    get_run_facts().record_error()
 
 
 def _notify(
@@ -395,11 +408,12 @@ async def run_guarded_async(
                     _notify(pipeline, call, mods, blocked=True)
                 return render_error(decision)
 
+    # Before dispatch, not after: see _record_run_execution.
+    _record_run_execution(call.tool_name)
     try:
         raw = await invoke(dict(call.args))
-        _record_run_execution(call.tool_name)
     except Exception as exc:
-        _record_run_execution(call.tool_name, failed=True)
+        _record_run_error()
         rendered = await _run_post_async(
             pipeline,
             call,
@@ -566,12 +580,12 @@ def run_guarded_sync(
                     _notify(pipeline, call, mods, blocked=True)
                 return render_error(decision)
 
+    # See the async path: counted after the decision, before dispatch.
+    _record_run_execution(call.tool_name)
     try:
         raw = invoke(dict(call.args))
-        # See the async path: counted after the decision, non-deny only.
-        _record_run_execution(call.tool_name)
     except Exception as exc:
-        _record_run_execution(call.tool_name, failed=True)
+        _record_run_error()
         rendered = _run_post_sync(
             pipeline,
             call,

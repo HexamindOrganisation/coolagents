@@ -844,7 +844,13 @@ def _resolve_run_facts(raw: str, tool: str) -> dict[str, Any]:
             f"--run-facts has unknown run.* path(s) {unknown} "
             f"(this build knows: {', '.join(sorted(KNOWN_RUN_PATHS))})"
         )
-    return run_namespace(tool, **parsed)
+    try:
+        return run_namespace(tool, **parsed)
+    except ValueError as exc:
+        # Re-raised against the flag: a wrong-typed value otherwise fails the
+        # comparison closed and prints as an ordinary threshold trip, so the
+        # dry-run answers a question the user did not ask.
+        raise ValueError(f"--run-facts has a wrong-typed value: {exc}") from exc
 
 
 def _resolve_test_roles(args: argparse.Namespace) -> list[str]:

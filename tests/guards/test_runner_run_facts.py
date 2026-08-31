@@ -258,14 +258,19 @@ async def test_recording_outside_a_run_scope_is_a_no_op(path: str) -> None:
 # ---------------------------------------------------------------------------
 
 _CAP = 5
-_CONCURRENCY = 8
+_CONCURRENCY = 50
 
 
 @pytest.mark.asyncio
-async def test_parallel_overshoot_is_bounded_by_concurrency() -> None:
-    """N concurrent calls all read the same pre-increment snapshot, so a cap of
-    K permits up to K-1+N executions. Assert the bound, not an exact count —
-    scheduling decides how many actually race."""
+async def test_a_cap_holds_exactly_under_parallel_tool_calls() -> None:
+    """A cap of K admits exactly K executions out of N concurrent calls.
+
+    Guards the ordering in ``_record_run_execution``: the count is taken before
+    dispatch, and ``decide`` -> record has no ``await`` between them, so the
+    read-then-increment cannot interleave on an event loop. Counting after
+    ``invoke`` returned instead let all N calls read the same pre-increment
+    snapshot, and a cap of 5 admitted all 50.
+    """
     import asyncio
 
     executed = 0
@@ -316,7 +321,7 @@ async def test_parallel_overshoot_is_bounded_by_concurrency() -> None:
             )
         )
 
-    assert _CAP <= executed <= _CAP - 1 + _CONCURRENCY
+    assert executed == _CAP
 
 
 @pytest.mark.asyncio

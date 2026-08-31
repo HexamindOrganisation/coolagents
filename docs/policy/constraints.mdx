@@ -150,8 +150,9 @@ denying silently at runtime.
 
 These distinctions change what a cap does, so they are worth reading once:
 
-- **A tool counts when it executes**, after the decision. `run.tool_calls < 20`
-  permits exactly 20 executions.
+- **A tool counts when it is dispatched**, after the decision has allowed it.
+  `run.tool_calls < 20` permits exactly 20 executions, in parallel as well as in
+  sequence.
 - **A denied call consumes no tool budget.** It counts toward `run.denials`
   instead, which you can bound separately — otherwise an agent misbehaving
   against one tool would exhaust a legitimate caller's budget.
@@ -164,16 +165,25 @@ These distinctions change what a cap does, so they are worth reading once:
 
 <Warning>
 **`run.*` caps are circuit breakers, not quotas.** They stop a run that has gone
-wrong; they do not meter it precisely. Three places the count can lag reality:
+wrong; they do not meter it precisely. Four places the count can lag reality:
 
-- **Parallel tool calls.** Calls that run concurrently all read the counter
-  before any of them records, so a cap of `K` under `N` concurrent calls permits
-  up to `K - 1 + N` executions.
 - **Tokens trail by one turn.** Tokens are only known once the model has
   answered, so the turn that blows the budget still gets its tool calls; the cap
   fires on the next decision.
+- **Token facts are not available on the Pydantic AI adapter.** It has no
+  per-call usage hook, so it reports usage once, after the whole run finishes.
+  `run.input_tokens`, `run.output_tokens`, `run.total_tokens` and
+  `run.llm_calls` therefore read **zero at every decision** in a Pydantic AI
+  run, and a token budget never fires there. Use `run.tool_calls` or
+  `run.elapsed_seconds` to bound those runs. The LangChain, OpenAI and Google
+  adapters all report per LLM call and are unaffected.
 - **Sub-agents don't roll up.** A child invocation opens its own run, so its
   counts don't reach the parent — a per-run cap is bypassable by spawning one.
+- **Raw threads.** A tool call is counted before it is dispatched, and on an
+  event loop that read-then-increment cannot interleave — so parallel tool calls
+  (`asyncio.gather`, LangChain's executor) respect a cap exactly. Guarded calls
+  dispatched to a hand-rolled `threading.Thread` can still overshoot, since two
+  OS threads can be decided concurrently.
 </Warning>
 
 ### Where facts aren't collected
