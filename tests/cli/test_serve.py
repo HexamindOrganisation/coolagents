@@ -625,23 +625,94 @@ def test_build_runtime_openai_uses_runner_and_skips_enforce(
     assert "enforced_agent" not in captured
 
 
-@pytest.mark.parametrize(
-    "framework", [AgentFramework.GOOGLE, AgentFramework.PYDANTIC_AI]
-)
-def test_build_runtime_rejects_unsupported_framework(
+def test_build_runtime_google_uses_driver_and_skips_enforce(
     _patched_runtime_deps: dict[str, Any],
-    framework: AgentFramework,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Google / Pydantic AI serve isn't built yet — fail loud, not obscure."""
+    """A Google agent builds a GoogleServeDriver and binds its seam, skipping
+    the native policy-fetch path (the ADK runner owns enforcement)."""
     captured = _patched_runtime_deps
-    captured["framework"] = framework
+    captured["framework"] = AgentFramework.GOOGLE
 
-    with pytest.raises(NotImplementedError, match="does not yet support"):
-        build_runtime_from_local_agent(
-            _stub_settings(),
-            agent_obj=object(),
-            description=None,
-            approval_handler=None,
-            auto_register=False,
-            console=Console(),
-        )
+    class _FakeDriver:
+        def __init__(
+            self,
+            *,
+            agent: Any,
+            app_name: str,
+            approval_handler: Any = None,
+            api_key: Any = None,
+        ) -> None:
+            captured["google_agent"] = agent
+            captured["google_app_name"] = app_name
+            captured["google_approval"] = approval_handler
+
+        async def astream(self, *_a: Any, **_k: Any):
+            if False:  # pragma: no cover — empty async generator
+                yield None
+
+    monkeypatch.setattr(
+        "hexgate.adapters.google.streaming.GoogleServeDriver", _FakeDriver
+    )
+
+    sentinel_agent = object()
+    handler = object()
+    runtime = build_runtime_from_local_agent(
+        _stub_settings(),
+        agent_obj=sentinel_agent,
+        description=None,
+        approval_handler=handler,
+        auto_register=False,
+        console=Console(),
+    )
+
+    assert captured["google_agent"] is sentinel_agent
+    assert captured["google_app_name"] == "customer_bot"
+    assert captured["google_approval"] is handler
+    assert runtime.agent is sentinel_agent
+    assert runtime.astream_normalized is not None
+    assert "get_agent_name" not in captured
+    assert "enforced_agent" not in captured
+
+
+def test_build_runtime_pydantic_uses_driver_and_skips_enforce(
+    _patched_runtime_deps: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Pydantic AI agent builds a PydanticServeDriver and binds its seam,
+    skipping the native policy-fetch path (wrap_pydantic_agent owns it)."""
+    captured = _patched_runtime_deps
+    captured["framework"] = AgentFramework.PYDANTIC_AI
+
+    class _FakeDriver:
+        def __init__(
+            self, *, agent: Any, approval_handler: Any = None, api_key: Any = None
+        ) -> None:
+            captured["pydantic_agent"] = agent
+            captured["pydantic_approval"] = approval_handler
+
+        async def astream(self, *_a: Any, **_k: Any):
+            if False:  # pragma: no cover — empty async generator
+                yield None
+
+    monkeypatch.setattr(
+        "hexgate.adapters.pydantic_ai.streaming.PydanticServeDriver", _FakeDriver
+    )
+
+    sentinel_agent = object()
+    handler = object()
+    runtime = build_runtime_from_local_agent(
+        _stub_settings(),
+        agent_obj=sentinel_agent,
+        description=None,
+        approval_handler=handler,
+        auto_register=False,
+        console=Console(),
+    )
+
+    assert captured["pydantic_agent"] is sentinel_agent
+    assert captured["pydantic_approval"] is handler
+    assert runtime.agent is sentinel_agent
+    assert runtime.astream_normalized is not None
+    assert "get_agent_name" not in captured
+    assert "enforced_agent" not in captured
