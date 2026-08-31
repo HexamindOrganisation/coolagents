@@ -22,6 +22,7 @@ from hexgate.guards.types import (
     ToolOutcome,
     ToolPipeline,
 )
+from hexgate.runtime.run_facts import run_scope
 from hexgate.security.decision import DecisionOutcome
 from tests.guards.helpers import FakeEnforcer, RecordingInvoke, langchain_error
 
@@ -687,3 +688,70 @@ async def test_post_halt_records_both_the_allow_and_the_guard_denial() -> None:
     markers = [d.error_type for d in enf.recorded]
     assert DecisionOutcome.ALLOW in outcomes  # the tool genuinely ran
     assert "guard_denied" in markers  # and the halt is also on the trail
+
+
+# ---------------------------------------------------------------------------
+# Guard halts carry the run they happened in
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pre_halt_carries_the_enclosing_run_id() -> None:
+    """A halt and the call it interrupts must share a run_id.
+
+    ``_record_halt`` exists so a guard-blocked call leaves the same trail a
+    policy denial does. Stamping the run only in ``PolicyEnforcer.decide``
+    would break that: a per-run timeline would show the run's tool calls but
+    not the guard that stopped it — the one row that explains the ending.
+    """
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
+
+    with run_scope("agent") as facts:
+        await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert enf.recorded[0].run.run_id == facts.id
+
+
+@pytest.mark.asyncio
+async def test_post_halt_counts_the_tool_that_already_ran() -> None:
+    """A post-guard halt withholds the result; the side effect happened, so the
+    call stays counted. Both recorded decisions belong to the same run."""
+    enf, inv = FakeEnforcer(), RecordingInvoke("val")
+    pipe = _pipe(post=[lambda call, out: Halt(reason="withheld")])
+
+    with run_scope("agent") as facts:
+        await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    halt = next(d for d in enf.recorded if d.error_type == "guard_denied")
+    assert halt.run.run_id == facts.id
+    assert halt.run.tool_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_halt_outside_a_run_scope_is_detached() -> None:
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
+
+    await _run(enf, pipe, {"x": 1}, invoke=inv)
+
+    assert enf.recorded[0].run.run_id == ""
+
+
+def test_sync_halt_carries_the_enclosing_run_id() -> None:
+    """The sync path mirrors the async one; both build the same Decision."""
+    enf, inv = FakeEnforcer(), RecordingInvoke()
+    pipe = _pipe(pre=[lambda call: Halt(reason="blocked")])
+
+    with run_scope("agent") as facts:
+        run_guarded_sync(
+            "echo",
+            {"x": 1},
+            enforcer=enf,
+            pipeline=pipe,
+            approval_handler=None,
+            invoke=inv.sync,
+            render_error=langchain_error,
+        )
+
+    assert enf.recorded[0].run.run_id == facts.id

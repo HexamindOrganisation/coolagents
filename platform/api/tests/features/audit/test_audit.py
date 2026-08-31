@@ -140,6 +140,67 @@ def test_negative_run_counter_rejected() -> None:
     assert "run_tool_calls" in str(exc.value)
 
 
+def test_sdk_payload_validates_in_a_run_scope() -> None:
+    """The cross-package contract, asserted against the real SDK.
+
+    The SDK's own suite can only check its idea of the wire shape; this is the
+    only test where both halves meet. Names and types must line up or the
+    field is silently dropped — DecisionEvent does not forbid extras.
+    """
+    from hexgate.audit import AuditEvent
+    from hexgate.security.decision import Decision, DecisionOutcome, RunAttribution
+
+    payload = AuditEvent(
+        decision=Decision(
+            outcome=DecisionOutcome.DENY,
+            agent_name="example_agent",
+            tool_name="read_file",
+            run=RunAttribution(
+                run_id=str(uuid.uuid4()),
+                tool_calls=3,
+                llm_calls=2,
+                denials=1,
+                total_tokens=1200,
+                elapsed_ms=4500,
+            ),
+        )
+    ).as_payload()
+
+    event = DecisionEvent(**payload)
+
+    assert str(event.run_id) == payload["run_id"]
+    assert event.run_tool_calls == 3
+    assert event.run_llm_calls == 2
+    assert event.run_denials == 1
+    assert event.run_total_tokens == 1200
+    assert event.run_elapsed_ms == 4500
+
+
+def test_sdk_payload_validates_outside_a_run_scope() -> None:
+    """The regression guard for the whole feature's worst failure mode.
+
+    A decision made outside a run scope sends ``run_id: None``. If the SDK ever
+    sent "" instead, this raises — and in production that ValidationError is a
+    422 the sender discards, losing the entire audit record rather than just
+    the attribution.
+    """
+    from hexgate.audit import AuditEvent
+    from hexgate.security.decision import Decision, DecisionOutcome
+
+    payload = AuditEvent(
+        decision=Decision(
+            outcome=DecisionOutcome.ALLOW,
+            agent_name="example_agent",
+            tool_name="read_file",
+        )
+    ).as_payload()
+
+    event = DecisionEvent(**payload)
+
+    assert event.run_id is None
+    assert event.run_tool_calls == 0
+
+
 # ---------------------------------------------------------------------------
 # Endpoint behaviour — auth + ClickHouse stubbed
 # ---------------------------------------------------------------------------

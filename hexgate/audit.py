@@ -170,8 +170,9 @@ class AuditEvent:
         ``arguments`` and ``attributes`` are redacted (sensitive key names, on
         their own patterns — see ``_SENSITIVE_ATTR_KEY_RE``); those plus
         ``hint`` and ``violations`` are truncated to their platform caps here —
-        the single choke point onto the wire. The role fields deliberately pass
-        through untouched — see the comment on them below."""
+        the single choke point onto the wire. The role fields and the ``run.*``
+        fields deliberately pass through untouched — see the comments on them
+        below."""
         d = self.decision
         arguments = (
             _truncate_json(
@@ -222,6 +223,13 @@ class AuditEvent:
             "attributes": attributes,
             "user_id": self.user_id,
             "session_id": self.session_id,
+            # Neither redacted nor capped: five bounded counters and a UUID
+            # produced by the SDK's own accumulator, not by caller data — the
+            # same reasoning as the role fields above. Spread from one method
+            # so the platform's field names live in a single place
+            # (RunAttribution.as_payload_fields), reviewable against
+            # DecisionEvent as a unit. Note run_id is None, never "", there.
+            **d.run.as_payload_fields(),
         }
 
 

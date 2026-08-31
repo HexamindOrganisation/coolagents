@@ -28,6 +28,12 @@ class LlmUsageEvent:
     session_id: str = ""
     user_id: str = ""
     error_code: str | None = None  # optional error code if status is "error"
+    # The run this model request belongs to, so llm_invocation rows join to the
+    # policy_decision rows of the same invocation. ``""`` outside a run scope,
+    # matching ``run_facts.DETACHED.id``; a plain field rather than the six-way
+    # RunAttribution because llm_invocation carries one run column, and the
+    # counters mid-request are not what a token total should be read from.
+    run_id: str = ""
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -44,6 +50,11 @@ class LlmUsageEvent:
             "latency_ms": self.latency_ms,
             "status": self.status,
             "error_code": self.error_code or "",
+            # None, never "": the platform types run_id as ``UUID | None`` and
+            # rejects an empty string with a 422, which the sender drops rather
+            # than retries — losing the whole usage record, not just its
+            # attribution.
+            "run_id": self.run_id or None,
         }
 
 
@@ -75,7 +86,10 @@ def emit_llm_usage(
     try:
         # Before the sender check: a token cap must work with no platform
         # attached, or run.total_tokens stays a permanent 0 in local mode.
-        get_run_facts().record_llm_usage(input_tokens, output_tokens)
+        # Bound once, so the tokens recorded and the run they are attributed to
+        # are structurally the same run rather than incidentally so.
+        facts = get_run_facts()
+        facts.record_llm_usage(input_tokens, output_tokens)
 
         sender = configure_usage_sender(api_key)
         if sender is None:
@@ -94,6 +108,7 @@ def emit_llm_usage(
                 else "",
                 user_id=context.user_id if context is not None else "",
                 error_code=error_code,
+                run_id=facts.id,
             )
         )
     except Exception:

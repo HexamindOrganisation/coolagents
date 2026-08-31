@@ -778,3 +778,36 @@ def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
     with pytest.raises(SchemaOutOfDate) as exc:
         llm_invocations.verify_schema(_describing(columns))
     assert exc.value.missing == {"llm_invocation": ["input_tokens"]}
+
+
+def test_sdk_usage_payload_validates_both_in_and_out_of_a_run_scope() -> None:
+    """The cross-package contract for llm_invocation.run_id.
+
+    Same failure mode as the decision path: ``run_id`` is ``UUID | None``, so a
+    "" from the SDK is a 422 the sender discards — the usage record lost, not
+    just its attribution.
+    """
+    import uuid as _uuid
+
+    from hexgate.tracing.usage import LlmUsageEvent
+
+    attributed = LlmUsageEvent(
+        agent_name="a",
+        model="gpt-4o",
+        input_tokens=1,
+        output_tokens=1,
+        latency_ms=1,
+        status="success",
+        run_id=str(_uuid.uuid4()),
+    ).as_payload()
+    detached = LlmUsageEvent(
+        agent_name="a",
+        model="gpt-4o",
+        input_tokens=1,
+        output_tokens=1,
+        latency_ms=1,
+        status="success",
+    ).as_payload()
+
+    assert str(LlmInvocationEvent(**attributed).run_id) == attributed["run_id"]
+    assert LlmInvocationEvent(**detached).run_id is None

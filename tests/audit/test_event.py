@@ -13,7 +13,7 @@ from hexgate.audit import (
     AuditEvent,
 )
 from hexgate.runtime import MAX_EVALUATED_ROLES
-from hexgate.security.decision import Decision, DecisionOutcome
+from hexgate.security.decision import Decision, DecisionOutcome, RunAttribution
 
 
 def _decision(**overrides) -> Decision:
@@ -356,3 +356,99 @@ def test_a_full_role_set_goes_out_whole() -> None:
 
     assert wire["user_roles"] == list(roles)
     assert wire["deciding_role"] == roles[-1]
+
+
+# --- run attribution --------------------------------------------------------
+
+
+def _run(**overrides) -> RunAttribution:
+    base = dict(
+        run_id="9c2f1d3e-0000-4000-8000-000000000001",
+        tool_calls=3,
+        llm_calls=2,
+        denials=1,
+        total_tokens=1200,
+        elapsed_ms=4500,
+    )
+    return RunAttribution(**{**base, **overrides})
+
+
+def test_as_payload_carries_run_attribution() -> None:
+    wire = AuditEvent(decision=_decision(run=_run())).as_payload()
+
+    assert wire["run_id"] == "9c2f1d3e-0000-4000-8000-000000000001"
+    assert wire["run_tool_calls"] == 3
+    assert wire["run_llm_calls"] == 2
+    assert wire["run_denials"] == 1
+    assert wire["run_total_tokens"] == 1200
+    assert wire["run_elapsed_ms"] == 4500
+
+
+def test_as_payload_sends_null_run_id_never_empty_string() -> None:
+    """The regression guard for the whole feature's worst failure mode.
+
+    ``DecisionEvent.run_id`` is ``UUID | None`` on the platform. Pydantic does
+    not coerce "" to a UUID, FastAPI maps the ValidationError to 422, and the
+    SDK sender discards any >=400 without retrying — so an empty string would
+    lose the entire audit record for every decision made outside a run scope,
+    which is precisely the population an auditor most wants to see.
+    """
+    wire = AuditEvent(decision=_decision()).as_payload()
+
+    assert wire["run_id"] is None
+    assert wire["run_tool_calls"] == 0
+    assert wire["run_elapsed_ms"] == 0
+
+
+def test_as_payload_does_not_redact_or_truncate_run_fields() -> None:
+    """Bounded integers and a UUID from the SDK's own accumulator — not caller
+    data, so they pass through like the role fields do."""
+    wire = AuditEvent(
+        decision=_decision(run=_run(tool_calls=10**6, total_tokens=10**7))
+    ).as_payload()
+
+    assert wire["run_tool_calls"] == 10**6
+    assert wire["run_total_tokens"] == 10**7
+
+
+def test_as_payload_key_set_is_the_wire_contract() -> None:
+    """Mirrors DecisionEvent (platform/api/hexgate_api/schemas.py).
+
+    Asserted as a set, not field by field: DecisionEvent does not set
+    ``extra="forbid"``, so a key the platform does not know is silently
+    dropped rather than rejected. A field added to Decision without a column,
+    or renamed on either side, has to fail here or it fails nowhere.
+    """
+    wire = AuditEvent(decision=_decision(run=_run())).as_payload()
+
+    assert set(wire) == {
+        "event_id",
+        "occurred_at",
+        "agent_name",
+        "tool_name",
+        "outcome",
+        "user_roles",
+        "deciding_role",
+        "error_type",
+        "reason",
+        "violations",
+        "hint",
+        "arguments",
+        "attributes",
+        "user_id",
+        "session_id",
+        "run_id",
+        "run_tool_calls",
+        "run_llm_calls",
+        "run_denials",
+        "run_total_tokens",
+        "run_elapsed_ms",
+    }
+
+
+def test_as_payload_run_fields_are_json_serializable() -> None:
+    """The sender posts ``json=payload``; a non-JSON value would raise inside
+    the emit task, where it is logged and the event lost."""
+    wire = AuditEvent(decision=_decision(run=_run())).as_payload()
+
+    assert json.loads(json.dumps(wire))["run_id"] == wire["run_id"]

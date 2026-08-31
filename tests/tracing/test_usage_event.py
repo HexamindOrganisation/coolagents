@@ -71,3 +71,16 @@ def test_event_id_defaults_to_a_stringified_uuid_and_is_unique_per_event() -> No
 def test_as_payload_when_occurred_at_defaults_then_occurred_at_has_utc_offset() -> None:
     wire = _event().as_payload()
     assert "+00:00" in wire["occurred_at"]
+
+
+def test_as_payload_sends_null_run_id_never_empty_string() -> None:
+    """``LlmInvocationEvent.run_id`` is ``UUID | None`` on the platform: an
+    empty string is a 422, which the sender drops without retrying — losing the
+    usage record for every model call made outside a run scope."""
+    assert _event().as_payload()["run_id"] is None
+
+
+def test_as_payload_carries_the_run_id_when_inside_a_run() -> None:
+    wire = _event(run_id="9c2f1d3e-0000-4000-8000-000000000001").as_payload()
+
+    assert wire["run_id"] == "9c2f1d3e-0000-4000-8000-000000000001"

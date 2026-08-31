@@ -22,7 +22,12 @@ from hexgate.audit import AuditEvent, configure
 from hexgate.runtime.context import get_current_context
 from hexgate.runtime.roles import resolve_role_set
 from hexgate.runtime.run_facts import get_run_facts
-from hexgate.security.decision import Decision, PolicyEngine, combine_role_verdicts
+from hexgate.security.decision import (
+    Decision,
+    PolicyEngine,
+    RunAttribution,
+    combine_role_verdicts,
+)
 from hexgate.tracing._senders import AuditSender
 
 if TYPE_CHECKING:
@@ -154,6 +159,10 @@ class PolicyEnforcer:
             deciding_role=deciding_role,
             arguments=args_snapshot,
             attributes=attrs_snapshot,
+            # Projected from the same snapshot the verdict was evaluated
+            # against, never a second read: the audit record and the decision
+            # must not describe different counter values for one call.
+            run=RunAttribution.from_namespace(run_snapshot),
         )
 
         self.record(

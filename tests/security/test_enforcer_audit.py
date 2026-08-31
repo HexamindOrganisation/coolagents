@@ -10,7 +10,8 @@ import pytest
 from hexgate.audit import AuditEvent
 from hexgate.tracing import _senders
 from hexgate.runtime.context import HexgateContext
-from hexgate.security.decision import DecisionOutcome, Verdict
+from hexgate.runtime.run_facts import run_scope
+from hexgate.security.decision import DETACHED_RUN, DecisionOutcome, Verdict
 from hexgate.security.enforcer import PolicyEnforcer
 
 
@@ -186,3 +187,67 @@ async def test_audited_deny_records_no_deciding_role() -> None:
     wire = sender.events[0].as_payload()
     assert wire["deciding_role"] == ""
     assert wire["user_roles"] == ["support", "billing"]
+
+
+# --- run attribution --------------------------------------------------------
+
+
+def test_decide_stamps_the_enclosing_run_on_the_audit_event() -> None:
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+
+    with run_scope("r") as facts:
+        enforcer.decide("read_file", {})
+
+    assert sender.events[0].decision.run.run_id == facts.id
+    assert sender.events[0].as_payload()["run_id"] == facts.id
+
+
+def test_decide_outside_a_run_scope_is_detached() -> None:
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+
+    enforcer.decide("read_file", {})
+
+    # Value-equal, not the singleton: DETACHED still projects a populated
+    # all-zero namespace, so from_namespace builds a fresh equal instance.
+    assert sender.events[0].decision.run == DETACHED_RUN
+    assert sender.events[0].as_payload()["run_id"] is None
+
+
+def test_two_invocations_stamp_two_distinct_run_ids() -> None:
+    """Catches a scope opened once at construction instead of per invocation."""
+    sender = _CapturingSender()
+    enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
+
+    for _ in range(2):
+        with run_scope("r"):
+            enforcer.decide("read_file", {})
+
+    first, second = (event.decision.run.run_id for event in sender.events)
+    assert first and second and first != second
+
+
+def test_stamped_counters_are_the_ones_the_verdict_saw() -> None:
+    """One read per decide(), shared by the fold and the record.
+
+    A second get_run_facts() read for the audit stamp would let the row claim a
+    counter value no role ever evaluated against — the record and the decision
+    disagreeing about the same call.
+    """
+    sender = _CapturingSender()
+    seen: list[Mapping[str, Any] | None] = []
+
+    class _RecordingEngine(_StubEngine):
+        def evaluate(self, *, run: Mapping[str, Any] | None = None, **kwargs: Any):
+            seen.append(run)
+            return super().evaluate(run=run, **kwargs)
+
+    enforcer = PolicyEnforcer(_RecordingEngine(), agent_name="r", audit_sender=sender)
+
+    with run_scope("r") as facts:
+        facts.record_execution("read_file")
+        facts.record_execution("read_file")
+        enforcer.decide("read_file", {})
+
+    assert seen[0]["tool_calls"] == sender.events[0].decision.run.tool_calls == 2

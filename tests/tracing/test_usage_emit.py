@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from hexgate.runtime import HexgateContext
+from hexgate.runtime.run_facts import run_scope
 from hexgate.tracing import usage as usage_mod
 from hexgate.tracing.usage import emit_llm_usage
 
@@ -203,3 +204,49 @@ def test_token_cap_trails_the_turn_that_exceeded_it() -> None:
         emit_llm_usage("a", "gpt-4o", 400, 0)
         # ...so the overshoot is only visible to the *next* decision.
         assert not enforcer.decide("t", {}).allowed
+
+
+def test_emit_stamps_the_enclosing_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    """llm_invocation rows must join to the policy_decision rows of the same
+    invocation, so the run has to reach the event, not just the counters."""
+    sender = _FakeSender()
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: sender
+    )
+
+    with run_scope("agent") as facts:
+        emit_llm_usage("agent", "gpt-4o", 10, 5)
+
+    assert sender.events[0].run_id == facts.id
+    assert sender.events[0].as_payload()["run_id"] == facts.id
+
+
+def test_emit_outside_a_run_scope_sends_no_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sender = _FakeSender()
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: sender
+    )
+
+    emit_llm_usage("agent", "gpt-4o", 10, 5)
+
+    assert sender.events[0].run_id == ""
+    assert sender.events[0].as_payload()["run_id"] is None
+
+
+def test_emit_attributes_tokens_and_the_run_id_to_the_same_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One get_run_facts() read: the tokens recorded and the run they are
+    attributed to are the same object, structurally rather than incidentally."""
+    sender = _FakeSender()
+    monkeypatch.setattr(
+        usage_mod, "configure_usage_sender", lambda api_key=None: sender
+    )
+
+    with run_scope("agent") as facts:
+        emit_llm_usage("agent", "gpt-4o", 10, 5)
+
+    assert facts.as_namespace("t")["total_tokens"] == 15
+    assert sender.events[0].run_id == facts.id
