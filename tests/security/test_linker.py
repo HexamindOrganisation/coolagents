@@ -318,6 +318,24 @@ def test_link_rejects_admission_block_in_module() -> None:
         link([], [mod])
 
 
+def test_link_rejects_policy_level_constraints_in_module() -> None:
+    """The fold composes ``.tools`` only, so a role-wide fence authored in a
+    module would be silently dropped — fail-open. ``_MODULE_COMPOSABLE_FIELDS``
+    rejects it automatically, which is the point of the allowlist: a field
+    added to AgentPolicy fails closed until composition learns it. Pinned here
+    so nobody adds ``constraints`` to that set without teaching ``link()`` to
+    fold it (and deciding which layer may set a role-wide fence)."""
+    mod = ModuleContent(
+        name="d",
+        kind="boundary",
+        policy=AgentPolicy(constraints=["run.tool_calls < 5"]),
+        source="d.yaml",
+        content_hash="hash-d",
+    )
+    with pytest.raises(LinkError, match=r"\['constraints'\]"):
+        link([mod], [])
+
+
 # --- provenance + policy-set wiring ---
 
 

@@ -927,3 +927,64 @@ def test_run_fact_parity(tool: str, run: dict, expect: str) -> None:
 
 def test_run_none_namespace_fails_closed_both_engines() -> None:
     _assert_parity(_RUN_POLICY, "default", "identity", {}, "deny", run=None)
+
+
+# ---------------------------------------------------------------------------
+# Policy-level constraints — applied to every tool, on both engines
+#
+# The drift risk is structural: the pydantic engine prepends them to whatever
+# get_tool_policy resolved, which is one code path for every tool key. The Rego
+# compiler emits a rule *per* tool key from three separate call sites, and the
+# easiest one to forget is the synthetic agent.run admission rule, whose policy
+# comes from a fallback constant rather than the document.
+# ---------------------------------------------------------------------------
+
+_POLICY_LEVEL_POLICY = {
+    "roles": {
+        "read_only": {
+            "is_mixin": True,
+            "constraints": ["run.tool_calls < 3"],
+        },
+        "default": {
+            "inherits": ["read_only"],
+            "default_policy": {"mode": "allow"},
+            "tools": {
+                "listed": {"mode": "allow"},
+                "capped": {"mode": "allow", "constraints": ["args.amount <= 50"]},
+                "forbidden": {"mode": "deny"},
+            },
+        },
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "run", "expect"),
+    [
+        # A listed tool, under and over the policy-level cap.
+        ("listed", {}, {"tool_calls": 1}, "allow"),
+        ("listed", {}, {"tool_calls": 5}, "deny"),
+        # A tool falling through to default_policy.
+        ("unlisted", {}, {"tool_calls": 1}, "allow"),
+        ("unlisted", {}, {"tool_calls": 5}, "deny"),
+        # Admission: opt-in on both engines, and gated by the same cap.
+        ("agent.run", {}, {"tool_calls": 1}, "allow"),
+        ("agent.run", {}, {"tool_calls": 5}, "deny"),
+        # Both lists apply, in either failing direction.
+        ("capped", {"amount": 10}, {"tool_calls": 1}, "allow"),
+        ("capped", {"amount": 999}, {"tool_calls": 1}, "deny"),
+        ("capped", {"amount": 10}, {"tool_calls": 5}, "deny"),
+        # Can only narrow: a satisfied policy-level constraint never
+        # resurrects a denied tool or an unlisted reach key.
+        ("forbidden", {}, {"tool_calls": 0}, "deny"),
+        ("agent.handoff:other", {}, {"tool_calls": 0}, "deny"),
+        # Missing namespace fails closed on both.
+        ("listed", {}, {}, "deny"),
+    ],
+)
+def test_policy_level_constraint_parity(
+    tool: str, args: dict, run: dict, expect: str
+) -> None:
+    """The constraint is inherited from a mixin, so this also covers the union
+    merge reaching the Rego compiler through the resolved PolicySet."""
+    _assert_parity(_POLICY_LEVEL_POLICY, None, tool, args, expect, run=run)

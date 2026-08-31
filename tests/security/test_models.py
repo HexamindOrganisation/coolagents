@@ -65,3 +65,33 @@ def test_valid_full_policy_document() -> None:
         }
     )
     assert policy.tools["refund_order"].constraints[0] == "args.amount <= 500"
+
+
+# --- policy-level constraints ----------------------------------------------
+
+
+def test_policy_level_constraints_are_grammar_checked_at_load() -> None:
+    """The same rule as a tool's list, via the shared ``_parse_all`` helper —
+    duplicating the check would let the two drift."""
+    with pytest.raises(ValidationError):
+        AgentPolicy(constraints=["args.amount =< 500"])
+
+
+def test_policy_level_constraints_default_to_empty_and_unset() -> None:
+    """``model_fields_set`` is what ``linker._reject_unsupported_module_fields``
+    keys on, so an unset field must not register as authored."""
+    policy = AgentPolicy()
+
+    assert policy.constraints == []
+    assert "constraints" not in policy.model_fields_set
+
+
+def test_policy_level_constraints_are_not_folded_into_effective_tools() -> None:
+    """``effective_tools`` is what ``get_tool_policy`` returns; folding a
+    role-wide list into a tool's own would make that return value a lie."""
+    policy = AgentPolicy(
+        constraints=["run.tool_calls < 3"],
+        tools={"read_file": BaseToolPolicy(mode="allow")},
+    )
+
+    assert policy.effective_tools["read_file"].constraints == []
