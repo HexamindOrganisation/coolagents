@@ -911,9 +911,10 @@ async def test_recompile_builds_distinct_bundles_per_agent(
 
 
 def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> None:
-    # PUT-ing a capability with a deny into a modular project must 409 (the linker
-    # rejects it at resolve), not store an uncomposable module that silently keeps
-    # agents on the old bundle.
+    # PUT-ing a capability with a deny must be rejected, not stored as an
+    # uncomposable module that silently keeps agents on the old bundle. This
+    # branch rejects it at WRITE time (422, `_validate_module`), earlier than the
+    # resolvability guard (409); either way it must not land.
     pid = _project(client)
     _put_module(client, pid, "capability", "read_only", READ_ONLY)
     assert (
@@ -927,8 +928,8 @@ def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> 
         f"/v1/projects/{pid}/policy-modules/capability/bad",
         json={"content": "tools:\n  x: { mode: deny }\n"},
     )
-    assert r.status_code == 409, r.text
-    # rolled back — the newly-created module was removed.
+    assert r.status_code in (422, 409), r.text
+    # not stored.
     paths = {
         (m["tier"], m["path"])
         for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
