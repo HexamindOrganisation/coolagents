@@ -51,6 +51,22 @@ _log = logging.getLogger(__name__)
 _MAX_POLL_INTERVAL_MS = 30 * 60 * 1000
 
 
+def _project_id(key: bytes | None) -> str | None:
+    """The auth-derived project attribution, or None when it is unusable.
+
+    A non-UTF-8 key can only come from a foreign producer (the Collector
+    always keys with the project_id string) and is as unattributable as no
+    key at all — both fall through to the missing_key parking path rather
+    than crash the poll.
+    """
+    if key is None:
+        return None
+    try:
+        return key.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 class TopicsMissing(Exception):
     """A required topic does not exist (auto-create is disabled)."""
 
@@ -193,7 +209,7 @@ class EnricherJob:
         seen_event_ids: set[tuple[str, str]] = set()
         dlq_messages: list[tuple[bytes | None, bytes]] = []  # (key, envelope)
         for record in records:
-            project_id = record.key.decode("utf-8") if record.key is not None else None
+            project_id = _project_id(record.key)
             # Decode before looking at the key: a keyless record is usually a
             # valid request that lost its auth attribution upstream, and only
             # a decoded span can be redacted before it is parked.
@@ -210,7 +226,9 @@ class EnricherJob:
                             topic=record.topic,
                             partition=record.partition,
                             offset=record.offset,
-                            raw_value=record.value,
+                            # None decodes to nothing worth carrying; b"" keeps
+                            # the envelope shape (and b64encode) total.
+                            raw_value=record.value or b"",
                         ),
                     )
                 )

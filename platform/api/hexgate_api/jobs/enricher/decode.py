@@ -52,13 +52,18 @@ def attrs_dict(attributes: Any) -> dict[str, Any]:
     return out
 
 
-def decode_record(value: bytes) -> list[DecodedSpan]:
+def decode_record(value: bytes | None) -> list[DecodedSpan]:
     """Parse one record into per-span units, each tagged with its
     instrumentation scope name and the enclosing resource attributes.
 
     Raises :class:`RecordDecodeError` when the bytes are not a valid
     protobuf message; a valid request with zero spans returns [].
     """
+    if value is None:
+        # A tombstone or a foreign producer's null. ParseFromString(None)
+        # raises TypeError, not DecodeError — unmapped here, it would escape
+        # the caller's decode handling and crash-loop the process.
+        raise RecordDecodeError("record value is None")
     request = ExportTraceServiceRequest()
     try:
         request.ParseFromString(value)

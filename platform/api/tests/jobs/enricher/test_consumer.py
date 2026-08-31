@@ -185,6 +185,41 @@ async def test_when_the_payload_is_undecodable_then_whole_record_to_dlq(
     assert consumer.commits == 1
 
 
+async def test_when_the_record_value_is_none_then_whole_record_to_dlq(
+    make_job,
+) -> None:
+    # A tombstone/null value from a foreign producer must park like any other
+    # undecodable record, not escape as a TypeError and crash-loop the job.
+    job, clickhouse, consumer, producer, calls = make_job()
+    records = [FakeRecord(key=b"proj_1", value=None)]
+
+    await job._process_poll(records)
+
+    clickhouse.insert.assert_not_called()
+    envelope = json.loads(producer.sent[0][2])
+    assert envelope["error_class"] == "decode"
+    assert envelope["record_value_base64"] == ""  # no bytes to carry
+    assert consumer.commits == 1
+
+
+async def test_when_the_record_key_is_not_utf8_then_spans_parked_as_missing_key(
+    make_job,
+) -> None:
+    # A garbled key is as unattributable as no key: the spans park through the
+    # redacting missing_key path instead of UnicodeDecodeError killing run().
+    job, clickhouse, consumer, producer, calls = make_job()
+    records = [
+        _record([(semconv.SCOPE_AUDIT, [make_span(decision_attrs())])], key=b"\xff\xfe")
+    ]
+
+    await job._process_poll(records)
+
+    clickhouse.insert.assert_not_called()
+    envelope = json.loads(producer.sent[0][2])
+    assert envelope["error_class"] == "missing_key"
+    assert consumer.commits == 1
+
+
 async def test_when_the_agent_version_is_unresolved_then_inserted_with_empty_string(
     make_job,
 ) -> None:

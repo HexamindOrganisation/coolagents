@@ -39,6 +39,13 @@ def test_when_value_is_not_protobuf_then_record_decode_error() -> None:
         decode_record(b"\xff\xff\xff\xff not a protobuf")
 
 
+def test_when_value_is_none_then_record_decode_error() -> None:
+    # ParseFromString(None) raises TypeError, which nothing upstream catches;
+    # it must surface as the decode error the consumer parks to the DLQ.
+    with pytest.raises(RecordDecodeError):
+        decode_record(None)
+
+
 def test_when_request_has_multiple_scopes_then_spans_tagged_per_scope() -> None:
     decoded = decode_record(
         make_request_bytes(
