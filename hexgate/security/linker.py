@@ -38,6 +38,7 @@ from hexgate.security.models import (
     BaseToolPolicy,
     FileToolPolicy,
     ToolPolicy,
+    is_agent_key,
 )
 from hexgate.security.modules import (
     DEFAULT_AGENT,
@@ -396,7 +397,13 @@ def _fold_tool(
             # doesn't (unlisted, or mentioned only via a conditional deny), the
             # tool is ineligible — a capability grant can't make it eligible.
             trace.shadow(tool, _prov(g))
-            return None
+            # For an ordinary tool, dropping it (None) IS the implicit deny. An
+            # agent key must instead stay as an explicit deny: the gate's
+            # engagement is derived from whether the resolved policy still carries
+            # the key (declares_admission / declares_reach), so a shadowed-away
+            # agent.run would silently DISENGAGE the gate (admit everyone) rather
+            # than deny — a fail-open. Keep it present and closed.
+            return BaseToolPolicy(mode="deny") if is_agent_key(tool) else None
 
     # 3+4. Capability grants. No grant → eligible but ungranted → implicit deny.
     grants: list[tuple[ModuleContent, ToolPolicy]] = []

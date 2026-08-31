@@ -321,6 +321,29 @@ def test_capability_admission_grant_composes() -> None:
     assert effective.effective_tools["agent.run"].mode == "allow"
 
 
+def test_ceiling_shadowed_admission_stays_a_deny_not_dropped() -> None:
+    # A capability grants admission, but a ceiling boundary (default deny) that
+    # doesn't list agent.run would shadow it. For an ordinary tool that drop IS the
+    # implicit deny; for an agent key it must stay an explicit deny, or the gate's
+    # engagement (declares_admission, derived from effective_tools) would read the
+    # key as absent and admit everyone — a fail-open.
+    ceiling = _mod(
+        "org.ceiling", "boundary", {"read_file": _allow()}, default_mode="deny"
+    )
+    cap = ModuleContent(
+        name="c",
+        kind="capability",
+        policy=AgentPolicy(admission={"mode": "allow"}),
+        source="c.yaml",
+        content_hash="hash-c",
+    )
+    effective, _ = link([ceiling], [cap])
+    # Present (so declares_admission stays True and the gate stays engaged) AND a
+    # deny (closed-world), rather than dropped (which would disengage → admit-all).
+    assert "agent.run" in effective.effective_tools
+    assert effective.effective_tools["agent.run"].mode == "deny"
+
+
 def test_capability_agents_deny_is_a_link_error() -> None:
     # Capabilities grant only, agent keys included: a capability that denies a
     # lowered agent key is a config error, same as a capability tool deny.

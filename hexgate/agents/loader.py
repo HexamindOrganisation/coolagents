@@ -377,17 +377,20 @@ def _apply_approval_handler(
     if not touched:
         logging.getLogger(__name__).warning(
             "approval_handler was supplied but %r has no GuardedTool tools to apply "
-            "it to; approval prompts will not fire for this agent",
+            "it to; tool approval prompts will not fire for this agent",
             getattr(agent, "name", None) or "agent",
         )
-        return agent
-    rebuilt = agent.with_tools(rewrapped)
-    # with_tools threads the existing admission gate forward, but that gate was
-    # built with the OLD handler (often None), so without re-stamping it an
-    # `admission: approval_required` policy would fail closed even though the
-    # caller wired an interactive handler. Rebuild it on the same enforcer.
-    binding = getattr(rebuilt, "_binding", None)
-    if binding is not None and getattr(rebuilt, "_agent_gate", None) is not None:
+    # The admission gate is independent of tools, so it must pick up the handler
+    # even for a tool-less (or non-LangChain-tool) agent gated purely by admission.
+    # with_tools threads the existing gate forward, but that gate was built with the
+    # OLD handler (often None), so without re-stamping it an `admission:
+    # approval_required` policy fails closed even though the caller wired a handler.
+    binding = getattr(agent, "_binding", None)
+    gate = getattr(agent, "_agent_gate", None)
+    if not touched and gate is None:
+        return agent  # no tools re-wrapped and no admission gate — nothing to do
+    rebuilt = agent.with_tools(rewrapped)  # rewrapped == agent.tools when untouched
+    if binding is not None and gate is not None:
         from hexgate.security.agent_gate import resolve_agent_gate
 
         rebuilt._agent_gate = resolve_agent_gate(

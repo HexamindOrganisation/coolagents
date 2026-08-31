@@ -391,3 +391,27 @@ async def test_apply_approval_handler_rewires_admission_gate() -> None:
     handled = loader._apply_approval_handler(guarded, approval_handler=True)
     async with ctx:
         await handled._agent_gate.check_admission_async()  # does not raise
+
+
+@pytest.mark.asyncio
+async def test_apply_approval_handler_rewires_gate_without_guarded_tools() -> None:
+    # Fix follow-up: the admission gate is independent of tools, so a tool-less
+    # agent gated purely by admission must still get the handler even though there
+    # are no GuardedTools to re-wrap (the "not touched" early-return path).
+    from hexgate.agents import loader
+    from hexgate.runtime import HexgateContext
+    from hexgate.security.agent_gate import AgentNotAdmittedError
+
+    agent, _ = factory.create_agent(model="openai:gpt-5.4", tools=[], name="a")
+    guarded = agent.enforce_policy(
+        AgentPolicy(admission=BaseToolPolicy(mode="approval_required"))
+    )
+    ctx = HexgateContext(user_id="u", user_roles=["support"])
+
+    async with ctx:
+        with pytest.raises(AgentNotAdmittedError):
+            await guarded._agent_gate.check_admission_async()
+
+    handled = loader._apply_approval_handler(guarded, approval_handler=True)
+    async with ctx:
+        await handled._agent_gate.check_admission_async()  # rewired despite no tools
