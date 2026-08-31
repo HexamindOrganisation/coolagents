@@ -1,6 +1,6 @@
 ---
 title: "Policy YAML shape"
-description: "version, default_policy, tools, modes, constraints."
+description: "version, constraints, default_policy, tools, modes."
 ---
 
 Enforcement is **deny-by-default**: the policy file lists what's allowed. Each
@@ -8,6 +8,11 @@ tool gets a mode and an optional list of [constraints](/policy/constraints).
 
 ```yaml
 version: 1
+
+# Applies to every tool below. default_policy.constraints would only reach
+# tools NOT listed under `tools:` — see "Where a constraint can live".
+constraints:
+  - run.tool_calls < 20
 
 default_policy:
   mode: deny
