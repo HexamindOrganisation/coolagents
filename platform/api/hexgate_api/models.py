@@ -370,10 +370,16 @@ class PolicyModule(SQLModel, table=True):
 
 
 class RoleBinding(SQLModel, table=True):
-    """A project role: a named list of capability names it imports.
+    """A project role: the capabilities it imports, per executing agent.
 
     A role is a binding, not a policy (see R-POL-001) — boundaries apply to
     every role and are never listed here. One row per ``(project_id, role)``.
+
+    ``capabilities`` carries the ``(role, agent)`` matrix in its JSON value:
+    a mapping ``{agent-or-"*": [capability names]}``. A legacy flat ``[names]``
+    list is read as the generic ``{"*": [names]}`` agent — so the agent axis is
+    a value-shape evolution with no schema change (the column stays JSON, the
+    key stays ``(project_id, role)``). See ``agent-policy-dimension-design.md``.
     """
 
     __tablename__ = "role_binding"
@@ -384,6 +390,8 @@ class RoleBinding(SQLModel, table=True):
     id: str = Field(primary_key=True)  # new_id(RoleBinding) -> "rbd_…"
     project_id: str = Field(foreign_key="project.id", index=True)
     role: str = Field(index=True)
-    capabilities: list[str] = Field(
-        default_factory=list, sa_column=Column(JSON, nullable=False)
+    # list[str] (legacy flat) OR dict[agent, list[str]] (the matrix). Column is
+    # JSON either way, so widening the value shape needs no migration.
+    capabilities: list[str] | dict[str, list[str]] = Field(
+        default_factory=dict, sa_column=Column(JSON, nullable=False)
     )

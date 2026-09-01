@@ -27,6 +27,33 @@ LayerKind = Literal["boundary", "capability"]
 # and the analyzer's lints so they can't drift out of lockstep.
 GRANT_MODES: tuple[str, ...] = ("allow", "approval_required")
 
+# The wildcard / default agent key in a role binding — applies to any executing
+# agent not named explicitly. Deliberately distinct from the default executing
+# agent NAME ("main") and from the default ROLE name, so the three never collide.
+DEFAULT_AGENT = "*"
+
+
+@dataclass(frozen=True)
+class AgentBinding:
+    """One ``(role, agent)`` cell of a role binding.
+
+    A thin *selection*, not authored policy: ``capabilities`` names the capability
+    modules this agent imports for the role. A named agent's binding **replaces**
+    the ``"*"`` default for that agent (so an agent can be *more restricted*),
+    never merges with it — the reading that lets capability-selection alone
+    express "this agent does less than the role generally allows".
+
+    (Reach edges — handoff / agent-as-tool — attach here in a later commit; kept
+    to capabilities for now so the capabilities matrix lands first.)
+    """
+
+    capabilities: tuple[str, ...] = ()
+
+
+# role -> agent-or-"*" -> binding. The normalized shape of a project's role
+# bindings; a flat ``role: [caps]`` is sugar for ``{role: {"*": <caps>}}``.
+RoleMatrix = dict[str, dict[str, AgentBinding]]
+
 
 class LinkError(ValueError):
     """Raised when a bundle of modules can't be composed.

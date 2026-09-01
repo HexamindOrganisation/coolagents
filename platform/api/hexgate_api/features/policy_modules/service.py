@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from collections.abc import Iterable
 
 import yaml
 from sqlalchemy.exc import IntegrityError
@@ -20,7 +22,14 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from hexgate_api.core.ids import new_id
 from hexgate_api.models import PolicyModule, RoleBinding, utcnow
 
+logger = logging.getLogger("hexgate.platform.policy_modules")
+
 VALID_TIERS = ("boundary", "capability")
+
+# The generic/default agent key in a role binding. Mirrors
+# ``hexgate.security.DEFAULT_AGENT``; kept local so the store CRUD (get/set_roles)
+# doesn't import the SDK at module load — the SDK is imported lazily in resolve.
+DEFAULT_AGENT = "*"
 
 
 class InvalidModuleError(Exception):
@@ -83,6 +92,17 @@ async def _get_module(
             )
         )
     ).first()
+
+
+async def get_module_peek(
+    session: AsyncSession, project_id: str, tier: str, path: str
+) -> tuple[str | None, str | None]:
+    """``(content, content_hash)`` of the stored module, or ``(None, None)``.
+
+    One read, so a caller can both detect a real change (compare the hash) and
+    restore the prior content if an edit turns out to break the project."""
+    row = await _get_module(session, project_id, tier, path)
+    return (row.content, row.content_hash) if row is not None else (None, None)
 
 
 async def upsert_module(
@@ -154,19 +174,75 @@ async def delete_module(
 # --- role bindings -----------------------------------------------------------
 
 
-async def get_roles(session: AsyncSession, project_id: str) -> dict[str, list[str]]:
+RoleMatrixJson = dict[str, dict[str, list[str]]]
+"""The platform's JSON-friendly binding shape: role -> agent-or-"*" -> caps."""
+
+
+def _normalize_cell(stored: object) -> dict[str, list[str]]:
+    """One stored ``RoleBinding.capabilities`` value → ``{agent: [caps]}``.
+
+    A legacy flat ``[names]`` list reads as the generic ``{"*": [names]}`` agent,
+    so old rows keep their exact meaning with no migration. A mapping is already
+    the matrix and passes through.
+    """
+    if isinstance(stored, dict):
+        return {str(agent): list(caps) for agent, caps in stored.items()}
+    if isinstance(stored, list):
+        return {DEFAULT_AGENT: [str(c) for c in stored]}
+    # The column is model-constrained to list|dict, so this only fires on a
+    # corrupt row (a direct DB edit, a future bug). Fail closed (the role grants
+    # nothing) but don't swallow it silently — log so check()/ops can see it.
+    logger.warning(
+        "role_binding.capabilities has unexpected shape %r; treating as empty",
+        type(stored).__name__,
+    )
+    return {}
+
+
+async def get_roles(session: AsyncSession, project_id: str) -> RoleMatrixJson:
+    """The project's role bindings as ``role -> agent-or-"*" -> capabilities``.
+
+    Legacy flat rows normalize to the generic ``"*"`` agent, so a project written
+    before the agent axis reads back identically.
+    """
     rows = (
         await session.exec(
             select(RoleBinding).where(RoleBinding.project_id == project_id)
         )
     ).all()
-    return {row.role: list(row.capabilities) for row in rows}
+    return {row.role: _normalize_cell(row.capabilities) for row in rows}
+
+
+async def roles_importing(
+    session: AsyncSession, project_id: str, path: str
+) -> list[str]:
+    """Role names whose binding still imports the capability ``path`` under ANY agent.
+
+    Used to block deleting a capability that a role still references: without
+    this the delete succeeds but the project stops resolving (the SDK linker
+    raises "role imports unknown capability"), so no new bundle is built and
+    every agent keeps the old one — still granting the deleted capability.
+    """
+    roles = await get_roles(session, project_id)
+    return sorted(
+        role
+        for role, cells in roles.items()
+        if any(path in caps for caps in cells.values())
+    )
 
 
 async def set_roles(
-    session: AsyncSession, *, project_id: str, roles: dict[str, list[str]]
-) -> dict[str, list[str]]:
+    session: AsyncSession,
+    *,
+    project_id: str,
+    roles: RoleMatrixJson | dict[str, list[str]],
+) -> RoleMatrixJson:
     """Replace the project's role bindings wholesale (a small, edited-together set).
+
+    Accepts either the matrix (``role -> {agent: [caps]}``) or the flat form
+    (``role -> [caps]``, normalized to the generic ``"*"`` agent), so a flat
+    caller stays valid. Stores each role's ``{agent: [caps]}`` mapping in the
+    row's JSON value — no schema change.
 
     Retries once on an IntegrityError: two concurrent wholesale replaces can each
     delete the existing rows and re-insert the same ``(project_id, role)``,
@@ -174,6 +250,7 @@ async def set_roles(
     replaces them cleanly instead of surfacing a 500 (same posture as
     ``upsert_module``'s create-race handling).
     """
+    normalized = {role: _normalize_cell(cells) for role, cells in roles.items()}
     for attempt in range(2):
         existing = (
             await session.exec(
@@ -186,13 +263,13 @@ async def set_roles(
         # order an INSERT first and trip the (project_id, role) unique constraint
         # when a role name recurs across edits (the common wholesale-replace case).
         await session.flush()
-        for role, caps in roles.items():
+        for role, cells in normalized.items():
             session.add(
                 RoleBinding(
                     id=new_id(RoleBinding),
                     project_id=project_id,
                     role=role,
-                    capabilities=list(caps),
+                    capabilities=dict(cells),
                 )
             )
         try:
@@ -220,26 +297,45 @@ def _to_module_content(row: PolicyModule):
     )
 
 
+def _to_role_matrix(matrix: RoleMatrixJson):
+    """The stored JSON matrix (``role -> agent -> [caps]``) → the SDK's RoleMatrix
+    (AgentBinding cells), or ``None`` when empty.
+
+    No role bindings maps to ``None``, not ``{}``: the SDK reads ``None`` as "no
+    roles, one default importing every capability" (the all-compose behaviour the
+    local ``hexgate policy resolve`` and docs/adr/R-POL-001 document), whereas
+    ``{}`` is a present-but-empty binding that fail-closes. The platform has no
+    typo-able roles file, so "no bindings" is the no-roles case, not the empty one.
+    """
+    from hexgate.security import AgentBinding
+
+    return {
+        role: {
+            agent: AgentBinding(capabilities=tuple(caps))
+            for agent, caps in cells.items()
+        }
+        for role, cells in matrix.items()
+    } or None
+
+
 async def _sdk_inputs(session: AsyncSession, project_id: str):
     rows = await list_modules(session, project_id)
     boundaries = [_to_module_content(r) for r in rows if r.tier == "boundary"]
     capabilities = [_to_module_content(r) for r in rows if r.tier == "capability"]
-    # No role bindings maps to None, not {}: the SDK reads None as "no roles, one
-    # default importing every capability" (the all-compose behaviour the local
-    # `hexgate policy resolve` and docs/adr/R-POL-001 document), whereas {} is a
-    # present-but-empty binding that fail-closes. The platform has no typo-able
-    # roles file, so "no bindings" is the no-roles case, not the empty one.
-    roles = await get_roles(session, project_id) or None
+    roles = _to_role_matrix(await get_roles(session, project_id))
     return boundaries, capabilities, roles
 
 
-async def resolve(session: AsyncSession, project_id: str):
-    """Compose the project into a role-keyed PolicySet. Raises the SDK's
-    LinkError / PolicySetError / ConstraintParseError on an invalid set."""
+async def resolve(session: AsyncSession, project_id: str, agent: str = DEFAULT_AGENT):
+    """Compose one agent's role-keyed PolicySet (Path A). Raises the SDK's
+    LinkError / PolicySetError / ConstraintParseError on an invalid set.
+
+    ``agent`` selects the executing agent's column of the ``(role, agent)`` matrix
+    (default ``"*"`` — the generic view). Each agent resolves to its own bundle."""
     from hexgate.security import resolve_for_project
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
-    return resolve_for_project(boundaries, capabilities, roles)
+    return resolve_for_project(boundaries, capabilities, roles, agent=agent)
 
 
 async def check(session: AsyncSession, project_id: str):
@@ -249,3 +345,184 @@ async def check(session: AsyncSession, project_id: str):
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
     return check_project(boundaries, capabilities, roles)
+
+
+def compose_error_types() -> tuple[type[BaseException], ...]:
+    """Exceptions meaning "the module set doesn't compose right now".
+
+    The single source of truth shared by the write-time guard (:func:`resolves`)
+    and the compile fail-safe (``agents.service``), so they can't drift on which
+    errors fold to "keep the last-good bundle" versus escape as a 500 — the SDK
+    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
+    from re-parsing a stored row. SDK imports stay lazy so this module loads
+    without the SDK."""
+    from pydantic import ValidationError
+
+    from hexgate.security import LinkError, PolicySetError
+    from hexgate.security.constraints import ConstraintParseError
+
+    return (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        ValidationError,
+        yaml.YAMLError,
+    )
+
+
+def _resolve_all_agents(boundaries, capabilities, roles) -> None:
+    """Resolve EVERY agent column of ``roles`` (not just ``"*"``, so a named-agent
+    cell importing an unknown capability is caught). Raises the SDK compose errors
+    on failure; resolves only (no YAML serialization)."""
+    from hexgate.security import resolve_for_project
+
+    agents = {DEFAULT_AGENT}
+    if roles:
+        agents |= {agent for cells in roles.values() for agent in cells}
+    for agent in agents:
+        resolve_for_project(boundaries, capabilities, roles, agent=agent)
+
+
+def normalize_roles(
+    roles: RoleMatrixJson | dict[str, list[str]],
+) -> RoleMatrixJson:
+    """A flat-or-matrix role binding → the matrix JSON shape (flat → ``"*"``)."""
+    return {role: _normalize_cell(cells) for role, cells in roles.items()}
+
+
+async def resolves(session: AsyncSession, project_id: str) -> bool:
+    """Whether the project's STORED modules + bindings compose for every agent.
+
+    A cheap, opa-free precondition for accepting a write that edits a MODULE
+    (the bindings are already stored). ``True`` only if every agent column
+    resolves. ``_sdk_inputs`` is inside the ``try`` because it re-parses every
+    stored module — a row that no longer parses is a compose failure (→ False →
+    409), not a 500."""
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+        _resolve_all_agents(boundaries, capabilities, roles)
+        return True
+    except compose_error_types():
+        return False
+
+
+async def resolves_proposed(
+    session: AsyncSession, project_id: str, proposed: RoleMatrixJson
+) -> bool:
+    """Whether the STORED modules compose with the PROPOSED role bindings, for
+    every agent — validated in memory **before** writing, so an invalid binding
+    is never briefly visible via a concurrent GET and no rollback is needed.
+    ``_sdk_inputs`` is inside the ``try`` for the same reason as :func:`resolves`."""
+    try:
+        boundaries, capabilities, _stored = await _sdk_inputs(session, project_id)
+        _resolve_all_agents(boundaries, capabilities, _to_role_matrix(proposed))
+        return True
+    except compose_error_types():
+        return False
+
+
+def _draft_module_content(tier: str, path: str, content: str):
+    """A :class:`ModuleContent` from an unsaved draft (hash recomputed, not stored)."""
+    from hexgate.security import ModuleContent
+
+    return ModuleContent(
+        name=path,
+        kind=tier,
+        policy=_parse_policy(content),  # raises on invalid YAML / schema
+        source=f"{tier}/{path}",
+        content_hash=_content_hash(content),
+    )
+
+
+async def resolves_with_module(
+    session: AsyncSession, project_id: str, tier: str, path: str, content: str
+) -> bool:
+    """Whether the project still resolves with this DRAFT module overlaid, without
+    writing it — validated in memory **before** the write, so a resolution-breaking
+    edit (e.g. a capability with a deny) is rejected without a commit-then-rollback
+    window a concurrent GET could observe.
+
+    Raises :class:`InvalidModuleError` if the content isn't a valid policy (the
+    caller maps that to 422); returns ``False`` only when the content is valid but
+    the project no longer composes with it (→ 409)."""
+    _validate_policy_yaml(content)  # → InvalidModuleError (422) on malformed content
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+        overlay = _draft_module_content(tier, path, content)
+        if tier == "boundary":
+            boundaries = [m for m in boundaries if m.name != path] + [overlay]
+        else:
+            capabilities = [m for m in capabilities if m.name != path] + [overlay]
+        _resolve_all_agents(boundaries, capabilities, roles)
+        return True
+    except compose_error_types():
+        return False
+
+
+# --- enforcement integration (see docs/adr/R-POL-002) ------------------------
+
+
+async def is_modular(session: AsyncSession, project_id: str) -> bool:
+    """Whether the project compiles agents from modules rather than policy_yaml.
+
+    A project is modular once it has at least one role binding. Binding a role is
+    the deliberate opt-in: uploading a capability or boundary module alone does
+    not flip enforcement, so a half-built library never bricks live agents.
+    """
+    row = (
+        await session.exec(
+            select(RoleBinding.id)  # type: ignore[arg-type]
+            .where(RoleBinding.project_id == project_id)
+            .limit(1)
+        )
+    ).first()
+    return row is not None
+
+
+def roles_json(result, role: str | None = None) -> dict:
+    """The effective policy per role, as JSON-able dicts.
+
+    Delegates to the SDK's ``effective_policy_by_role`` so the resolve endpoint
+    and the compile path serialize a project the same way ``hexgate policy
+    resolve`` does — same role order (sorted), same bytes. ``role`` narrows to a
+    single role (the resolve endpoint's ``?role=``); ``None`` returns all.
+    """
+    from hexgate.security import effective_policy_by_role
+
+    return effective_policy_by_role(result, None if role is None else [role])
+
+
+async def resolved_policy_yaml(
+    session: AsyncSession, project_id: str, agent: str = DEFAULT_AGENT
+) -> str:
+    """One agent's resolved role-keyed policy as inline-roles YAML.
+
+    Serializes to the ``roles:`` shape ``build_signed_bundle`` accepts, so the
+    platform compile path is byte-for-byte the same as a single-file policy.
+    ``agent`` selects that agent's column of the ``(role, agent)`` matrix (Path A:
+    one bundle per agent). Raises the SDK's ``LinkError`` / ``PolicySetError`` /
+    ``ConstraintParseError`` if the modules don't compose, so callers can leave
+    live bundles untouched.
+    """
+    result = await resolve(session, project_id, agent=agent)
+    return yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+
+
+async def resolved_yaml_by_agent(
+    session: AsyncSession, project_id: str, agents: Iterable[str]
+) -> dict[str, str]:
+    """Resolve several agents' policy YAML, loading modules + bindings **once**.
+
+    Compiling a modular project fans out over its agents; resolving each via
+    ``resolved_policy_yaml`` would re-read the store and re-parse every module per
+    agent. This loads the SDK inputs once and resolves each agent's column in
+    memory. Raises the SDK's link/compose errors if any agent's set doesn't
+    compose, so callers keep the last-good bundle (fail-safe)."""
+    from hexgate.security import resolve_for_project
+
+    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    out: dict[str, str] = {}
+    for agent in agents:
+        result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
+        out[agent] = yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+    return out
