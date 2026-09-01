@@ -462,15 +462,17 @@ def compose_error_types() -> tuple[type[BaseException], ...]:
     The single source of truth shared by the write-time guard (:func:`resolves`)
     and the compile fail-safe (``agents.service``), so they can't drift on which
     errors fold to "keep the last-good bundle" versus escape as a 500 — the SDK
-    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
-    from re-parsing a stored row. SDK imports stay lazy so this module loads
-    without the SDK."""
+    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``,
+    and ``InvalidModuleError`` (``_to_module_content`` wraps a stored row that no
+    longer parses in it). SDK imports stay lazy so this module loads without the
+    SDK."""
     from pydantic import ValidationError
 
     from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
 
     return (
+        InvalidModuleError,
         LinkError,
         PolicySetError,
         ConstraintParseError,
@@ -551,10 +553,11 @@ async def resolves_with_module(
     edit (e.g. a capability with a deny) is rejected without a commit-then-rollback
     window a concurrent GET could observe.
 
-    Raises :class:`InvalidModuleError` if the content isn't a valid policy (the
-    caller maps that to 422); returns ``False`` only when the content is valid but
-    the project no longer composes with it (→ 409)."""
-    _validate_policy_yaml(content)  # → InvalidModuleError (422) on malformed content
+    Raises :class:`InvalidModuleError` if the content isn't a valid policy — or,
+    on this branch, a capability with a deny (the caller maps that to 422);
+    returns ``False`` only when the content is valid but the project no longer
+    composes with it (→ 409)."""
+    _validate_module(tier, path, content)  # → InvalidModuleError (422)
     try:
         boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
         overlay = _draft_module_content(tier, path, content)
