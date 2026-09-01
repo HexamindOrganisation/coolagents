@@ -23,7 +23,7 @@ from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import DEFAULT_AGENT_NAME, HexgateContext, run_scope
 from hexgate.security.bans import resolve_ban_gate
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ class HexgateRunner:
             session_service=session_service,
             **runner_kwargs,
         )
-        self._agent_name = getattr(agent, "name", "default")
+        self._agent_name = getattr(agent, "name", DEFAULT_AGENT_NAME)
         self._ban_gate = resolve_ban_gate(
             self._agent_name, api_key=self.api_key, client=client
         )
@@ -117,7 +117,11 @@ class HexgateRunner:
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
             self._ban_gate.check(hexgate_context)
-        with hexgate_context.sync_scope(), self._propagate(hexgate_context):
+        with (
+            hexgate_context.sync_scope(),
+            run_scope(self._agent_name),
+            self._propagate(hexgate_context),
+        ):
             agen = self._runner.run_async(
                 user_id=hexgate_context.user_id,
                 session_id=hexgate_context.session_id,
@@ -155,7 +159,7 @@ class HexgateRunner:
         if self._ban_gate is not None:
             await self._ban_gate.check_async(hexgate_context)
         async with hexgate_context:
-            with self._propagate(hexgate_context):
+            with run_scope(self._agent_name), self._propagate(hexgate_context):
                 async for event in self._runner.run_async(
                     user_id=hexgate_context.user_id,
                     session_id=hexgate_context.session_id,

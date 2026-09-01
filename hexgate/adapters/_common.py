@@ -7,9 +7,12 @@ import surface.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from contextlib import asynccontextmanager, contextmanager
+from typing import Any, AsyncIterator, Iterator
 
-from hexgate.runtime import HexgateContext
+from langfuse import propagate_attributes
+
+from hexgate.runtime import HexgateContext, run_scope
 from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 
 # Langfuse silently drops a propagated metadata value over 200 chars, so the
@@ -66,3 +69,28 @@ def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, An
         "session_id": context.session_id,
         "metadata": {"user_roles": roles},
     }
+
+
+@asynccontextmanager
+async def abind(
+    context: HexgateContext, agent_name: str, tag: str
+) -> AsyncIterator[None]:
+    """Async run boundary shared by every adapter proxy: identity scope, run facts,
+    then Langfuse propagation, so the facts are live wherever a tool call executes.
+
+    Takes the span ``tag`` rather than the built kwargs — it embeds the caller's
+    method name, and resolving it here keeps the attributes read inside the scopes.
+    """
+    async with context:
+        with run_scope(agent_name):
+            with propagate_attributes(**langfuse_propagate_kwargs(context, tag)):
+                yield
+
+
+@contextmanager
+def bind(context: HexgateContext, agent_name: str, tag: str) -> Iterator[None]:
+    """Sync mirror of :func:`abind`."""
+    with context.sync_scope():
+        with run_scope(agent_name):
+            with propagate_attributes(**langfuse_propagate_kwargs(context, tag)):
+                yield
