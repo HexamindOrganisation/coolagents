@@ -4,9 +4,12 @@ with no asyncio event loop anywhere in the process — the sender's span
 export runs on its own worker thread, with no loop affinity — and (3) lands
 a policy_decision row for its tool call.
 
-Requires: `make clickhouse-up` and `make platform-api` running, and
-`HEXGATE_API_KEY` set to a token minted via the dashboard (or the
-platform API directly).
+Requires the full OTLP ingest pipeline — Postgres, ClickHouse, Redpanda,
+`make platform-api-pg`, `make collector-run` and `make enricher-run` — plus
+`HEXGATE_API_KEY` set to a token minted against that Postgres-backed API.
+`make platform-api` (SQLite) is NOT enough: the Collector authenticates
+keys against the `devtoken` table in Postgres. See
+.claude/skills/integration-tests for the exact sequence.
 
 Opt in with: `pytest -m integration`.
 """

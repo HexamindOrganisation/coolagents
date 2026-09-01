@@ -28,7 +28,7 @@ USER_ID_PREFIX = "u-integration-"
 def poll_until(
     fetch: Callable[[], Any],
     *,
-    timeout: float = 10.0,
+    timeout: float = 30.0,
     interval: float = 0.5,
     message: str,
 ) -> Any:
@@ -39,6 +39,12 @@ def poll_until(
     wall-clock deadline, not an iteration-count proxy for one — a slow
     individual ``fetch()`` call eats into the budget instead of silently
     extending the total wait past ``timeout``.
+
+    The default is sized for the OTLP pipeline's worst case rather than the
+    happy path: the SDK's batch processor delay (cut to 500ms by the
+    ``hexgate_platform_env`` fixture) + the Collector's 5s ``batch.timeout``
+    + the enricher's 1s Kafka poll + the ClickHouse insert. The old 10s was
+    calibrated on the pre-OTel path, where emit() was a direct POST.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -61,8 +67,10 @@ def assert_policy_and_usage_events_landed(
 
     ``policy_decision`` is the audit trail (the allow/deny outcome);
     ``llm_invocation`` is usage telemetry (SDK usage ingest), a distinct
-    concept that happens to land in the same ClickHouse database. Both
-    sends run on a background thread — poll rather than assume they've
+    concept that happens to land in the same ClickHouse database. Neither
+    is written by the process under test: both leave as OTLP spans on the
+    exporter's worker thread and cross the Collector, Redpanda and the
+    enricher before any row exists — so poll rather than assume they've
     landed the instant the run call returns. Common to all four framework
     adapters' integration tests, which each wrap one ``tool_name``-calling
     agent the same way.

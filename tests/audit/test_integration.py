@@ -1,10 +1,11 @@
 """End-to-end audit emission against a live Collector → Redpanda → enricher
 → ClickHouse pipeline.
 
-Requires: the platform stack running (`make clickhouse-up`, the Collector,
-Redpanda and the enricher job — see platform/README), `HEXGATE_API_KEY` set
-to a token minted via the dashboard, and `HEXGATE_OTLP_ENDPOINT` pointing at
-the Collector's OTLP/HTTP receiver (default `http://localhost:4318/v1/traces`).
+Requires the platform stack running (`make clickhouse-up`, `make redpanda-topics`,
+the Collector and the enricher job — see .claude/skills/integration-tests),
+`HEXGATE_API_KEY` set to a token minted against the Postgres-backed API, and
+`HEXGATE_OTLP_ENDPOINT` pointing at the Collector's OTLP/HTTP receiver
+(default `http://localhost:4318/v1/traces`).
 
 Opt in with: `pytest -m integration`.
 """
