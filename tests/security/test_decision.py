@@ -11,13 +11,13 @@ from collections.abc import Callable
 
 import pytest
 
+from hexgate.runtime.roles import MAX_EVALUATED_ROLES
 from hexgate.security.decision import (
     Decision,
     DecisionOutcome,
     Verdict,
     combine_role_verdicts,
 )
-from hexgate.runtime.roles import MAX_EVALUATED_ROLES
 
 
 def _deny_decision() -> Decision:

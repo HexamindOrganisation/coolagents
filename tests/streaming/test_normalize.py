@@ -18,8 +18,8 @@ from hexgate.streaming import (
     ToolCallState,
     ToolEndEvent,
     ToolStartEvent,
+    normalize_langchain_events,
 )
-from hexgate.streaming import normalize_langchain_events
 
 
 async def _aiter(items: list[dict]) -> AsyncIterator[dict]:

@@ -16,7 +16,6 @@ from hexgate.security import (
 )
 from hexgate.security.constraints import ConstraintParseError
 
-
 # ---------------------------------------------------------------------------
 # C — typed constraint constructors emit the grammar strings the parser accepts
 # ---------------------------------------------------------------------------

@@ -29,9 +29,9 @@ from yaml.error import MarkedYAMLError
 from hexgate.runtime.context import ContextAttributeValue
 from hexgate.runtime.roles import distinct_roles, resolve_role_set
 from hexgate.security import (
+    DEFAULT_ROLE_NAME,
     AgentPolicy,
     DecisionOutcome,
-    DEFAULT_ROLE_NAME,
     OpaNotFoundError,
     PolicySetError,
     SignatureError,

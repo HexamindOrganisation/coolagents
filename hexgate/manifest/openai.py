@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from agents import Agent
+from agents.models.interface import Model
+from agents.tool import FunctionTool, Tool
+
 from hexgate.manifest.models import (
     AgentFramework,
     AgentManifest,
@@ -7,10 +11,6 @@ from hexgate.manifest.models import (
     InputSchema,
     ToolDefinition,
 )
-
-from agents import Agent
-from agents.models.interface import Model
-from agents.tool import FunctionTool, Tool
 
 
 def create_openai_manifest(

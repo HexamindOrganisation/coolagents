@@ -28,7 +28,6 @@ from hexgate.security import (
     sign_bytes,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(
     not _OPA_AVAILABLE,

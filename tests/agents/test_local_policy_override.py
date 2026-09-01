@@ -31,7 +31,6 @@ from hexgate.security import (
     sign_bytes,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(
     not _OPA_AVAILABLE,
@@ -309,6 +308,7 @@ def test_load_local_agent_uses_original_policy_without_override(
     is used (not a PolicyBundle). Guards against my own dispatcher
     silently always preferring wasm."""
     from typing import Any
+
     from hexgate.security import AgentPolicy, PolicyBundle
 
     _write_local_agent_dir(tmp_path / "example_agent", name="example_agent")

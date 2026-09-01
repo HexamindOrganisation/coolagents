@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import logging
 
+from pydantic_ai import Agent
+from pydantic_ai.models import Model
+from pydantic_ai.tools import Tool
+
 from hexgate.manifest.models import (
     AgentFramework,
     AgentManifest,
@@ -9,10 +13,6 @@ from hexgate.manifest.models import (
     InputSchema,
     ToolDefinition,
 )
-
-from pydantic_ai import Agent
-from pydantic_ai.models import Model
-from pydantic_ai.tools import Tool
 
 logger = logging.getLogger(__name__)
 

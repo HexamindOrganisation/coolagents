@@ -24,7 +24,6 @@ from tests.mcp.conftest import (
     toolset_stub,
 )
 
-
 # ---- wrap_mcp_toolset — shape ---------------------------------------------
 
 

@@ -12,12 +12,11 @@ client patched over ``hexgate.cloud.client.HexgateClient``.
 
 from __future__ import annotations
 
-
 import pytest
 from langchain_core.tools import tool
 
-from hexgate.agents import factory
 from hexgate.adapters.langchain.tools import GuardedTool
+from hexgate.agents import factory
 from hexgate.cloud.client import HexgateError
 from hexgate.security import AgentPolicy, PolicySet
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME

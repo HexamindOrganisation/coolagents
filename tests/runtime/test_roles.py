@@ -11,7 +11,6 @@ from hexgate.runtime.roles import (
     resolve_role_set,
 )
 
-
 # --- distinct_roles: dedup for attestation (no cap, no sentinel) ------------
 
 

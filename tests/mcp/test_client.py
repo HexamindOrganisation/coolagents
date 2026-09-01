@@ -23,7 +23,6 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 from hexgate.mcp import MCPServerConfig
 from hexgate.mcp.client import MCPClient, MCPConnectionError
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

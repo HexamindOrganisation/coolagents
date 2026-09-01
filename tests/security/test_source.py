@@ -33,7 +33,6 @@ from hexgate.security.source import (
     SignaturePolicy,
 )
 
-
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(not _OPA_AVAILABLE, reason="opa not on PATH")
 

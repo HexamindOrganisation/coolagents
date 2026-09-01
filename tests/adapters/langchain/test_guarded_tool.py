@@ -21,7 +21,6 @@ from hexgate.security.decision import Decision, DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

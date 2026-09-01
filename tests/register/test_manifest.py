@@ -1,15 +1,15 @@
 from hexgate.manifest import create_manifest
+from hexgate.manifest.google import create_google_manifest
+from hexgate.manifest.langchain import create_langchain_manifest
 from hexgate.manifest.models import (
-    AgentManifest,
     AgentFramework,
+    AgentManifest,
     InputProperty,
     InputSchema,
     ToolDefinition,
 )
 from hexgate.manifest.native import create_hexgate_manifest
 from hexgate.manifest.openai import create_openai_manifest
-from hexgate.manifest.google import create_google_manifest
-from hexgate.manifest.langchain import create_langchain_manifest
 from hexgate.manifest.pydantic_ai import create_pydantic_ai_manifest
 
 
@@ -136,8 +136,8 @@ def test_google_manifest_extracts_mcp_tool_schema_from_json_schema():
     from hexgate.adapters.google.mcp import wrap_mcp_toolset
     from hexgate.manifest.google import _to_tool_definition
     from hexgate.mcp import MCPServerConfig
-    from hexgate.mcp.proxy import _ToolsetState
     from hexgate.mcp.proxy import _build_proxy as build
+    from hexgate.mcp.proxy import _ToolsetState
 
     class _FakeClient:
         def __init__(self, config):

@@ -28,9 +28,9 @@ from typing import TYPE_CHECKING, Any
 from hexgate.agents.approvals import resolve_approval_async, resolve_approval_sync
 from hexgate.guards.types import (
     _UNSET,
-    Halt,
     Guard,
     GuardEvent,
+    Halt,
     Modification,
     Proceed,
     ToolCall,

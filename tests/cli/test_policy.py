@@ -19,9 +19,6 @@ from pathlib import Path
 
 import pytest
 
-from hexgate.security import analyzer
-from hexgate.security.analyzer import PolicyLint
-
 from hexgate.cli.policy.main import (
     _main_build,
     _main_keygen,
@@ -29,6 +26,8 @@ from hexgate.cli.policy.main import (
     _main_test,
     _main_validate,
 )
+from hexgate.security import analyzer
+from hexgate.security.analyzer import PolicyLint
 
 _OPA_AVAILABLE = shutil.which("opa") is not None
 needs_opa = pytest.mark.skipif(

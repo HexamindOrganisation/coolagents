@@ -23,7 +23,6 @@ from hexgate.agents import factory
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.runtime import HexgateContext, get_current_context
 
-
 # ---------------------------------------------------------------------------
 # Fixtures + helpers
 # ---------------------------------------------------------------------------

@@ -13,9 +13,9 @@ import pytest
 from hexgate.guards import after_tool, before_tool
 from hexgate.guards.runner import run_guarded_async, run_guarded_sync
 from hexgate.guards.types import (
-    Halt,
     Guard,
     GuardEvent,
+    Halt,
     Modification,
     Proceed,
     ToolCall,

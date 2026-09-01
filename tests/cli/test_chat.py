@@ -15,8 +15,14 @@ from hexgate.agents.loader import _apply_decision_observer
 from hexgate.cli import _common
 from hexgate.cli._common import (
     AgentRuntime,
+)
+from hexgate.cli._common import (
     build_approval_handler as _build_approval_handler,
+)
+from hexgate.cli._common import (
     load_agent_script as _load_agent_script,
+)
+from hexgate.cli._common import (
     prompt_for_approval as _prompt_for_approval,
 )
 from hexgate.cli.chat import (
