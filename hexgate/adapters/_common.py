@@ -20,10 +20,6 @@ from hexgate.tracing._senders import DEFAULT_DRAIN_TIMEOUT, pending_send_tasks
 # values are dropped too). Only bites on an unusually large role list.
 _MAX_METADATA_CHARS = 200
 
-# Fallback when a wrapped agent has no name. Shared so a nameless agent's audit
-# events and its run facts agree on the label, rather than drifting apart.
-DEFAULT_AGENT_NAME = "default"
-
 
 def drain_pending_tasks(
     loop: asyncio.AbstractEventLoop, *, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT
@@ -77,25 +73,24 @@ def langfuse_propagate_kwargs(context: HexgateContext, tag: str) -> dict[str, An
 
 @asynccontextmanager
 async def abind(
-    context: HexgateContext, agent_name: str, propagate_kwargs: dict[str, Any]
+    context: HexgateContext, agent_name: str, tag: str
 ) -> AsyncIterator[None]:
     """Async run boundary shared by every adapter proxy: identity scope, run facts,
     then Langfuse propagation, so the facts are live wherever a tool call executes.
 
-    The caller passes ``propagate_kwargs`` because its tag embeds their method name.
+    Takes the span ``tag`` rather than the built kwargs — it embeds the caller's
+    method name, and resolving it here keeps the attributes read inside the scopes.
     """
     async with context:
         with run_scope(agent_name):
-            with propagate_attributes(**propagate_kwargs):
+            with propagate_attributes(**langfuse_propagate_kwargs(context, tag)):
                 yield
 
 
 @contextmanager
-def bind(
-    context: HexgateContext, agent_name: str, propagate_kwargs: dict[str, Any]
-) -> Iterator[None]:
+def bind(context: HexgateContext, agent_name: str, tag: str) -> Iterator[None]:
     """Sync mirror of :func:`abind`."""
     with context.sync_scope():
         with run_scope(agent_name):
-            with propagate_attributes(**propagate_kwargs):
+            with propagate_attributes(**langfuse_propagate_kwargs(context, tag)):
                 yield

@@ -27,6 +27,11 @@ from uuid import uuid4
 # never fires — a fail-open cap that looks like it works.
 KNOWN_RUN_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_seconds"})
 
+# Fallback when a wrapped agent has no name. Lives here, below both callers, so a
+# nameless agent's audit events and its run facts agree on the label rather than
+# drifting apart — and so core (``agents.factory``) need not import the adapter layer.
+DEFAULT_AGENT_NAME: Final[str] = "default"
+
 
 @dataclass(slots=True)
 class RunFacts:
@@ -139,8 +144,10 @@ _CURRENT_RUN_FACTS: ContextVar[RunFacts] = ContextVar(
 def get_run_facts() -> RunFacts:
     """The active run's facts, or :data:`DETACHED` outside a run scope.
 
-    Never ``None``: a missing ``run`` namespace fails every ``run.*`` constraint
-    closed, so an unwired boundary would deny everything for the wrong reason.
+    Never ``None`` — were it, the ``run`` namespace would be absent, and a missing
+    ref fails every comparison closed, so an unwired boundary would deny everything
+    for the wrong reason. :data:`DETACHED` reads as zeros instead: a projected path
+    (``elapsed_seconds``) then fails open, an unprojected one is still a missing ref.
     """
     return _CURRENT_RUN_FACTS.get()
 

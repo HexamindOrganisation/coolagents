@@ -35,10 +35,10 @@ from langgraph.store.base import BaseStore
 from pydantic import BaseModel
 
 # BC re-export — canonical home is hexgate.approvals (framework-agnostic).
-from hexgate.adapters._common import DEFAULT_AGENT_NAME
 from hexgate.approvals import ApprovalHandler  # noqa: F401 — re-export
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import (
+    DEFAULT_AGENT_NAME,
     LocalWorkspace,
     ToolUseContext,
     Workspace,

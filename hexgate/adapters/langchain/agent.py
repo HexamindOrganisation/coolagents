@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Literal
 
 from langchain_core.runnables import RunnableConfig
@@ -9,14 +10,9 @@ from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph
 
-from hexgate.adapters._common import (
-    DEFAULT_AGENT_NAME,
-    abind,
-    bind,
-    langfuse_propagate_kwargs,
-)
+from hexgate.adapters._common import abind, bind
 from hexgate.adapters.langchain.usage import HexgateUsageCallbackHandler
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import DEFAULT_AGENT_NAME, HexgateContext
 
 if TYPE_CHECKING:
     from hexgate.security.bans import BanGate
@@ -75,17 +71,22 @@ class HexgateLangchainAgent:
         if self._ban_gate is not None:
             self._ban_gate.check(context)
 
-    def _propagate_kwargs(self, context: HexgateContext, method: str) -> dict[str, Any]:
-        return langfuse_propagate_kwargs(context, f"langchain.agent.{method}")
-
-    def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
+    def _abind(
+        self, context: HexgateContext, method: str
+    ) -> AbstractAsyncContextManager[None]:
         """Async run boundary — identity scope, run facts, Langfuse propagation.
         See :func:`hexgate.adapters._common.abind`."""
-        return abind(context, self._agent_name, self._propagate_kwargs(context, method))
+        return abind(context, self._agent_name, self._tag(method))
 
-    def _bind(self, context: HexgateContext, method: str) -> Iterator[None]:
+    def _bind(
+        self, context: HexgateContext, method: str
+    ) -> AbstractContextManager[None]:
         """Sync mirror of :meth:`_abind`."""
-        return bind(context, self._agent_name, self._propagate_kwargs(context, method))
+        return bind(context, self._agent_name, self._tag(method))
+
+    @staticmethod
+    def _tag(method: str) -> str:
+        return f"langchain.agent.{method}"
 
     def _with_callbacks(self, config: RunnableConfig | None) -> RunnableConfig:
         """Append the Hexgate callback handlers to ``config['callbacks']``."""

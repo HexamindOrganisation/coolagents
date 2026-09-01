@@ -17,17 +17,13 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from hexgate.adapters._common import (
-    DEFAULT_AGENT_NAME,
-    drain_pending_tasks,
-    langfuse_propagate_kwargs,
-)
+from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import HexgateContext, run_scope
+from hexgate.runtime import DEFAULT_AGENT_NAME, HexgateContext, run_scope
 from hexgate.security.bans import resolve_ban_gate
 
 if TYPE_CHECKING:

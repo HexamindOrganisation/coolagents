@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+)
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from langfuse import get_client
 from pydantic_ai import Agent
 from pydantic_ai.agent import AgentRun, AgentRunResult
 from pydantic_ai.result import StreamedRunResult
 
-from hexgate.adapters._common import abind, bind, langfuse_propagate_kwargs
+from hexgate.adapters._common import abind, bind
 from hexgate.adapters.pydantic_ai.usage import emit_run_usage
 from hexgate.runtime import HexgateContext
 
@@ -70,17 +74,22 @@ class HexgatePydanticAgent:
         """Globally instrument all pydantic_ai Agents (idempotent)."""
         Agent.instrument_all()
 
-    def _propagate_kwargs(self, context: HexgateContext, method: str) -> dict[str, Any]:
-        return langfuse_propagate_kwargs(context, f"pydantic_ai.agent.{method}")
-
-    def _abind(self, context: HexgateContext, method: str) -> AsyncIterator[None]:
+    def _abind(
+        self, context: HexgateContext, method: str
+    ) -> AbstractAsyncContextManager[None]:
         """Async HexgateContext scope + run facts + Langfuse propagation.
         See :func:`hexgate.adapters._common.abind`."""
-        return abind(context, self._agent_name, self._propagate_kwargs(context, method))
+        return abind(context, self._agent_name, self._tag(method))
 
-    def _bind(self, context: HexgateContext, method: str) -> Iterator[None]:
+    def _bind(
+        self, context: HexgateContext, method: str
+    ) -> AbstractContextManager[None]:
         """Sync mirror of :meth:`_abind`."""
-        return bind(context, self._agent_name, self._propagate_kwargs(context, method))
+        return bind(context, self._agent_name, self._tag(method))
+
+    @staticmethod
+    def _tag(method: str) -> str:
+        return f"pydantic_ai.agent.{method}"
 
     async def run(
         self,

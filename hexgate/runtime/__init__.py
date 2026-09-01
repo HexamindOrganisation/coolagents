@@ -25,6 +25,7 @@ from hexgate.runtime.roles import (
     resolve_role_set,
 )
 from hexgate.runtime.run_facts import (
+    DEFAULT_AGENT_NAME,
     DETACHED,
     KNOWN_RUN_PATHS,
     RunFacts,
@@ -48,6 +49,7 @@ __all__ = [
     "CommandResult",
     "DETACHED",
     "FILE_OPS_COMMANDS",
+    "DEFAULT_AGENT_NAME",
     "KNOWN_RUN_PATHS",
     "LocalWorkspace",
     "MAX_EVALUATED_ROLES",
