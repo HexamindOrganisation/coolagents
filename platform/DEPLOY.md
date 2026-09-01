@@ -80,9 +80,18 @@ Then add two routes to the box's reverse proxy (one-time), so each hostname
 terminates TLS and proxies to its loopback port:
 
 ```
-app.hexgate.ai          → 127.0.0.1:7000
-app.staging.hexgate.ai  → 127.0.0.1:7200
+app.hexgate.ai          → 127.0.0.1:7000   (except path /v1/traces → 127.0.0.1:7001)
+app.staging.hexgate.ai  → 127.0.0.1:7200   (except path /v1/traces → 127.0.0.1:7201)
 ```
+
+The `/v1/traces` path routes to the stage's `HEXGATE_OTLP_PORT` — the
+collector's OTLP/HTTP receiver — and must match BEFORE the hostname's
+catch-all route (in Caddy a `handle /v1/traces` block above the general
+`reverse_proxy`; in nginx an exact `location = /v1/traces`). This is what
+lets the SDK's default endpoint (`<api url>/v1/traces`) work with zero
+client config. Everything else in the stack (Postgres, ClickHouse,
+Redpanda) binds no host ports; Redpanda in particular is PLAINTEXT with no
+auth — never publish it.
 
 (In Caddy this is two `reverse_proxy` site blocks; in nginx, two `server`
 blocks with `proxy_pass`. Forward `X-Forwarded-Proto: https` — the API trusts

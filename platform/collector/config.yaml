@@ -5,7 +5,9 @@ receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:4317
+        # Loopback suits host-native dev; the deploy container overrides to
+        # 0.0.0.0 (a loopback bind is unreachable from outside the container).
+        endpoint: ${env:HEXGATE_COLLECTOR_GRPC_ENDPOINT:-127.0.0.1:4317}
         auth:
           authenticator: hexgatebiscuitauth
         # Required for message_key_from_metadata_key (see the kafka
@@ -13,7 +15,7 @@ receivers:
         # isn't propagated to downstream consumers by default.
         include_metadata: true
       http:
-        endpoint: 127.0.0.1:4318
+        endpoint: ${env:HEXGATE_COLLECTOR_HTTP_ENDPOINT:-127.0.0.1:4318}
         auth:
           authenticator: hexgatebiscuitauth
         include_metadata: true

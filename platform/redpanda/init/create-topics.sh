@@ -9,6 +9,11 @@
 set -euo pipefail
 
 BOOTSTRAP="${HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"
+# The cluster-config call below goes to the ADMIN API (9644), not the Kafka
+# listener. The localhost default fits how dev runs this script (docker exec
+# inside the broker container); the deploy stack runs it from a one-shot
+# sibling container and overrides both addresses to the service name.
+ADMIN_API="${HEXGATE_REDPANDA_ADMIN_API:-localhost:9644}"
 
 # rpk auto-detects a container environment and applies dev-container
 # cluster defaults (including this) regardless of whether --mode
@@ -18,7 +23,8 @@ BOOTSTRAP="${HEXGATE_REDPANDA_BOOTSTRAP_SERVER:-localhost:9092}"
 # hitting the broker before this script has ever run) gets the topic
 # silently fabricated with cluster defaults — 1 partition, 7-day
 # retention — instead of a clear error. Applies live, no restart.
-rpk cluster config set auto_create_topics_enabled false --no-confirm
+rpk cluster config set auto_create_topics_enabled false --no-confirm \
+    -X admin.hosts="$ADMIN_API"
 
 # `create --if-not-exists` only applies -c/--partitions on the branch
 # where it actually creates the topic — on a topic that already exists
