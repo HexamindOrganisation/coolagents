@@ -47,6 +47,11 @@ _log = logging.getLogger(__name__)
 # fail open in silence. Deduped so a long-lived process logs it once, not per run.
 _admission_unenforced_warned: set[tuple[str, str]] = set()
 _reach_unenforced_warned: set[tuple[str, str]] = set()
+# Separate from _reach_unenforced_warned: the two reach warnings describe distinct
+# gaps (no reach at all vs. handoff-only, so agent-as-tool is unenforced). Sharing a
+# set would let whichever fires first suppress the other for the same (framework,
+# agent), hiding the second gap.
+_tool_reach_unenforced_warned: set[tuple[str, str]] = set()
 
 
 def warn_if_admission_unenforced(
@@ -106,7 +111,7 @@ def warn_if_tool_reach_unenforced(
     declared (``declares_tool_reach``), so a handoff-only policy is not warned."""
     if not engine.declares_tool_reach():
         return
-    if not _mark_warned(_reach_unenforced_warned, framework, agent_name):
+    if not _mark_warned(_tool_reach_unenforced_warned, framework, agent_name):
         return
     _log.warning(
         "policy for agent %r declares agent-as-tool reach ('agents' target with "
@@ -180,13 +185,18 @@ class ReachNotAllowedError(RuntimeError):
         )
 
 
-class HandoffDepthExceededError(Exception):
+class HandoffDepthExceededError(RuntimeError):
     """Raised when a run's handoff chain grows past its depth cap.
 
     A handoff transfers control forward (A → B → C …), so the count of handoffs
     within one run is the depth of the chain. The cap is a runaway guard,
     independent of reach policy: even an all-allowed chain stops here. Carries the
     observed ``depth`` and the ``cap`` it exceeded.
+
+    Subclasses ``RuntimeError`` for the same reason as :class:`AgentNotAdmittedError`
+    and :class:`ReachNotAllowedError`: it aborts the run at the same handoff seam, so
+    a caller that handles run refusals with ``except RuntimeError`` catches this one
+    too rather than letting the depth cap escape uncaught.
     """
 
     def __init__(self, depth: int, cap: int) -> None:

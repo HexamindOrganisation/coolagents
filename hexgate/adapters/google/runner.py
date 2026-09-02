@@ -90,6 +90,8 @@ class _HexgateReachPlugin(BasePlugin):
             return None  # ordinary tool; the wrapped enforcer already gates it
         if not target:
             return None
+        if not self._runner._binding.enforcer.policy.declares_reach():
+            return None  # no 'agents' block — skip building a gate on the hot seam
         gate = resolve_reach_gate(
             self._runner._binding.enforcer,
             approval_handler=self._runner._approval_handler,

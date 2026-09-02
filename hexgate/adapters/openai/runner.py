@@ -119,6 +119,8 @@ class _HexgateReachHooks(RunHooks):
         binding = self._runner._bindings.get(canonical_agent_name(from_agent))
         if binding is None:
             return  # source is not Hexgate-governed; reach from it isn't gated here
+        if not binding.enforcer.policy.declares_reach():
+            return  # no 'agents' block — skip building a gate on the hot handoff path
         gate = resolve_reach_gate(
             binding.enforcer, approval_handler=self._runner._approval_handler
         )
