@@ -49,6 +49,13 @@ from hexgate.security.models import (
 
 DEFAULT_ROLE_NAME = "default"
 
+# Top-level flag the resolve serializer stamps onto a resolved (already-lowered)
+# policy document, so ``load_policy_set_from_dict`` loads it under a "resolved"
+# context that accepts lowered ``agent.*`` keys in ``tools`` (R-POL-002 compiles a
+# modular agent's bundle from this re-parsed YAML). Hand-written policies omit it,
+# so the reserved-name guard still fires on authored source.
+RESOLVED_POLICY_MARKER = "_resolved"
+
 
 class PolicySetError(ValueError):
     """Raised when a role's policies/ directory is malformed."""
@@ -261,17 +268,28 @@ def load_policy_set_from_dict(payload: dict[str, Any]) -> PolicySet:
     * **Flat single-policy shape** (legacy) — anything else is treated as a
       single :class:`AgentPolicy` and wrapped as the ``default`` role.
 
+    A top-level ``_resolved: true`` marker (set by the resolve serializer,
+    :data:`RESOLVED_POLICY_MARKER`) validates under a ``{"resolved": True}``
+    context: a machine-resolved policy legitimately carries lowered ``agent.*``
+    keys in ``tools`` and must round-trip back through this loader when a modular
+    agent's bundle is compiled from its resolved YAML (R-POL-002). A hand-written
+    policy has no marker, so the reserved-``agent.*``-name guard still fires on it.
+
     Used by the cloud loader (the platform returns one ``policy_yaml`` string
     per agent, with roles potentially inline) and by ``_load_legacy_file``
     for SDK-local agents.
     """
+    context = {"resolved": True} if payload.get(RESOLVED_POLICY_MARKER) else None
     if isinstance(payload.get("roles"), dict):
         role_policies = {
-            role_name: AgentPolicy.model_validate(spec or {})
+            role_name: AgentPolicy.model_validate(spec or {}, context=context)
             for role_name, spec in payload["roles"].items()
         }
         return load_policy_map(role_policies)
-    return PolicySet({DEFAULT_ROLE_NAME: AgentPolicy.model_validate(payload)})
+    flat = {k: v for k, v in payload.items() if k != RESOLVED_POLICY_MARKER}
+    return PolicySet(
+        {DEFAULT_ROLE_NAME: AgentPolicy.model_validate(flat, context=context)}
+    )
 
 
 def _load_from_directory(root: Path) -> PolicySet:

@@ -76,19 +76,21 @@ class AgentNotAdmittedError(RuntimeError):
     :class:`~hexgate.security.errors.ApprovalRequiredError`,
     :class:`~hexgate.security.errors.AgentBannedError`), so ``except RuntimeError``
     catches this one too. Carries the :class:`Decision` so the caller can inspect
-    the reason.
+    the reason programmatically.
 
     Admission is caller-facing (it fires before the model runs, so there is no
     tool result to render into), so the message is admission-specific rather than
-    the model-facing tool rendering: it never claims a "tool" was involved.
+    the model-facing tool rendering: it never claims a "tool" was involved. The
+    engine's ``decision.reason`` is *not* interpolated — it is phrased against the
+    lowered ``agent.run`` key ("tool 'agent.run' is denied…"), which would leak
+    that synthetic key here; read it off ``.decision`` instead.
     """
 
     def __init__(self, decision: Decision) -> None:
         self.decision = decision
-        reason = f": {decision.reason}" if decision.reason else ""
         super().__init__(
             f"admission denied for agent {decision.agent_name!r}; this caller may "
-            f"not run it{reason}. The run did not start."
+            "not run it. The run did not start."
         )
 
 

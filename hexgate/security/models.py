@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from hexgate.security.constraints import parse_constraint
 
@@ -163,13 +163,22 @@ class AgentPolicy(BaseModel):
     @field_validator("tools")
     @classmethod
     def _reject_reserved_tool_names(
-        cls, value: dict[str, ToolPolicy]
+        cls, value: dict[str, ToolPolicy], info: ValidationInfo
     ) -> dict[str, ToolPolicy]:
         """Keep the ``agent.*`` key namespace for agent-level gating.
 
         An authored tool named ``agent.run`` / ``agent.tool:x`` / ``agent.handoff:x``
         would collide with a lowered agent rule in :attr:`effective_tools` and
-        silently shadow (or be shadowed by) it. Reject it at load."""
+        silently shadow (or be shadowed by) it. Reject it at load.
+
+        Skipped when validated under a ``{"resolved": True}`` context: a *resolved*
+        policy legitimately carries the lowered ``agent.*`` keys in ``tools`` (the
+        linker's :meth:`resolved` builder puts them there), and it must round-trip
+        back through this loader when a modular agent's bundle is compiled from its
+        resolved YAML (R-POL-002). The guard is an authoring ergonomic — it only
+        needs to fire on hand-written source, not on a machine-resolved artifact."""
+        if info.context and info.context.get("resolved"):
+            return value
         for name in value:
             if is_agent_key(name):
                 raise ValueError(

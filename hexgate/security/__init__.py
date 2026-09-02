@@ -86,6 +86,7 @@ from hexgate.security.policy import (
 )
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
+    RESOLVED_POLICY_MARKER,
     PolicySet,
     PolicySetError,
     load_policy_map,
@@ -210,6 +211,7 @@ __all__ = [
     "DEFAULT_ENTRYPOINT",
     "DEFAULT_ENTRYPOINTS",
     "DEFAULT_ROLE_NAME",
+    "RESOLVED_POLICY_MARKER",
     "Decision",
     "FileScope",
     "FileToolPolicy",

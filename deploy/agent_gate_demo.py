@@ -156,7 +156,7 @@ def _(
     ps,
     resolve_agent_gate,
 ):
-    def _admit(role):
+    def admit(role):
         # A fresh enforcer + gate, exactly as enforce_policy builds them.
         gate = resolve_agent_gate(build_enforcer(ps, agent_name="refund_agent"))
         roles = [role] if role is not None else []
@@ -181,11 +181,11 @@ def _(
     ]
     _rows = ["| caller role | may run `refund_agent`? |", "|---|---|"]
     for _role in _cases:
-        _outcome, _ = _admit(_role)
+        _outcome, _ = admit(_role)
         _shown = _role if _role is not None else "_(none)_"
         _rows.append(f"| `{_shown}` | {_label.get(_outcome, _outcome)} |")
     mo.md("\n".join(_rows))
-    return (_admit,)
+    return (admit,)
 
 
 @app.cell
@@ -256,14 +256,14 @@ def _(mo):
 
 
 @app.cell
-def _(_admit, mo, role_form):
+def _(admit, mo, role_form):
     if role_form.value is None:
         _out = mo.callout(
             mo.md("Pick a role and click **▶ Check admission**."), kind="info"
         )
     else:
         _role = role_form.value["role"]
-        _outcome, _reason = _admit(_role)
+        _outcome, _reason = admit(_role)
         if _outcome == "allow":
             _out = mo.callout(
                 mo.md(f"`{_role}` is **admitted** — the agent run starts."),

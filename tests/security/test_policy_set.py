@@ -6,14 +6,17 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from hexgate.security import (
+    RESOLVED_POLICY_MARKER,
     AgentPolicy,
     BaseToolPolicy,
     PolicySet,
     PolicySetError,
     load_policy_map,
     load_policy_set,
+    load_policy_set_from_dict,
 )
 
 
@@ -56,6 +59,40 @@ def test_load_policy_set_from_agent_policy_wraps_in_default() -> None:
     ps = load_policy_set(ap)
     assert ps.roles == ["default"]
     assert ps.policy_for(None).tools["refund"].mode == "allow"
+
+
+def test_resolved_marker_admits_lowered_agent_keys_on_reload() -> None:
+    """A resolved modular policy carries lowered ``agent.*`` keys in ``tools``
+    (per-via divergence can't reverse-lower into ``admission``/``agents``). When its
+    YAML is re-loaded to compile the signed bundle (R-POL-002), the marker tells the
+    loader this is a machine artifact and the reserved-name guard is skipped, so the
+    resolve→build round-trip succeeds instead of tripping the authoring guard."""
+    payload = {
+        "roles": {
+            "default": {
+                "default_policy": {"mode": "deny"},
+                "tools": {"agent.run": {"mode": "allow"}},
+            }
+        },
+    }
+    # Without the marker the same document is treated as hand-authored source and
+    # the reserved ``agent.*`` namespace guard rejects it.
+    with pytest.raises(ValidationError, match="reserved for agent-level gating"):
+        load_policy_set_from_dict(payload)
+
+    ps = load_policy_set_from_dict({**payload, RESOLVED_POLICY_MARKER: True})
+    assert ps.policy_for("default").tools["agent.run"].mode == "allow"
+
+
+def test_resolved_marker_admits_lowered_agent_keys_flat_form() -> None:
+    """The marker skips the guard on the legacy flat (no ``roles:``) shape too —
+    the resolve path emits per-agent flat documents as well as role-keyed ones."""
+    payload = {"tools": {"agent.tool:billing-bot": {"mode": "allow"}}}
+    with pytest.raises(ValidationError, match="reserved for agent-level gating"):
+        load_policy_set_from_dict(payload)
+
+    ps = load_policy_set_from_dict({**payload, RESOLVED_POLICY_MARKER: True})
+    assert ps.policy_for(None).tools["agent.tool:billing-bot"].mode == "allow"
 
 
 def test_load_policy_set_none_returns_deny_default() -> None:

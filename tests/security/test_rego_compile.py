@@ -374,9 +374,9 @@ def test_approval_required_emits_separate_rule_head() -> None:
         },
     }
     rego = compile_to_rego(payload)
-    # The only allow rule is the agent.run admission opt-in; issue_credit is an
-    # approval rule, not an allow rule.
-    assert all("agent.run" in rule for rule in _allow_rules(rego))
+    # issue_credit is an approval rule, not an allow rule; no role declares
+    # admission, so agent.run stays closed-world with no opt-in — zero allow rules.
+    assert _allow_rules(rego) == []
     [approval] = _approval_rules(rego)
     assert 'input.tool == "issue_credit"' in approval
     assert "input.args.amount <= 500" in approval
@@ -396,8 +396,8 @@ def test_flat_single_policy_compiles_as_default_role() -> None:
         },
     }
     rego = compile_to_rego(payload)
-    # web_search plus the agent.run admission opt-in; pick the web_search rule.
-    [rule] = [r for r in _allow_rules(rego) if "web_search" in r]
+    # web_search is the only allow rule — no admission declared, so no agent.run rule.
+    [rule] = _allow_rules(rego)
     assert 'input.tool == "web_search"' in rule
     # Only the default role exists → no role guard; it applies to every caller
     # (including unknown roles, per the default-role fallback).
@@ -514,9 +514,9 @@ def test_quantifier_emits_helper_rule() -> None:
     }
     rego = compile_to_rego(payload)
     assert re.search(r"_q_[0-9a-f]+ if \{\n\s+every __e_[0-9a-f]+ in ", rego)
-    # Two allow rules now: tool "t" and the agent.run admission opt-in. The
-    # quantifier body is on "t".
-    [allow_body] = [r for r in _allow_rules(rego) if "agent.run" not in r]
+    # One allow rule (tool "t") — no admission declared, so no agent.run rule.
+    # The quantifier body is on "t".
+    [allow_body] = _allow_rules(rego)
     assert re.search(r"_q_[0-9a-f]+", allow_body)  # allow references the helper
     assert re.search(r"not _q_[0-9a-f]+", rego)  # violation negates the helper
     assert "not every" not in rego and "not some" not in rego  # never inline-negated

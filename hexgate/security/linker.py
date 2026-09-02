@@ -319,8 +319,6 @@ def _reject_file_scope(
 _MODULE_COMPOSABLE_FIELDS = frozenset(
     {
         "version",
-        "inherits",
-        "is_mixin",
         "default_policy",
         "tools",
         "consts",
@@ -330,6 +328,11 @@ _MODULE_COMPOSABLE_FIELDS = frozenset(
         "agents",
     }
 )
+# `inherits` / `is_mixin` are deliberately NOT here: the module fold composes
+# modules by role binding, it does not resolve a module's own inheritance. Listing
+# them here would let a boundary/capability file declare `inherits:` and silently
+# get none of the base (it works only in the single-file policy-set path), so they
+# are rejected by _reject_unsupported_module_fields instead — fail loud, not silent.
 
 
 def _reject_unsupported_module_fields(

@@ -291,6 +291,22 @@ def test_file_scope_in_module_raises():
         link([guard], [])
 
 
+def test_inherits_in_module_raises():
+    """``inherits:`` resolves only on the single-file policy-set path; the module
+    fold composes by role binding and never resolves a module's own base, so a
+    boundary/capability that declares it would silently get none of the base. Fail
+    loud (like file_scope) instead of dropping the operator's inherited rules."""
+    guard = ModuleContent(
+        name="g",
+        kind="boundary",
+        policy=AgentPolicy(inherits=["read_only"]),
+        source="g.yaml",
+        content_hash="hash-g",
+    )
+    with pytest.raises(LinkError, match="inherits"):
+        link([guard], [])
+
+
 def test_boundary_agents_deny_composes_as_authoritative_deny() -> None:
     # An ``agents`` block lowers to agent.* keys the fold composes like tools
     # (R-AGENT-002). A boundary agent-deny is authoritative — it folds to a hard
