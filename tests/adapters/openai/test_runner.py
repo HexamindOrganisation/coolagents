@@ -668,6 +668,70 @@ def test_run_streamed_refreshes_before_setup(
     assert order == ["refresh", "run_streamed"]
 
 
+@pytest.mark.asyncio
+async def test_arun_streamed_refreshes_async_before_run_streamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """arun_streamed (the serve path) awaits the async refresh before
+    Runner.run_streamed — same security-relevant ordering as the sync path, but
+    off the event loop so serve isn't blocked."""
+    _silence_observability(monkeypatch)
+
+    order: list[str] = []
+
+    def fake_run_streamed(*_args: Any, **_kwargs: Any) -> _FakeStreamingResult:
+        order.append("run_streamed")
+        return _FakeStreamingResult()
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_streamed",
+        staticmethod(fake_run_streamed),
+    )
+
+    class _OrderedBinding(_CountingBinding):
+        async def refresh_async(self) -> None:
+            order.append("refresh_async")
+            await super().refresh_async()
+
+    runner = HexgateRunner(api_key="k")
+    runner._bindings["my-agent"] = _OrderedBinding()  # type: ignore[assignment]
+
+    await runner.arun_streamed(
+        _make_agent("my-agent"), "hello", hexgate_context=_user()
+    )
+
+    assert order == ["refresh_async", "run_streamed"]
+
+
+@pytest.mark.asyncio
+async def test_arun_streamed_refused_before_task_spawns_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ban gate is awaited (check_async) before Runner.run_streamed spawns
+    its background task, so a banned stream never starts on the serve path."""
+    _silence_observability(monkeypatch)
+    called: list[str] = []
+
+    def fake_run_streamed(*_a: Any, **_kw: Any) -> _FakeStreamingResult:
+        called.append("run_streamed")
+        return _FakeStreamingResult()
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_streamed",
+        staticmethod(fake_run_streamed),
+    )
+
+    runner = HexgateRunner(api_key="k")
+    runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
+
+    with pytest.raises(AgentBannedError):
+        await runner.arun_streamed(
+            _make_agent("my-agent"), "hi", hexgate_context=_user()
+        )
+
+    assert called == []  # background task never spawned
+
+
 # ---------------------------------------------------------------------------
 # Usage hooks: merge behavior + HexgateContext contextvar survives into on_llm_end
 # ---------------------------------------------------------------------------
