@@ -97,18 +97,23 @@ if __name__ == "__main__":
 ## Agent-level enforcement
 
 Beyond tool calls, `HexgateRunner` enforces [agent-level policy](/concepts/agent-level-enforcement):
-**admission** (may this caller run the agent) at run entry, and **handoff reach**
+**admission** (may this caller run the agent) at run entry, **handoff reach**
 (`agent.handoff:<name>`) at the SDK's `on_handoff` seam — a denied handoff is
-vetoed before the target runs. Set `HexgateRunner(max_handoff_depth=N)` to cap a
-runaway handoff chain.
+vetoed before the target runs — and **agent-as-tool reach** (`agent.tool:<name>`)
+at the tool seam. Set `HexgateRunner(max_handoff_depth=N)` to cap a runaway
+handoff chain.
 
-<Warning>
-**Agent-as-tool reach is not enforced on OpenAI.** `Agent.as_tool()` produces a
-plain function tool with no link back to the target agent, so the
-`agent.tool:<name>` reach key can't be resolved here — a policy that declares one
-logs a warning at setup. Gate a sub-agent-as-tool by its **tool name** instead
-(an ordinary `tools:` rule), which works normally.
-</Warning>
+<Note>
+**Agent-as-tool reach is enforced at the top level.** The SDK tags an
+`Agent.as_tool()` with its target agent, so when the top-level agent's policy
+declares an `agents` block, that as-tool call is gated under `agent.tool:<name>`
+(closed-world, `via`/constraints honored) rather than by tool name. A reach edge
+one level deeper — a sub-agent that itself calls another agent as a tool — is not
+gated yet, because the sub-agent runs unwrapped through the SDK's own runner;
+those deeper edges fall back to tool-name gating. On an `agents` SDK too old to
+expose the tool origin, even the top level falls back to name-gating and a
+declared `via: tool` rule warns at setup.
+</Note>
 
 ## Runnable example
 

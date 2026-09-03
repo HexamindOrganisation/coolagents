@@ -29,6 +29,7 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters._common import langfuse_propagate_kwargs
+from hexgate.adapters.openai.tools import _CAN_DETECT_AGENT_TOOLS
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
@@ -101,7 +102,9 @@ class _HexgateReachHooks(RunHooks):
     ``agent.handoff:<target>``. Only handoffs from a Hexgate-governed source (the
     resolved top-level agent) are gated; a handoff from an un-governed sub-agent is
     left alone here (sub-agent governance is a later slice). Agent-as-tool reach
-    (``Agent.as_tool``) has no target handle at this seam and is not gated.
+    (``Agent.as_tool``) is not handled here — it never fires ``on_handoff`` — but
+    is gated at the tool seam instead: :func:`~hexgate.adapters.openai.tools.wrap_tool`
+    reads the SDK's tool-origin metadata and decides ``agent.tool:<target>``.
     """
 
     def __init__(self, runner: "HexgateRunner") -> None:
@@ -180,11 +183,14 @@ class HexgateRunner:
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
             )
-            # Handoff reach is enforced (on_handoff); agent-as-tool reach is not,
-            # so warn if the policy declares a via: tool target.
-            warn_if_tool_reach_unenforced(
-                resolved.engine, framework="OpenAI Agents", agent_name=name
-            )
+            # Handoff reach is enforced (on_handoff). Agent-as-tool reach is
+            # enforced too when the SDK tags as-tools with their origin (wrap_tool
+            # gates the top edge under agent.tool:<target>); on an SDK too old to
+            # expose that, it is not, so warn only in that fallback case.
+            if not _CAN_DETECT_AGENT_TOOLS:
+                warn_if_tool_reach_unenforced(
+                    resolved.engine, framework="OpenAI Agents", agent_name=name
+                )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
         return binding

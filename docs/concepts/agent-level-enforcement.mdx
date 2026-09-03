@@ -99,7 +99,7 @@ a warning at setup, so you always know whether a rule is actually enforced.
 
 | framework | admission | handoff reach | agent-as-tool reach |
 |---|---|---|---|
-| [OpenAI Agents](/adapters/openai) | enforced | enforced | warns — the SDK's `Agent.as_tool()` exposes no target to gate |
+| [OpenAI Agents](/adapters/openai) | enforced | enforced | enforced at the top level (nested is name-gated — see Limits) |
 | [Google ADK](/adapters/google-adk) | enforced | enforced | enforced |
 | native agent (`create_agent`) | enforced | not applicable — no handoff concept | gated as an ordinary tool, by name |
 | [pydantic_ai](/adapters/pydantic-ai) | warns | not applicable — no handoff concept | gated as an ordinary tool, by name |
@@ -107,12 +107,14 @@ a warning at setup, so you always know whether a rule is actually enforced.
 
 <Note>
 **Agent-as-tool is still gated even where the reach key is not.** A sub-agent
-exposed as a tool is an ordinary tool: it is gated by its tool name through the
-normal enforcer, on every adapter, today. The `agent.tool:<name>` *reach* key is
-a separate, higher-level statement ("gate this as a delegation to agent B") that
-only fires where the framework hands Hexgate the target agent at the seam. So on
-OpenAI and the native agent you gate agent-as-tool by writing a `tools:` rule on
-the tool's name; on Google you can additionally use the `agent.tool:` reach key.
+exposed as a tool is also an ordinary tool: it is gated by its tool name through
+the normal enforcer, on every adapter, today. The `agent.tool:<name>` *reach* key
+is a separate, higher-level statement ("gate this as a delegation to agent B")
+that fires where the framework lets Hexgate recover the target agent. On Google
+(via `AgentTool`) and OpenAI (via the SDK's tool-origin metadata) an `agent.tool:`
+reach rule is enforced for the top-level agent; on the native agent, or when the
+policy declares no `agents` block, you gate agent-as-tool by writing a `tools:`
+rule on the tool's name.
 </Note>
 
 ## Limits
@@ -122,10 +124,15 @@ the tool's name; on Google you can additionally use the `agent.tool:` reach key.
   and the native single-graph agent has no transfer seam. There is nothing to
   intercept on those, by nature — a declared `agents` handoff rule warns rather
   than silently doing nothing.
-- **Agent-as-tool reach on OpenAI is not enforced.** `Agent.as_tool()` produces a
-  plain function tool with no link back to the target agent, so the
-  `agent.tool:<name>` key can't be resolved at the seam. Gate it by tool name
-  instead; a declared `via: tool` rule warns.
+- **Agent-as-tool reach on OpenAI is enforced only at the top level.** The SDK
+  tags an `Agent.as_tool()` with its target agent, so a top-level agent's
+  `agent.tool:<name>` reach rule *is* enforced. But a sub-agent reached as a tool
+  runs through the SDK's own runner on the *unwrapped* agent, so a reach edge one
+  level deeper (B calls C as a tool) is not gated — only B's tools were wrapped.
+  Governing nested agents needs each nested agent wrapped through Hexgate; until
+  then, deeper edges fall back to name-gating. (On an SDK too old to expose the
+  tool origin, even the top level falls back to name-gating and a `via: tool` rule
+  warns.)
 - **Reach is governed by the source agent's policy.** When A hands off to B,
   today the check is A's `agents:` rule. B re-checking its *own* admission when
   reached by a handoff is a planned addition.
