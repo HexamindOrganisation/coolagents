@@ -23,7 +23,7 @@ from typing import Any, ClassVar, Protocol
 
 from opentelemetry.context import Context
 from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
@@ -42,6 +42,24 @@ unreachable platform must not hold a host application's exit for that long."""
 # many agents), but it's what shows up next to our spans in any third-party
 # OTel backend a customer points this exporter at.
 _RESOURCE = Resource.create({"service.name": "hexgate-sdk"})
+
+# Every limit pinned to UNSET (no limit, and crucially: don't read the
+# OTEL_* env vars). A bare SpanLimits() inherits the customer's process-wide
+# trimming — OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT would cut the JSON-string
+# arguments/hint/attributes mid-string and OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+# would drop required attributes, either of which makes the enricher reject
+# the whole span — and a malformed value would raise out of configure().
+# Our own redaction/truncation pipeline (span_attributes) is the size cap.
+_SPAN_LIMITS = SpanLimits(
+    max_attributes=SpanLimits.UNSET,
+    max_events=SpanLimits.UNSET,
+    max_links=SpanLimits.UNSET,
+    max_span_attributes=SpanLimits.UNSET,
+    max_event_attributes=SpanLimits.UNSET,
+    max_link_attributes=SpanLimits.UNSET,
+    max_attribute_length=SpanLimits.UNSET,
+    max_span_attribute_length=SpanLimits.UNSET,
+)
 
 
 class SpanEvent(Protocol):
@@ -144,7 +162,16 @@ class AuditSender:
         # script that never calls hexgate.audit.shutdown() would lose its
         # final batch at interpreter exit. The hook is the safety net;
         # shutdown() is still the documented contract for host applications.
-        self._provider = TracerProvider(sampler=ALWAYS_ON, resource=_RESOURCE)
+        self._provider = TracerProvider(
+            sampler=ALWAYS_ON, resource=_RESOURCE, span_limits=_SPAN_LIMITS
+        )
+        # OTEL_SDK_DISABLED=true makes get_tracer() return a NoOpTracer —
+        # every audit event silently discarded because the customer switched
+        # off *their* tracing. The audit trail is a compliance channel, not
+        # telemetry, so their kill switch must not mute it; HEXGATE_LOCAL_MODE
+        # is the supported off switch. Private attribute, pinned by
+        # test_when_customer_disables_otel_sdk_then_audit_still_exports.
+        self._provider._disabled = False
         self._provider.add_span_processor(self._processor)
         self._tracers = {
             scope: self._provider.get_tracer(scope)

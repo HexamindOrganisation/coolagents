@@ -245,6 +245,49 @@ def test_unix_nanos_keeps_microsecond_precision() -> None:
     assert _unix_nanos(at) % 1_000_000_000 == 999_999_000
 
 
+def test_when_customer_disables_otel_sdk_then_audit_still_exports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OTEL_SDK_DISABLED is the customer's kill switch for *their* tracing;
+    it must not silently mute the audit trail (HEXGATE_LOCAL_MODE is the
+    supported off switch). Also pins the private ``_disabled`` attribute the
+    sender forces off."""
+    monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
+    sender, exporter = _sender()
+    sender.emit(_event())
+    _flush(sender)
+    assert len(exporter.get_finished_spans()) == 1
+
+
+def test_when_customer_sets_otel_attribute_limits_then_attributes_survive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A customer's process-wide OTel trimming must not truncate or drop the
+    wire attributes — a cut JSON string or missing required key makes the
+    enricher reject the whole span."""
+    monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "5")
+    monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "2")
+    sender, exporter = _sender()
+    ev = _event()
+    sender.emit(ev)
+    _flush(sender)
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes[semconv.TOOL_NAME] == "t"  # not dropped by the count cap
+    assert span.attributes[semconv.EVENT_ID] == str(ev.event_id)  # 36 chars, uncut
+
+
+def test_when_otel_limit_env_is_malformed_then_sender_still_constructs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare SpanLimits() raises ValueError on a malformed env value, which
+    would propagate out of configure() and fail agent bootstrap."""
+    monkeypatch.setenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", "banana")
+    sender, exporter = _sender()  # must not raise
+    sender.emit(_event())
+    _flush(sender)
+    assert len(exporter.get_finished_spans()) == 1
+
+
 def test_when_span_attributes_raises_then_emit_logs_and_swallows(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
