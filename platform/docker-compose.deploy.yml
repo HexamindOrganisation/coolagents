@@ -1,14 +1,16 @@
-# Per-environment stack: postgres + clickhouse + api on one private network.
+# Per-environment stack on one private network: postgres + clickhouse + api,
+# plus the OTLP ingest pipeline (collector → redpanda → enricher → clickhouse).
 # The api serves both /v1 and the dashboard SPA same-origin (no separate edge).
 # Run once per env as a distinct Compose PROJECT, which isolates its network +
 # volumes:
 #   make platform-up STAGE=prod      # -p hexgate-prod    --env-file platform/.env.prod
 #   make platform-up STAGE=staging   # -p hexgate-staging --env-file platform/.env.staging
 #
-# The api listens plain HTTP on a loopback port (HEXGATE_HTTP_PORT: 7000 prod /
-# 7200 staging); the box's existing reverse proxy owns 80/443 + TLS and routes
-# to it by hostname (see platform/DEPLOY.md). Secrets/per-deploy values live in
-# .env.<env>.
+# Two services bind host ports, both loopback-only: the api (HEXGATE_HTTP_PORT:
+# 7000 prod / 7200 staging) and the collector's OTLP/HTTP receiver
+# (HEXGATE_OTLP_PORT: 7001 / 7201). The box's existing reverse proxy owns
+# 80/443 + TLS and routes to them by hostname and path (see platform/DEPLOY.md).
+# Secrets/per-deploy values live in .env.<env>.
 
 services:
   postgres:
@@ -96,7 +98,60 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+      # The lifespan re-runs both bootstrap steps (idempotent); waiting on
+      # api-init only keeps the first-ever keypair generation single-writer.
+      api-init:
+        condition: service_completed_successfully
     # Liveness from the image's HEALTHCHECK (/health).
+
+  api-init:
+    # One-shot from the api image: the two side effects of the api lifespan
+    # that OTHER services depend on — init_db() (the Postgres tables the
+    # enricher's resolver reads) and keystore.ensure_keypair() (the
+    # /keys/hexgate.pub the collector verifies against). Pulling them out
+    # lets collector and enricher gate on `service_completed_successfully`
+    # (same pattern as redpanda-init) instead of `api: service_healthy`,
+    # which tied the whole ingest path to the api process: every api-only
+    # redeploy would hold them for the api's first health probe (≥30s of
+    # 502s on /v1/traces), and an api that refuses to boot — verify_all()
+    # raising on a stale ClickHouse schema, deliberately, so the previous
+    # deployment keeps serving — would take the collector down with it,
+    # losing spans instead of buffering them in Redpanda.
+    image: ${REGISTRY:-hexgate}/hexgate-api:${TAG:-latest}
+    platform: linux/amd64
+    restart: "no"
+    command:
+      - uv
+      - run
+      - --no-sync
+      - python
+      - -c
+      - |
+        import asyncio
+
+        # Registers every table on SQLModel.metadata before create_all runs;
+        # the api gets this for free by importing its routers.
+        import hexgate_api.models  # noqa: F401
+        from hexgate_api.core.db import engine, init_db
+        from hexgate_api.core.keystore import keystore
+
+        async def main():
+            await init_db()
+            await engine.dispose()
+
+        asyncio.run(main())
+        keystore.ensure_keypair()
+    env_file:
+      - .env.${HEXGATE_ENV:-prod}
+    environment:
+      HEXGATE_POSTGRES_HOST: postgres
+      HEXGATE_POSTGRES_PORT: "5432"
+      HEXGATE_KEYSTORE_PATH: /keys
+    volumes:
+      - hexgate-keys:/keys
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # ── OTLP ingest pipeline: SDK → collector → redpanda → enricher → ClickHouse ──
 
@@ -117,6 +172,17 @@ services:
       # whole audit pipeline already prefers dropping to blocking.
       - --mode
       - dev-container
+      # dev-container also sets --reserve-memory 0M, and seastar otherwise
+      # budgets (near) all host RAM and one shard per core — per broker, and
+      # DEPLOY.md runs two stacks on one box, each beside ClickHouse,
+      # Postgres, api, collector and enricher. Under sustained traffic (or an
+      # enricher-outage backlog) the batch cache grows toward that budget
+      # until the kernel OOM-kills whichever container is largest. Sized for
+      # what this is: a 3-partition, short-retention buffer.
+      - --smp
+      - "1"
+      - --memory
+      - 1G
       # One listener, advertised as the service name. Dev's second
       # (localhost:9092) listener exists for host-native processes; here
       # every client is a container, so it would only be an unreachable
@@ -128,16 +194,25 @@ services:
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health >/dev/null 2>&1"]
+      # Exit code alone is not enough: `rpk cluster health` exits 0 as soon as
+      # the admin API answers, whatever the `Healthy:` field says, and
+      # redpanda-init fires on this signal — before the controller has a
+      # leader or the Kafka listener is bound, its rpk calls fail. Redpanda's
+      # own compose example greps the field for the same reason.
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
       interval: 5s
       timeout: 5s
       retries: 20
+      start_period: 10s
 
   redpanda-init:
     # One-shot: creates the two topics + disables auto-creation, then exits 0
-    # (the script is idempotent). Dev runs the same script via `make
-    # redpanda-topics` (docker exec); compose has no exec, hence a sibling
-    # container — which is why the script takes the admin API address as env.
+    # (the script is idempotent, and retries each rpk call for ~1 minute: a
+    # single transient failure here would otherwise block collector and
+    # enricher for good, since `restart: "no"` + service_completed_successfully
+    # never re-runs it). Dev runs the same script via `make redpanda-topics`
+    # (docker exec); compose has no exec, hence a sibling container — which
+    # is why the script takes the admin API address as env.
     image: redpandadata/redpanda:v26.2.2
     restart: "no"
     entrypoint: ["bash", "/init/create-topics.sh"]
@@ -160,14 +235,17 @@ services:
       # proxy routes the path /v1/traces on the api hostname here, which is
       # what makes the SDK's default endpoint (<api url>/v1/traces) work
       # with zero client config. See DEPLOY.md §3.
-      - "127.0.0.1:${HEXGATE_OTLP_PORT:?set HEXGATE_OTLP_PORT in .env.<env>}:4318"
+      # `:?` aborts EVERY compose subcommand (up/down/logs) on a box whose
+      # .env.<env> predates this key — see DEPLOY.md §6 for the one-time
+      # secret update + `make platform-env-pull` that adds it.
+      - "127.0.0.1:${HEXGATE_OTLP_PORT:?HEXGATE_OTLP_PORT missing - add it to the /hexgate/<stage> secret, then make platform-env-pull STAGE=<stage> (DEPLOY.md section 6)}:4318"
     environment:
       # In-container binds; the image's config.yaml defaults to loopback.
       HEXGATE_COLLECTOR_HTTP_ENDPOINT: 0.0.0.0:4318
       HEXGATE_COLLECTOR_GRPC_ENDPOINT: 0.0.0.0:4317
       HEXGATE_REDPANDA_BOOTSTRAP_SERVER: redpanda:9092
-      # The api's first boot writes this into the shared volume (see the
-      # api service's keystore comment); mounted read-only below.
+      # api-init writes this into the shared volume on the first boot (see
+      # that service); mounted read-only below.
       HEXGATE_COLLECTOR_PUBLIC_KEY_FILE: /keys/hexgate.pub
       # Keyword/value DSN with the password deliberately left out: pgx reads
       # PGPASSWORD itself (the extension validates with the same parser), so
@@ -185,13 +263,23 @@ services:
       redpanda-init:
         condition: service_completed_successfully
       # Not for traffic — for /keys/hexgate.pub: the biscuit-auth extension
-      # refuses to start without it, and the api's first boot creates it.
-      api:
-        condition: service_healthy
+      # refuses to start without it. On api-init, not api: the collector must
+      # not go down (or stay down) with the api process — see api-init.
+      api-init:
+        condition: service_completed_successfully
     healthcheck:
       # TCP-connect probe: the ocb manifest builds no health extension into
       # the collector, so there is no HTTP endpoint to hit. bash ships in the
       # image's bookworm-slim base.
+      #
+      # Known gap: this stays green in the pipeline's two real failure modes
+      # — revocation snapshot past max_staleness (every request 401s, process
+      # keeps running) and Redpanda unreachable (the exporter acks 200, then
+      # drops after retries). A real probe needs the healthcheckv2 extension
+      # in builder-config.yaml with `include_recoverable_errors: true`, plus
+      # the biscuit extension reporting component status at its
+      # unavailable/markAvailable transitions. Collector-side change, tracked
+      # separately from this deploy PR.
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/4318"]
       interval: 10s
       timeout: 3s
@@ -218,6 +306,13 @@ services:
       # The image HEALTHCHECK probes uvicorn's :8000/health, which this
       # process doesn't serve — inherited, it would mark the enricher
       # permanently unhealthy.
+      #
+      # Known gap: nothing replaces it, and consumer.py's retry loop is
+      # unbounded, so a consumer wedged on rotated credentials stays "Up"
+      # while the raw topic's 3-day retention deletes what it never
+      # committed. Fix needs the job to touch a heartbeat file per poll (and
+      # a retry ceiling so permanent failures exit 1 for `restart:` to
+      # recycle) — an api-package change, tracked separately from this PR.
       disable: true
     depends_on:
       postgres:
@@ -228,12 +323,12 @@ services:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
-      # Not for traffic — the api's startup init_db() creates the Postgres
-      # tables the resolver reads, so a fresh volume never surfaces as
-      # "no such table" on the first consumed span (same reason
-      # `make enricher-run` runs postgres-init first).
-      api:
-        condition: service_healthy
+      # Not for traffic — api-init's init_db() creates the Postgres tables
+      # the resolver reads, so a fresh volume never surfaces as "no such
+      # table" on the first consumed span (same reason `make enricher-run`
+      # runs postgres-init first). On api-init, not api: see that service.
+      api-init:
+        condition: service_completed_successfully
 
 volumes:
   pg-data:

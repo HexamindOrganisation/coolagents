@@ -23,6 +23,19 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -o /out/hexgate-collector .
 
+# The same gate `make collector-check` ends with, because nothing else on the
+# deploy path runs it: CI has no collector job, and this image is otherwise the
+# only automated step that touches config.yaml — and it just COPYs it below.
+# `validate` is a dry run: it resolves the ${env:...:-default} lookups, runs
+# each component's Validate() and builds the pipeline graph, but never reads
+# the public key file or opens Postgres/Kafka, so it needs no env here (the
+# defaults are the dev ones, whose localhost DSN passes the dev-password
+# tripwire). A typo in config.yaml therefore fails the build in ~1s instead of
+# crash-looping the container while api/enricher come up healthy. It cannot
+# catch bad deploy-time values (malformed DSN, wrong key path) — those still
+# surface only at Start().
+RUN /out/hexgate-collector validate --config=config.yaml
+
 # Slim-not-distroless on purpose: the compose healthcheck is a bash /dev/tcp
 # probe (the ocb manifest builds no health extension into the collector, so
 # there is no HTTP endpoint to hit).
