@@ -52,7 +52,20 @@ SCOPE_SITES: list[tuple[str, str, str, str]] = [
     ),
     ("hexgate.adapters.openai.runner", "HexgateRunner", "run", "run"),
     ("hexgate.adapters.openai.runner", "HexgateRunner", "run_sync", "run_sync"),
-    ("hexgate.adapters.openai.runner", "HexgateRunner", "run_streamed", "run_streamed"),
+    # Both streaming entry points delegate the wrap + scope to _launch_streamed
+    # after refreshing the binding and ban gate in their own (sync/async) way.
+    (
+        "hexgate.adapters.openai.runner",
+        "HexgateRunner",
+        "run_streamed",
+        "_launch_streamed",
+    ),
+    (
+        "hexgate.adapters.openai.runner",
+        "HexgateRunner",
+        "arun_streamed",
+        "_launch_streamed",
+    ),
     ("hexgate.adapters.pydantic_ai.agent", "HexgatePydanticAgent", "run", "_abind"),
     ("hexgate.adapters.pydantic_ai.agent", "HexgatePydanticAgent", "run_sync", "_bind"),
     (
@@ -149,12 +162,22 @@ def test_scope_opens_after_the_ban_check() -> None:
     assert source.index("_check_ban_async") < source.index("_abind")
 
 
+@pytest.mark.parametrize("method", ["run_streamed", "arun_streamed"])
+def test_streamed_boundaries_launch_after_the_ban_check(method: str) -> None:
+    """The streaming boundaries own only the refresh + ban gate; the scope lives
+    in ``_launch_streamed``, so each must actually hand off to it — and only
+    once a banned run has been refused."""
+    source = _source_of("hexgate.adapters.openai.runner", "HexgateRunner", method)
+    assert "_launch_streamed(" in source
+    assert source.index("ban_gate.check") < source.index("_launch_streamed(")
+
+
 def test_run_streamed_rejoins_rather_than_mints() -> None:
     """``run_streamed`` hands tools to a background task that snapshots the
     contextvars, so the consumer-side iterator must re-bind the same object —
     minting would split one invocation across two run ids."""
     source = _source_of(
-        "hexgate.adapters.openai.runner", "HexgateRunner", "run_streamed"
+        "hexgate.adapters.openai.runner", "HexgateRunner", "_launch_streamed"
     )
     assert _OPENS_SCOPE in source
     assert _JOINS_SCOPE in source
