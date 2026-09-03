@@ -166,36 +166,46 @@ class AuditSender:
 
     def emit(self, event: SpanEvent) -> None:
         """Turn ``event`` into one finished span and hand it to the batch
-        processor. Never blocks on the network; never raises for a transport
-        problem (those surface as the exporter's own log lines)."""
+        processor. Never blocks on the network, and never raises: transport
+        problems surface as the exporter's own log lines, and a failure in
+        here — an unserializable event, most likely — is logged and costs
+        that one event. This runs on the caller's thread inside enforcement
+        (``PolicyEnforcer.record``), so an escaping exception would kill the
+        tool call it audits; losing an audit event is acceptable, breaking
+        enforcement is not."""
         if self._closing:
             return
-        # A full queue evicts its oldest span on append with no signal — OTel
-        # deliberately never logs on that path. The warning stays on the
-        # stdlib logger: it must reach stderr precisely when the OTLP
-        # pipeline is the thing that's failing, so it can never travel over
-        # OTLP itself. The count is approximate under concurrent emits.
-        if len(self._span_queue) >= self._max_queue_size:
-            self._dropped_events += 1
-            if self._dropped_events == 1 or self._dropped_events % 10 == 0:
-                _log.warning(
-                    "audit span queue saturated; %d events dropped so far "
-                    "(oldest evicted first)",
-                    self._dropped_events,
-                )
-        tracer = self._tracers[event.SCOPE]
-        at = _unix_nanos(event.occurred_at)
-        # start == end: these are point-in-time events, and the enricher reads
-        # occurred_at from start_time_unix_nano (see semconv). context=Context()
-        # detaches the span from whatever the caller's own tracing has active,
-        # so it is always a root span in a trace of its own.
-        span = tracer.start_span(
-            event.SCOPE,
-            context=Context(),
-            attributes=event.span_attributes(),
-            start_time=at,
-        )
-        span.end(end_time=at)
+        try:
+            # A full queue evicts its oldest span on append with no signal —
+            # OTel deliberately never logs on that path. The warning stays on
+            # the stdlib logger: it must reach stderr precisely when the OTLP
+            # pipeline is the thing that's failing, so it can never travel
+            # over OTLP itself. The count is approximate under concurrent
+            # emits.
+            if len(self._span_queue) >= self._max_queue_size:
+                self._dropped_events += 1
+                if self._dropped_events == 1 or self._dropped_events % 10 == 0:
+                    _log.warning(
+                        "audit span queue saturated; %d events dropped so far "
+                        "(oldest evicted first)",
+                        self._dropped_events,
+                    )
+            tracer = self._tracers[event.SCOPE]
+            at = _unix_nanos(event.occurred_at)
+            # start == end: these are point-in-time events, and the enricher
+            # reads occurred_at from start_time_unix_nano (see semconv).
+            # context=Context() detaches the span from whatever the caller's
+            # own tracing has active, so it is always a root span in a trace
+            # of its own.
+            span = tracer.start_span(
+                event.SCOPE,
+                context=Context(),
+                attributes=event.span_attributes(),
+                start_time=at,
+            )
+            span.end(end_time=at)
+        except Exception:
+            _log.exception("emit failed; dropping one %s event", event.SCOPE)
 
     async def close(self) -> None:
         """Stop accepting new emits; flush what's queued; stop the worker.

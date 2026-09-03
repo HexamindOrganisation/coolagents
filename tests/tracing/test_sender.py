@@ -245,6 +245,29 @@ def test_unix_nanos_keeps_microsecond_precision() -> None:
     assert _unix_nanos(at) % 1_000_000_000 == 999_999_000
 
 
+def test_when_span_attributes_raises_then_emit_logs_and_swallows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """emit() runs on the caller's thread inside enforcement — an escaping
+    exception would kill the tool call being audited, so it must cost only
+    the one event."""
+    sender, exporter = _sender()
+
+    class ExplodingEvent:
+        SCOPE = semconv.SCOPE_AUDIT
+        occurred_at = datetime.now(timezone.utc)
+
+        def span_attributes(self) -> dict:
+            raise RuntimeError("boom")
+
+    with caplog.at_level(logging.ERROR, logger="hexgate.tracing._senders"):
+        sender.emit(ExplodingEvent())  # must not raise
+
+    assert any("emit failed" in r.getMessage() for r in caplog.records)
+    _flush(sender)
+    assert exporter.get_finished_spans() == ()
+
+
 # ---------------------------------------------------------------------------
 # emit(): drop-on-saturation detection
 # ---------------------------------------------------------------------------
