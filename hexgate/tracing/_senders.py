@@ -324,5 +324,18 @@ async def shutdown() -> None:
     explicit flush (or the provider's best-effort atexit hook)."""
     senders = list(_senders.values())
     _senders.clear()
-    for sender in senders:
-        await sender.close()
+    # Concurrent, not sequential: each close() blocks up to the export
+    # timeout, so N keys must cost one timeout, not N. return_exceptions
+    # keeps one sender's failure from skipping the flush of the others —
+    # and from escaping into the host's teardown.
+    results = await asyncio.gather(
+        *(sender.close() for sender in senders), return_exceptions=True
+    )
+    for sender, result in zip(senders, results):
+        if isinstance(result, BaseException):
+            _log.error(
+                "closing the sender for endpoint %s failed during shutdown; "
+                "its queued events may be lost",
+                sender._endpoint,
+                exc_info=result,
+            )

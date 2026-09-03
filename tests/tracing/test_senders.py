@@ -167,3 +167,25 @@ async def test_shutdown_closes_every_sender() -> None:
     assert senders_mod._senders == {}
     assert sender_a._closing is True
     assert sender_b._closing is True
+
+
+async def test_when_one_close_raises_then_shutdown_still_closes_the_rest(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One sender's failing close must cost only its own events: the other
+    senders still flush, and no exception escapes into the host's teardown."""
+    sender_a = senders_mod.get_or_create_sender("k1")
+    sender_b = senders_mod.get_or_create_sender("k2")
+    assert sender_a is not None and sender_b is not None
+
+    async def exploding_close() -> None:
+        raise RuntimeError("boom")
+
+    sender_a.close = exploding_close
+
+    with caplog.at_level(logging.ERROR, logger="hexgate.tracing._senders"):
+        await senders_mod.shutdown()  # must not raise
+
+    assert senders_mod._senders == {}
+    assert sender_b._closing is True
+    assert any("failed during shutdown" in r.getMessage() for r in caplog.records)
