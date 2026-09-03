@@ -28,13 +28,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
 
 # The sys.path bootstrap above has to run before these resolve.
 from hexgate_api.constants import DEFAULT_PROJECT_ID  # noqa: E402
-from hexgate_api.core.clickhouse import get_clickhouse  # noqa: E402
+from hexgate_api.core.clickhouse import (  # noqa: E402
+    BATCH_INSERT_SETTINGS,
+    get_clickhouse,
+)
 from hexgate_api.features.audit.service import (  # noqa: E402
     _ANOMALY_MIN_REQUESTS,
     _DECISION_COLUMNS,
-    _DECISION_INSERT_SETTINGS,
     _TIMEDELTA_ANOMALY_HOURS,
 )
+from hexgate_api.schemas import AuditOutcome  # noqa: E402
 
 # ── Agent & users ─────────────────────────────────────────────────────────────
 # Uses the dev default project id (imported above) so data is visible in the dashboard.
@@ -87,7 +90,7 @@ USER_IDS = [
 ]
 
 # ── Traffic shape ─────────────────────────────────────────────────────────────
-# Normal: ~300 rows per user over 30 days, grouped into short runs (one
+# Normal: exactly 300 rows per user over 30 days, grouped into short runs (one
 # session_id + one run_id each) spaced beyond one detector window, outcomes
 # weighted 80% allow / 10% deny / 10% needs_approval. The grouping is what
 # gives session_id and run_id meaning; see the run bounds below for why it
@@ -126,9 +129,8 @@ _MIN_RUN_SEPARATION = timedelta(hours=_TIMEDELTA_ANOMALY_HOURS) + _MAX_RUN_DURAT
 TOKENS_PER_LLM_CALL_MIN = 300
 TOKENS_PER_LLM_CALL_MAX = 4_000
 
-OUTCOMES = ["allow", "deny", "needs_approval"]
+OUTCOMES = [AuditOutcome.ALLOW, AuditOutcome.DENY, AuditOutcome.NEEDS_APPROVAL]
 OUTCOME_WEIGHTS = [0.8, 0.1, 0.1]
-DENY_OUTCOME = "deny"
 
 TOOL_NAMES = ["refund_customer", "create_ticket", "read_customer", "web_search"]
 RESTRICTED_TOOLS = ["refund_customer", "create_ticket"]
@@ -194,10 +196,12 @@ class RunSnapshot:
     def as_fields(self) -> Fields:
         """Only the run columns this build's audit contract declares.
 
-        The six run_* columns landed after the multi-role ones, so an API
-        image from either side of that change is expected here; narrowing to
-        _SEED_COLUMNS writes run attribution where the columns exist and
-        leaves the older shape untouched, rather than failing the insert.
+        As of this commit that is NONE of them: the six run_* columns exist
+        only on the unmerged run-attribution branch, so against main this
+        returns an empty dict and every seeded row takes ClickHouse's
+        zero-run defaults. Narrowing to _SEED_COLUMNS rather than hardcoding
+        the six is what lets one script serve an API image from either side
+        of that merge, with no edit needed when the columns land.
         """
         return {
             column: value
@@ -240,14 +244,22 @@ class RunProgress:
             elapsed_ms=elapsed_ms,
         )
 
-    def record(self, outcome: str) -> None:
+    def record(self, outcome: AuditOutcome) -> None:
+        """Apply one decision's effect, following RunFacts' record_* methods.
+
+        Only an allow dispatches the tool, so only an allow is a tool_call. A
+        denial is counted separately (record_denial) and an approval gate is
+        counted as neither — "execution is counted separately, so an approval
+        never granted consumes no budget" (RunFacts.record_approval), and
+        approvals have no column here. The model was still called either way.
+        """
         self._llm_calls += 1
         self._total_tokens += self._rng.randint(
             TOKENS_PER_LLM_CALL_MIN, TOKENS_PER_LLM_CALL_MAX
         )
-        if outcome == DENY_OUTCOME:
+        if outcome == AuditOutcome.DENY:
             self._denials += 1
-        else:
+        elif outcome == AuditOutcome.ALLOW:
             self._tool_calls += 1
 
 
@@ -306,7 +318,7 @@ def _normal_row(
     user_id: str,
     run: RunSnapshot,
 ) -> Row:
-    denied = outcome == DENY_OUTCOME
+    denied = outcome == AuditOutcome.DENY
     roles = _role_set(user_id)
     return _project_row(
         {
@@ -355,7 +367,7 @@ def _anomaly_row(
                 user_id=user_id,
             ),
             "tool_name": rng.choice(RESTRICTED_TOOLS),
-            "outcome": DENY_OUTCOME,
+            "outcome": AuditOutcome.DENY,
             "error_type": DENY_ERROR_TYPE,
             "reason": DENY_REASON,
             "violations": list(ANOMALY_VIOLATIONS),
@@ -364,7 +376,7 @@ def _anomaly_row(
             # Always populated: the anomaly is a restricted-tool deny, and the
             # low-clearance bag is what makes it explainable in the drawer.
             "attributes": json.dumps(ANOMALY_ATTRIBUTES),
-            "user_roles": _role_set(user_id),
+            "user_roles": list(_role_set(user_id)),
             "deciding_role": "",
             **run.as_fields(),
         }
@@ -385,14 +397,38 @@ def _validate_columns(client: Client) -> None:
 
 
 def _run_sizes(rng: random.Random, total: int) -> list[int]:
-    sizes = []
-    remaining = total
-    while remaining > 0:
-        sizes.append(
-            min(rng.randint(DECISIONS_PER_RUN_MIN, DECISIONS_PER_RUN_MAX), remaining)
-        )
-        remaining -= sizes[-1]
+    """Partition ``total`` decisions into runs, each within the per-run bounds.
+
+    The run count is drawn first and the total spread across it, rather than
+    filling greedily: a greedy fill leaves a 1-2 decision remainder for most
+    users, and folding that remainder into its neighbour would push one run
+    to or past DECISIONS_PER_RUN_MAX + 1 — over the detector's request
+    threshold, which is the one thing the bounds exist to prevent.
+    """
+    if total <= DECISIONS_PER_RUN_MAX:
+        return [total]
+    fewest = -(-total // DECISIONS_PER_RUN_MAX)
+    most = max(total // DECISIONS_PER_RUN_MIN, fewest)
+    count = rng.randint(fewest, most)
+    size, larger = divmod(total, count)
+    sizes = [size + 1] * larger + [size] * (count - larger)
+    rng.shuffle(sizes)
     return sizes
+
+
+def _past_instant(rng: random.Random, now: datetime) -> datetime:
+    """A time inside the seed window, far enough back to stay in the past.
+
+    Every row's received_at carries up to INGEST_LAG_SECONDS_MAX on top of
+    its occurred_at, so a base drawn right up to ``now`` puts rows seconds
+    into the future — which the dashboard's windows read as not-yet-happened.
+    Reserving _MIN_RUN_SEPARATION at the recent end keeps that impossible.
+    """
+    span = timedelta(days=SEED_WINDOW_DAYS)
+    latest = now - _MIN_RUN_SEPARATION
+    return latest - timedelta(
+        seconds=rng.uniform(0, (span - _MIN_RUN_SEPARATION).total_seconds())
+    )
 
 
 def _run_starts(rng: random.Random, now: datetime, count: int) -> list[datetime]:
@@ -467,7 +503,7 @@ def generate_anomalies(
     rows: list[Row] = []
     for _ in range(number_anomalies):
         anomaly_user = rng.choice(USER_IDS[:number_users])
-        anomaly_base = now - timedelta(days=rng.randint(0, SEED_WINDOW_DAYS - 1))
+        anomaly_base = _past_instant(rng, now)
         requests = rng.randint(REQUESTS_PER_ANOMALY_MIN, REQUESTS_PER_ANOMALY_MAX)
         session_id = str(uuid4())
         progress = RunProgress(rng, uuid4())
@@ -486,7 +522,7 @@ def generate_anomalies(
                     run=progress.snapshot(_elapsed_ms(start, timestamp)),
                 )
             )
-            progress.record(DENY_OUTCOME)
+            progress.record(AuditOutcome.DENY)
     return rows
 
 
@@ -533,7 +569,7 @@ def seed(
         "policy_decision",
         normal + anomalous,
         column_names=_SEED_COLUMNS,
-        settings=_DECISION_INSERT_SETTINGS,
+        settings=BATCH_INSERT_SETTINGS,
     )
     return len(normal), len(anomalous)
 
