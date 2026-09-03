@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 import sys
@@ -35,9 +34,10 @@ from hexgate_api.core.clickhouse import (  # noqa: E402
 from hexgate_api.features.audit.service import (  # noqa: E402
     _ANOMALY_MIN_REQUESTS,
     _DECISION_COLUMNS,
+    _decision_row,
     _TIMEDELTA_ANOMALY_HOURS,
 )
-from hexgate_api.schemas import AuditOutcome  # noqa: E402
+from hexgate_api.schemas import AuditOutcome, DecisionEvent  # noqa: E402
 
 # ── Agent & users ─────────────────────────────────────────────────────────────
 # Uses the dev default project id (imported above) so data is visible in the dashboard.
@@ -157,6 +157,9 @@ ATTRIBUTE_BAGS = [
     {"department": "support", "region": "US", "clearance_level": 2},
 ]
 ATTRIBUTES_POPULATED_RATIO = 0.66
+# Platform-resolved from the agent registry in production; seeded rows belong
+# to no registered agent version, and "" is what the column defaults to.
+AGENT_VERSION_ID = ""
 ANOMALY_ATTRIBUTES = {"department": "support", "region": "EU", "clearance_level": 1}
 
 # ── ClickHouse columns ────────────────────────────────────────────────────────
@@ -193,15 +196,15 @@ class RunSnapshot:
     total_tokens: int
     elapsed_ms: int
 
-    def as_fields(self) -> Fields:
-        """Only the run columns this build's audit contract declares.
+    def as_event_fields(self) -> Fields:
+        """Only the run fields this build's DecisionEvent declares.
 
-        As of this commit that is NONE of them: the six run_* columns exist
+        As of this commit that is NONE of them: the six run_* fields exist
         only on the unmerged run-attribution branch, so against main this
         returns an empty dict and every seeded row takes ClickHouse's
-        zero-run defaults. Narrowing to _SEED_COLUMNS rather than hardcoding
-        the six is what lets one script serve an API image from either side
-        of that merge, with no edit needed when the columns land.
+        zero-run defaults. Keying off model_fields rather than hardcoding the
+        six is what lets one script serve an API image from either side of
+        that merge, with no edit needed when the fields land.
         """
         return {
             column: value
@@ -213,7 +216,7 @@ class RunSnapshot:
                 ("run_total_tokens", self.total_tokens),
                 ("run_elapsed_ms", self.elapsed_ms),
             )
-            if column in _SEED_COLUMNS
+            if column in DecisionEvent.model_fields
         }
 
 
@@ -264,123 +267,139 @@ class RunProgress:
 
 
 # ── Row builders ──────────────────────────────────────────────────────────────
+# Rows come from the API's own _decision_row, not from a local column list.
+# That builder is the single place the row-shaping rules live (payload
+# serialization, the falsy-attributes normalisation, the legacy role shim), so
+# reusing it means the seed names no audit column at all beyond splicing
+# received_at, and cannot drift from the ingest contract the way it did
+# through the multi-role change (#120).
 
 
 def _role_set(user_id: str) -> list[str]:
     return ROLE_SETS[USER_IDS.index(user_id) % len(ROLE_SETS)]
 
 
-def _project_row(fields: Fields) -> Row:
-    """Order ``fields`` into a _SEED_COLUMNS row, failing on any drift.
+@dataclass(frozen=True, slots=True)
+class SeededDecision:
+    """What differs between a background decision and an anomaly probe.
 
-    _SEED_COLUMNS is derived from _DECISION_COLUMNS, so a column added
-    upstream surfaces here as a missing key rather than as the driver's
-    count-mismatch error, which names neither side.
+    Everything else — the envelope, the deny fields, the role set — follows
+    from these, so both traffic shapes go through one builder instead of two
+    near-identical ones.
     """
-    missing = [column for column in _SEED_COLUMNS if column not in fields]
-    unknown = sorted(set(fields) - set(_SEED_COLUMNS))
-    if missing or unknown:
-        raise ValueError(
-            f"seed row does not match the {len(_SEED_COLUMNS)} audit columns — "
-            f"missing {missing}, unknown {unknown}"
-        )
-    return [fields[column] for column in _SEED_COLUMNS]
+
+    timestamp: datetime
+    session_id: str
+    user_id: str
+    tool_name: str
+    outcome: AuditOutcome
+    violations: list[str]
+    attributes: dict | None
+    run: RunSnapshot
 
 
-def _envelope(
-    target: SeedTarget,
+def _decision_seed_row(
+    target: SeedTarget, rng: random.Random, decision: SeededDecision
+) -> Row:
+    """One policy_decision row, built by the API and given a seeded received_at.
+
+    received_at is server-stamped in production, so it is absent from
+    DecisionEvent and from _decision_row's output; splicing it in at the
+    position _SEED_COLUMNS puts it is what lets the seed backdate ingestion
+    instead of having every row land at insert time.
+    """
+    denied = decision.outcome == AuditOutcome.DENY
+    roles = list(_role_set(decision.user_id))
+    event = DecisionEvent(
+        event_id=uuid4(),
+        occurred_at=decision.timestamp,
+        agent_name=target.agent_name,
+        session_id=decision.session_id,
+        user_id=decision.user_id,
+        tool_name=decision.tool_name,
+        outcome=decision.outcome,
+        user_roles=roles,
+        deciding_role="" if denied else roles[0],
+        error_type=DENY_ERROR_TYPE if denied else "",
+        reason=DENY_REASON if denied else "",
+        violations=list(decision.violations),
+        attributes=decision.attributes,
+        **decision.run.as_event_fields(),
+    )
+    row = _decision_row(
+        event, project_id=target.project_id, agent_version_id=AGENT_VERSION_ID
+    )
+    row.insert(
+        _idx + 1,
+        decision.timestamp + timedelta(seconds=rng.randint(0, INGEST_LAG_SECONDS_MAX)),
+    )
+    return row
+
+
+def _background_decision(
     rng: random.Random,
     *,
-    timestamp: datetime,
-    session_id: str,
-    user_id: str,
-) -> Fields:
-    return {
-        "event_id": uuid4(),
-        "occurred_at": timestamp,
-        "received_at": timestamp
-        + timedelta(seconds=rng.randint(0, INGEST_LAG_SECONDS_MAX)),
-        "project_id": target.project_id,
-        "agent_name": target.agent_name,
-        "agent_version_id": "",
-        "session_id": session_id,
-        "user_id": user_id,
-    }
-
-
-def _normal_row(
-    target: SeedTarget,
-    rng: random.Random,
-    *,
-    outcome: str,
+    outcome: AuditOutcome,
     timestamp: datetime,
     session_id: str,
     user_id: str,
     run: RunSnapshot,
-) -> Row:
+) -> SeededDecision:
     denied = outcome == AuditOutcome.DENY
-    roles = _role_set(user_id)
-    return _project_row(
-        {
-            **_envelope(
-                target,
-                rng,
-                timestamp=timestamp,
-                session_id=session_id,
-                user_id=user_id,
-            ),
-            "tool_name": rng.choice(TOOL_NAMES),
-            "outcome": outcome,
-            "error_type": DENY_ERROR_TYPE if denied else "",
-            "reason": DENY_REASON if denied else "",
-            "violations": list(DENY_VIOLATIONS) if denied else [],
-            "hint": "",
-            "arguments": "",
-            # Empty a third of the time so the drawer's "omit when absent" path
-            # shows up in the seeded data too, not just the populated one.
-            "attributes": json.dumps(rng.choice(ATTRIBUTE_BAGS))
+    return SeededDecision(
+        timestamp=timestamp,
+        session_id=session_id,
+        user_id=user_id,
+        tool_name=rng.choice(TOOL_NAMES),
+        outcome=outcome,
+        violations=DENY_VIOLATIONS if denied else [],
+        # Absent a third of the time so the drawer's "omit when absent" path
+        # shows up in the seeded data too, not just the populated one.
+        attributes=(
+            rng.choice(ATTRIBUTE_BAGS)
             if rng.random() < ATTRIBUTES_POPULATED_RATIO
-            else "",
-            "user_roles": list(roles),
-            "deciding_role": "" if denied else roles[0],
-            **run.as_fields(),
-        }
+            else None
+        ),
+        run=run,
     )
 
 
-def _anomaly_row(
-    target: SeedTarget,
+def _anomaly_decision(
     rng: random.Random,
     *,
     timestamp: datetime,
     session_id: str,
     user_id: str,
     run: RunSnapshot,
-) -> Row:
-    return _project_row(
-        {
-            **_envelope(
-                target,
-                rng,
-                timestamp=timestamp,
-                session_id=session_id,
-                user_id=user_id,
-            ),
-            "tool_name": rng.choice(RESTRICTED_TOOLS),
-            "outcome": AuditOutcome.DENY,
-            "error_type": DENY_ERROR_TYPE,
-            "reason": DENY_REASON,
-            "violations": list(ANOMALY_VIOLATIONS),
-            "hint": "",
-            "arguments": "",
-            # Always populated: the anomaly is a restricted-tool deny, and the
-            # low-clearance bag is what makes it explainable in the drawer.
-            "attributes": json.dumps(ANOMALY_ATTRIBUTES),
-            "user_roles": list(_role_set(user_id)),
-            "deciding_role": "",
-            **run.as_fields(),
-        }
+) -> SeededDecision:
+    return SeededDecision(
+        timestamp=timestamp,
+        session_id=session_id,
+        user_id=user_id,
+        tool_name=rng.choice(RESTRICTED_TOOLS),
+        outcome=AuditOutcome.DENY,
+        violations=ANOMALY_VIOLATIONS,
+        # Always populated: the anomaly is a restricted-tool deny, and the
+        # low-clearance bag is what makes it explainable in the drawer.
+        attributes=ANOMALY_ATTRIBUTES,
+        run=run,
     )
+
+
+def _validate_row_shape(rows: list[Row]) -> None:
+    """Guard the one seam left between the seed and the API's row builder.
+
+    _decision_row emits _DECISION_COLUMNS order and the splice puts
+    received_at where _SEED_COLUMNS expects it, so a mismatch here means the
+    ingest contract moved received_at or _idx no longer describes it — not a
+    forgotten column, which is no longer possible to have.
+    """
+    widths = {len(row) for row in rows}
+    if widths - {len(_SEED_COLUMNS)}:
+        raise ValueError(
+            f"seed row widths {sorted(widths)} != {len(_SEED_COLUMNS)} columns "
+            f"({_SEED_COLUMNS}) — the audit row contract moved"
+        )
 
 
 def _validate_columns(client: Client) -> None:
@@ -479,14 +498,17 @@ def generate_normal_data(
                 outcomes, _run_timestamps(rng, start, decisions)
             ):
                 rows.append(
-                    _normal_row(
+                    _decision_seed_row(
                         target,
                         rng,
-                        outcome=outcome,
-                        timestamp=timestamp,
-                        session_id=session_id,
-                        user_id=user_id,
-                        run=progress.snapshot(_elapsed_ms(start, timestamp)),
+                        _background_decision(
+                            rng,
+                            outcome=outcome,
+                            timestamp=timestamp,
+                            session_id=session_id,
+                            user_id=user_id,
+                            run=progress.snapshot(_elapsed_ms(start, timestamp)),
+                        ),
                     )
                 )
                 progress.record(outcome)
@@ -513,13 +535,16 @@ def generate_anomalies(
         start = timestamps[0]
         for timestamp in timestamps:
             rows.append(
-                _anomaly_row(
+                _decision_seed_row(
                     target,
                     rng,
-                    timestamp=timestamp,
-                    session_id=session_id,
-                    user_id=anomaly_user,
-                    run=progress.snapshot(_elapsed_ms(start, timestamp)),
+                    _anomaly_decision(
+                        rng,
+                        timestamp=timestamp,
+                        session_id=session_id,
+                        user_id=anomaly_user,
+                        run=progress.snapshot(_elapsed_ms(start, timestamp)),
+                    ),
                 )
             )
             progress.record(AuditOutcome.DENY)
@@ -565,6 +590,7 @@ def seed(
 ) -> Tuple[int, int]:
     clear(client, target.project_id)
     normal, anomalous = build_rows(target, number_users, number_anomalies)
+    _validate_row_shape(normal + anomalous)
     client.insert(
         "policy_decision",
         normal + anomalous,
