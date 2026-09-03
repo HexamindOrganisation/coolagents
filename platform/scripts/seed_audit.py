@@ -30,8 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "api"))
 from hexgate_api.constants import DEFAULT_PROJECT_ID  # noqa: E402
 from hexgate_api.core.clickhouse import get_clickhouse  # noqa: E402
 from hexgate_api.features.audit.service import (  # noqa: E402
+    _ANOMALY_MIN_REQUESTS,
     _DECISION_COLUMNS,
     _DECISION_INSERT_SETTINGS,
+    _TIMEDELTA_ANOMALY_HOURS,
 )
 
 # ── Agent & users ─────────────────────────────────────────────────────────────
@@ -86,8 +88,10 @@ USER_IDS = [
 
 # ── Traffic shape ─────────────────────────────────────────────────────────────
 # Normal: ~300 rows per user over 30 days, grouped into short runs (one
-# session_id + one run_id each), outcomes weighted 80% allow / 10% deny /
-# 10% needs_approval.
+# session_id + one run_id each) spaced beyond one detector window, outcomes
+# weighted 80% allow / 10% deny / 10% needs_approval. The grouping is what
+# gives session_id and run_id meaning; see the run bounds below for why it
+# must stay under the anomaly threshold.
 # Anomaly: for each anomaly, one user (sampled from the seeded normal subset,
 # USER_IDS[:number_users]) spikes 20-50 denies inside a single run in a
 # 5-minute window at a random point in the last 30 days, probing restricted
@@ -102,10 +106,23 @@ REQUESTS_PER_ANOMALY_MIN = 20
 REQUESTS_PER_ANOMALY_MAX = 50
 
 SEED_WINDOW_DAYS = 30
-DECISIONS_PER_RUN_MIN = 3
-DECISIONS_PER_RUN_MAX = 12
 SECONDS_BETWEEN_DECISIONS_MAX = 45
 INGEST_LAG_SECONDS_MAX = 5
+
+# Background traffic must not read as anomalous. The detector flags a user with
+# _ANOMALY_MIN_REQUESTS or more decisions inside a _TIMEDELTA_ANOMALY_HOURS
+# window at a >= 30% deny rate, so a normal run stays strictly below that
+# request count and consecutive runs are spaced beyond one window — a run
+# grouping that packed more decisions into a window than the threshold would
+# make the seeded baseline flag ~140 medium anomalies on its own, drowning the
+# deliberate spikes below. Bounds are derived from the detector's own
+# constants so retuning it cannot silently reintroduce that.
+DECISIONS_PER_RUN_MIN = 3
+DECISIONS_PER_RUN_MAX = _ANOMALY_MIN_REQUESTS - 1
+_MAX_RUN_DURATION = timedelta(
+    seconds=(DECISIONS_PER_RUN_MAX - 1) * SECONDS_BETWEEN_DECISIONS_MAX
+)
+_MIN_RUN_SEPARATION = timedelta(hours=_TIMEDELTA_ANOMALY_HOURS) + _MAX_RUN_DURATION
 TOKENS_PER_LLM_CALL_MIN = 300
 TOKENS_PER_LLM_CALL_MAX = 4_000
 
@@ -367,12 +384,33 @@ def _validate_columns(client: Client) -> None:
 # ── Generators ────────────────────────────────────────────────────────────────
 
 
-def _run_start(rng: random.Random, now: datetime) -> datetime:
-    return now - timedelta(
-        days=rng.randint(0, SEED_WINDOW_DAYS - 1),
-        hours=rng.randint(0, 23),
-        minutes=rng.randint(0, 59),
-    )
+def _run_sizes(rng: random.Random, total: int) -> list[int]:
+    sizes = []
+    remaining = total
+    while remaining > 0:
+        sizes.append(
+            min(rng.randint(DECISIONS_PER_RUN_MIN, DECISIONS_PER_RUN_MAX), remaining)
+        )
+        remaining -= sizes[-1]
+    return sizes
+
+
+def _run_starts(rng: random.Random, now: datetime, count: int) -> list[datetime]:
+    """One jittered start per run, one run per evenly-sized slot of the window.
+
+    Slotting rather than a free scatter: two independently placed runs land in
+    the same detector window often enough to flag the user, and jitter bounded
+    by the slot minus _MIN_RUN_SEPARATION keeps consecutive runs more than a
+    window apart by construction instead of by luck.
+    """
+    span = timedelta(days=SEED_WINDOW_DAYS)
+    slot = span / count
+    jitter_seconds = max((slot - _MIN_RUN_SEPARATION).total_seconds(), 0.0)
+    earliest = now - span
+    return [
+        earliest + slot * index + timedelta(seconds=rng.uniform(0, jitter_seconds))
+        for index in range(count)
+    ]
 
 
 def _run_timestamps(
@@ -396,13 +434,8 @@ def generate_normal_data(
 ) -> list[Row]:
     rows: list[Row] = []
     for user_id in USER_IDS[:number_users]:
-        emitted = 0
-        while emitted < ROWS_PER_USER:
-            decisions = min(
-                rng.randint(DECISIONS_PER_RUN_MIN, DECISIONS_PER_RUN_MAX),
-                ROWS_PER_USER - emitted,
-            )
-            start = _run_start(rng, now)
+        sizes = _run_sizes(rng, ROWS_PER_USER)
+        for decisions, start in zip(sizes, _run_starts(rng, now, len(sizes))):
             session_id = str(uuid4())
             progress = RunProgress(rng, uuid4())
             outcomes = rng.choices(OUTCOMES, weights=OUTCOME_WEIGHTS, k=decisions)
@@ -421,7 +454,6 @@ def generate_normal_data(
                     )
                 )
                 progress.record(outcome)
-            emitted += decisions
     return rows
 
 
