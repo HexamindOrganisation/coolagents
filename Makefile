@@ -392,6 +392,19 @@ platform-down: _require-stage-env ## Stop a deploy stack, keeps volumes: make pl
 platform-logs: _require-stage-env ## Tail a deploy stack's logs: make platform-logs STAGE=prod
 	$(DEPLOY_COMPOSE) logs -f
 
+# Post-deploy check, run from anywhere with network access to the stage (a
+# laptop, not necessarily the box): sends one of every event type through the
+# SDK's real OTLP path and reads them back via the dashboard API. Needs
+# HEXGATE_API_KEY minted on that stage, plus HEXGATE_SMOKE_EMAIL/_PASSWORD (a
+# dashboard login there) for the read-back; without those it prints the
+# ClickHouse queries to run on the box instead. Stage → origin below; set
+# HEXGATE_API_URL to target anything else (a local stack, a new hostname).
+SMOKE_URL_prod    = https://app.hexgate.ai
+SMOKE_URL_staging = https://app.staging.hexgate.ai
+.PHONY: platform-smoke
+platform-smoke: ## End-to-end OTLP smoke test of a live stage: make platform-smoke STAGE=prod (needs HEXGATE_API_KEY)
+	HEXGATE_API_URL=$${HEXGATE_API_URL:-$(SMOKE_URL_$(STAGE))} $(UV) python platform/scripts/otlp_smoke.py
+
 # -------- SDK → platform bridge --------
 
 # Make's rule parser treats colons specially, so a positional

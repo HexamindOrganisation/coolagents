@@ -96,13 +96,12 @@ The `/v1/traces` path routes to the stage's `HEXGATE_OTLP_PORT` — the
 collector's OTLP/HTTP receiver — and must match BEFORE the hostname's
 catch-all route (in Caddy a `handle /v1/traces` block above the general
 `reverse_proxy`; in nginx an exact `location = /v1/traces`). This is what
-will let the OTLP-emitting SDK's default endpoint (`<api url>/v1/traces`)
-work with zero client config once that SDK ships — the SDK in this tree
-still posts to the api's `/v1/audit/*` endpoints and sends nothing to the
-collector, so an empty pipeline on today's SDK is expected, not a proxy
-fault. Everything else in the stack (Postgres, ClickHouse, Redpanda) binds
-no host ports; Redpanda in particular is PLAINTEXT with no auth — never
-publish it.
+makes the SDK's default OTLP endpoint (`<api url>/v1/traces`) work with zero
+client config. Without the route, the api's SPA catch-all answers the POST
+with a JSON 404 and every SDK on that stage silently loses its audit trail —
+`make platform-smoke` (§4) is how you catch that. Everything else in the
+stack (Postgres, ClickHouse, Redpanda) binds no host ports; Redpanda in
+particular is PLAINTEXT with no auth — never publish it.
 
 (In Caddy this is two `reverse_proxy` site blocks; in nginx, two `server`
 blocks with `proxy_pass`. Forward `X-Forwarded-Proto: https` — the API trusts
@@ -140,6 +139,23 @@ curl -sf https://app.staging.hexgate.ai/v1/health
 # path route is missing or ordered after the hostname's catch-all.
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://app.hexgate.ai/v1/traces   # → 401
 ```
+
+Then prove the whole pipeline, not just the front door. From a laptop with the
+repo checked out (needs an admin account on the stage — §5 — and an API key
+minted in its dashboard):
+
+```bash
+export HEXGATE_API_KEY=fty_live_...          # minted on THIS stage; a prod key 401s on staging
+export HEXGATE_SMOKE_EMAIL=you@example.com   # dashboard login on this stage
+export HEXGATE_SMOKE_PASSWORD=...
+make platform-smoke STAGE=prod               # or STAGE=staging
+```
+
+It sends five events (allow / deny / needs_approval decisions, one LLM usage,
+one ban enforcement) through the SDK's real OTLP path and polls the dashboard
+API until each shows up, then prints `PASS` or a per-event `MISSING` list.
+Rows are tagged `agent_name = otlp_smoke` and a per-run `session_id`, so they
+are easy to spot and harmless to leave. Run it after every `platform-up`.
 
 ## 5. First admin (per env)
 
