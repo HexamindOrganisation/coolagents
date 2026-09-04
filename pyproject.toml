@@ -53,6 +53,12 @@ dependencies = [
     # enforcement as @agent_tool functions. Was a transitive dep
     # already; pinned explicitly now since we import from it directly.
     "mcp>=1.0",
+    # RE2 (Go regexp / Rego's `regex.match`) evaluates `matches` on the
+    # pydantic engine, so a constraint behaves the same there as in a
+    # compiled WASM bundle -- same syntax accepted, and linear time either
+    # way. Prebuilt wheels for 3.13/3.14 on macOS, Linux and Windows, so
+    # nothing is compiled on install. See docs/adr/R-CONSTRAINT-001.
+    "google-re2>=1.1.20251105",
 ]
 
 [project.scripts]

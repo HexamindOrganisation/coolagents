@@ -81,9 +81,14 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import re2
 
 from hexgate.security.errors import PolicyDeniedError
+
+if TYPE_CHECKING:  # `re2` exposes no public type for a compiled pattern.
+    from re2 import _Regexp
 
 
 class ConstraintParseError(ValueError):
@@ -246,15 +251,6 @@ _FACTS = ("role", "tool")
 
 _FUNCS = ("startswith", "endswith", "contains", "matches")
 _FUNC_RE = re.compile(r"^([a-z]+)\((.*)\)$", re.DOTALL)
-# RE2 (Go regexp, what Rego runs) lacks several constructs Python's `re`
-# accepts; reject them so a pattern can't evaluate one way in pydantic and
-# another (or undefined → deny) in a WASM bundle. Verified against `opa eval`:
-# each of these is undefined under RE2 while Python matches.
-#   \1..\9        numeric backreference        (?P=name)  named backreference
-#   (?=..)(?!..)  lookahead                    (?<=)(?<!) lookbehind
-#   \Z            Python end-anchor (RE2 uses \z, rejects \Z)
-#   (?#..)        inline comment               (?(..)..)  conditional
-_RE2_INCOMPATIBLE = re.compile(r"\\[1-9]|\\Z|\(\?[=!]|\(\?<[=!]|\(\?P=|\(\?#|\(\?\(")
 
 
 @lru_cache(maxsize=2048)
@@ -645,20 +641,55 @@ def _split_call_args(inner: str, source: str, fn: str) -> tuple[str, str]:
     return field, value
 
 
+@lru_cache(maxsize=2048)
+def _compile_re2(pattern: str) -> _Regexp:
+    """Compile ``pattern`` with RE2, the engine Rego runs.
+
+    Cached, so a policy's patterns compile once at load and every later
+    evaluation reuses the object. ``re2.error`` is left to the caller, which
+    turns it into a :class:`ConstraintParseError` naming the constraint.
+    """
+    return re2.compile(pattern)
+
+
+def _re2_reason(exc: BaseException) -> str:
+    """RE2's own explanation, as text.
+
+    RE2 reports through the C++ layer, so the reason arrives as bytes; rendering
+    the exception directly would print ``b'missing ]'`` in an error a policy
+    author reads.
+    """
+    detail = exc.args[0] if exc.args else exc
+    if isinstance(detail, bytes):
+        return detail.decode("utf-8", "replace")
+    return str(detail)
+
+
 def _validate_re2(pattern: str, source: str) -> None:
-    """Reject a regex that Python accepts but Rego's RE2 engine can't run."""
+    """Reject a regex RE2 cannot run, RE2 itself being the judge.
+
+    ``matches`` is evaluated with RE2 on both engines, so a pattern that fails
+    to compile here would fail in a WASM bundle too. Compiling at load turns
+    that into one clear error where the policy is written rather than a surprise
+    at enforcement time, and the compiled object is then cached for the
+    evaluator.
+    """
     try:
-        re.compile(pattern, re.ASCII)
-    except re.error as exc:
+        _compile_re2(pattern)
+    except re2.error as exc:
         raise ConstraintParseError(
-            f"invalid regex {pattern!r} in {source!r}: {exc}"
+            f"invalid regex {pattern!r} in {source!r}: {_re2_reason(exc)} — "
+            "`matches` is evaluated with RE2, the engine a compiled policy "
+            "bundle runs"
         ) from exc
-    if _RE2_INCOMPATIBLE.search(pattern):
+    except UnicodeEncodeError as exc:
+        # RE2 matches over UTF-8 bytes, so a pattern carrying an unpaired
+        # surrogate cannot be encoded at all. That is a malformed policy rather
+        # than a denial, so it is reported where the policy is written.
         raise ConstraintParseError(
-            f"regex {pattern!r} in {source!r} uses features RE2 does not support "
-            "(backreferences, lookaround, \\Z anchor, inline comments, or "
-            "conditionals) — the WASM engine would diverge"
-        )
+            f"regex {pattern!r} in {source!r} is not valid UTF-8 (it carries an "
+            "unpaired surrogate), so RE2 cannot compile it"
+        ) from exc
 
 
 def _find_operator(text: str) -> tuple[str | None, int]:
@@ -781,8 +812,9 @@ def _eval_quant(node: Quant, context: dict[str, Any]) -> bool:
 def _eval_call(node: Call, context: dict[str, Any]) -> bool:
     """Evaluate a string function. Non-string / missing target fails closed.
 
-    ``matches`` uses ``re.search`` (unanchored) to mirror Rego's
-    ``regex.match``; a full-string match needs explicit ``^…$`` anchors.
+    ``matches`` is RE2's own ``search`` (unanchored), the same engine and the
+    same call Rego's ``regex.match`` makes; a full-string match needs explicit
+    ``^…$`` anchors.
     """
     x = _resolve_operand(node.arg, context)
     if not isinstance(x, str):
@@ -795,9 +827,18 @@ def _eval_call(node: Call, context: dict[str, Any]) -> bool:
     if node.fn == "contains":
         return v in x
     if node.fn == "matches":
-        # re.ASCII pins \d/\w/\s/\b to ASCII, matching Rego's RE2 (Go) engine —
-        # without it Python treats them as Unicode and diverges on non-ASCII args.
-        return re.search(v, x, re.ASCII) is not None
+        # RE2 is the engine Rego runs, so the two engines agree by
+        # construction instead of by keeping a list of Python features to
+        # avoid. It is linear-time, so no pattern can stall the decision.
+        try:
+            return _compile_re2(v).search(x) is not None
+        except UnicodeEncodeError:
+            # RE2 matches over UTF-8 bytes, and `json.loads` accepts strings
+            # that have no encoding: a lone `\ud83d` is half an emoji whose other
+            # half never arrived. Fail the constraint rather than raise, so a
+            # malformed argument denies like any other unmatchable value here
+            # instead of escaping the enforcer as an exception.
+            return False
     return False  # unreachable given the _FUNCS whitelist
 
 
