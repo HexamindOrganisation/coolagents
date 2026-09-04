@@ -399,13 +399,21 @@ platform-logs: _require-stage-env ## Tail a deploy stack's logs: make platform-l
 # clickhouse → read API); it runs no agent, so enforcer/adapter behaviour is
 # out of scope — that's `pytest -m integration` against a local stack. Needs
 # HEXGATE_API_KEY minted on that stage, plus HEXGATE_SMOKE_EMAIL/_PASSWORD (a
-# dashboard login there) for the read-back; without those it prints the
-# ClickHouse queries to run on the box instead. Stage → origin below; set
-# HEXGATE_API_URL to target anything else (a local stack, a new hostname).
+# dashboard login there, project admin — the ban read is admin-gated) for the
+# read-back; without those it prints the ClickHouse queries to run on the box
+# instead. Stage → origin below; set HEXGATE_API_URL to target anything else (a
+# local stack, a new hostname). Unlike its siblings this target has no
+# _require-stage-env dep — it needs no env file, just network access — so it
+# guards the stage itself: an unknown STAGE would expand SMOKE_URL_ to empty,
+# and the SDK reads an empty HEXGATE_API_URL as unset and falls back to the
+# prod default, i.e. a typo would smoke-test production.
 SMOKE_URL_prod    = https://app.hexgate.ai
 SMOKE_URL_staging = https://app.staging.hexgate.ai
 .PHONY: platform-smoke
 platform-smoke: ## OTLP pipeline smoke test of a live stage, sender → ClickHouse (no agent): make platform-smoke STAGE=prod (needs HEXGATE_API_KEY)
+	@test -n "$${HEXGATE_API_URL:-$(SMOKE_URL_$(STAGE))}" || { \
+	  echo "unknown STAGE '$(STAGE)': add a SMOKE_URL_$(STAGE) line, or set HEXGATE_API_URL"; \
+	  exit 1; }
 	HEXGATE_API_URL=$${HEXGATE_API_URL:-$(SMOKE_URL_$(STAGE))} $(UV) python platform/scripts/otlp_smoke.py
 
 # -------- SDK → platform bridge --------

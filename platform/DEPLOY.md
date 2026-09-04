@@ -157,6 +157,11 @@ API until each shows up, then prints `PASS` or a per-event `MISSING` list.
 Rows are tagged `agent_name = otlp_smoke` and a per-run `session_id`, so they
 are easy to spot and harmless to leave. Run it after every `platform-up`.
 
+Exit 0 is the only green: 1 means an event did not land, and 2 means the
+credentials above were missing so nothing was read back at all — the send step
+on its own cannot fail, because the OTLP exporter only logs export errors.
+Anything gating a deploy on this must treat 2 as a failure.
+
 Scope: it starts at the SDK's sender, so a PASS proves the deployment —
 proxy route, collector auth, Redpanda, enricher, ClickHouse, read API — for
 this SDK version. It runs no agent, so the enforcer and adapter hooks that

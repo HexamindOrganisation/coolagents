@@ -20,11 +20,11 @@ covered by the adapter integration tests (`pytest -m integration`), not here.
 A PASS means "a correctly-formed span from this SDK version lands and is
 queryable on this stage"; it does not mean "an agent on this stage is audited".
 
-Verification needs a dashboard login (the read endpoints are org-member
-only, an API key is not enough). Set HEXGATE_SMOKE_EMAIL and
-HEXGATE_SMOKE_PASSWORD to the account you registered on that stage and the
-script polls the API until every row shows up. Without them it prints the
-ClickHouse queries to run on the box instead.
+Verification needs a dashboard login for a project admin (the ban-enforcement
+read is admin-gated; an API key is not enough for any of them). Set
+HEXGATE_SMOKE_EMAIL and HEXGATE_SMOKE_PASSWORD to that account and the script
+polls the API until every row shows up. Without them it prints the ClickHouse
+queries to run on the box instead.
 
 Usage (the post-deploy check in platform/DEPLOY.md §4; the Makefile target
 maps STAGE to the stage's origin, or set HEXGATE_API_URL yourself):
@@ -34,11 +34,12 @@ maps STAGE to the stage's origin, or set HEXGATE_API_URL yourself):
     export HEXGATE_SMOKE_EMAIL=you@example.com HEXGATE_SMOKE_PASSWORD=...
     make platform-smoke STAGE=staging
 
-Exit 0 means every event was accepted and (when credentials are set) found
-in the platform. The OTLP exporter never raises on transport or auth
-failures; it logs them at ERROR, so a "Failed to export" line is a failure
-even though the script keeps going to the verification step, which then
-reports what is missing.
+Exit codes: 0 every event landed, 1 some did not, 2 nothing was verified
+because no credentials were set. Sending alone proves nothing, hence the
+distinct 2: the OTLP exporter never raises on transport or auth failures, it
+logs them at ERROR, so a "Failed to export" line is a failure even though the
+script keeps going to the verification step, which then reports what is
+missing.
 """
 
 from __future__ import annotations
@@ -130,6 +131,13 @@ def login(client: httpx.Client, email: str, password: str) -> None:
         raise SystemExit(f"dashboard login failed: {r.status_code} {r.text}")
 
 
+def _read(client: httpx.Client, path: str, **params: str | int) -> dict:
+    """GET a read endpoint; raises HTTPStatusError for verify()'s retry logic."""
+    r = client.get(path, params=params)
+    r.raise_for_status()
+    return r.json()
+
+
 def verify(
     client: httpx.Client,
     project_id: str,
@@ -151,40 +159,45 @@ def verify(
     while True:
         missing = {}
 
-        rows = (
-            client.get(
+        try:
+            rows = _read(
+                client,
                 f"{base}/audit/decisions",
-                params={"agent": AGENT_NAME, "session_id": session_id, "limit": 50},
-            )
-            .raise_for_status()
-            .json()["rows"]
-        )
-        seen = {r["event_id"]: r["outcome"] for r in rows}
-        for eid, outcome in want_decisions.items():
-            if eid not in seen:
-                missing[f"decision:{outcome}"] = "row not found"
-            elif seen[eid] != outcome:
-                missing[f"decision:{outcome}"] = f"landed with outcome {seen[eid]!r}"
+                agent=AGENT_NAME,
+                session_id=session_id,
+                limit=50,
+            )["rows"]
+            seen = {r["event_id"]: r["outcome"] for r in rows}
+            for eid, outcome in want_decisions.items():
+                if eid not in seen:
+                    missing[f"decision:{outcome}"] = "row not found"
+                elif seen[eid] != outcome:
+                    missing[f"decision:{outcome}"] = (
+                        f"landed with outcome {seen[eid]!r}"
+                    )
 
-        bans = (
-            client.get(f"{base}/audit/ban-enforcements", params={"limit": 100})
-            .raise_for_status()
-            .json()["rows"]
-        )
-        if not any(r["event_id"] == ban_event_id for r in bans):
-            missing["ban_enforcement"] = "row not found"
+            bans = _read(client, f"{base}/audit/ban-enforcements", limit=100)["rows"]
+            if not any(r["event_id"] == ban_event_id for r in bans):
+                missing["ban_enforcement"] = "row not found"
 
-        # No per-row read for usage; the summary filtered on this run's unique
-        # user id is exactly one call when the event landed.
-        totals = (
-            client.get(
-                f"{base}/llm/summary", params={"agent": AGENT_NAME, "user": user_id}
-            )
-            .raise_for_status()
-            .json()["totals"]
-        )
-        if totals["calls"] < 1:
-            missing["llm_usage"] = "no calls in summary"
+            # No per-row read for usage; the summary filtered on this run's unique
+            # user id is exactly one call when the event landed.
+            totals = _read(
+                client, f"{base}/llm/summary", agent=AGENT_NAME, user=user_id
+            )["totals"]
+            if totals["calls"] < 1:
+                missing["llm_usage"] = "no calls in summary"
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status < 500:
+                # e.g. 403 on ban-enforcements when the account is not a project
+                # admin — polling will never fix that, so say what happened.
+                raise SystemExit(
+                    f"read {exc.request.url.path} -> {status}: {exc.response.text[:200]}"
+                ) from exc
+            # 5xx, typically the api's 503 while ClickHouse warms up after a
+            # platform-up: that is what the poll window is for, so keep going.
+            missing = dict.fromkeys(events, f"read failed: {status}")
 
         if not missing or time.monotonic() > deadline:
             break
@@ -225,7 +238,8 @@ def main() -> int:
             f"  clickhouse-client --query \"SELECT ban_type, ban_id FROM hexgate_audit.ban_enforcement WHERE session_id = '{session_id}'\"\n"
             "  (prefix each with: docker exec hexgate-<stage>-clickhouse-1)"
         )
-        return 0
+        print("\nSKIPPED: nothing was verified (no dashboard credentials)")
+        return 2
 
     print(f"\nverifying via {api_url} as {email} (up to {POLL_TIMEOUT_S}s)")
     with httpx.Client(base_url=api_url, timeout=15) as client:
