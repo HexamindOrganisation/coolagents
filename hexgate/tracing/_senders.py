@@ -1,9 +1,16 @@
 """Shared sender registry — generic get-or-create/shutdown machinery reused
-by ``hexgate.audit`` (policy decisions) and ``hexgate.tracing.usage`` (LLM
-token usage). Neither of those modules owns this one; both import from it.
+by ``hexgate.audit`` (policy decisions), ``hexgate.tracing.usage`` (LLM
+token usage) and ``hexgate.security.bans`` (ban enforcements). None of those
+modules owns this one; all import from it.
 
 Also owns the ``HEXGATE_LOCAL_MODE`` gate: a single kill switch that
 suppresses every event type sharing this registry, not just decisions.
+
+Transport: every event is one OpenTelemetry span, exported over OTLP/HTTP
+(protobuf) to the Hexgate Collector. The wire contract — scope names,
+attribute keys, how ``occurred_at``/``event_id`` travel — is
+``hexgate.tracing.semconv``, shared verbatim with the platform's
+span-enricher job.
 """
 
 from __future__ import annotations
@@ -11,46 +18,112 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
-import threading
-import time
-from typing import Any, Protocol
+from datetime import datetime
+from typing import Any, ClassVar, Protocol
 
-import httpx
+from opentelemetry.context import Context
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 
-from hexgate.config.env import resolve_api_key, resolve_api_url
+from hexgate.config.env import resolve_api_key, resolve_otlp_endpoint
+from hexgate.tracing import semconv
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_DRAIN_TIMEOUT = 5.0
-"""Default bound for waiting on already-scheduled fire-and-forget sends to
-finish — at process shutdown (:meth:`AuditSender.close`) or when an
-adapter's per-call drain (``hexgate.adapters._common.drain_pending_tasks``)
-gives the last turn's send one final chance before giving up on it."""
+DEFAULT_EXPORT_TIMEOUT = 5.0
+"""Bound, in seconds, on a single OTLP export request and on the final
+flush at :meth:`AuditSender.close`. Replaces OTel's 30s defaults: a slow or
+unreachable platform must not hold a host application's exit for that long."""
+
+# Identifies the emitting library on every span's resource. Not read by the
+# enricher (agent identity travels as a span attribute — one process hosts
+# many agents), but it's what shows up next to our spans in any third-party
+# OTel backend a customer points this exporter at.
+_RESOURCE = Resource.create({"service.name": "hexgate-sdk"})
+
+# Every limit pinned to UNSET (no limit, and crucially: don't read the
+# OTEL_* env vars). A bare SpanLimits() inherits the customer's process-wide
+# trimming — OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT would cut the JSON-string
+# arguments/hint/attributes mid-string and OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT
+# would drop required attributes, either of which makes the enricher reject
+# the whole span — and a malformed value would raise out of configure().
+# Our own redaction/truncation pipeline (span_attributes) is the size cap.
+_SPAN_LIMITS = SpanLimits(
+    max_attributes=SpanLimits.UNSET,
+    max_events=SpanLimits.UNSET,
+    max_links=SpanLimits.UNSET,
+    max_span_attributes=SpanLimits.UNSET,
+    max_event_attributes=SpanLimits.UNSET,
+    max_link_attributes=SpanLimits.UNSET,
+    max_attribute_length=SpanLimits.UNSET,
+    max_span_attribute_length=SpanLimits.UNSET,
+)
 
 
-class _PayloadEvent(Protocol):
-    """Structural type for anything ``AuditSender`` can emit — a frozen
-    event dataclass exposing a flat-dict wire payload. Both ``AuditEvent``
-    and ``LlmUsageEvent`` satisfy this without either being imported here."""
+class SpanEvent(Protocol):
+    """Structural type for anything ``AuditSender`` can emit — a frozen event
+    dataclass that knows which instrumentation scope it belongs to and how
+    to lay itself out as flat span attributes. ``AuditEvent``,
+    ``LlmUsageEvent`` and ``BanEnforcementEvent`` all satisfy this without
+    being imported here."""
 
-    def as_payload(self) -> dict[str, Any]: ...
+    SCOPE: ClassVar[str]
+    occurred_at: datetime
+
+    def span_attributes(self) -> dict[str, Any]: ...
+
+
+def _unix_nanos(moment: datetime) -> int:
+    """``datetime`` → integer nanoseconds since the epoch, the unit OTLP
+    types span timestamps in. Integer arithmetic on the microsecond field
+    rather than ``timestamp() * 1e9``: the float loses precision past ~µs."""
+    epoch_seconds = int(moment.timestamp())
+    return epoch_seconds * 1_000_000_000 + moment.microsecond * 1_000
+
+
+class _BoundedShutdownProcessor(BatchSpanProcessor):
+    """``BatchSpanProcessor`` whose ``shutdown()`` is bounded by our export
+    timeout instead of OTel's 30s default.
+
+    The parent constructor's ``export_timeout_millis`` is dead upstream —
+    stored, never read (see the TODO at
+    https://github.com/open-telemetry/opentelemetry-python/issues/4555) —
+    and ``TracerProvider.shutdown()`` reaches the wrapped processor's
+    ``shutdown()`` with no timeout argument, so it falls back to a 30 000 ms
+    default. Every slow exit path (``AuditSender.close()`` and the
+    provider's atexit hook) funnels through this one method; overriding it
+    bounds them all."""
+
+    def __init__(
+        self, exporter: SpanExporter, *, shutdown_timeout_millis: float
+    ) -> None:
+        super().__init__(exporter)
+        self._shutdown_timeout_millis = shutdown_timeout_millis
+
+    def shutdown(self) -> None:
+        self._batch_processor.shutdown(timeout_millis=self._shutdown_timeout_millis)
 
 
 class AuditSender:
-    """Fire-and-forget POST for a single ``(api_key, path)`` pair.
+    """Span emitter for a single ``api_key``: one ``TracerProvider`` feeding
+    one ``BatchSpanProcessor`` → ``OTLPSpanExporter`` pair, with one tracer
+    per event stream (decisions / usage / bans) so the instrumentation-scope
+    name tells the platform which event type each span is.
 
-    emit() is sync and non-blocking. When a live event loop is available it
-    schedules an asyncio task, bounded by ``self._semaphore``
-    (``max_in_flight``). When none is available anywhere in the process
-    (e.g. a purely-synchronous caller like pydantic_ai's ``run_sync()``,
-    which drives its own loop internally and closes it before returning
-    control here), it spawns a plain background thread instead, bounded the
-    same way by ``self._sync_semaphore``. Both paths drop with a periodic
-    log when saturated (platform slow/unreachable, or too many concurrent
-    callers) rather than growing an unbounded backlog.
-    Named for its original use (policy decisions); reused unmodified for any
-    event type whose payload is a flat JSON dict via ``as_payload()``.
+    ``emit()`` is sync, non-blocking and thread-agnostic: it only enqueues
+    the finished span onto the processor's bounded in-memory queue, whose
+    own worker thread batches and POSTs on a timer or size trigger. That
+    holds equally on an asyncio loop thread, in a ``run_in_executor`` worker
+    and in a purely synchronous caller with no loop anywhere — there is no
+    event-loop affinity to manage. A saturated queue stays bounded by
+    evicting the *oldest* queued span to admit the new one — silently,
+    inside the deque, with no signal from OTel — so ``emit()`` detects the
+    eviction itself and logs a rate-limited warning.
+
+    ``exporter`` is an injection seam for tests; production callers leave
+    it ``None`` and get an OTLP/HTTP exporter bearing the key.
     """
 
     def __init__(
@@ -58,338 +131,120 @@ class AuditSender:
         endpoint: str,
         api_key: str,
         *,
-        max_in_flight: int = 32,
-        http_timeout: float = 5.0,
+        export_timeout: float = DEFAULT_EXPORT_TIMEOUT,
+        exporter: SpanExporter | None = None,
     ) -> None:
         self._endpoint = endpoint
         self._api_key = api_key
-        self._max_in_flight = max_in_flight
-        self._http_timeout = http_timeout
-        # The semaphore and httpx client are loop-bound: asyncio primitives
-        # latch onto the first loop that drives them and reject any other
-        # (e.g. a second asyncio.run()). Build them eagerly so configure()
-        # stays sync, but track the loop and rebuild if it rotates.
-        #
-        # Capture the build-time loop so emit() can reach it from an executor
-        # thread (a sync tool under run_in_executor has no loop of its own).
-        try:
-            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = None
-        self._semaphore = asyncio.Semaphore(max_in_flight)
-        self._client: httpx.AsyncClient | None = self._new_client()
-        self._tasks: set[asyncio.Task[None]] = set()
+        self._export_timeout = export_timeout
         self._closing = False
-        self._dropped = 0
-        # Fallback for when no asyncio loop exists anywhere in the process
-        # (e.g. a caller built purely on pydantic_ai's run_sync()): a plain
-        # background thread instead of an asyncio task. Bounded by the same
-        # max_in_flight ceiling as self._semaphore, just applied to a
-        # different resource (OS threads instead of asyncio tasks).
-        # httpx.Client, unlike AsyncClient, has no event-loop affinity, so
-        # it's safe to build eagerly here rather than lazily on first use.
-        self._sync_semaphore = threading.Semaphore(max_in_flight)
-        self._sync_client = self._new_sync_client()
-        self._sync_dropped = 0
-        # Tracked so close() can join outstanding sends before tearing down
-        # self._sync_client out from under them. Needed for real: a script
-        # built purely on run_sync() can still spin up its own
-        # asyncio.run(hexgate.shutdown()) as its very last action (the
-        # documented shutdown pattern, hexgate/audit.py:4) — a fresh loop
-        # started just for that call reaches close() same as any other
-        # caller, so this can and does overlap with an in-flight sync send.
+        if exporter is None:
+            exporter = self._new_exporter()
+        self._processor = _BoundedShutdownProcessor(
+            exporter, shutdown_timeout_millis=export_timeout * 1000
+        )
+        # The processor's bounded deque and its cap, reached through OTel
+        # private attributes (pinned by a unit test, so an opentelemetry-sdk
+        # upgrade that moves them fails loudly). emit() reads them to detect
+        # drop-on-saturation, which the deque performs silently.
+        self._span_queue = self._processor._batch_processor._queue
+        self._max_queue_size = self._processor._batch_processor._max_queue_size
+        self._dropped_events = 0
+        # ALWAYS_ON, not the default parent-based sampler: a customer running
+        # their own OTel tracing sets sampling decisions on *their* spans, and
+        # a parent-based sampler here would inherit them — a 1% trace sample
+        # would silently drop 99% of audit events. (emit() also starts every
+        # span from an empty Context so it never picks up their parent.)
         #
-        # Also guards self._sync_dropped: unlike self._dropped (only ever
-        # touched on the single event-loop thread), _spawn_sync_send can
-        # run concurrently on real OS threads whenever several no-loop
-        # callers hit saturation at once — a plain += there would be a
-        # lost-update race.
-        self._sync_threads: set[threading.Thread] = set()
-        self._sync_lock = threading.Lock()
+        # shutdown_on_exit stays at its default (True): the provider registers
+        # an atexit hook that flushes and stops the processor. The processor's
+        # worker is a daemon thread, so without that hook a run_sync()-only
+        # script that never calls hexgate.audit.shutdown() would lose its
+        # final batch at interpreter exit. The hook is the safety net;
+        # shutdown() is still the documented contract for host applications.
+        self._provider = TracerProvider(
+            sampler=ALWAYS_ON, resource=_RESOURCE, span_limits=_SPAN_LIMITS
+        )
+        # OTEL_SDK_DISABLED=true makes get_tracer() return a NoOpTracer —
+        # every audit event silently discarded because the customer switched
+        # off *their* tracing. The audit trail is a compliance channel, not
+        # telemetry, so their kill switch must not mute it; HEXGATE_LOCAL_MODE
+        # is the supported off switch. Private attribute, pinned by
+        # test_when_customer_disables_otel_sdk_then_audit_still_exports.
+        self._provider._disabled = False
+        self._provider.add_span_processor(self._processor)
+        self._tracers = {
+            scope: self._provider.get_tracer(scope)
+            for scope in (semconv.SCOPE_AUDIT, semconv.SCOPE_USAGE, semconv.SCOPE_BANS)
+        }
 
-    def _new_client(self) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            timeout=self._http_timeout,
-            headers={"Authorization": f"Bearer {self._api_key}"},
+    def _new_exporter(self) -> SpanExporter:
+        # Imported lazily: the exporter pulls in `requests` and the protobuf
+        # stubs, which tests injecting their own exporter never need.
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
         )
 
-    def _new_sync_client(self) -> httpx.Client:
-        # Connect gets its own short budget, separate from the read/write/pool
-        # timeout: an unreachable host (dead IP, packet black hole) fails at
-        # the connect stage, and this thread is non-daemon, so a slow connect
-        # timeout directly extends how long process exit can hang on it
-        # (see close()'s finalizer-thread comment for why that thread can
-        # outlive an explicit close() entirely). A live host's TCP handshake
-        # is sub-second, so 2s is generous for the happy path while still
-        # capping the unreachable-host case well below self._http_timeout.
-        return httpx.Client(
-            timeout=httpx.Timeout(self._http_timeout, connect=2.0),
+        return OTLPSpanExporter(
+            endpoint=self._endpoint,
             headers={"Authorization": f"Bearer {self._api_key}"},
+            timeout=self._export_timeout,
         )
 
-    def _ensure_loop_state(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Adopt the running loop on first use; rebuild on loop rotation.
-
-        The previous client/semaphore are bound to a now-defunct loop, so
-        drop them (GC closes the old client) and rebuild on ``loop``."""
-        if self._loop is loop:
-            return
-        if self._loop is not None:
-            self._semaphore = asyncio.Semaphore(self._max_in_flight)
-            self._client = self._new_client()
-            self._dropped = 0
-        self._loop = loop
-
-    def emit(self, event: _PayloadEvent) -> None:
-        if self._closing or self._client is None:
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # Called off-loop: either a sync tool dispatched to a
-            # run_in_executor thread (a live loop is still bound, just not
-            # running on *this* thread), or a purely synchronous caller with
-            # no loop anywhere in the process (e.g. pydantic_ai's
-            # run_sync()). Prefer handing back to the bound loop; only fall
-            # to a plain background thread when no loop exists at all.
-            #
-            # is_running(), not is_closed(): self._loop is a singleton
-            # shared across every adapter using this api_key, and it's
-            # rebound to whichever loop last called emit() while running
-            # (_ensure_loop_state). Some adapters (e.g. the openai-agents
-            # SDK's run_sync()) deliberately keep their default loop open
-            # across calls without ever driving it again afterward — open
-            # but idle, so it passes is_closed() yet will never execute a
-            # call_soon_threadsafe callback. is_running() is the only check
-            # that actually reflects whether anyone is still pumping it.
-            loop = self._loop
-            if loop is not None and loop.is_running():
-                try:
-                    loop.call_soon_threadsafe(self._spawn_send, event)
-                    return
-                except RuntimeError:
-                    pass  # loop torn down between the is_running() check and the call
-            self._spawn_sync_send(event)
-            return
-        self._ensure_loop_state(loop)
-        self._spawn_send(event)
-
-    def _spawn_send(self, event: _PayloadEvent) -> None:
-        """Create the send task. MUST run on the bound loop's thread —
-        ``create_task`` and the loop-bound semaphore require the running loop.
-        Reached on-loop from :meth:`emit`, or via ``call_soon_threadsafe``."""
-        if self._closing or self._client is None:
-            return
-        if self._semaphore.locked():
-            self._dropped += 1
-            if self._dropped % 100 == 1:
-                _log.warning(
-                    "audit sender saturated; %d events dropped (platform slow?)",
-                    self._dropped,
-                )
-            return
-        task = asyncio.create_task(self._send(event), name="hexgate-audit-send")
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    async def _send(self, event: _PayloadEvent) -> None:
-        if self._client is None:
-            # Invariant: _send is only reached after start() initialised
-            # the client. Raise so `python -O` can't strip the check.
-            raise RuntimeError("audit sender _send called before start()")
-        async with self._semaphore:
-            payload = event.as_payload()
-            try:
-                response = await self._client.post(self._endpoint, json=payload)
-                if response.status_code == 503:
-                    # Equal jitter: a fleet of SDKs hitting the same platform
-                    # 503 must not retry in lockstep.
-                    delay = min(self._http_timeout, 2.0)
-                    await asyncio.sleep(random.uniform(delay / 2, delay))
-                    response = await self._client.post(self._endpoint, json=payload)
-                if response.status_code >= 400:
-                    _log.error(
-                        "audit ingest failed: %s %s",
-                        response.status_code,
-                        response.text[:200],
-                    )
-            except httpx.RequestError as exc:
-                _log.warning("audit ingest network error: %s", exc)
-
-    def _spawn_sync_send(self, event: _PayloadEvent) -> None:
-        """Fallback for when no asyncio loop exists anywhere to schedule
-        ``_spawn_send`` on. Bounded by ``self._sync_semaphore`` the same way
-        ``_spawn_send`` is bounded by ``self._semaphore`` — saturated
-        callers are dropped immediately rather than piling up an unbounded
-        number of OS threads. Threads are non-daemon: a short-lived
-        run_sync()-only script is the common caller here, and a daemon
-        thread would get killed the instant that script exits, before the
-        send completes — silently reproducing the exact bug this fallback
-        exists to fix. CPython's own interpreter-shutdown sequence joins
-        non-daemon threads instead, bounded by ``self._http_timeout``.
-
-        The ``self._closing`` check below is a fast path only, not the
-        authoritative one — it's rechecked under ``self._sync_lock`` right
-        before registering the thread, in the same critical section
-        ``close()`` uses to flip ``self._closing`` and snapshot
-        ``self._sync_threads`` together. Without that, a thread could read
-        ``self._closing`` as ``False`` here, then still be constructing/
-        registering itself when ``close()`` takes its snapshot moments
-        later — landing after the snapshot, never joined, and racing
-        ``self._sync_client.close()``."""
+    def emit(self, event: SpanEvent) -> None:
+        """Turn ``event`` into one finished span and hand it to the batch
+        processor. Never blocks on the network, and never raises: transport
+        problems surface as the exporter's own log lines, and a failure in
+        here — an unserializable event, most likely — is logged and costs
+        that one event. This runs on the caller's thread inside enforcement
+        (``PolicyEnforcer.record``), so an escaping exception would kill the
+        tool call it audits; losing an audit event is acceptable, breaking
+        enforcement is not."""
         if self._closing:
             return
-        if not self._sync_semaphore.acquire(blocking=False):
-            with self._sync_lock:
-                self._sync_dropped += 1
-                dropped = self._sync_dropped
-            if dropped % 100 == 1:
-                _log.warning(
-                    "audit sender saturated (no event loop path); %d events "
-                    "dropped (platform slow, or too many concurrent "
-                    "synchronous callers?)",
-                    dropped,
-                )
-            return
-        thread = threading.Thread(
-            target=self._send_sync,
-            args=(event,),
-            daemon=False,
-            name="hexgate-audit-send-sync",
-        )
-        # Authoritative recheck + registration, one atomic step: if close()
-        # already flipped _closing and took its snapshot, don't hand it a
-        # thread it'll never wait for — give the semaphore slot back and
-        # drop instead of starting a thread that'll race a closed client.
-        with self._sync_lock:
-            if self._closing:
-                self._sync_semaphore.release()
-                return
-            self._sync_threads.add(thread)
-        thread.start()
-
-    def _send_sync(self, event: _PayloadEvent) -> None:
-        """Synchronous mirror of ``_send`` for the no-event-loop fallback.
-        Runs entirely on its own thread; always releases
-        ``self._sync_semaphore`` so the next caller past the cap can
-        proceed, and discards itself from ``self._sync_threads`` so close()
-        isn't left waiting on threads that already finished.
-
-        Unlike ``_send``, does not retry on a 503: this thread is
-        non-daemon (see ``_spawn_sync_send``), so on a run_sync()-only
-        script that never calls ``hexgate.shutdown()``, whatever it's
-        blocked on directly extends how long process exit hangs. A retry
-        would add a full extra ``self._http_timeout`` plus jitter sleep to
-        that; one attempt keeps the bound to a single request."""
         try:
-            payload = event.as_payload()
-            try:
-                response = self._sync_client.post(self._endpoint, json=payload)
-                if response.status_code >= 400:
-                    _log.error(
-                        "audit ingest failed: %s %s",
-                        response.status_code,
-                        response.text[:200],
+            # A full queue evicts its oldest span on append with no signal —
+            # OTel deliberately never logs on that path. The warning stays on
+            # the stdlib logger: it must reach stderr precisely when the OTLP
+            # pipeline is the thing that's failing, so it can never travel
+            # over OTLP itself. The count is approximate under concurrent
+            # emits.
+            if len(self._span_queue) >= self._max_queue_size:
+                self._dropped_events += 1
+                if self._dropped_events == 1 or self._dropped_events % 10 == 0:
+                    _log.warning(
+                        "audit span queue saturated; %d events dropped so far "
+                        "(oldest evicted first)",
+                        self._dropped_events,
                     )
-            except httpx.RequestError as exc:
-                _log.warning("audit ingest network error: %s", exc)
-        finally:
-            self._sync_semaphore.release()
-            with self._sync_lock:
-                self._sync_threads.discard(threading.current_thread())
-
-    async def close(self, drain_timeout: float = DEFAULT_DRAIN_TIMEOUT) -> None:
-        """Stop accepting new emits; drain in-flight tasks; close the HTTP clients."""
-        # Flip _closing and snapshot _sync_threads as one atomic step, under
-        # the same lock _spawn_sync_send uses for its own closing-recheck +
-        # registration. Otherwise a thread could pass _spawn_sync_send's
-        # check just before this line, and still be registering itself when
-        # the snapshot below is taken — landing after it, never joined.
-        with self._sync_lock:
-            self._closing = True
-            pending = list(self._sync_threads)
-        if self._tasks:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*self._tasks, return_exceptions=True),
-                    timeout=drain_timeout,
-                )
-            except asyncio.TimeoutError:
-                _log.warning(
-                    "audit close: drain timed out with %d tasks pending",
-                    len(self._tasks),
-                )
-        if self._client is not None:
-            await self._client.aclose()
-        # Join outstanding sync-fallback sends before closing the client
-        # they share: a run_sync()-only script commonly wraps its final
-        # cleanup in its own asyncio.run(hexgate.shutdown()), so close()
-        # reaching here concurrently with an in-flight _send_sync() thread
-        # is a real case, not a hypothetical one — closing self._sync_client
-        # out from under it would abort the send (a bare RuntimeError if
-        # the client closes before the request starts, since that's not an
-        # httpx.RequestError and isn't caught by _send_sync's handler).
-        #
-        # Unlike the async drain above — where a asyncio.wait_for timeout
-        # actually cancels the tasks, so nothing is still running by the
-        # time aclose() fires — Thread.join(timeout=...) timing out leaves
-        # the thread genuinely alive with no way to cancel it (no forced
-        # thread termination in Python). So on a timed-out sync drain, skip
-        # closing the client here rather than racing whatever's still
-        # running, and hand the close off to a finalizer thread that blocks
-        # on the stragglers instead. A *later* close() call can't be counted
-        # on to finish the job: shutdown() (the only realistic caller,
-        # hexgate/audit.py:4) clears the shared registry and closes each
-        # sender exactly once, so once this call returns nothing will ever
-        # call close() on this sender again — without the finalizer,
-        # self._sync_client (and its connection pool) would leak for the
-        # rest of the process. The finalizer thread is non-daemon, same as
-        # the sync-fallback send threads, so the interpreter still waits
-        # for it at exit.
-        if pending:
-            stragglers = await asyncio.to_thread(
-                self._join_sync_threads, pending, drain_timeout
+            tracer = self._tracers[event.SCOPE]
+            at = _unix_nanos(event.occurred_at)
+            # start == end: these are point-in-time events, and the enricher
+            # reads occurred_at from start_time_unix_nano (see semconv).
+            # context=Context() detaches the span from whatever the caller's
+            # own tracing has active, so it is always a root span in a trace
+            # of its own.
+            span = tracer.start_span(
+                event.SCOPE,
+                context=Context(),
+                attributes=event.span_attributes(),
+                start_time=at,
             )
-            if stragglers:
-                _log.warning(
-                    "audit close: sync drain timed out with %d thread(s) still "
-                    "running; handing off to a finalizer thread to close the "
-                    "sync client once they finish",
-                    len(stragglers),
-                )
-                threading.Thread(
-                    target=self._finalize_sync_close,
-                    args=(stragglers,),
-                    daemon=False,
-                    name="hexgate-audit-close-finalizer",
-                ).start()
-                return
-        self._sync_client.close()
+            span.end(end_time=at)
+        except Exception:
+            _log.exception("emit failed; dropping one %s event", event.SCOPE)
 
-    @staticmethod
-    def _join_sync_threads(
-        threads: list[threading.Thread], timeout: float
-    ) -> list[threading.Thread]:
-        """Join every thread within one shared ``timeout`` budget (not
-        ``timeout`` each — mirrors ``asyncio.wait_for``'s total-time bound
-        for the async drain above). Returns whichever threads are still
-        alive once the budget runs out."""
-        deadline = time.monotonic() + timeout
-        for t in threads:
-            t.join(timeout=max(0.0, deadline - time.monotonic()))
-        return [t for t in threads if t.is_alive()]
+    async def close(self) -> None:
+        """Stop accepting new emits; flush what's queued; stop the worker.
 
-    def _finalize_sync_close(self, stragglers: list[threading.Thread]) -> None:
-        """Run off the event loop, on its own thread, when close() times out
-        waiting for sync-fallback sends: block on the stragglers (no
-        timeout — they will finish) and only then close self._sync_client,
-        so it's never torn down out from under an in-flight send."""
-        for t in stragglers:
-            t.join()
-        self._sync_client.close()
+        ``TracerProvider.shutdown()`` blocks for up to the export timeout, so
+        it runs off the event loop. Idempotent — OTel's own shutdown guards
+        make a second call a logged no-op."""
+        self._closing = True
+        await asyncio.to_thread(self._provider.shutdown)
 
 
-# --- Shared (api_key, path) registry ----------------------------------------
+# --- Shared per-api_key registry ---------------------------------------------
 
 # Setting this env var to a truthy value (``1``/``true``/``yes``/``on``,
 # case-insensitive) makes ``get_or_create_sender()`` a no-op for every event
@@ -399,24 +254,21 @@ class AuditSender:
 # adapter wrapper that re-configures after bootstrap still respects the gate.
 _LOCAL_MODE_ENV = "HEXGATE_LOCAL_MODE"
 
-# One-shot log gate per path, so the "sender suppressed" message lands the
-# first time it'd matter for that event type (a key WAS set but local mode
-# preempted it) and stays quiet thereafter. Per-path rather than a single
-# global flag, since decisions and usage each warrant their own
-# first-suppression notice.
-_logged_local_mode_suppressed: set[str] = set()
+# One-shot log gate, so the "sender suppressed" message lands the first time
+# it'd matter (a key WAS set but local mode preempted it) and stays quiet
+# thereafter.
+_logged_local_mode_suppressed = False
 
-# One sender per (api_key, path) pair. A single process may wrap agents for
-# several tenants/keys and emit more than one event type, and each pair must
-# emit with its own bearer token to its own endpoint — so senders are keyed
-# by the pair rather than kept as a first-wins singleton or keyed by api_key
-# alone (which would make a usage sender for an already-configured decisions
-# key silently reuse the decisions sender and POST to the wrong endpoint).
+# One sender per api_key. A single process may wrap agents for several
+# tenants/keys, and each must export with its own bearer token — so senders
+# are keyed by key rather than kept as a first-wins singleton. All three
+# event types share one sender per key; the span's instrumentation scope,
+# not a separate endpoint, tells them apart.
 # The registry is unbounded and assumes a small, fixed key set per process;
-# a key-per-request pattern would leak one sender + httpx pool per unique
-# pair. Such callers must evict explicitly (await sender.close(), then drop
+# a key-per-request pattern would leak one sender + export worker per unique
+# key. Such callers must evict explicitly (await sender.close(), then drop
 # the dict entry) or use shutdown().
-_senders: dict[tuple[str, str], AuditSender] = {}
+_senders: dict[str, AuditSender] = {}
 
 
 def _local_mode_active() -> bool:
@@ -435,17 +287,17 @@ def _local_mode_active() -> bool:
 
 
 def get_or_create_sender(
-    path: str,
     api_key: str | None = None,
     base_url: str | None = None,
 ) -> AuditSender | None:
-    """Get-or-create the sender for ``(api_key, path)``. Idempotent per pair.
+    """Get-or-create the sender for ``api_key``. Idempotent per key.
 
-    Both ``api_key``/``base_url`` fall back to ``HEXGATE_API_KEY`` /
-    ``HEXGATE_API_URL`` env vars. Reuses the existing sender when the same
-    pair was already configured; distinct pairs get distinct senders.
-    Returns ``None`` when no api_key is resolvable — the caller's event type
-    stays inert.
+    ``api_key``/``base_url`` fall back to ``HEXGATE_API_KEY`` /
+    ``HEXGATE_API_URL`` env vars; the export endpoint is
+    ``HEXGATE_OTLP_ENDPOINT`` when set, else ``<api url>/v1/traces``.
+    Reuses the existing sender when the same key was already configured;
+    distinct keys get distinct senders. Returns ``None`` when no api_key is
+    resolvable — the caller's event type stays inert.
 
     Also returns ``None`` when ``HEXGATE_LOCAL_MODE`` is set in env, even if
     a key was resolvable — that's the "I have a key in .env but I'm
@@ -453,69 +305,64 @@ def get_or_create_sender(
     opts in via ``bootstrap(local_only=True)``), shared by every event type
     that goes through this registry.
     """
+    global _logged_local_mode_suppressed
     if _local_mode_active():
         # Only log when a key was actually present — otherwise the
         # message is just noise during a no-key local run.
         resolved = resolve_api_key(api_key)
-        if resolved and path not in _logged_local_mode_suppressed:
+        if resolved and not _logged_local_mode_suppressed:
             _log.info(
-                "sender suppressed for %s: %s=1 (a key is configured but "
-                "local mode is on, so events stay on this machine)",
-                path,
+                "sender suppressed: %s=1 (a key is configured but local mode "
+                "is on, so events stay on this machine)",
                 _LOCAL_MODE_ENV,
             )
-            _logged_local_mode_suppressed.add(path)
+            _logged_local_mode_suppressed = True
         return None
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
         return None
-    cache_key = (resolved_key, path)
-    existing = _senders.get(cache_key)
+    existing = _senders.get(resolved_key)
     if existing is not None:
         return existing
-    resolved_url = resolve_api_url(base_url)
-    sender = AuditSender(endpoint=f"{resolved_url}{path}", api_key=resolved_key)
-    _senders[cache_key] = sender
+    sender = AuditSender(
+        endpoint=resolve_otlp_endpoint(base_url=base_url), api_key=resolved_key
+    )
+    _senders[resolved_key] = sender
     return sender
 
 
-def get_sender(path: str, api_key: str | None = None) -> AuditSender | None:
-    """Return the sender for ``(api_key, path)`` (api_key falling back to
-    ``HEXGATE_API_KEY``), if configured. Never creates one."""
+def get_sender(api_key: str | None = None) -> AuditSender | None:
+    """Return the sender for ``api_key`` (falling back to ``HEXGATE_API_KEY``),
+    if configured. Never creates one."""
     resolved_key = resolve_api_key(api_key)
     if not resolved_key:
         return None
-    return _senders.get((resolved_key, path))
-
-
-def pending_send_tasks(loop: asyncio.AbstractEventLoop) -> set[asyncio.Task[None]]:
-    """Every not-yet-finished fire-and-forget send task, across all senders
-    in the registry, that actually runs on ``loop``.
-
-    Scoped two ways on purpose: to hexgate's own sends (via each sender's
-    own ``_tasks`` bookkeeping, the same set ``close()`` drains) rather than
-    every task on the loop, since a caller's or another library's unrelated
-    task could otherwise get swept up and — worse — cancelled by a draining
-    caller's timeout; and to tasks actually owned by ``loop``, since the
-    registry is process-wide and a concurrent caller's sender may be
-    running on a different thread's loop entirely (e.g. the google adapter
-    builds a fresh loop per call) — awaiting or cancelling a task bound to a
-    loop that isn't the one driving it here is unsafe.
-    """
-    return {
-        task
-        for sender in _senders.values()
-        for task in sender._tasks
-        if not task.done() and task.get_loop() is loop
-    }
+    return _senders.get(resolved_key)
 
 
 async def shutdown() -> None:
-    """Drain in-flight emits and close every sender for every path.
+    """Flush and stop every sender in the registry.
 
     Safe to call multiple times. Drains the whole shared registry — calling
-    this from either ``hexgate.audit`` or ``hexgate.tracing.usage`` closes
-    both event types' senders in one shot."""
+    this from ``hexgate.audit``, ``hexgate.tracing.usage`` or the bans module
+    closes every event type's sender in one shot. Host applications must
+    call this before exit: normal traffic flushes itself on the processor's
+    timer, but the final in-flight batch only leaves the process on an
+    explicit flush (or the provider's best-effort atexit hook)."""
     senders = list(_senders.values())
     _senders.clear()
-    await asyncio.gather(*(s.close() for s in senders), return_exceptions=True)
+    # Concurrent, not sequential: each close() blocks up to the export
+    # timeout, so N keys must cost one timeout, not N. return_exceptions
+    # keeps one sender's failure from skipping the flush of the others —
+    # and from escaping into the host's teardown.
+    results = await asyncio.gather(
+        *(sender.close() for sender in senders), return_exceptions=True
+    )
+    for sender, result in zip(senders, results):
+        if isinstance(result, BaseException):
+            _log.error(
+                "closing the sender for endpoint %s failed during shutdown; "
+                "its queued events may be lost",
+                sender._endpoint,
+                exc_info=result,
+            )

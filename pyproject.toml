@@ -26,6 +26,8 @@ dependencies = [
     "langchain-openai",
     "langchain-core",
     "langfuse",
+    "opentelemetry-exporter-otlp-proto-http>=1.38.0",
+    "opentelemetry-sdk>=1.38.0",
     "pydantic>=2.12.4",
     "python-dotenv>=1.1.1",
     "pyyaml>=6.0.2",

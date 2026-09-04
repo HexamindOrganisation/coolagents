@@ -200,8 +200,9 @@ class Decision:
     # The ABAC attribute snapshot the decision was evaluated against, so an
     # in-process observer sees the ``ctx.*`` values that drove the outcome, and
     # so the audit record can explain a ``ctx.*``-driven deny. Persisted by the
-    # audit sender (redacted + capped in ``audit.as_payload``); deliberately
-    # still absent from ``as_error_payload`` — the model must never see it.
+    # audit sender (redacted + capped in ``audit.AuditEvent.span_attributes``);
+    # deliberately still absent from ``as_error_payload`` — the model must
+    # never see it.
     attributes: dict[str, Any] | None = None
 
     @classmethod

@@ -6,9 +6,12 @@ ClickHouse — the two audit paths ``PolicyEnforcer.decide()`` and
 model-quality: the "LLM" is a two-turn scripted fake (see ``_ScriptedLlm``
 below) so the run is free and deterministic.
 
-Requires: `make clickhouse-up` and `make platform-api` running, and
-`HEXGATE_API_KEY` set to a token minted via the dashboard (or the
-platform API directly).
+Requires the full OTLP ingest pipeline — Postgres, ClickHouse, Redpanda,
+`make platform-api-pg`, `make collector-run` and `make enricher-run` — plus
+`HEXGATE_API_KEY` set to a token minted against that Postgres-backed API.
+`make platform-api` (SQLite) is NOT enough: the Collector authenticates
+keys against the `devtoken` table in Postgres. See
+.claude/skills/integration-tests for the exact sequence.
 
 Opt in with: `pytest -m integration`.
 """

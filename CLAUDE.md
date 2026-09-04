@@ -1,7 +1,7 @@
 # Hexgate — Claude Code Instructions
 
 ## Tech Stack
-- Python ≥ 3.13 (`uv`), FastAPI (`platform/api/`), ClickHouse (Docker), Redpanda (Docker, Kafka-protocol-compatible, dev-infra only for now — see `platform/docker-compose.yml`)
+- Python ≥ 3.13 (`uv`), FastAPI (`platform/api/`), ClickHouse (Docker), Redpanda (Docker, Kafka-protocol-compatible; dev broker in `platform/docker-compose.yml`, deployed as the OTLP span buffer in `platform/docker-compose.deploy.yml`)
 - React, Vite, pnpm (`platform/dashboard/`)
 - Ruff (Python). WASM via `wasmtime`.
 

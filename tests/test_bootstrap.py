@@ -33,14 +33,14 @@ def _stub_dotenv_with_required_keys(
 def _isolate_audit_and_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset audit + the env vars bootstrap touches between tests."""
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
     monkeypatch.delenv("HEXGATE_API_KEY", raising=False)
     monkeypatch.delenv("HEXGATE_API_URL", raising=False)
     monkeypatch.delenv("HEXGATE_LOCAL_POLICY", raising=False)
     monkeypatch.delenv(_senders._LOCAL_MODE_ENV, raising=False)
     yield
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
 
 
 def test_bootstrap_loads_env_file_from_cwd(
