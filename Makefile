@@ -448,7 +448,7 @@ demo-platform: ## Print the multi-terminal recipe for running the full platform 
 	@echo "First-time setup (run once):"
 	@echo "      make platform-api-install"
 	@echo "      make dashboard-install"
-	@echo "      make collector-generate"
+	@echo "      cd platform/collector && go build -o hexgate-collector ."
 	@echo ""
 
 # -------- Bundled notebook demo (one process locally / per-container on Modal) --------

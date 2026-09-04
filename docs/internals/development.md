@@ -37,10 +37,12 @@ make test-one T=tests/security/test_bundle.py   # single file
 
 ## Run the platform locally
 
-The platform is five processes. Three of them make up the audit pipeline, and
-an agent run without them looks fine while its audit trail silently 404s, so
-start all of them. Each `make` target starts the Docker infrastructure it
-needs (Postgres, Redpanda, ClickHouse) and then blocks, one terminal each:
+The platform is four processes plus your agent. Two of them — the collector and
+the span-enricher, with the Redpanda buffer their targets start for you — make
+up the audit pipeline, and an agent run without them looks fine while its audit
+trail silently 404s, so start all of them. Each `make` target starts the Docker
+infrastructure it needs (Postgres, Redpanda, ClickHouse) and then blocks, one
+terminal each:
 
 ```bash
 make platform-api-pg      # 1. API on :8000, on Postgres — NOT `platform-api`: the collector
@@ -51,10 +53,10 @@ make enricher-run         # 3. Redpanda → ClickHouse
 make dashboard            # 4. http://localhost:5173
 ```
 
-Then mint a key at <http://localhost:5173/tokens> and give it to the SDK. There
-is no reverse proxy locally, so the SDK also needs to be told where the
-collector is; on a deployed stage the proxy routes `/v1/traces` and this line
-is unnecessary:
+Then mint a key at [http://localhost:5173/tokens](http://localhost:5173/tokens)
+and give it to the SDK. There is no reverse proxy locally, so the SDK also
+needs to be told where the collector is; on a deployed stage the proxy routes
+`/v1/traces` and this line is unnecessary:
 
 ```bash
 # repo-root .env (read by `make serve` and the SDK)
@@ -69,13 +71,27 @@ make serve                # 5. bridge the demo agent; chat at http://localhost:5
 
 Every decision the agent makes shows up on the dashboard's audit page a few
 seconds later (the collector batches for 5 s). To check the pipeline without an
-agent, `HEXGATE_API_URL=http://localhost:8000 make platform-smoke` sends one of
-every event type and reads them back. `deploy/provision.py` mints a key from the
-command line when you don't want to go through the dashboard — the
-`integration-tests` skill uses it.
+agent, `make platform-smoke` sends one of every event type and reads them back.
+It reads its config straight from the environment — no `.env` — so export
+these first, or it silently exercises nothing:
+
+```bash
+export HEXGATE_API_URL=http://localhost:8000
+export HEXGATE_OTLP_ENDPOINT=http://localhost:4318/v1/traces  # else spans go to the API and 404
+export HEXGATE_API_KEY=fty_live_...                           # else exit 1
+export HEXGATE_SMOKE_EMAIL=you@example.com HEXGATE_SMOKE_PASSWORD=...
+make platform-smoke                                           # no creds → exit 2, nothing verified
+```
+
+`deploy/provision.py` mints a key from the command line when you don't want to
+go through the dashboard — the `integration-tests` skill uses it.
 
 First-time setup: `make platform-api-install`, `make dashboard-install`, and a
-collector binary from `make collector-generate`.
+collector binary. The generated collector sources are committed, so the binary
+is just `cd platform/collector && go build -o hexgate-collector .`; you only
+need `make collector-generate` after editing `builder-config.yaml`, and that
+target calls the `ocb` `builder`, which `make collector-install-builder` puts on
+`$PATH` once.
 
 Unset `HEXGATE_API_KEY` / `HEXGATE_API_URL` / `HEXGATE_OTLP_ENDPOINT` before
 running the unit suite: some tests assert that no platform is configured.

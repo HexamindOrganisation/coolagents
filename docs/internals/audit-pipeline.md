@@ -407,7 +407,7 @@ travels as the record key; `agent_version_id` is a platform lookup;
 ### 4.5 Legacy HTTP ingest
 
 `POST /v1/audit/decisions`, `POST /v1/audit/ban-enforcements` and
-`POST /v1/llm/invocations` (`features/audit/router.py`,
+`POST /v1/audit/llm-invocations` (`features/audit/router.py`,
 `features/llm_invocations/router.py`) still exist: one event per request,
 same bearer via `require_project`, same pydantic validation, synchronous
 single-row insert, `202 {"event_id"}` on success. They predate the OTLP
