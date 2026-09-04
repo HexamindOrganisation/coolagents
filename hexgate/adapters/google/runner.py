@@ -17,7 +17,7 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
@@ -137,13 +137,6 @@ class HexgateRunner:
                         break
             finally:
                 loop.run_until_complete(agen.aclose())
-                # The last turn's fire-and-forget audit-send task (policy
-                # decision / LLM usage) may still be in flight — there's no
-                # further turn left to keep this loop spinning in the
-                # background while it completes. Give it one last chance
-                # before tearing the loop down, or its event is silently
-                # dropped.
-                drain_pending_tasks(loop)
                 loop.close()
 
     async def run_async(

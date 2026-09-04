@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Final, Protocol, runtime_checkable
 
+from hexgate.tracing import semconv
+
 
 class DecisionOutcome(str, Enum):
     """Authorization outcome."""
@@ -217,20 +219,25 @@ class RunAttribution:
             ),
         )
 
-    def as_payload_fields(self) -> dict[str, Any]:
-        """Wire fields for the platform's ``DecisionEvent``.
+    def as_span_attributes(self) -> dict[str, Any]:
+        """Span attributes for a decision's run attribution.
 
-        ``run_id`` is ``None``, never ``""``: the platform 422s on an empty
-        string and the sender drops a 4xx, losing the whole record.
+        ``run_id`` is omitted outside a run scope, never sent as ``""``: OTLP
+        attributes cannot carry null, and an empty string fails the enricher's
+        ``UUID | None`` validation, which would DLQ the whole record rather
+        than just its attribution. The counters always travel — zero is a
+        meaningful tally.
         """
-        return {
-            "run_id": self.run_id or None,
-            "run_tool_calls": self.tool_calls,
-            "run_llm_calls": self.llm_calls,
-            "run_denials": self.denials,
-            "run_total_tokens": self.total_tokens,
-            "run_elapsed_ms": self.elapsed_ms,
+        attrs: dict[str, Any] = {
+            semconv.RUN_TOOL_CALLS: self.tool_calls,
+            semconv.RUN_LLM_CALLS: self.llm_calls,
+            semconv.RUN_DENIALS: self.denials,
+            semconv.RUN_TOTAL_TOKENS: self.total_tokens,
+            semconv.RUN_ELAPSED_MS: self.elapsed_ms,
         }
+        if self.run_id:
+            attrs[semconv.RUN_ID] = self.run_id
+        return attrs
 
 
 # A decision with no run scope behind it. Safe to share: the class is frozen.
@@ -258,8 +265,9 @@ class Decision:
     # The ABAC attribute snapshot the decision was evaluated against, so an
     # in-process observer sees the ``ctx.*`` values that drove the outcome, and
     # so the audit record can explain a ``ctx.*``-driven deny. Persisted by the
-    # audit sender (redacted + capped in ``audit.as_payload``); deliberately
-    # still absent from ``as_error_payload`` — the model must never see it.
+    # audit sender (redacted + capped in ``audit.AuditEvent.span_attributes``);
+    # deliberately still absent from ``as_error_payload`` — the model must
+    # never see it.
     attributes: dict[str, Any] | None = None
     # The run this decision belongs to. Persisted untouched (bounded ints and a
     # UUID, not caller data); absent from ``as_error_payload`` like

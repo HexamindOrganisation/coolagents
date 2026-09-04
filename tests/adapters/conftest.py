@@ -1,9 +1,16 @@
 """Shared fixture for the (opt-in) adapter integration test suite — one
-live platform + ClickHouse backend, common to all four frameworks.
+live platform + ingest pipeline, common to all four frameworks.
+
+Two distinct hops, easy to conflate: policy is fetched over HTTP from the
+platform API (HEXGATE_API_URL), while audit/usage spans are exported over
+OTLP to the Collector (HEXGATE_OTLP_ENDPOINT) and reach ClickHouse only
+via Redpanda and the span-enricher job. Both must be up; see
+.claude/skills/integration-tests.
 
 Centralizes what would otherwise be copy-pasted per adapter: reading
-HEXGATE_API_KEY/HEXGATE_API_URL/ClickHouse creds, skipping cleanly when no
-key is configured, and querying the audit tables.
+HEXGATE_API_KEY/HEXGATE_API_URL/ClickHouse creds, pinning the OTLP
+endpoint, skipping cleanly when no key is configured, and querying the
+audit tables.
 """
 
 from __future__ import annotations
@@ -79,6 +86,20 @@ def hexgate_platform_env(monkeypatch: pytest.MonkeyPatch) -> HexgatePlatformEnv:
     )
     monkeypatch.setenv("HEXGATE_API_KEY", api_key)
     monkeypatch.setenv("HEXGATE_API_URL", platform_url)
+    # Spans go to the Collector's OTLP/HTTP receiver, NOT to the control
+    # plane. Leaving this unset lets resolve_otlp_endpoint() fall back to
+    # <api url>/v1/traces, and the platform API serves no such route — every
+    # export then dies with a 405 the SDK only logs, surfacing here as a
+    # bare "row never landed in ClickHouse".
+    monkeypatch.setenv(
+        "HEXGATE_OTLP_ENDPOINT",
+        os.environ.get("HEXGATE_OTLP_ENDPOINT", "http://localhost:4318/v1/traces"),
+    )
+    # Upstream's default is 5s, which would eat most of poll_until's budget
+    # before the Collector's own 5s batch timeout even starts. A documented
+    # OTel env var, read when the sender builds its BatchSpanProcessor on
+    # first emit — this fixture runs first, so the sender picks it up.
+    monkeypatch.setenv("OTEL_BSP_SCHEDULE_DELAY", "500")
     return HexgatePlatformEnv(
         api_key=api_key,
         platform_url=platform_url,

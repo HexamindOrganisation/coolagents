@@ -76,8 +76,33 @@ def _envelope(
     }
 
 
+def _run_counter(attrs: dict[str, Any], key: str, scope: str) -> int:
+    """A run counter, defaulting to 0 when the emitter sends no attribution.
+
+    Absent is not an error: spans predating run attribution, and decisions made
+    outside a run scope, both legitimately carry no counters.
+    """
+    value = attrs.get(key)
+    return 0 if value is None else as_int(value, key=key, scope=scope)
+
+
+def _run_fields(attrs: dict[str, Any], scope: str) -> dict[str, Any]:
+    return {
+        # ``None``, never ``""``: the field is ``UUID | None`` and an empty
+        # string fails validation, DLQ-ing the whole event over an advisory
+        # column. Emitters omit the attribute outside a run scope.
+        "run_id": as_str(attrs.get(semconv.RUN_ID)) or None,
+        "run_tool_calls": _run_counter(attrs, semconv.RUN_TOOL_CALLS, scope),
+        "run_llm_calls": _run_counter(attrs, semconv.RUN_LLM_CALLS, scope),
+        "run_denials": _run_counter(attrs, semconv.RUN_DENIALS, scope),
+        "run_total_tokens": _run_counter(attrs, semconv.RUN_TOTAL_TOKENS, scope),
+        "run_elapsed_ms": _run_counter(attrs, semconv.RUN_ELAPSED_MS, scope),
+    }
+
+
 def _decision_fields(attrs: dict[str, Any], scope: str) -> dict[str, Any]:
     return {
+        **_run_fields(attrs, scope),
         "tool_name": as_str(required(attrs, semconv.TOOL_NAME, scope=scope)),
         "outcome": as_str(required(attrs, semconv.OUTCOME, scope=scope)),
         "user_roles": as_str_list(
@@ -131,6 +156,9 @@ def _usage_fields(attrs: dict[str, Any], span: Span, scope: str) -> dict[str, An
         ),
         "latency_ms": as_int(latency, key=semconv.LATENCY_MS, scope=scope),
         "error_code": as_str(attrs.get(semconv.ERROR_CODE)),
+        # Joins this model call to the decisions of the same run; the usage
+        # event carries the id alone, no counters.
+        "run_id": as_str(attrs.get(semconv.RUN_ID)) or None,
     }
     status = attrs.get(semconv.STATUS)
     if status is not None:  # absent → the model's "success" default

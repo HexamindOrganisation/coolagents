@@ -780,30 +780,6 @@ def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
     assert exc.value.missing == {"llm_invocation": ["input_tokens"]}
 
 
-def test_sdk_usage_payload_validates_both_in_and_out_of_a_run_scope() -> None:
-    """Same failure mode as the decision path: a "" from the SDK is a 422 the
-    sender discards, losing the record."""
-    import uuid as _uuid
-
-    from hexgate.tracing.usage import LlmUsageEvent
-
-    attributed = LlmUsageEvent(
-        agent_name="a",
-        model="gpt-4o",
-        input_tokens=1,
-        output_tokens=1,
-        latency_ms=1,
-        status="success",
-        run_id=str(_uuid.uuid4()),
-    ).as_payload()
-    detached = LlmUsageEvent(
-        agent_name="a",
-        model="gpt-4o",
-        input_tokens=1,
-        output_tokens=1,
-        latency_ms=1,
-        status="success",
-    ).as_payload()
-
-    assert str(LlmInvocationEvent(**attributed).run_id) == attributed["run_id"]
-    assert LlmInvocationEvent(**detached).run_id is None
+# The cross-package run_id contract — the SDK's real span attributes decoded
+# by the real enricher — lives in tests/jobs/enricher/test_mapping.py, where
+# the span builders are.

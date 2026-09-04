@@ -32,10 +32,10 @@ def bootstrap(env_file: str = ".env", *, local_only: bool = False) -> Settings:
     env var and stays inert. ``hexgate chat`` opts in this way; the
     examples and unit tests inherit it transitively.
 
-    Audit sends are fire-and-forget background tasks: when the event loop
-    tears down at exit they are cancelled, not finished, so events
-    emitted shortly before exit are lost unless the teardown path
-    explicitly drains with ``await audit.shutdown()``.
+    Audit events are batched in memory and exported by a daemon worker
+    thread: the final batch queued shortly before exit only leaves the
+    process on an explicit flush, so the teardown path must call
+    ``await audit.shutdown()``.
 
     The ``HEXGATE_API_KEY + HEXGATE_LOCAL_POLICY`` combination almost always
     means a dev forgot to clean up their env between an "I'm trying the

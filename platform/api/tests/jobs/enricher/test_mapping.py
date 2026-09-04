@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
@@ -146,3 +148,150 @@ def test_when_agent_name_is_absent_then_resource_service_name_is_used() -> None:
         semconv.SCOPE_AUDIT, make_span(attrs), {"service.name": "svc-agent"}
     )
     assert event.agent_name == "svc-agent"
+
+
+# ---------------------------------------------------------------------------
+# Run attribution
+# ---------------------------------------------------------------------------
+
+
+def test_run_attribution_decodes_onto_the_decision_event() -> None:
+    run_id = str(uuid.uuid4())
+    attrs = decision_attrs(
+        **{
+            semconv.RUN_ID: run_id,
+            semconv.RUN_TOOL_CALLS: 3,
+            semconv.RUN_LLM_CALLS: 2,
+            semconv.RUN_DENIALS: 1,
+            semconv.RUN_TOTAL_TOKENS: 1200,
+            semconv.RUN_ELAPSED_MS: 4500,
+        }
+    )
+    event = map_span(semconv.SCOPE_AUDIT, make_span(attrs), {})
+
+    assert str(event.run_id) == run_id
+    assert event.run_tool_calls == 3
+    assert event.run_llm_calls == 2
+    assert event.run_denials == 1
+    assert event.run_total_tokens == 1200
+    assert event.run_elapsed_ms == 4500
+
+
+def test_when_run_attribution_is_absent_then_event_is_unattributed() -> None:
+    """A decision made outside a run scope, or an SDK build that predates run
+    attribution: None / zero, never a rejected span."""
+    event = map_span(semconv.SCOPE_AUDIT, make_span(decision_attrs()), {})
+
+    assert event.run_id is None
+    assert event.run_tool_calls == 0
+    assert event.run_elapsed_ms == 0
+
+
+def test_when_run_id_is_empty_then_decoded_as_unattributed() -> None:
+    """The regression guard for this feature's worst failure mode: "" is not a
+    UUID, so passing it through would fail validation and DLQ the whole event
+    over an advisory column. Emitters omit the attribute, but a foreign one
+    may not."""
+    attrs = decision_attrs(**{semconv.RUN_ID: ""})
+    event = map_span(semconv.SCOPE_AUDIT, make_span(attrs), {})
+
+    assert event.run_id is None
+
+
+def test_run_id_decodes_onto_the_llm_invocation_event() -> None:
+    run_id = str(uuid.uuid4())
+    attrs = usage_attrs(**{semconv.RUN_ID: run_id})
+    event = map_span(semconv.SCOPE_USAGE, make_span(attrs), {})
+
+    assert str(event.run_id) == run_id
+    assert map_span(semconv.SCOPE_USAGE, make_span(usage_attrs()), {}).run_id is None
+
+
+def test_malformed_run_counter_rejects_the_span() -> None:
+    attrs = decision_attrs(**{semconv.RUN_TOOL_CALLS: "many"})
+    with pytest.raises(SpanRejected):
+        map_span(semconv.SCOPE_AUDIT, make_span(attrs), {})
+
+
+# ---------------------------------------------------------------------------
+# Cross-package: the SDK's real span attributes, decoded by the real enricher
+# ---------------------------------------------------------------------------
+
+
+def test_sdk_decision_span_carries_run_attribution_through_the_enricher() -> None:
+    """The only test where both halves of the wire meet. Catches an attribute
+    renamed on one side and not the other — silently dropped, otherwise."""
+    from hexgate.audit import AuditEvent
+    from hexgate.security.decision import Decision, DecisionOutcome, RunAttribution
+
+    run_id = str(uuid.uuid4())
+    attrs = AuditEvent(
+        decision=Decision(
+            outcome=DecisionOutcome.DENY,
+            agent_name="example_agent",
+            tool_name="read_file",
+            run=RunAttribution(
+                run_id=run_id,
+                tool_calls=3,
+                llm_calls=2,
+                denials=1,
+                total_tokens=1200,
+                elapsed_ms=4500,
+            ),
+        )
+    ).span_attributes()
+
+    event = map_span(semconv.SCOPE_AUDIT, make_span(attrs), {})
+
+    assert str(event.run_id) == run_id
+    assert event.run_tool_calls == 3
+    assert event.run_llm_calls == 2
+    assert event.run_denials == 1
+    assert event.run_total_tokens == 1200
+    assert event.run_elapsed_ms == 4500
+
+
+def test_sdk_decision_span_outside_a_run_scope_is_still_accepted() -> None:
+    """Were the SDK to send ``run_id: ""`` rather than omitting it, the event
+    would fail validation and be DLQ'd — losing the whole record, not just its
+    attribution."""
+    from hexgate.audit import AuditEvent
+    from hexgate.security.decision import Decision, DecisionOutcome
+
+    attrs = AuditEvent(
+        decision=Decision(
+            outcome=DecisionOutcome.ALLOW,
+            agent_name="example_agent",
+            tool_name="read_file",
+        )
+    ).span_attributes()
+
+    event = map_span(semconv.SCOPE_AUDIT, make_span(attrs), {})
+
+    assert event.run_id is None
+    assert event.run_tool_calls == 0
+
+
+def test_sdk_usage_span_carries_the_run_id_through_the_enricher() -> None:
+    from hexgate.tracing.usage import LlmUsageEvent
+
+    run_id = str(uuid.uuid4())
+
+    def usage_span_attrs(**overrides: Any) -> dict[str, Any]:
+        return LlmUsageEvent(
+            agent_name="a",
+            model="gpt-4o",
+            input_tokens=1,
+            output_tokens=1,
+            latency_ms=1,
+            status="success",
+            **overrides,
+        ).span_attributes()
+
+    attributed = map_span(
+        semconv.SCOPE_USAGE, make_span(usage_span_attrs(run_id=run_id)), {}
+    )
+    detached = map_span(semconv.SCOPE_USAGE, make_span(usage_span_attrs()), {})
+
+    assert str(attributed.run_id) == run_id
+    assert detached.run_id is None

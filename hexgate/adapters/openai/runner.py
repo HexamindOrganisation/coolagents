@@ -8,7 +8,6 @@ enforcer, so a refresh swap reaches every clone.
 """
 
 import asyncio
-import warnings
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -29,7 +28,7 @@ from agents.lifecycle import RunHooksBase
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
-from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
@@ -245,40 +244,13 @@ class HexgateRunner:
         )
         with hexgate_context.sync_scope():
             with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
-                try:
-                    return Runner.run_sync(
-                        wrapped_agent,
-                        input,
-                        run_config=run_config,
-                        hooks=self._merge_hooks(hooks),
-                        **kwargs,
-                    )
-                finally:
-                    self._drain_default_loop()
-
-    def _drain_default_loop(self) -> None:
-        """``AgentRunner.run_sync`` (the ``agents`` SDK) deliberately keeps
-        its per-thread default loop open across calls rather than closing
-        it, but ``run_until_complete`` only waits for the top-level run —
-        not sibling tasks on the same loop. The last turn's fire-and-forget
-        audit-send (policy decision / LLM usage) can still be scheduled and
-        pending when ``run_sync`` returns, with nothing left to pump the
-        loop for it. Give it one last chance here; don't close the loop —
-        the SDK expects to find the same one open on the next call.
-
-        If ``Runner.run_sync`` is mocked out and never touches asyncio,
-        ``get_event_loop`` just hands back a freshly created, empty loop —
-        so there's simply nothing pending to drain. The ``RuntimeError``
-        guard instead covers callers with no loop set on the current
-        thread at all (e.g. a background thread, or a test that has
-        explicitly called ``asyncio.set_event_loop(None)``)."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                return
-        drain_pending_tasks(loop)
+                return Runner.run_sync(
+                    wrapped_agent,
+                    input,
+                    run_config=run_config,
+                    hooks=self._merge_hooks(hooks),
+                    **kwargs,
+                )
 
     def run_streamed(
         self,

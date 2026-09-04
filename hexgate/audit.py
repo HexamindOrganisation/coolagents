@@ -1,6 +1,7 @@
-"""Per-decision audit emission to the platform's /v1/audit/decisions endpoint.
+"""Per-decision audit emission: one OTel span per decision, exported over
+OTLP to the Hexgate Collector under instrumentation scope ``hexgate.audit``.
 
-Fire-and-forget POST per decision; bounded concurrency; drops on saturation.
+Fire-and-forget; batched in memory; drops on saturation.
 Lifecycle: configure() per api_key, await shutdown() at process exit.
 """
 
@@ -11,9 +12,10 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID, uuid4
 
+from hexgate.tracing import semconv
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
 from hexgate.tracing._senders import shutdown as _shutdown_all
@@ -156,7 +158,10 @@ class AuditEvent:
 
     ``event_id`` / ``occurred_at`` are stamped here, not on ``Decision`` —
     they exist only for audit emission, and the no-audit path never
-    constructs an event. Names mirror the platform's AuditEnvelope."""
+    constructs an event. ``occurred_at`` becomes the span's start time;
+    ``event_id`` is the platform's idempotency key (see ``semconv``)."""
+
+    SCOPE: ClassVar[str] = semconv.SCOPE_AUDIT
 
     decision: Decision
     user_id: str = ""
@@ -164,80 +169,63 @@ class AuditEvent:
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    def as_payload(self) -> dict[str, Any]:
-        """Flat JSON payload matching the platform's DecisionEvent body.
+    def span_attributes(self) -> dict[str, Any]:
+        """Flat span attributes keyed by ``semconv`` names.
 
         ``arguments`` and ``attributes`` are redacted (sensitive key names, on
         their own patterns — see ``_SENSITIVE_ATTR_KEY_RE``); those plus
         ``hint`` and ``violations`` are truncated to their platform caps here —
-        the single choke point onto the wire. The role fields and the ``run.*``
-        fields deliberately pass through untouched — see the comments on them
-        below."""
+        the single choke point onto the wire. The three dict fields travel as
+        JSON strings (the caps are defined in serialized-JSON bytes, so the
+        capped quantity stays the measured one); the two list fields as native
+        string arrays. Absent optional fields are left out rather than sent as
+        ``None`` — OTel attributes can't carry null. The role fields and the
+        ``run.*`` fields deliberately pass through untouched — see the comments
+        on them below."""
         d = self.decision
-        arguments = (
-            _truncate_json(
-                _redact(d.arguments, pattern=_SENSITIVE_ARG_KEY_RE),
-                cap=MAX_ARGS_BYTES,
-            )
-            if d.arguments is not None
-            else None
-        )
-        # Not redacted — a file-scope hint is policy config (glob lists), not
-        # caller data — but still capped: a policy enumerating enough paths
-        # would 413 and take the whole event down with it, deterministically,
-        # for every denial on that tool.
-        hint = (
-            _truncate_json(d.hint, cap=MAX_HINT_BYTES) if d.hint is not None else None
-        )
-        # Falsy, not ``is not None``: an active context with no attributes
-        # yields ``{}`` (HexgateContext.attributes defaults to an empty dict),
-        # and an empty bag is indistinguishable from no bag downstream — both
-        # store '' and read back as None.
-        attributes = (
-            _truncate_json(
-                _redact(d.attributes, pattern=_SENSITIVE_ATTR_KEY_RE),
-                cap=MAX_ATTRIBUTES_BYTES,
-            )
-            if d.attributes
-            else None
-        )
-        return {
-            "event_id": str(self.event_id),
-            "occurred_at": self.occurred_at.isoformat(),
-            "agent_name": d.agent_name,
-            "tool_name": d.tool_name,
-            "outcome": d.outcome.value,
+        attrs: dict[str, Any] = {
+            semconv.EVENT_ID: str(self.event_id),
+            semconv.AGENT_NAME: d.agent_name,
+            semconv.TOOL_NAME: d.tool_name,
+            semconv.OUTCOME: d.outcome.value,
             # Roles evaluated, in caller order, and the one that granted or
             # gated the call ("" on a deny). No legacy scalar ``role``: it was
             # only ever ``user_roles[0]``, and the platform derives what it
             # needs from the list. Uncapped on purpose: these are policy
             # identifiers, not caller payloads, and the platform bounds them
             # (32 x 256) on ``DecisionEvent``.
-            "user_roles": list(d.user_roles),
-            "deciding_role": d.deciding_role or "",
-            "error_type": d.error_type or "",
-            "reason": d.reason,
-            "violations": _bounded_violations(d.violations),
-            "hint": hint,
-            "arguments": arguments,
-            "attributes": attributes,
-            "user_id": self.user_id,
-            "session_id": self.session_id,
+            semconv.USER_ROLES: list(d.user_roles),
+            semconv.DECIDING_ROLE: d.deciding_role or "",
+            semconv.ERROR_TYPE: d.error_type or "",
+            semconv.REASON: d.reason,
+            semconv.VIOLATIONS: _bounded_violations(d.violations),
+            semconv.USER_ID: self.user_id,
+            semconv.SESSION_ID: self.session_id,
             # Neither redacted nor capped — SDK counters, not caller data.
-            # Spread so the platform's field names live in one place.
-            **d.run.as_payload_fields(),
+            # Spread so the attribute names live in one place.
+            **d.run.as_span_attributes(),
         }
-
-
-# --- Per-key sender registry --------------------------------------------------
-#
-# The registry mechanics (dict + get-or-create + shutdown), the
-# HEXGATE_LOCAL_MODE gate, and AuditSender itself now live in the neutral
-# hexgate.tracing._senders module, shared with hexgate.tracing.usage. The
-# functions below are thin, decisions-specific wrappers around it.
-
-
-_AUDIT_PATH = "/v1/audit/decisions"
+        if d.arguments is not None:
+            attrs[semconv.ARGUMENTS] = json.dumps(
+                _truncate_json(
+                    _redact(d.arguments, pattern=_SENSITIVE_ARG_KEY_RE),
+                    cap=MAX_ARGS_BYTES,
+                ),
+                default=str,
+            )
+        if d.hint is not None:
+            attrs[semconv.HINT] = json.dumps(
+                _truncate_json(d.hint, cap=MAX_HINT_BYTES), default=str
+            )
+        if d.attributes:
+            attrs[semconv.ATTRIBUTES] = json.dumps(
+                _truncate_json(
+                    _redact(d.attributes, pattern=_SENSITIVE_ATTR_KEY_RE),
+                    cap=MAX_ATTRIBUTES_BYTES,
+                ),
+                default=str,
+            )
+        return attrs
 
 
 def configure(
@@ -246,17 +234,19 @@ def configure(
 ) -> AuditSender | None:
     """Get-or-create the audit sender for ``api_key``. Idempotent per key.
 
-    Both args fall back to ``HEXGATE_API_KEY`` / ``HEXGATE_API_URL`` env vars.
-    Reuses the existing sender when the same key was already configured;
-    distinct keys get distinct senders. Returns ``None`` when no api_key is
-    resolvable — audit stays inert.
+    Both args fall back to ``HEXGATE_API_KEY`` / ``HEXGATE_API_URL`` env vars
+    (``HEXGATE_OTLP_ENDPOINT`` overrides where spans are exported). Reuses the
+    existing sender when the same key was already configured — one sender per
+    key carries decisions, LLM usage and ban enforcements alike; distinct keys
+    get distinct senders. Returns ``None`` when no api_key is resolvable —
+    audit stays inert.
 
     Also returns ``None`` when ``HEXGATE_LOCAL_MODE`` is set in env, even
     if a key was resolvable — that's the "I have a key in .env but I'm
     iterating locally and don't want cloud writes" path
     (``hexgate chat`` opts in via ``bootstrap(local_only=True)``).
     """
-    return get_or_create_sender(_AUDIT_PATH, api_key, base_url)
+    return get_or_create_sender(api_key, base_url)
 
 
 def get_sender(api_key: str | None = None) -> AuditSender | None:
@@ -266,10 +256,11 @@ def get_sender(api_key: str | None = None) -> AuditSender | None:
     :class:`~hexgate.security.enforcer.PolicyEnforcer`; this lookup exists for
     diagnostics and is unambiguous only when scoped to a key.
     """
-    return _get_sender(_AUDIT_PATH, api_key)
+    return _get_sender(api_key)
 
 
 async def shutdown() -> None:
-    """Drain in-flight emits and close every sender in the shared registry
-    (decisions and LLM usage alike). Safe to call multiple times."""
+    """Flush queued events and stop every sender in the shared registry —
+    decisions, LLM usage and ban enforcements alike. Safe to call multiple
+    times."""
     await _shutdown_all()

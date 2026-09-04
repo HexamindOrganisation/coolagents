@@ -21,6 +21,7 @@ from hexgate.security.decision import (
 )
 from hexgate.runtime.roles import MAX_EVALUATED_ROLES
 from hexgate.runtime.run_facts import RunFacts
+from hexgate.tracing import semconv
 
 
 def _deny_decision() -> Decision:
@@ -515,22 +516,28 @@ def test_run_attribution_of_detached_facts_reads_zeros_and_no_id() -> None:
     )
 
 
-def test_run_attribution_sends_null_run_id_never_an_empty_string() -> None:
-    """The platform 422s on "" and the sender drops a 4xx, so an empty string
-    loses the whole record for every decision made outside a run scope."""
-    assert DETACHED_RUN.as_payload_fields()["run_id"] is None
+def test_run_attribution_omits_run_id_rather_than_sending_it_empty() -> None:
+    """The enricher validates "" against ``UUID | None`` and DLQs the span, so
+    an empty string loses the whole record — not just the attribution — for
+    every decision made outside a run scope. OTLP has no null to send instead,
+    so the attribute is left off entirely."""
+    attrs = DETACHED_RUN.as_span_attributes()
+
+    assert semconv.RUN_ID not in attrs
+    # The counters still travel: zero is a tally, not an absence.
+    assert attrs[semconv.RUN_TOOL_CALLS] == 0
 
 
-def test_run_attribution_payload_field_names_match_the_platform_columns() -> None:
-    """Mirrors DecisionEvent. It does not forbid extras, so a rename on either
-    side is silently dropped rather than rejected."""
-    assert set(RunAttribution().as_payload_fields()) == {
-        "run_id",
-        "run_tool_calls",
-        "run_llm_calls",
-        "run_denials",
-        "run_total_tokens",
-        "run_elapsed_ms",
+def test_run_attribution_attribute_names_are_the_semconv_run_names() -> None:
+    """Mirrors what the enricher's ``_run_fields`` decodes. Neither side
+    forbids extras, so a rename is silently dropped rather than rejected."""
+    assert set(RunAttribution(run_id="run-1").as_span_attributes()) == {
+        semconv.RUN_ID,
+        semconv.RUN_TOOL_CALLS,
+        semconv.RUN_LLM_CALLS,
+        semconv.RUN_DENIALS,
+        semconv.RUN_TOTAL_TOKENS,
+        semconv.RUN_ELAPSED_MS,
     }
 
 

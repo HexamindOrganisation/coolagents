@@ -12,6 +12,7 @@ import pytest
 
 from hexgate.runtime import HexgateContext
 from hexgate.runtime.run_facts import run_scope
+from hexgate.tracing import semconv
 from hexgate.tracing import usage as usage_mod
 from hexgate.tracing.usage import emit_llm_usage
 
@@ -218,7 +219,7 @@ def test_emit_stamps_the_enclosing_run_id(monkeypatch: pytest.MonkeyPatch) -> No
         emit_llm_usage("agent", "gpt-4o", 10, 5)
 
     assert sender.events[0].run_id == facts.id
-    assert sender.events[0].as_payload()["run_id"] == facts.id
+    assert sender.events[0].span_attributes()[semconv.RUN_ID] == facts.id
 
 
 def test_emit_outside_a_run_scope_sends_no_run_id(
@@ -232,7 +233,7 @@ def test_emit_outside_a_run_scope_sends_no_run_id(
     emit_llm_usage("agent", "gpt-4o", 10, 5)
 
     assert sender.events[0].run_id == ""
-    assert sender.events[0].as_payload()["run_id"] is None
+    assert semconv.RUN_ID not in sender.events[0].span_attributes()
 
 
 def test_emit_attributes_tokens_and_the_run_id_to_the_same_facts(

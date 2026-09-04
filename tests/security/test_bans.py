@@ -27,7 +27,7 @@ from hexgate.security.bans import (
 )
 from hexgate.security.bans import _ban_sources as _BAN_SOURCES
 from hexgate.security.errors import AgentBannedError
-from hexgate.tracing import _senders
+from hexgate.tracing import _senders, semconv
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +35,7 @@ def _isolate_ban_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset the shared ban-source + sender registries and HEXGATE_* env."""
     _BAN_SOURCES.clear()
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
     monkeypatch.delenv("HEXGATE_API_KEY", raising=False)
     monkeypatch.delenv("HEXGATE_API_URL", raising=False)
     monkeypatch.delenv(_senders._LOCAL_MODE_ENV, raising=False)
@@ -43,7 +43,7 @@ def _isolate_ban_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yield
     _BAN_SOURCES.clear()
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
 
 
 def _user(user_id: str = "u-1") -> HexgateContext:
@@ -421,24 +421,17 @@ def test_none_sink_is_noop_but_still_raises() -> None:
         gate.check(_user())
 
 
-async def test_check_async_emits_on_loop_even_when_sink_built_off_loop() -> None:
-    """Regression: check_async emits on the loop, so a real AuditSender built
-    off-loop (loop None) still POSTs instead of dropping the event."""
-    posted: list[dict] = []
-
-    class _FakeHttpClient:
-        async def post(self, endpoint: str, json: dict) -> Any:
-            posted.append(json)
-            return SimpleNamespace(status_code=200, text="")
-
-        async def aclose(self) -> None:
-            return None
-
-    sender = _senders.AuditSender(
-        endpoint="http://test/v1/audit/ban-enforcements", api_key="k"
+async def test_check_async_emits_a_ban_span_through_a_real_sender() -> None:
+    """The refusal reaches the wire as one ``hexgate.bans`` span carrying the
+    ban and the caller identity."""
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
     )
-    sender._loop = None  # simulate a sink built off the loop (wrap at sync setup)
-    sender._client = _FakeHttpClient()  # type: ignore[assignment]
+
+    exporter = InMemorySpanExporter()
+    sender = _senders.AuditSender(
+        endpoint="http://test/v1/traces", api_key="k", exporter=exporter
+    )
 
     bans = ban_set_from_payload([_agent_entry("bot", ban_id="b1")])
     gate = BanGate("bot", _StaticSource(bans), sender)
@@ -446,11 +439,12 @@ async def test_check_async_emits_on_loop_even_when_sink_built_off_loop() -> None
     with pytest.raises(AgentBannedError):
         await gate.check_async(_user("u-1"))
 
-    await sender.close()  # drain the fire-and-forget send task
-    assert len(posted) == 1
-    assert posted[0]["ban_id"] == "b1"
-    assert posted[0]["agent_name"] == "bot"
-    assert posted[0]["user_id"] == "u-1"
+    await sender.close()  # flush the batch
+    (span,) = exporter.get_finished_spans()
+    assert span.instrumentation_scope.name == semconv.SCOPE_BANS
+    assert span.attributes[semconv.BAN_ID] == "b1"
+    assert span.attributes[semconv.AGENT_NAME] == "bot"
+    assert span.attributes[semconv.USER_ID] == "u-1"
 
 
 # ---------------------------------------------------------------------------
@@ -488,11 +482,11 @@ def test_resolve_ban_gate_builds_gate_with_shared_source() -> None:
 
 
 # ---------------------------------------------------------------------------
-# BanEnforcementEvent.as_payload — wire mapping
+# BanEnforcementEvent.span_attributes — wire mapping
 # ---------------------------------------------------------------------------
 
 
-def test_event_payload_field_mapping() -> None:
+def test_event_span_attributes_field_mapping() -> None:
     ev = BanEnforcementEvent(
         ban_type="user",
         ban_id="b1",
@@ -501,40 +495,45 @@ def test_event_payload_field_mapping() -> None:
         user_id="u-1",
         session_id="s-1",
     )
-    wire = ev.as_payload()
-    assert wire["event_id"] == str(ev.event_id)
-    assert wire["occurred_at"] == ev.occurred_at.isoformat()
-    assert wire["agent_name"] == "bot"
-    assert wire["user_id"] == "u-1"
-    assert wire["session_id"] == "s-1"
-    assert wire["ban_type"] == "user"
-    assert wire["ban_id"] == "b1"
-    assert wire["reason"] == "abuse"
+    wire = ev.span_attributes()
+    assert BanEnforcementEvent.SCOPE == semconv.SCOPE_BANS
+    assert wire[semconv.EVENT_ID] == str(ev.event_id)
+    assert wire[semconv.AGENT_NAME] == "bot"
+    assert wire[semconv.USER_ID] == "u-1"
+    assert wire[semconv.SESSION_ID] == "s-1"
+    assert wire[semconv.BAN_TYPE] == "user"
+    assert wire[semconv.BAN_ID] == "b1"
+    assert wire[semconv.REASON] == "abuse"
 
 
-def test_event_payload_reason_none_normalizes_to_empty() -> None:
+def test_event_span_attributes_reason_none_normalizes_to_empty() -> None:
     wire = BanEnforcementEvent(
         ban_type="agent", ban_id="b1", agent_name="bot"
-    ).as_payload()
-    assert wire["reason"] == ""
-    assert wire["user_id"] == ""
-    assert wire["session_id"] == ""
+    ).span_attributes()
+    assert wire[semconv.REASON] == ""
+    assert wire[semconv.USER_ID] == ""
+    assert wire[semconv.SESSION_ID] == ""
 
 
-def test_event_payload_omits_server_resolved_fields() -> None:
+def test_event_span_attributes_omits_server_resolved_fields() -> None:
+    """occurred_at is the span start time; project_id / agent_version_id /
+    received_at are server-resolved."""
     wire = BanEnforcementEvent(
         ban_type="agent", ban_id="b1", agent_name="bot"
-    ).as_payload()
-    assert "project_id" not in wire
-    assert "agent_version_id" not in wire
-    assert "received_at" not in wire
+    ).span_attributes()
+    assert not any("occurred_at" in k for k in wire)
+    assert not any("project_id" in k for k in wire)
+    assert not any("agent_version" in k for k in wire)
+    assert not any("received_at" in k for k in wire)
 
 
 def test_event_id_unique_per_event() -> None:
-    w1 = BanEnforcementEvent(ban_type="agent", ban_id="b", agent_name="a").as_payload()
-    w2 = BanEnforcementEvent(ban_type="agent", ban_id="b", agent_name="a").as_payload()
-    assert w1["event_id"] != w2["event_id"]
-    assert "+00:00" in w1["occurred_at"]
+    e1 = BanEnforcementEvent(ban_type="agent", ban_id="b", agent_name="a")
+    e2 = BanEnforcementEvent(ban_type="agent", ban_id="b", agent_name="a")
+    assert (
+        e1.span_attributes()[semconv.EVENT_ID] != e2.span_attributes()[semconv.EVENT_ID]
+    )
+    assert e1.occurred_at.utcoffset().total_seconds() == 0
 
 
 # ---------------------------------------------------------------------------
@@ -546,10 +545,10 @@ def test_configure_ban_sink_none_without_key() -> None:
     assert configure_ban_sink() is None
 
 
-def test_configure_ban_sink_wires_to_ban_enforcements_endpoint() -> None:
+def test_configure_ban_sink_wires_to_the_otlp_endpoint() -> None:
     sender = configure_ban_sink("k")
     assert sender is not None
-    assert sender._endpoint == "https://app.hexgate.ai/v1/audit/ban-enforcements"
+    assert sender._endpoint == "https://app.hexgate.ai/v1/traces"
 
 
 def test_configure_ban_sink_memoized_per_key() -> None:
@@ -565,13 +564,11 @@ def test_configure_ban_sink_suppressed_in_local_mode(
     assert configure_ban_sink("real_key") is None
 
 
-def test_configure_ban_sink_distinct_from_other_event_types() -> None:
-    """The ban sink shares the registry but is keyed by its own path, so it
-    never collides with the decisions/usage senders for the same key."""
+def test_configure_ban_sink_shares_the_sender_with_other_event_types() -> None:
+    """One sender per key carries every event type; the span's instrumentation
+    scope, not a separate sender, tells ban enforcements from decisions."""
     import hexgate.audit as audit_mod
 
     decisions = audit_mod.configure("k1")
     ban = configure_ban_sink("k1")
-    assert decisions is not ban
-    assert decisions._endpoint.endswith("/v1/audit/decisions")
-    assert ban._endpoint.endswith("/v1/audit/ban-enforcements")
+    assert decisions is ban
