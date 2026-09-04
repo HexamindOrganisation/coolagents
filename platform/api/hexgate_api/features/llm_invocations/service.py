@@ -4,9 +4,16 @@ from clickhouse_connect.driver.client import Client
 
 from datetime import datetime
 
-from hexgate_api.core.clickhouse import BatchItem, insert_batch, verify_written_columns
+from hexgate_api.core.clickhouse import (
+    ZERO_RUN_ID,
+    BatchItem,
+    insert_batch,
+    verify_written_columns,
+)
 from hexgate_api.query_scope import scope_filters
 from hexgate_api.schemas import LlmInvocationEvent
+
+LLM_INVOCATION_TABLE = "llm_invocation"
 
 # Order matches schema.sql; received_at absent (server-stamped via column default).
 _LLM_INVOCATION_COLUMNS = [
@@ -23,9 +30,8 @@ _LLM_INVOCATION_COLUMNS = [
     "latency_ms",
     "status",
     "error_code",
+    "run_id",
 ]
-
-LLM_INVOCATION_TABLE = "llm_invocation"
 
 
 def verify_schema(client: Client) -> None:
@@ -66,6 +72,7 @@ def _llm_invocation_row(
         event.latency_ms,
         event.status,
         event.error_code,
+        event.run_id or ZERO_RUN_ID,
     ]
 
 
@@ -115,7 +122,7 @@ def insert_llm_invocations_batch(
     """
     insert_batch(
         clickhouse_client,
-        "llm_invocation",
+        LLM_INVOCATION_TABLE,
         _LLM_INVOCATION_COLUMNS,
         _llm_invocation_row,
         items,
@@ -190,7 +197,7 @@ def summarize_llm_invocations(
     where_sql = " AND ".join(where)
     summary_sql = (
         f"SELECT {', '.join(_SELECT_COLS)} "
-        f"FROM llm_invocation WHERE {where_sql} GROUP BY {_GROUPING_SETS}"
+        f"FROM {LLM_INVOCATION_TABLE} WHERE {where_sql} GROUP BY {_GROUPING_SETS}"
     )
     result = client.query(summary_sql, parameters=params)
 

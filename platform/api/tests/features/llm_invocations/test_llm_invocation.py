@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from clickhouse_connect.driver.exceptions import DataError, OperationalError
+from clickhouse_connect.driver.exceptions import (
+    DataError,
+    OperationalError,
+    ProgrammingError,
+)
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -163,6 +167,19 @@ def test_when_model_exceeds_max_length_then_validation_error_is_raised() -> None
     assert "model" in str(exc.value)
 
 
+def test_when_run_id_is_omitted_then_it_defaults_to_none() -> None:
+    """None (not the zero UUID) is the wire default — the zero-UUID
+    substitution happens at insert time, not on the wire model."""
+    e = LlmInvocationEvent(**_llm_event())
+    assert e.run_id is None
+
+
+def test_when_run_id_is_malformed_then_validation_error_is_raised() -> None:
+    with pytest.raises(ValidationError) as exc:
+        LlmInvocationEvent(**_llm_event(run_id="not-a-uuid"))
+    assert "run_id" in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Endpoint behaviour — auth + ClickHouse stubbed
 # ---------------------------------------------------------------------------
@@ -218,10 +235,11 @@ def test_ingest_llm_invocation_happy_path(
 
     fake_clickhouse.insert.assert_called_once()
     args, kwargs = fake_clickhouse.insert.call_args
-    assert args[0] == "llm_invocation"
+    assert args[0] == llm_invocations.LLM_INVOCATION_TABLE
     rows = args[1]
     assert len(rows) == 1
-    assert len(rows[0]) == 13
+    # Derived, not hardcoded: a length mismatch misaligns values silently.
+    assert len(rows[0]) == len(llm_invocations._LLM_INVOCATION_COLUMNS)
     # Indices match _LLM_INVOCATION_COLUMNS in service.py.
     assert rows[0][2] == "proj_test"  # project_id (bearer)
     assert rows[0][4] == _STUB_AGENT_VERSION_ID  # agent_version_id (platform)
@@ -229,6 +247,31 @@ def test_ingest_llm_invocation_happy_path(
     assert kwargs["settings"]["async_insert"] == 1
     # Durable: block until flush so insert failures surface synchronously.
     assert kwargs["settings"]["wait_for_async_insert"] == 1
+
+
+def _inserted(fake_clickhouse: MagicMock, column: str):
+    """The value stored in ``column`` by the last insert."""
+    rows = fake_clickhouse.insert.call_args.args[1]
+    return rows[0][llm_invocations._LLM_INVOCATION_COLUMNS.index(column)]
+
+
+def test_run_id_defaults_to_the_zero_uuid_when_omitted(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """The column is UUID, not Nullable(UUID) — an absent run_id must not
+    reach ClickHouse as None."""
+    r = client.post("/v1/audit/llm-invocations", json=_llm_event())
+    assert r.status_code == 202
+    assert _inserted(fake_clickhouse, "run_id") == llm_invocations.ZERO_RUN_ID
+
+
+def test_run_id_round_trips_when_present(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    run_id = str(uuid.uuid4())
+    r = client.post("/v1/audit/llm-invocations", json=_llm_event(run_id=run_id))
+    assert r.status_code == 202
+    assert str(_inserted(fake_clickhouse, "run_id")) == run_id
 
 
 def test_when_occurred_at_is_in_the_future_then_400_is_returned(
@@ -279,6 +322,21 @@ def test_when_clickhouse_rejects_the_row_then_422_is_returned(
     assert r.status_code == 422
     assert "retry-after" not in {k.lower() for k in r.headers}
     assert "rejected" in r.json()["detail"]
+
+
+def test_when_schema_is_behind_the_build_then_503_is_returned(
+    client: TestClient, fake_clickhouse: MagicMock
+) -> None:
+    """ProgrammingError (the driver rejects our column names before sending)
+    is a schema-behind-this-build condition, not a bad row — retryable once
+    the migration lands, so 503 not 422. Regression guard: ProgrammingError
+    IS a ClickHouseError, so without its own except branch this fell through
+    to the generic one below and returned a non-retryable 422."""
+    fake_clickhouse.insert.side_effect = ProgrammingError("Unknown column 'run_id'")
+    r = client.post("/v1/audit/llm-invocations", json=_llm_event())
+    assert r.status_code == 503
+    assert r.headers.get("retry-after") == "5"
+    assert "unavailable" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -559,12 +617,14 @@ def test_real_clickhouse_round_trip() -> None:
     try:
         rows = clickhouse_client.query(
             "SELECT event_id, project_id, model, input_tokens, output_tokens, "
-            "received_at, agent_version_id FROM llm_invocation "
+            "received_at, agent_version_id, run_id FROM llm_invocation "
             "WHERE project_id = {pid:String}",
             parameters={"pid": project_id},
         ).result_rows
         assert len(rows) == 1
-        ev_id, pid, model, input_tokens, output_tokens, received_at, av_id = rows[0]
+        ev_id, pid, model, input_tokens, output_tokens, received_at, av_id, run_id = (
+            rows[0]
+        )
         assert str(ev_id) == str(event_id)
         assert pid == project_id
         assert model == "gpt-4o-2024-08-06"
@@ -572,6 +632,8 @@ def test_real_clickhouse_round_trip() -> None:
         assert output_tokens == 45
         assert received_at is not None  # server-stamped via column default
         assert av_id == "9f1e3c5a-test"
+        # No run_id sent — the migrated column reads back the zero UUID, not NULL.
+        assert str(run_id) == "00000000-0000-0000-0000-000000000000"
     finally:
         clickhouse_client.command(
             "ALTER TABLE llm_invocation DELETE WHERE project_id = {pid:String}",
