@@ -212,6 +212,89 @@ export interface ValidatePolicyResponse {
   warnings: PolicyValidationError[];
 }
 
+// --- Policy modules (multi-module editor; mirrors platform/api/schemas.py) ---
+
+export type PolicyTier = "boundary" | "capability";
+
+/** One stored module — a boundary (ceiling/deny) or capability (grant). The
+ * `path` may contain slashes for subfolders (e.g. `team_a/payments`). */
+export interface PolicyModuleRead {
+  tier: PolicyTier;
+  path: string;
+  content: string;
+  content_hash: string;
+  updated_at: string;
+}
+
+/** A persisted empty folder (tier + path prefix). Folders are otherwise derived
+ * from module paths; these keep an empty one visible before a module lands. */
+export interface PolicyFolder {
+  tier: PolicyTier;
+  path: string;
+}
+
+/** The (role, agent) matrix: role -> agent-or-"*" -> the capability names it
+ * imports. `"*"` is the generic agent (applies to any agent not named); a named
+ * agent's cell replaces `"*"` for that agent. Boundaries always apply, so they
+ * carry no binding. An empty map means the project is still classic. */
+export type RoleBindings = Record<string, Record<string, string[]>>;
+
+/** One analyzer lint over the composed project. `source`/`tier`/`tool`/`role`
+ * locate it; a null `role` is a project-wide concern. */
+export interface PolicyLint {
+  code: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+  source: string | null;
+  tier: string | null;
+  tool: string | null;
+  role: string | null;
+}
+
+/** The effective policy for one role: a tool map plus the catch-all default.
+ * Loosely typed — it's an AgentPolicy dump the editor only renders. */
+export interface ResolvedRolePolicy {
+  default_policy?: { mode?: string } | null;
+  tools?: Record<
+    string,
+    { mode?: string; constraints?: string[] | null } | null
+  >;
+  [key: string]: unknown;
+}
+
+export type ResolvedPolicy = Record<string, ResolvedRolePolicy>;
+
+/** The editor's unsaved edit, overlaid before resolve/test. One module OR the
+ * roles map, never both (matches PolicyDraft server-side). */
+export interface PolicyDraft {
+  module?: { tier: PolicyTier; path: string; content: string };
+  roles?: RoleBindings;
+}
+
+export interface PolicyPreviewResponse {
+  resolved: ResolvedPolicy;
+  lints: PolicyLint[];
+}
+
+export type PolicyTestOutcome = "allow" | "deny" | "approval_required";
+
+export interface PolicyTestRequest {
+  role: string;
+  /** The executing agent whose column to test against; defaults to "main". */
+  agent?: string;
+  tool: string;
+  args?: Record<string, unknown>;
+  attributes?: Record<string, unknown> | null;
+  draft?: PolicyDraft | null;
+}
+
+export interface PolicyTestResponse {
+  outcome: PolicyTestOutcome;
+  reason: string | null;
+  violations: string[];
+  hint: string | null;
+}
+
 // --- Audit dashboard (mirrors platform/api/schemas.py) ----------------------
 
 export type AuditWindow = "24h" | "7d" | "30d" | "90d";
@@ -413,6 +496,14 @@ export interface LlmUsageScope {
   end_date?: string;
 }
 
+/** Encode a module path for a URL while preserving the `/` separators the
+ * `{path:path}` route depends on: each segment is percent-encoded, slashes
+ * kept. A path typed into a prompt may hold `?`, `#`, `%`, or spaces, which
+ * would otherwise be parsed as query/fragment/escape and hit the wrong route. */
+function encodePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -513,4 +604,87 @@ export const api = {
     request<LlmInvocationSummary>(
       `/v1/projects/${projectId}/llm/summary${qs({ ...scope })}`,
     ),
+
+  // --- policy modules (multi-module editor) --------------------------------
+  // `path` may contain slashes (subfolders); the route's `{path:path}` keeps
+  // them, so `encodePath` encodes each segment but preserves the separators.
+
+  listPolicyModules: (projectId: string) =>
+    request<PolicyModuleRead[]>(`/v1/projects/${projectId}/policy-modules`),
+
+  upsertPolicyModule: (
+    projectId: string,
+    tier: PolicyTier,
+    path: string,
+    content: string,
+  ) =>
+    request<PolicyModuleRead>(
+      `/v1/projects/${projectId}/policy-modules/${tier}/${encodePath(path)}`,
+      { method: "PUT", body: JSON.stringify({ content }) },
+    ),
+
+  deletePolicyModule: (projectId: string, tier: PolicyTier, path: string) =>
+    request<void>(
+      `/v1/projects/${projectId}/policy-modules/${tier}/${encodePath(path)}`,
+      { method: "DELETE" },
+    ),
+
+  movePolicyModule: (
+    projectId: string,
+    tier: PolicyTier,
+    path: string,
+    newPath: string,
+  ) =>
+    request<PolicyModuleRead>(
+      `/v1/projects/${projectId}/policy-modules/${tier}/${encodePath(path)}`,
+      { method: "PATCH", body: JSON.stringify({ new_path: newPath }) },
+    ),
+
+  listPolicyFolders: (projectId: string) =>
+    request<PolicyFolder[]>(`/v1/projects/${projectId}/policy-folders`),
+
+  createPolicyFolder: (projectId: string, tier: PolicyTier, path: string) =>
+    request<PolicyFolder>(
+      `/v1/projects/${projectId}/policy-folders/${tier}/${encodePath(path)}`,
+      { method: "PUT" },
+    ),
+
+  deletePolicyFolder: (projectId: string, tier: PolicyTier, path: string) =>
+    request<void>(
+      `/v1/projects/${projectId}/policy-folders/${tier}/${encodePath(path)}`,
+      { method: "DELETE" },
+    ),
+
+  getPolicyRoles: (projectId: string) =>
+    request<{ roles: RoleBindings }>(
+      `/v1/projects/${projectId}/policy-roles`,
+    ).then((r) => r.roles),
+
+  setPolicyRoles: (projectId: string, roles: RoleBindings) =>
+    request<{ roles: RoleBindings }>(`/v1/projects/${projectId}/policy-roles`, {
+      method: "PUT",
+      body: JSON.stringify({ roles }),
+    }).then((r) => r.roles),
+
+  resolvePolicy: (projectId: string, role?: string) =>
+    request<{ roles: ResolvedPolicy }>(
+      `/v1/projects/${projectId}/policy/resolve${qs({ role })}`,
+    ).then((r) => r.roles),
+
+  checkPolicy: (projectId: string) =>
+    request<{ ok: boolean; lints: PolicyLint[] }>(
+      `/v1/projects/${projectId}/policy/check`,
+    ),
+
+  previewPolicy: (projectId: string, draft?: PolicyDraft | null) =>
+    request<PolicyPreviewResponse>(`/v1/projects/${projectId}/policy/preview`, {
+      method: "POST",
+      body: JSON.stringify({ draft: draft ?? null }),
+    }),
+
+  testPolicy: (projectId: string, body: PolicyTestRequest) =>
+    request<PolicyTestResponse>(`/v1/projects/${projectId}/policy/test`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

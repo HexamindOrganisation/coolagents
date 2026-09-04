@@ -24,20 +24,27 @@
 import { EditorView } from "@codemirror/view";
 import { tokyoNightStormInit } from "@uiw/codemirror-theme-tokyo-night-storm";
 
-const tokyoNight = tokyoNightStormInit({
-  settings: {
-    // Mono face — Tokyo Night Storm's default is a stack we don't use.
-    fontFamily: "var(--font-mono)",
-    // Match the dashboard's text-sm (14px).
-    fontSize: "14px",
-    // Blend the editor into the dashboard surface — Tokyo Night Storm's
-    // default `#24283b` was slightly bluer than `--background`; using
-    // the dashboard var instead means no seam between the editor and the
-    // surrounding chrome.
-    background: "hsl(var(--background))",
-    gutterBackground: "hsl(var(--background))",
-  },
-});
+/**
+ * Tokyo Night Storm with our mono face + a caller-chosen background.
+ * `background` is the editor surface: `hsl(var(--background))` for the
+ * standalone editor (a visible code-pane), or `transparent` for editors
+ * embedded in a translucent pane, where any solid fill would read as a
+ * darker inset seam.
+ */
+function tokyoNightWith(background: string) {
+  return tokyoNightStormInit({
+    settings: {
+      // Mono face — Tokyo Night Storm's default is a stack we don't use.
+      fontFamily: "var(--font-mono)",
+      // Match the dashboard's text-sm (14px).
+      fontSize: "14px",
+      background,
+      gutterBackground: background,
+    },
+  });
+}
+
+const tokyoNight = tokyoNightWith("hsl(var(--background))");
 
 /**
  * Editor chrome + semantic decoration colors. Kept here (in
@@ -65,3 +72,13 @@ const chromeAndDecorationsTheme = EditorView.theme({
 });
 
 export const policyEditorTheme = [tokyoNight, chromeAndDecorationsTheme];
+
+/**
+ * Same theme with a transparent editor surface — for CodeMirror instances
+ * embedded in a translucent pane (e.g. the Test panel's JSON box), so the
+ * editor inherits the pane's shade instead of painting its own.
+ */
+export const policyEditorThemeTransparent = [
+  tokyoNightWith("transparent"),
+  chromeAndDecorationsTheme,
+];

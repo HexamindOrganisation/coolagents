@@ -10,6 +10,7 @@ docs/adr/R-POL-002).
 
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -22,10 +23,17 @@ from hexgate_api.deps.project import require_project_admin
 from hexgate_api.features.policy_modules import service
 from hexgate_api.models import OrganizationMember, PolicyModule, User
 from hexgate_api.schemas import (
+    MoveModuleRequest,
     PolicyCheckResponse,
+    PolicyDraft,
+    PolicyFolderRead,
     PolicyLintOut,
     PolicyModuleRead,
     PolicyModuleWrite,
+    PolicyPreviewRequest,
+    PolicyPreviewResponse,
+    PolicyTestRequest,
+    PolicyTestResponse,
     ResolvedPolicyResponse,
     RoleBindingsRead,
     RoleBindingsWrite,
@@ -44,6 +52,30 @@ def _norm(roles: dict[str, dict[str, list[str]]]) -> dict[str, dict[str, list[st
         role: {agent: sorted(caps) for agent, caps in cells.items()}
         for role, cells in roles.items()
     }
+
+
+def _lint_out(lint) -> PolicyLintOut:
+    return PolicyLintOut(
+        code=lint.code,
+        severity=lint.severity,
+        message=lint.message,
+        source=lint.source,
+        tier=lint.tier,
+        tool=lint.tool,
+        role=lint.role,
+    )
+
+
+def _unpack_draft(draft: PolicyDraft | None):
+    """PolicyDraft -> (draft_module tuple, draft_roles) for the service layer."""
+    if draft is None:
+        return None, None
+    module = (
+        (draft.module.tier, draft.module.path, draft.module.content)
+        if draft.module
+        else None
+    )
+    return module, draft.roles
 
 
 def _module_read(row: PolicyModule) -> PolicyModuleRead:
@@ -189,6 +221,60 @@ async def api_delete_policy_module(
     return Response(status_code=204)
 
 
+# --- folders (persisted empty folders) ---------------------------------------
+# No recompile on folder writes: folders never reach resolve (they're not
+# modules), so they can't change any agent's enforced bundle.
+
+
+@router.get("/projects/{project_id}/policy-folders", tags=["policy"])
+async def api_list_policy_folders(
+    project_id: str,
+    _user: User = Depends(require_org_member),
+    session: AsyncSession = Depends(get_session),
+) -> list[PolicyFolderRead]:
+    """Persisted empty folders in the project's module library."""
+    rows = await service.list_folders(session, project_id)
+    return [PolicyFolderRead(tier=r.tier, path=r.path) for r in rows]
+
+
+@router.put("/projects/{project_id}/policy-folders/{tier}/{path:path}", tags=["policy"])
+async def api_put_policy_folder(
+    project_id: str,
+    tier: str,
+    path: str,
+    _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
+    session: AsyncSession = Depends(get_session),
+) -> PolicyFolderRead:
+    """Create an empty folder marker (idempotent). 422 if the tier is unknown."""
+    try:
+        row = await service.create_folder(
+            session, project_id=project_id, tier=tier, path=path
+        )
+    except service.InvalidModuleError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PolicyFolderRead(tier=row.tier, path=row.path)
+
+
+@router.delete(
+    "/projects/{project_id}/policy-folders/{tier}/{path:path}",
+    status_code=204,
+    tags=["policy"],
+)
+async def api_delete_policy_folder(
+    project_id: str,
+    tier: str,
+    path: str,
+    _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    deleted = await service.delete_folder(
+        session, project_id=project_id, tier=tier, path=path
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="folder not found")
+    return Response(status_code=204)
+
+
 # --- role bindings -----------------------------------------------------------
 
 
@@ -293,7 +379,12 @@ async def api_resolve_policy(
 
     try:
         result = await service.resolve(session, project_id, agent=agent)
-    except (LinkError, PolicySetError, ConstraintParseError) as exc:
+    except (
+        LinkError,
+        PolicySetError,
+        ConstraintParseError,
+        service.InvalidModuleError,
+    ) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if role is not None and role not in result.by_role:
@@ -315,17 +406,103 @@ async def api_check_policy(
     errors...). Diagnostics-as-data: always 200. ``ok`` is False if any lint is
     an error."""
     lints = await service.check(session, project_id)
-    out = [
-        PolicyLintOut(
-            code=lint.code,
-            severity=lint.severity,
-            message=lint.message,
-            source=lint.source,
-            tier=lint.tier,
-            tool=lint.tool,
-            role=lint.role,
-        )
-        for lint in lints
-    ]
     ok = not any(lint.severity == "error" for lint in lints)
-    return PolicyCheckResponse(ok=ok, lints=out)
+    return PolicyCheckResponse(ok=ok, lints=[_lint_out(x) for x in lints])
+
+
+# --- editor: preview, test, move (see policy-editor-plan.md) -----------------
+
+_OUTCOME_WIRE = {
+    "ALLOW": "allow",
+    "DENY": "deny",
+    "NEEDS_APPROVAL": "approval_required",
+}
+
+
+@router.post("/projects/{project_id}/policy/preview", tags=["policy"])
+async def api_preview_policy(
+    project_id: str,
+    body: PolicyPreviewRequest,
+    _user: User = Depends(require_org_member),
+    session: AsyncSession = Depends(get_session),
+) -> PolicyPreviewResponse:
+    """Resolve + lint the project with the editor's unsaved edit overlaid, without
+    writing. Powers the debounced live preview. Always 200 (diagnostics-as-data)."""
+    draft_module, draft_roles = _unpack_draft(body.draft)
+    resolved, lints = await service.preview(
+        session, project_id, draft_module=draft_module, draft_roles=draft_roles
+    )
+    return PolicyPreviewResponse(resolved=resolved, lints=[_lint_out(x) for x in lints])
+
+
+@router.post("/projects/{project_id}/policy/test", tags=["policy"])
+async def api_test_policy(
+    project_id: str,
+    body: PolicyTestRequest,
+    _user: User = Depends(require_org_member),
+    session: AsyncSession = Depends(get_session),
+) -> PolicyTestResponse:
+    """Evaluate one tool call against the whole resolved policy for a role — the
+    'would this be allowed?' probe. 422 if the modules don't compose; 404 for an
+    unknown role. Reflects the editor's unsaved edit via ``draft``."""
+    from hexgate.security import LinkError, PolicySetError
+    from hexgate.security.constraints import ConstraintParseError
+
+    draft_module, draft_roles = _unpack_draft(body.draft)
+    try:
+        verdict = await service.test_policy(
+            session,
+            project_id,
+            role=body.role,
+            agent=body.agent,
+            tool=body.tool,
+            args=body.args,
+            attributes=body.attributes,
+            draft_module=draft_module,
+            draft_roles=draft_roles,
+        )
+    except service.InvalidModuleError as exc:
+        raise HTTPException(status_code=422, detail=f"draft is invalid: {exc}") from exc
+    except (LinkError, PolicySetError, ConstraintParseError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"policy does not compose: {exc}"
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"role {exc.args[0]!r} not defined"
+        ) from exc
+
+    return PolicyTestResponse(
+        outcome=_OUTCOME_WIRE.get(verdict.outcome.name, verdict.outcome.name.lower()),
+        reason=verdict.reason,
+        violations=[str(v) for v in (verdict.violations or [])],
+        # Verdict.hint is a machine-readable dict (file-scope path hint); the wire
+        # field is a string, so serialize it rather than 500 on a dict.
+        hint=json.dumps(verdict.hint) if verdict.hint is not None else None,
+    )
+
+
+@router.patch(
+    "/projects/{project_id}/policy-modules/{tier}/{path:path}", tags=["policy"]
+)
+async def api_move_policy_module(
+    project_id: str,
+    tier: str,
+    path: str,
+    body: MoveModuleRequest,
+    _membership: tuple[User, OrganizationMember] = Depends(require_project_admin),
+    session: AsyncSession = Depends(get_session),
+) -> PolicyModuleRead:
+    """Rename/move a module within its tier. A capability rename cascades to the
+    role bindings that imported it. 404 if absent, 409 if the target exists."""
+    try:
+        row = await service.move_module(
+            session, project_id=project_id, tier=tier, path=path, new_path=body.new_path
+        )
+    except service.ModulePathConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="module not found")
+    if await service.is_modular(session, project_id):
+        await _recompile_project_agents(session, project_id)
+    return _module_read(row)

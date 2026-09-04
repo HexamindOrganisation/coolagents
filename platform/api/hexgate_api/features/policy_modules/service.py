@@ -20,7 +20,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from hexgate_api.core.ids import new_id
-from hexgate_api.models import PolicyModule, RoleBinding, utcnow
+from hexgate_api.models import PolicyFolder, PolicyModule, RoleBinding, utcnow
 
 logger = logging.getLogger("hexgate.platform.policy_modules")
 
@@ -40,32 +40,56 @@ class InvalidModuleError(Exception):
     """
 
 
-def _content_hash(content: str) -> str:
+def _hash_payload(payload) -> str:
     """sha256 of the module's canonical JSON — the SAME scheme the SDK loader
     uses (``hexgate.security.module_loader``), so a module authored on the
     platform and the same module loaded from a file hash identically regardless
     of YAML formatting. ``default=str`` matches the loader for scalars YAML can
     produce that JSON can't (e.g. an unquoted date)."""
-    payload = yaml.safe_load(content) or {}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _parse_policy(content: str):
-    """Parse a module's YAML into an AgentPolicy. The one place content is parsed,
-    shared by write-time validation and read-time ModuleContent building so they
-    can't drift."""
+def _content_hash(content: str) -> str:
+    """Parse raw YAML text and canonical-hash it."""
+    return _hash_payload(yaml.safe_load(content) or {})
+
+
+def _load(content: str):
+    """Parse a module's YAML once → ``(payload, AgentPolicy)``. Raises on invalid
+    YAML / schema; callers wrap into ``InvalidModuleError`` where a clean 4xx or a
+    lint is wanted, so the raw pydantic/YAML error never escapes as a 500."""
     from hexgate.security import AgentPolicy
 
-    return AgentPolicy.model_validate(yaml.safe_load(content) or {})
+    payload = yaml.safe_load(content) or {}
+    return payload, AgentPolicy.model_validate(payload)
 
 
-def _validate_policy_yaml(content: str) -> None:
-    """Reject content that isn't a valid AgentPolicy before it's stored."""
+def _parse_policy(content: str):
+    """Parse a module's YAML into an AgentPolicy (read paths that don't also need
+    the raw payload for hashing)."""
+    return _load(content)[1]
+
+
+def _validate_module(tier: str, path: str, content: str):
+    """Validate a module about to be stored — schema **and** tier semantics — and
+    return ``(payload, policy)`` so the caller hashes without re-parsing.
+
+    A capability that ``deny``s is rejected here (fail fast, clean 422) rather
+    than parsing cleanly and then poisoning the whole project's resolve via the
+    SDK's library-wide capability-deny check."""
     try:
-        _parse_policy(content)
+        payload, policy = _load(content)
     except Exception as exc:  # noqa: BLE001 — surface as a clean 422
         raise InvalidModuleError(f"module is not a valid policy: {exc}") from exc
+    if tier == "capability":
+        for tool, tp in policy.tools.items():
+            if tp.mode == "deny":
+                raise InvalidModuleError(
+                    f"capability {path!r} denies {tool!r}; capabilities may only "
+                    f"grant — move the deny to a boundary"
+                )
+    return payload, policy
 
 
 # --- module CRUD -------------------------------------------------------------
@@ -123,7 +147,8 @@ async def upsert_module(
         raise InvalidModuleError(
             f"unknown tier {tier!r} (expected one of {VALID_TIERS})"
         )
-    _validate_policy_yaml(content)
+    payload, _policy = _validate_module(tier, path, content)  # parses once
+    content_hash = _hash_payload(payload)
 
     existing = await _get_module(session, project_id, tier, path)
     if existing is None:
@@ -133,7 +158,7 @@ async def upsert_module(
             tier=tier,
             path=path,
             content=content,
-            content_hash=_content_hash(content),
+            content_hash=content_hash,
         )
         session.add(row)
         try:
@@ -151,7 +176,7 @@ async def upsert_module(
             return row
 
     existing.content = content
-    existing.content_hash = _content_hash(content)
+    existing.content_hash = content_hash
     existing.updated_at = utcnow()
     session.add(existing)
     await session.commit()
@@ -164,6 +189,75 @@ async def delete_module(
 ) -> bool:
     """Remove one module. Returns False if it didn't exist."""
     row = await _get_module(session, project_id, tier, path)
+    if row is None:
+        return False
+    await session.delete(row)
+    await session.commit()
+    return True
+
+
+# --- folders (persisted empty folders; see models.PolicyFolder) --------------
+# Folders are usually derived from module paths; these rows exist only to keep
+# an EMPTY folder visible before any module lands in it. They never reach
+# resolve/analyze (those read modules), so no recompile on folder writes.
+
+
+async def _get_folder(
+    session: AsyncSession, project_id: str, tier: str, path: str
+) -> PolicyFolder | None:
+    stmt = select(PolicyFolder).where(
+        PolicyFolder.project_id == project_id,
+        PolicyFolder.tier == tier,
+        PolicyFolder.path == path,
+    )
+    return (await session.exec(stmt)).first()
+
+
+async def list_folders(session: AsyncSession, project_id: str) -> list[PolicyFolder]:
+    """Every persisted empty folder in the project's library."""
+    stmt = (
+        select(PolicyFolder)
+        .where(PolicyFolder.project_id == project_id)
+        .order_by(PolicyFolder.tier, PolicyFolder.path)  # type: ignore[arg-type]
+    )
+    return list((await session.exec(stmt)).all())
+
+
+async def create_folder(
+    session: AsyncSession, *, project_id: str, tier: str, path: str
+) -> PolicyFolder:
+    """Create an empty folder marker. Idempotent: returns the existing row if
+    the folder is already present (so re-creating is a no-op, not a 409)."""
+    if tier not in VALID_TIERS:
+        raise InvalidModuleError(
+            f"unknown tier {tier!r} (expected one of {VALID_TIERS})"
+        )
+    existing = await _get_folder(session, project_id, tier, path)
+    if existing is not None:
+        return existing
+    row = PolicyFolder(
+        id=new_id(PolicyFolder), project_id=project_id, tier=tier, path=path
+    )
+    session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # A concurrent create won the unique constraint — return its row.
+        await session.rollback()
+        existing = await _get_folder(session, project_id, tier, path)
+        if existing is None:
+            raise
+        return existing
+    await session.refresh(row)
+    return row
+
+
+async def delete_folder(
+    session: AsyncSession, *, project_id: str, tier: str, path: str
+) -> bool:
+    """Remove an empty-folder marker. Returns False if it didn't exist. Modules
+    under the prefix (if any) are untouched — the folder then stays derived."""
+    row = await _get_folder(session, project_id, tier, path)
     if row is None:
         return False
     await session.delete(row)
@@ -288,10 +382,20 @@ async def set_roles(
 def _to_module_content(row: PolicyModule):
     from hexgate.security import ModuleContent
 
+    # Modules are validated at write, but a stored one can still fail to parse
+    # after an SDK schema tightening or an out-of-band edit. Surface that as a
+    # clean InvalidModuleError (→ a lint on check, a 422 on resolve) rather than
+    # letting a raw pydantic error escape as a 500.
+    try:
+        policy = _parse_policy(row.content)
+    except Exception as exc:  # noqa: BLE001
+        raise InvalidModuleError(
+            f"stored module {row.tier}/{row.path} is invalid: {exc}"
+        ) from exc
     return ModuleContent(
         name=row.path,
         kind=row.tier,  # "boundary" | "capability" == LayerKind
-        policy=_parse_policy(row.content),
+        policy=policy,
         source=f"{row.tier}/{row.path}",
         content_hash=row.content_hash,
     )
@@ -339,11 +443,16 @@ async def resolve(session: AsyncSession, project_id: str, agent: str = DEFAULT_A
 
 
 async def check(session: AsyncSession, project_id: str):
-    """Lint the composed project. A hard link failure folds into a single
-    error lint inside the SDK, so this always returns a list."""
+    """Lint the composed project. Always returns a list: a hard link failure
+    folds into a link-error lint inside the SDK, and a stored module that no
+    longer parses becomes an ``invalid-module`` lint here — never a raise."""
     from hexgate.security import check_project
+    from hexgate.security.analyzer import PolicyLint
 
-    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    except InvalidModuleError as exc:
+        return [PolicyLint("invalid-module", "error", str(exc))]
     return check_project(boundaries, capabilities, roles)
 
 
@@ -353,15 +462,17 @@ def compose_error_types() -> tuple[type[BaseException], ...]:
     The single source of truth shared by the write-time guard (:func:`resolves`)
     and the compile fail-safe (``agents.service``), so they can't drift on which
     errors fold to "keep the last-good bundle" versus escape as a 500 — the SDK
-    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``
-    from re-parsing a stored row. SDK imports stay lazy so this module loads
-    without the SDK."""
+    link/compose errors plus ``yaml.YAMLError`` / pydantic ``ValidationError``,
+    and ``InvalidModuleError`` (``_to_module_content`` wraps a stored row that no
+    longer parses in it). SDK imports stay lazy so this module loads without the
+    SDK."""
     from pydantic import ValidationError
 
     from hexgate.security import LinkError, PolicySetError
     from hexgate.security.constraints import ConstraintParseError
 
     return (
+        InvalidModuleError,
         LinkError,
         PolicySetError,
         ConstraintParseError,
@@ -442,10 +553,11 @@ async def resolves_with_module(
     edit (e.g. a capability with a deny) is rejected without a commit-then-rollback
     window a concurrent GET could observe.
 
-    Raises :class:`InvalidModuleError` if the content isn't a valid policy (the
-    caller maps that to 422); returns ``False`` only when the content is valid but
-    the project no longer composes with it (→ 409)."""
-    _validate_policy_yaml(content)  # → InvalidModuleError (422) on malformed content
+    Raises :class:`InvalidModuleError` if the content isn't a valid policy — or,
+    on this branch, a capability with a deny (the caller maps that to 422);
+    returns ``False`` only when the content is valid but the project no longer
+    composes with it (→ 409)."""
+    _validate_module(tier, path, content)  # → InvalidModuleError (422)
     try:
         boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
         overlay = _draft_module_content(tier, path, content)
@@ -526,3 +638,204 @@ async def resolved_yaml_by_agent(
         result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
         out[agent] = yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
     return out
+
+
+# --- editor: preview, test, move (see policy-editor-plan.md) -----------------
+
+
+class ModulePathConflictError(Exception):
+    """A move/rename target path already exists in that tier. Routes -> HTTP 409."""
+
+
+def _draft_module_content(tier: str, path: str, content: str):
+    """A ModuleContent from an unsaved draft (hash recomputed, not stored)."""
+    from hexgate.security import ModuleContent
+
+    return ModuleContent(
+        name=path,
+        kind=tier,
+        policy=_parse_policy(content),  # raises on invalid YAML / schema
+        source=f"{tier}/{path}",
+        content_hash=_content_hash(content),
+    )
+
+
+async def _draft_inputs(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    draft_module: tuple[str, str, str] | None = None,
+    draft_roles: RoleMatrixJson | dict[str, list[str]] | None = None,
+):
+    """:func:`_sdk_inputs` with an optional unsaved-edit overlay.
+
+    The editor edits one thing at a time, so at most one of ``draft_module``
+    ``(tier, path, content)`` or ``draft_roles`` is set. The overlaid module
+    replaces the stored one of the same ``(tier, path)`` (or is added if new);
+    ``draft_roles`` (the ``(role, agent)`` matrix, or a flat ``role: [caps]``)
+    replaces the stored bindings, collapsing ``{}`` to ``None`` so an emptied
+    ``roles.yaml`` behaves like "no bindings" (all-compose), consistent with the
+    stored path.
+    """
+    boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    return _overlay_draft(
+        boundaries,
+        capabilities,
+        roles,
+        draft_module=draft_module,
+        draft_roles=draft_roles,
+    )
+
+
+def _overlay_draft(
+    boundaries,
+    capabilities,
+    roles,
+    *,
+    draft_module: tuple[str, str, str] | None = None,
+    draft_roles: dict[str, list[str]] | None = None,
+):
+    """Overlay one unsaved edit onto resolved inputs — the draft-parse step,
+    split out so ``preview`` can attribute a *draft* parse failure to the draft,
+    not to a stored module that separately fails to load. Raises if the draft
+    module content doesn't parse/validate."""
+    if draft_module is not None:
+        tier, path, content = draft_module
+        mc = _draft_module_content(tier, path, content)
+        if tier == "boundary":
+            boundaries = [m for m in boundaries if m.name != path] + [mc]
+        else:
+            capabilities = [m for m in capabilities if m.name != path] + [mc]
+    if draft_roles is not None:
+        roles = _to_role_matrix({r: _normalize_cell(c) for r, c in draft_roles.items()})
+    return boundaries, capabilities, roles
+
+
+async def preview(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    draft_module: tuple[str, str, str] | None = None,
+    draft_roles: dict[str, list[str]] | None = None,
+):
+    """Resolve + lint the project with an optional unsaved-edit overlay, without
+    writing. Returns ``(resolved_by_role, lints)`` — always, diagnostics-as-data:
+    a draft that won't parse or compose comes back as an error lint with an empty
+    resolution rather than raising."""
+    from hexgate.security import (
+        LinkError,
+        PolicySetError,
+        analyze_project,
+        resolve_for_project,
+    )
+    from hexgate.security.analyzer import PolicyLint
+    from hexgate.security.constraints import ConstraintParseError
+
+    try:
+        boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
+    except Exception as exc:  # noqa: BLE001 — a STORED module no longer parses
+        # Not the draft's fault — don't pin it to the edited file's path.
+        return {}, [PolicyLint("parse-error", "error", str(exc), source=None)]
+
+    try:
+        boundaries, capabilities, roles = _overlay_draft(
+            boundaries,
+            capabilities,
+            roles,
+            draft_module=draft_module,
+            draft_roles=draft_roles,
+        )
+    except Exception as exc:  # noqa: BLE001 — the draft itself doesn't parse
+        src = draft_module[1] if draft_module else None
+        return {}, [PolicyLint("parse-error", "error", str(exc), source=src)]
+
+    try:
+        result = resolve_for_project(boundaries, capabilities, roles)
+    except (LinkError, PolicySetError, ConstraintParseError) as exc:
+        return {}, [PolicyLint("link-error", "error", str(exc))]
+
+    lints = analyze_project(result, boundaries, capabilities, roles)
+    return roles_json(result), lints
+
+
+async def test_policy(
+    session: AsyncSession,
+    project_id: str,
+    *,
+    role: str,
+    tool: str,
+    agent: str = DEFAULT_AGENT,
+    args: dict,
+    attributes: dict | None = None,
+    draft_module: tuple[str, str, str] | None = None,
+    draft_roles: RoleMatrixJson | dict[str, list[str]] | None = None,
+):
+    """Evaluate one tool call against the resolved policy for ``role`` + ``agent``.
+
+    Resolves the executing ``agent``'s column of the ``(role, agent)`` matrix (all
+    boundaries + that cell's capabilities), with the same optional draft overlay
+    as :func:`preview`, then runs the pydantic engine. Returns the SDK ``Verdict``.
+    Raises the SDK compose errors if the set doesn't resolve, and ``KeyError``
+    (mapped to 404) for an unknown role.
+    """
+    from hexgate.security import resolve_for_project
+
+    boundaries, capabilities, roles = await _draft_inputs(
+        session, project_id, draft_module=draft_module, draft_roles=draft_roles
+    )
+    result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
+    if role not in result.policy_set.roles:
+        raise KeyError(role)
+    return result.policy_set.evaluate(
+        role=role, tool=tool, args=dict(args), attributes=attributes
+    )
+
+
+async def move_module(
+    session: AsyncSession, *, project_id: str, tier: str, path: str, new_path: str
+) -> PolicyModule | None:
+    """Rename/move a module within its tier. Returns None if it doesn't exist.
+
+    A capability rename cascades to every role binding that imported it (roles
+    reference capabilities by name), all in one transaction, so a reorg never
+    leaves a dangling binding. Boundaries are not referenced by name, so no
+    cascade. Raises :class:`ModulePathConflictError` if ``new_path`` is taken.
+    """
+    row = await _get_module(session, project_id, tier, path)
+    if row is None:
+        return None
+    if new_path == path:
+        return row
+    if await _get_module(session, project_id, tier, new_path) is not None:
+        raise ModulePathConflictError(
+            f"a {tier} module {new_path!r} already exists in this project"
+        )
+
+    row.path = new_path
+    row.updated_at = utcnow()
+    session.add(row)
+
+    if tier == "capability":
+        bindings = (
+            await session.exec(
+                select(RoleBinding).where(RoleBinding.project_id == project_id)
+            )
+        ).all()
+        for b in bindings:
+            cells = _normalize_cell(b.capabilities)  # {agent: [caps]}
+            if any(path in caps for caps in cells.values()):
+                # reassign (not in-place) so SQLAlchemy tracks the JSON change;
+                # rename the capability in every agent column that imports it.
+                b.capabilities = {
+                    # dedupe (order-preserving): if a cell already imported
+                    # new_path, renaming path->new_path would double it.
+                    agent: list(
+                        dict.fromkeys(new_path if c == path else c for c in caps)
+                    )
+                    for agent, caps in cells.items()
+                }
+                session.add(b)
+
+    await session.commit()
+    await session.refresh(row)
+    return row

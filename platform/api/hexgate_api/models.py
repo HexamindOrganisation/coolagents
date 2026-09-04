@@ -369,6 +369,29 @@ class PolicyModule(SQLModel, table=True):
     )
 
 
+class PolicyFolder(SQLModel, table=True):
+    """A persisted empty folder in a project's module library.
+
+    Folders are normally *derived* from module paths (``team_a/payments`` implies
+    a ``team_a`` folder), so this row exists only to keep an **empty** folder
+    around before any module lands in it. Invisible to resolve/analyze — those
+    read modules, never folders. Unique per ``(project_id, tier, path)``.
+    """
+
+    __tablename__ = "policy_folder"
+    __table_args__ = (
+        UniqueConstraint("project_id", "tier", "path", name="uq_policy_folder_scope"),
+    )
+
+    id: str = Field(primary_key=True)  # new_id(PolicyFolder) -> "pfd_…"
+    project_id: str = Field(foreign_key="project.id", index=True)
+    tier: str = Field(index=True)  # "boundary" | "capability"
+    path: str  # the folder prefix, e.g. "team_a" or "team_a/payments"
+    updated_at: datetime = Field(
+        default_factory=utcnow, sa_type=DateTime(timezone=True)
+    )
+
+
 class RoleBinding(SQLModel, table=True):
     """A project role: the capabilities it imports, per executing agent.
 

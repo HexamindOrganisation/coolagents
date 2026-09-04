@@ -159,20 +159,6 @@ def test_check_clean_bundle_is_ok(client: TestClient) -> None:
     assert all(lint["severity"] != "error" for lint in body["lints"])
 
 
-def test_capability_deny_is_link_error_on_check_and_422_on_resolve(
-    client: TestClient,
-) -> None:
-    pid = _project(client)
-    _put_module(client, pid, "capability", "bad", "tools:\n  x: { mode: deny }\n")
-    client.put(f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["bad"]}})
-
-    check = client.get(f"/v1/projects/{pid}/policy/check").json()
-    assert check["ok"] is False
-    assert any(lint["code"] == "link-error" for lint in check["lints"])
-
-    assert client.get(f"/v1/projects/{pid}/policy/resolve").status_code == 422
-
-
 def test_invalid_content_and_tier_are_422(client: TestClient) -> None:
     pid = _project(client)
     # not a policy document
@@ -925,9 +911,10 @@ async def test_recompile_builds_distinct_bundles_per_agent(
 
 
 def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> None:
-    # PUT-ing a capability with a deny into a modular project must 409 (the linker
-    # rejects it at resolve), not store an uncomposable module that silently keeps
-    # agents on the old bundle.
+    # PUT-ing a capability with a deny must be rejected, not stored as an
+    # uncomposable module that silently keeps agents on the old bundle. This
+    # branch rejects it at WRITE time (422, `_validate_module`), earlier than the
+    # resolvability guard (409); either way it must not land.
     pid = _project(client)
     _put_module(client, pid, "capability", "read_only", READ_ONLY)
     assert (
@@ -941,8 +928,8 @@ def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> 
         f"/v1/projects/{pid}/policy-modules/capability/bad",
         json={"content": "tools:\n  x: { mode: deny }\n"},
     )
-    assert r.status_code == 409, r.text
-    # rolled back — the newly-created module was removed.
+    assert r.status_code in (422, 409), r.text
+    # not stored.
     paths = {
         (m["tier"], m["path"])
         for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
@@ -974,3 +961,270 @@ async def test_resolves_false_on_unparseable_stored_module(session_factory) -> N
         await pm.set_roles(s, project_id=proj.id, roles={"default": ["broken"]})
         await s.commit()
         assert await pm.resolves(s, proj.id) is False  # must not raise
+
+
+# --- editor endpoints: preview, test, move --------------------------------
+
+
+def test_preview_overlays_an_unsaved_draft(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)  # view_orders only
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    # draft adds lookup_order to read_only, unsaved
+    draft = {
+        "module": {
+            "tier": "capability",
+            "path": "read_only",
+            "content": "tools:\n  view_orders: { mode: allow }\n  lookup_order: { mode: allow }\n",
+        }
+    }
+    body = client.post(
+        f"/v1/projects/{pid}/policy/preview", json={"draft": draft}
+    ).json()
+    tools = body["resolved"]["default"]["tools"]
+    assert "lookup_order" in tools  # reflects the draft, not the stored module
+    # stored resolve still doesn't have it
+    stored = client.get(f"/v1/projects/{pid}/policy/resolve").json()
+    assert "lookup_order" not in stored["roles"]["default"]["tools"]
+
+
+def test_preview_unparseable_draft_is_an_error_lint_not_500(client: TestClient) -> None:
+    pid = _project(client)
+    draft = {"module": {"tier": "capability", "path": "x", "content": "tools: [broken"}}
+    r = client.post(f"/v1/projects/{pid}/policy/preview", json={"draft": draft})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["resolved"] == {}
+    assert any(lint["code"] == "parse-error" for lint in body["lints"])
+
+
+def test_test_policy_allow_then_deny(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "boundary", "org_core", BOUNDARY)  # refund <= 1000
+    _put_module(client, pid, "capability", "payments", PAYMENTS)  # refund allow
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"billing": ["payments"]}}
+    )
+
+    allow = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "billing", "tool": "refund_order", "args": {"amount": 800}},
+    ).json()
+    assert allow["outcome"] == "allow"
+
+    deny = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "billing", "tool": "refund_order", "args": {"amount": 1500}},
+    ).json()
+    assert deny["outcome"] == "deny"
+    assert deny["reason"]  # explains why
+
+
+def test_test_policy_unknown_role_404(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    r = client.post(
+        f"/v1/projects/{pid}/policy/test",
+        json={"role": "ghost", "tool": "view_orders", "args": {}},
+    )
+    assert r.status_code == 404
+
+
+def test_move_capability_cascades_to_role_bindings(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"billing": ["read_only"]}}
+    )
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/read_only",
+        json={"new_path": "team/read_only"},
+    )
+    assert r.status_code == 200, r.text
+    paths = {
+        (m["tier"], m["path"])
+        for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
+    }
+    assert ("capability", "team/read_only") in paths
+    assert ("capability", "read_only") not in paths
+    # the binding followed the rename (in the (role, agent) matrix)
+    roles = client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"]
+    assert roles["billing"] == {"*": ["team/read_only"]}
+
+
+def test_move_conflict_is_409(client: TestClient) -> None:
+    pid = _project(client)
+    _put_module(client, pid, "capability", "a", READ_ONLY)
+    _put_module(client, pid, "capability", "b", PAYMENTS)
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/a", json={"new_path": "b"}
+    )
+    assert r.status_code == 409
+
+
+def test_move_missing_module_is_404(client: TestClient) -> None:
+    pid = _project(client)
+    r = client.patch(
+        f"/v1/projects/{pid}/policy-modules/capability/ghost", json={"new_path": "x"}
+    )
+    assert r.status_code == 404
+
+
+def test_capability_with_deny_rejected_at_write(client: TestClient) -> None:
+    # A capability that denies must fail fast at write (422), not save (200) and
+    # then poison the whole project's resolve via the SDK's library-wide check.
+    pid = _project(client)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-modules/capability/bad",
+        json={"content": "tools:\n  x: { mode: deny }\n"},
+    )
+    assert r.status_code == 422
+    assert "deny" in r.json()["detail"].lower()
+
+
+async def test_stored_invalid_module_is_diagnostic_not_500(session_factory) -> None:
+    # A stored module that no longer parses (schema drift / out-of-band edit)
+    # must surface as an invalid-module lint on check and a 422-mapped error on
+    # resolve, never a raw 500.
+    import uuid
+
+    from hexgate_api.constants import DEFAULT_ORG_ID
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule, Project
+
+    async with session_factory() as s:
+        proj = Project(
+            id=str(uuid.uuid4()),
+            org_id=DEFAULT_ORG_ID,
+            name=f"inv-{uuid.uuid4().hex[:8]}",
+        )
+        s.add(proj)
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="tools: {x: {mode: bogus}}",  # bad mode -> won't validate
+                content_hash="x",
+            )
+        )
+        await s.commit()
+
+        lints = await pm.check(s, proj.id)
+        assert any(lint.code == "invalid-module" for lint in lints)
+        with pytest.raises(pm.InvalidModuleError):
+            await pm.resolve(s, proj.id)
+
+
+def test_folder_crud_and_separate_from_modules(client: TestClient) -> None:
+    # Persisted empty folders live in their own table — create/list/delete, and
+    # they are NOT modules (so resolve/analyze never see them).
+    pid = _project(client)
+    r = client.put(f"/v1/projects/{pid}/policy-folders/capability/team_a")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"tier": "capability", "path": "team_a"}
+    # idempotent create (no 409)
+    assert (
+        client.put(f"/v1/projects/{pid}/policy-folders/capability/team_a").status_code
+        == 200
+    )
+    assert client.get(f"/v1/projects/{pid}/policy-folders").json() == [
+        {"tier": "capability", "path": "team_a"}
+    ]
+    # a folder is not a module
+    assert client.get(f"/v1/projects/{pid}/policy-modules").json() == []
+    # delete, then 404 on the second delete
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-folders/capability/team_a"
+        ).status_code
+        == 204
+    )
+    assert client.get(f"/v1/projects/{pid}/policy-folders").json() == []
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-folders/capability/team_a"
+        ).status_code
+        == 404
+    )
+
+
+def test_folder_unknown_tier_is_422(client: TestClient) -> None:
+    pid = _project(client)
+    assert client.put(f"/v1/projects/{pid}/policy-folders/bogus/x").status_code == 422
+
+
+async def test_preview_stored_error_not_attributed_to_draft(session_factory) -> None:
+    # A broken STORED module surfaces with source=None on preview — it must NOT
+    # be pinned to the currently-edited (valid) draft's path.
+    import uuid
+
+    from hexgate_api.constants import DEFAULT_ORG_ID
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule, Project
+
+    async with session_factory() as s:
+        proj = Project(
+            id=str(uuid.uuid4()),
+            org_id=DEFAULT_ORG_ID,
+            name=f"pv-{uuid.uuid4().hex[:6]}",
+        )
+        s.add(proj)
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="tools: {x: {mode: bogus}}",  # invalid stored module
+                content_hash="x",
+            )
+        )
+        await s.commit()
+
+        resolved, lints = await pm.preview(
+            s, proj.id, draft_module=("capability", "team_a/new", "tools: {}\n")
+        )
+        assert resolved == {}
+        err = next(lint for lint in lints if lint.severity == "error")
+        assert err.source is None  # the stored module's fault, not the draft's
+
+
+def test_policy_test_evaluates_per_agent(client: TestClient) -> None:
+    # /policy/test resolves the EXECUTING agent's column: billing_bot (payments)
+    # allows a refund; an agent falling back to "*" (read_only) does not.
+    pid = _project(client)
+    _put_module(client, pid, "boundary", "org_core", BOUNDARY)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    assert (
+        client.put(
+            f"/v1/projects/{pid}/policy-roles",
+            json={
+                "roles": {
+                    "member": {
+                        "*": ["read_only"],
+                        "billing_bot": ["read_only", "payments"],
+                    }
+                }
+            },
+        ).status_code
+        == 200
+    )
+    call = {"role": "member", "tool": "refund_order", "args": {"amount": 500}}
+    billing = client.post(
+        f"/v1/projects/{pid}/policy/test", json={**call, "agent": "billing_bot"}
+    ).json()
+    assert billing["outcome"] == "allow"
+    generic = client.post(
+        f"/v1/projects/{pid}/policy/test", json={**call, "agent": "triage_bot"}
+    ).json()
+    assert generic["outcome"] == "deny"  # "*" -> read_only only, no refund grant
