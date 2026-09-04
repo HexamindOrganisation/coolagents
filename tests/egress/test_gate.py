@@ -104,3 +104,39 @@ async def test_approval_required_without_handler_denies() -> None:
     gate = Gate(_enforcer("approval_required"), _agent())
     result = await gate.check(connect_to_args("any.example.com", 443))
     assert not result.allowed
+
+
+# ---------------------------------------------------------------------------
+# run.* — egress sits above every run, and records nothing
+# ---------------------------------------------------------------------------
+
+
+async def test_egress_decision_records_no_run_facts() -> None:
+    """``egress_guard`` is one per process with no per-run correlation, so a
+    decision here is never inside a run scope. Pinned so a later attempt to
+    attribute egress to a run starts from a red test."""
+    from hexgate.runtime.run_facts import run_scope
+
+    gate = Gate(_enforcer("allow"), _agent())
+
+    with run_scope("a") as facts:
+        result = await gate.check(connect_to_args("ok.example.com", 443))
+
+    assert result.allowed
+    assert (facts.tool_calls, facts.denials, facts.approvals, facts.errors) == (
+        0,
+        0,
+        0,
+        0,
+    )
+
+
+async def test_egress_run_constraint_reads_the_detached_zeros() -> None:
+    """A counter cap on an egress policy reads zeros and therefore permits —
+    the deliberate fail-open on an unattributable boundary."""
+    gate = Gate(_enforcer("allow", ["run.tool_calls < 1"]), _agent())
+
+    result = await gate.check(connect_to_args("ok.example.com", 443))
+
+    assert result.allowed
+    assert result.decision.outcome.value == "allow"

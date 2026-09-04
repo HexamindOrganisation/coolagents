@@ -22,15 +22,63 @@ from typing import Any, Final
 from uuid import uuid4
 
 # Every ``run.*`` path a policy may reference; :meth:`RunFacts.as_namespace` returns
-# exactly these. Register a path only once something projects it: a registered path
-# with no value reads a permanent zero, and ``run.tool_calls < 20`` against zero
-# never fires — a fail-open cap that looks like it works.
-KNOWN_RUN_PATHS: Final[frozenset[str]] = frozenset({"id", "agent", "elapsed_seconds"})
+# exactly these and the load-time linter rejects anything else. Register a path only
+# once something projects it: a registered path with no value reads a permanent zero,
+# and ``run.tool_calls < 20`` against zero never fires — a fail-open cap that looks
+# like it works.
+#
+# Split by value shape because the linter must tell them apart: a list-valued path is
+# fine inside ``count()`` / ``any()`` / ``every()`` and right of ``in``, but as the
+# *left* operand of an ordered or membership operator it silently always passes.
+SCALAR_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "agent",
+        "elapsed_seconds",
+        "tool_calls",
+        "calls_of_this_tool",
+        "denials",
+        "approvals",
+        "errors",
+        "llm_calls",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    }
+)
+LIST_PATHS: Final[frozenset[str]] = frozenset({"tools_used"})
+KNOWN_RUN_PATHS: Final[frozenset[str]] = SCALAR_PATHS | LIST_PATHS
 
 # Fallback when a wrapped agent has no name. Lives here, below both callers, so a
 # nameless agent's audit events and its run facts agree on the label rather than
 # drifting apart — and so core (``agents.factory``) need not import the adapter layer.
 DEFAULT_AGENT_NAME: Final[str] = "default"
+
+# The value shape each path projects, for the helpers that let a caller *supply*
+# run facts (``security.testing.run_namespace``, and ``policy test
+# --run-facts`` through it). Without it a wrong-typed value fails the
+# comparison closed and renders as a threshold trip — ``{"tool_calls": "5"}``
+# denying against ``run.tool_calls < 20`` is indistinguishable from a genuine
+# cap firing, which defeats the point of a dry-run.
+#
+# ``float`` accepts an int too (see _check_run_value); ``bool`` never satisfies
+# an int path, despite being an int subclass, because ``{"tool_calls": true}``
+# is a JSON typo rather than a count.
+RUN_PATH_TYPES: Final[dict[str, type]] = {
+    "id": str,
+    "agent": str,
+    "elapsed_seconds": float,
+    "tool_calls": int,
+    "calls_of_this_tool": int,
+    "denials": int,
+    "approvals": int,
+    "errors": int,
+    "llm_calls": int,
+    "input_tokens": int,
+    "output_tokens": int,
+    "total_tokens": int,
+    "tools_used": list,
+}
 
 
 @dataclass(slots=True)
@@ -69,7 +117,10 @@ class RunFacts:
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def record_execution(self, tool_name: str) -> None:
-        """Count one executed tool call, whether it returned or raised."""
+        """Count one dispatched tool call — before it runs, and whether it then
+        returns or raises. Counting before dispatch is what makes a cap hold under
+        parallel calls; see ``guards.runner._record_run_execution``.
+        """
         if self.detached:
             return
         with self._lock:
@@ -109,9 +160,12 @@ class RunFacts:
             self.input_tokens += input_tokens
             self.output_tokens += output_tokens
 
-    def as_namespace(self) -> dict[str, Any]:
-        """The ``run`` mapping the policy grammar evaluates against; its keys are
-        exactly :data:`KNOWN_RUN_PATHS`.
+    def as_namespace(self, tool_name: str) -> dict[str, Any]:
+        """The ``run`` mapping the policy grammar evaluates for a decision on
+        ``tool_name``; its keys are exactly :data:`KNOWN_RUN_PATHS`.
+
+        ``calls_of_this_tool`` is a per-decision view of the per-tool map, so it is
+        the one value here that is not monotone across a run.
 
         Locked because the grammar allows cross-field comparison (``run.a < run.b``),
         so an unsynchronised read could pair counters that never coexisted.
@@ -120,9 +174,21 @@ class RunFacts:
             return {
                 "id": self.id,
                 "agent": self.agent,
-                # Zero when detached, not process uptime: DETACHED's origin is set at
-                # import, so a live subtraction would eventually deny every
-                # out-of-scope call.
+                "tool_calls": self.tool_calls,
+                "calls_of_this_tool": self._calls_by_tool.get(tool_name, 0),
+                "denials": self.denials,
+                "approvals": self.approvals,
+                "errors": self.errors,
+                "llm_calls": self.llm_calls,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                # Derived: the grammar has no arithmetic.
+                "total_tokens": self.input_tokens + self.output_tokens,
+                # Re-keying a dict does not reorder it, so the keys already are the
+                # first-use-ordered deduplicated tool set.
+                "tools_used": list(self._calls_by_tool),
+                # Derived: the grammar has no time functions. Zero when detached, not
+                # process uptime — DETACHED's origin is set at import.
                 "elapsed_seconds": (
                     0.0 if self.detached else time.monotonic() - self._started_monotonic
                 ),

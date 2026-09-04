@@ -67,6 +67,7 @@ class PolicyEngine(Protocol):
         tool: str,
         args: Mapping[str, Any],
         attributes: Mapping[str, Any] | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> Verdict: ...
 
 

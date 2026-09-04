@@ -538,3 +538,15 @@ def test_authored_default_grant_messages_keep_the_no_named_role_wording() -> Non
 
     grant = next(lint for lint in lints if lint.tool == "deploy")
     assert "no named role does" in grant.message
+
+
+def test_run_constraints_are_not_linted_as_unknown_args():
+    """``_unknown_args`` only inspects ``args``-rooted paths, so ``run.*``
+    passes through untouched."""
+    boundary = _mod("b", "boundary", {"refund": _allow(["run.elapsed_seconds < 300"])})
+    cap = _mod("c", "capability", {"refund": _allow()})
+    manifest = _manifest(("refund", ["amount"]))
+
+    lints = check([boundary], [cap], manifest=manifest)
+
+    assert not [lint for lint in lints if lint.code == "unknown-arg"]

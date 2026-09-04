@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 from uuid import UUID, uuid4
 
 from hexgate.runtime.context import get_current_context
+from hexgate.runtime.run_facts import get_run_facts
 from hexgate.tracing import semconv
 from hexgate.tracing._senders import AuditSender, get_or_create_sender
 from hexgate.tracing._senders import get_sender as _get_sender
@@ -71,11 +72,16 @@ def emit_llm_usage(
     unhandled exception (Google's ``PluginManager``) or doesn't guard the
     call at all (OpenAI's run loop, Pydantic AI's inline call site); a
     failure here must not fail the agent run whose usage it's reporting.
-    No-op when no sender is configured for ``api_key`` (no key resolvable,
-    or ``HEXGATE_LOCAL_MODE`` is on) — mirrors ``PolicyEnforcer.decide()``'s
-    audit emission, which is likewise silent when its sender is ``None``.
+    Tokens are always recorded into the active run's facts; the event is only
+    emitted if a sender is configured for ``api_key`` — no-op otherwise
+    (no key resolvable, or ``HEXGATE_LOCAL_MODE`` on), mirroring
+    ``PolicyEnforcer.decide()``'s audit.
     """
     try:
+        # Before the sender check: a token cap must work with no platform
+        # attached, or run.total_tokens stays a permanent 0 in local mode.
+        get_run_facts().record_llm_usage(input_tokens, output_tokens)
+
         sender = configure_usage_sender(api_key)
         if sender is None:
             return

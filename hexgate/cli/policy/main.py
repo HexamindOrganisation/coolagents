@@ -28,6 +28,8 @@ from yaml.error import MarkedYAMLError
 
 from hexgate.runtime.context import ContextAttributeValue
 from hexgate.runtime.roles import distinct_roles, resolve_role_set
+from hexgate.runtime.run_facts import KNOWN_RUN_PATHS
+from hexgate.security.testing import run_namespace
 from hexgate.security import (
     AgentPolicy,
     DecisionOutcome,
@@ -223,6 +225,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             'constraints (e.g. \'{"department": "finance", "clearance_level": 3}\'). '
             "JSON (not key=value) so numbers/bools keep their type and match "
             "production. Defaults to {}."
+        ),
+    )
+    p_test.add_argument(
+        "--run-facts",
+        default="{}",
+        help=(
+            "Run facts as a JSON object, exposed to run.* constraints (e.g. "
+            "'{\"tool_calls\": 20}'). Unset paths read zero, matching a run's "
+            "first call — so this is how a circuit breaker is dry-run at its "
+            "threshold. Defaults to {}."
         ),
     )
     p_test.add_argument(
@@ -762,6 +774,12 @@ def _main_test(args: argparse.Namespace) -> int:
         return 1
 
     try:
+        run = _resolve_run_facts(getattr(args, "run_facts", "{}"), args.tool)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    try:
         policy_set = load_policy_set_from_dict(payload)
     except (PolicySetError, ValidationError) as exc:
         print(f"policy schema: {exc}", file=sys.stderr)
@@ -802,10 +820,37 @@ def _main_test(args: argparse.Namespace) -> int:
     engine = getattr(args, "engine", "pydantic")
 
     if engine == "wasm":
-        return _test_via_wasm(payload, roles, args.tool, tool_args, attributes, label)
+        return _test_via_wasm(
+            payload, roles, args.tool, tool_args, attributes, run, label
+        )
     return _test_via_pydantic(
-        policy_set, roles, args.tool, tool_args, attributes, label
+        policy_set, roles, args.tool, tool_args, attributes, run, label
     )
+
+
+def _resolve_run_facts(raw: str, tool: str) -> dict[str, Any]:
+    """Parse ``--run-facts`` over a zeroed run, so an unset path reads zero
+    rather than failing the dry-run closed. Raises :class:`ValueError` with a
+    printable message; the caller renders it."""
+    try:
+        parsed: Any = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--run-facts is not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--run-facts must be a JSON object (dict).")
+    unknown = sorted(set(parsed) - KNOWN_RUN_PATHS)
+    if unknown:
+        raise ValueError(
+            f"--run-facts has unknown run.* path(s) {unknown} "
+            f"(this build knows: {', '.join(sorted(KNOWN_RUN_PATHS))})"
+        )
+    try:
+        return run_namespace(tool, **parsed)
+    except ValueError as exc:
+        # Re-raised against the flag: a wrong-typed value otherwise fails the
+        # comparison closed and prints as an ordinary threshold trip, so the
+        # dry-run answers a question the user did not ask.
+        raise ValueError(f"--run-facts has a wrong-typed value: {exc}") from exc
 
 
 def _resolve_test_roles(args: argparse.Namespace) -> list[str]:
@@ -858,6 +903,7 @@ def _test_via_pydantic(
     tool: str,
     tool_args: dict,
     attributes: dict,
+    run: dict,
     label: str,
 ) -> int:
     """Run the decision through the in-process constraint evaluator.
@@ -868,11 +914,10 @@ def _test_via_pydantic(
 
     def evaluate(role: str | None) -> Verdict:
         policy: AgentPolicy = policy_set.policy_for(role)
-        # Forward role AND attributes so role-scoped (role == "admin") and ctx.*
-        # constraints decide the same as the wasm path and production — omitting
-        # either here made `policy test` fail closed on rules production allows.
+        # Forward role/attributes/run so their constraints decide the same as
+        # production — omitting any makes the dry-run fail closed.
         return evaluate_tool_call(
-            policy, tool, tool_args, role=role, attributes=attributes
+            policy, tool, tool_args, role=role, attributes=attributes, run=run
         )
 
     verdict, deciding_role = combine_role_verdicts(
@@ -887,6 +932,7 @@ def _test_via_wasm(
     tool: str,
     tool_args: dict,
     attributes: dict,
+    run: dict,
     label: str,
 ) -> int:
     """Compile to wasm on the fly + evaluate — matches production semantics."""
@@ -911,7 +957,7 @@ def _test_via_wasm(
         # ``None`` maps to the default role, mirroring PolicyBundle.evaluate.
         role_ = role or DEFAULT_ROLE_NAME
         decision = wasm_policy.decide(
-            role=role_, tool=tool, args=tool_args, ctx=attributes
+            role=role_, tool=tool, args=tool_args, ctx=attributes, run=run
         )
         return verdict_from_rego(decision, tool_name=tool, role=role_)
 

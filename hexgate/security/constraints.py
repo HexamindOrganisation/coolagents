@@ -38,12 +38,12 @@ as a ref to an absent field. ``matches`` is an RE2 regex and is
 element inside a quantifier body and is rejected elsewhere. ``every`` over an
 empty list is vacuously true; ``any`` over an empty list is false.
 
-Besides ``args.*``, three caller-scope fact families are in scope: ``role``
-(the caller's role) and ``tool`` (the tool being invoked) — mirroring Rego's
-``input.role`` / ``input.tool`` — and ``ctx.<key>``, the caller's ABAC
-attributes (``input.ctx`` in Rego). E.g. ``role == "admin"``,
-``tool == "refund_order"``, or ``ctx.department == "finance"``. A missing
-``ctx.<key>`` fails closed like any absent ref.
+Besides ``args.*``, four fact families are in scope: ``role`` and ``tool``
+(mirroring Rego's ``input.role`` / ``input.tool``), ``ctx.<key>`` (the
+caller's ABAC attributes, ``input.ctx``), and ``run.<name>`` (the invocation's
+own facts — tool calls, elapsed time, tokens — ``input.run``). E.g.
+``role == "admin"`` or ``run.tool_calls < 20``. A missing ``ctx.<key>`` or
+``run.<name>`` fails closed like any absent ref.
 
 Concrete examples (all of these parse and evaluate today):
 
@@ -572,6 +572,31 @@ def iter_arg_refs(node: Node):
         yield from iter_arg_refs(node.inner)
 
 
+LEFT = "left"
+RIGHT = "right"
+
+
+def iter_cmp_operands(node: Node):
+    """Yield ``(operand, op, side)`` for every comparison operand in a node.
+
+    Unlike :func:`iter_arg_refs`, keeps the operator and side and doesn't
+    unwrap ``count()`` — needed to tell ``count(x) <= 6`` (fine) from
+    ``x <= 6`` (silently wrong if ``x`` is a list). A quantifier's collection
+    is not yielded (only its body is recursed into); neither is a ``Call``
+    argument.
+    """
+    if isinstance(node, Cmp):
+        yield node.left, node.op, LEFT
+        yield node.right, node.op, RIGHT
+    elif isinstance(node, Quant):
+        yield from iter_cmp_operands(node.body)
+    elif isinstance(node, (And, Or)):
+        for part in node.parts:
+            yield from iter_cmp_operands(part)
+    elif isinstance(node, Not):
+        yield from iter_cmp_operands(node.inner)
+
+
 def _reject_unscoped_elem(node: Node, source: str, *, in_quant: bool) -> None:
     """Raise if an element ref (``.`` / ``.field``) appears outside a quantifier.
 
@@ -873,6 +898,7 @@ def check_constraints(
     role: str | None = None,
     consts: dict[str, Any] | None = None,
     attributes: Mapping[str, Any] | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> None:
     """Evaluate every constraint; raise on the first failure.
 
@@ -880,12 +906,11 @@ def check_constraints(
     nodes. Source strings are parsed once per call here for simplicity —
     caches can be added later if profiling demands it.
 
-    ``role`` and the tool name are exposed to constraints as top-level
-    ``role`` / ``tool`` facts, mirroring Rego's ``input.role`` / ``input.tool``.
-    ``consts`` supplies the policy's named constants for ``consts.<name>``.
-    ``attributes`` are the caller's ABAC bag, exposed under the ``ctx.<key>``
-    namespace and mirroring Rego's ``input.ctx``. A missing ``ctx.<key>``
-    resolves to ``_MISSING`` and fails closed, exactly like any other ref.
+    ``role`` and the tool name are exposed as top-level ``role`` / ``tool``
+    facts, mirroring Rego's ``input.role`` / ``input.tool``. ``consts``
+    supplies ``consts.<name>``. ``attributes`` and ``run`` are exposed under
+    ``ctx.<key>`` / ``run.<path>``, mirroring ``input.ctx`` / ``input.run``. A
+    missing ``ctx.<key>`` or ``run.<path>`` fails closed like any other ref.
     """
     if not constraints:
         return
@@ -894,6 +919,7 @@ def check_constraints(
         "role": role,
         "tool": tool_name,
         "ctx": dict(attributes or {}),
+        "run": dict(run or {}),
         _CONSTS_KEY: consts or {},
     }
     for entry in constraints:

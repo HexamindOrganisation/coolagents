@@ -986,3 +986,30 @@ def test_notin_violation_rule_is_valid_rego(_adversarial_wasm: bytes) -> None:
     assert "not not" not in rego
     # violation body for `not in` is the plain positive membership
     assert 'input.args.priority in ["urgent", "critical"]' in rego
+
+
+def _run_rego(constraint: str) -> str:
+    """Compile a single default-role tool carrying one run.* constraint."""
+    return compile_to_rego(
+        {
+            "version": 1,
+            "roles": {
+                "default": {
+                    "tools": {
+                        "t": {"mode": "allow", "constraints": [constraint]},
+                    }
+                }
+            },
+        }
+    )
+
+
+def test_run_fact_prefixes_input() -> None:
+    """``run.agent`` renders as ``input.run.agent`` — no compiler special-case."""
+    assert 'input.run.agent == "billing"' in _run_rego('run.agent == "billing"')
+
+
+def test_run_ordered_constraint_emits_type_guard() -> None:
+    rego = _run_rego("run.elapsed_seconds < 300")
+    assert "is_number(input.run.elapsed_seconds)" in rego
+    assert "input.run.elapsed_seconds < 300" in rego

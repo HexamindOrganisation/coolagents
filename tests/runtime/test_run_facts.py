@@ -24,6 +24,8 @@ import pytest
 from hexgate.runtime.run_facts import (
     DETACHED,
     KNOWN_RUN_PATHS,
+    LIST_PATHS,
+    SCALAR_PATHS,
     RunFacts,
     get_run_facts,
     run_scope,
@@ -108,7 +110,7 @@ def test_detached_default_drops_writes() -> None:
     # A fresh context must observe the same untouched object.
     observed = contextvars.copy_context().run(get_run_facts)
     assert observed is DETACHED
-    assert observed.as_namespace()["id"] == ""
+    assert observed.as_namespace(_ANY_TOOL)["id"] == ""
 
 
 def test_every_recorder_has_the_detached_guard() -> None:
@@ -135,7 +137,7 @@ def test_detached_elapsed_is_zero_not_uptime(monkeypatch: pytest.MonkeyPatch) ->
     """DETACHED's origin is set at import, so a live subtraction would report
     process uptime and eventually deny every out-of-scope call."""
     monkeypatch.setattr(time, "monotonic", lambda: _FAR_FUTURE_MONOTONIC)
-    assert DETACHED.as_namespace()["elapsed_seconds"] == 0.0
+    assert DETACHED.as_namespace(_ANY_TOOL)["elapsed_seconds"] == 0.0
 
 
 def test_get_run_facts_is_never_none() -> None:
@@ -350,17 +352,25 @@ def test_counters_are_monotone_under_random_recording() -> None:
             previous = current
 
 
+def test_registry_is_the_disjoint_union_of_its_halves() -> None:
+    """The linter reads the halves, ``as_namespace`` reads the union. A path in
+    both would be linted as a list *and* as a scalar; one in neither would be
+    projected and unlintable."""
+    assert KNOWN_RUN_PATHS == SCALAR_PATHS | LIST_PATHS
+    assert not (SCALAR_PATHS & LIST_PATHS)
+
+
 def test_as_namespace_returns_only_registered_paths() -> None:
     """A path a policy can reference is always one the SDK maintains, independent
     of the load-time linter."""
     with run_scope("a") as facts:
-        assert set(facts.as_namespace()) == KNOWN_RUN_PATHS
-    assert set(DETACHED.as_namespace()) == KNOWN_RUN_PATHS
+        assert set(facts.as_namespace(_ANY_TOOL)) == KNOWN_RUN_PATHS
+    assert set(DETACHED.as_namespace(_ANY_TOOL)) == KNOWN_RUN_PATHS
 
 
 def test_as_namespace_exposes_identity_and_elapsed() -> None:
     with run_scope("billing") as facts:
-        namespace = facts.as_namespace()
+        namespace = facts.as_namespace(_ANY_TOOL)
         assert namespace["id"] == facts.id
         assert namespace["agent"] == "billing"
         assert namespace["elapsed_seconds"] >= 0.0
@@ -375,7 +385,7 @@ def test_elapsed_derives_from_the_monotonic_clock(
     monkeypatch.setattr(time, "monotonic", lambda: next(clock))
 
     with run_scope("a") as facts:  # consumes 100.0 as the origin
-        assert facts.as_namespace()["elapsed_seconds"] == pytest.approx(42.5)
+        assert facts.as_namespace(_ANY_TOOL)["elapsed_seconds"] == pytest.approx(42.5)
 
 
 # ---------------------------------------------------------------------------

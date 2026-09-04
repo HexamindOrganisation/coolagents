@@ -292,17 +292,24 @@ class PolicyBundle:
         tool: str,
         args: Mapping[str, Any],
         attributes: Mapping[str, Any] | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> Verdict:
         """:class:`~hexgate.security.decision.PolicyEngine` entry point.
 
         Runs the compiled WASM module; ``None`` role falls back to the
         ``default`` role, matching the pydantic engine. ``attributes`` become
-        the ``input.ctx`` document the compiled ``ctx.*`` conditions read."""
+        the ``input.ctx`` document the compiled ``ctx.*`` conditions read, and
+        ``run`` the ``input.run`` document the ``run.*`` ones read."""
         from hexgate.security.policy import evaluate_tool_call_wasm
         from hexgate.security.policy_set import DEFAULT_ROLE_NAME
 
         return evaluate_tool_call_wasm(
-            self, role or DEFAULT_ROLE_NAME, tool, dict(args), attributes=attributes
+            self,
+            role or DEFAULT_ROLE_NAME,
+            tool,
+            dict(args),
+            attributes=attributes,
+            run=run,
         )
 
     # ---- Metadata ------------------------------------------------------

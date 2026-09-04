@@ -11,12 +11,19 @@ code (or YAML) can be exercised in a pytest suite:
 
 ``policy`` may be an :class:`AgentPolicy` (single role) or a :class:`PolicySet`
 (role-aware — pass ``role=``).
+
+Assert a ``run.*`` cap by supplying the run's facts via :func:`run_namespace`:
+
+    assert_denies(policy, "refund", run=run_namespace(tool_calls=20))
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+from uuid import uuid4
 
+from hexgate.runtime.run_facts import KNOWN_RUN_PATHS, RUN_PATH_TYPES, RunFacts
 from hexgate.security.decision import DecisionOutcome
 from hexgate.security.models import AgentPolicy
 from hexgate.security.policy import evaluate_tool_call
@@ -25,19 +32,71 @@ from hexgate.security.policy_set import PolicySet
 Policy = AgentPolicy | PolicySet
 
 
+def run_namespace(tool: str = "", **facts: Any) -> dict[str, Any]:
+    """A ``run`` namespace with ``facts`` applied over a zeroed run.
+
+    Raises on an unregistered keyword — a typo like ``tool_call=20`` would
+    otherwise leave the real counter at 0 and the cap would never fire — and on
+    a wrong-typed value, which fails the comparison closed and is then
+    indistinguishable from the cap firing for real.
+    """
+    unknown = sorted(set(facts) - KNOWN_RUN_PATHS)
+    if unknown:
+        raise ValueError(
+            f"unknown run.* path(s) {unknown} "
+            f"(this build knows: {', '.join(sorted(KNOWN_RUN_PATHS))})"
+        )
+    for name, value in facts.items():
+        _check_run_value(name, value)
+    return {**_zeroed_run(tool), **facts}
+
+
+def _check_run_value(name: str, value: Any) -> None:
+    """Raise unless ``value`` has the shape ``run.<name>`` projects."""
+    expected = RUN_PATH_TYPES[name]
+    if not _matches_run_type(value, expected):
+        raise ValueError(
+            f"run.{name} expects {expected.__name__}, got "
+            f"{type(value).__name__} ({value!r})"
+        )
+
+
+def _matches_run_type(value: Any, expected: type) -> bool:
+    # bool is an int subclass, but ``{"tool_calls": true}`` is a JSON typo
+    # rather than a count, so it satisfies no numeric path.
+    if isinstance(value, bool):
+        return expected is bool
+    # An int is an acceptable float (``elapsed_seconds=300``), not vice versa.
+    if expected is float:
+        return type(value) in (int, float)
+    return type(value) is expected
+
+
+def _zeroed_run(tool: str) -> dict[str, Any]:
+    """A freshly-started run — the default so an unset ``run.*`` cap reads
+    zero instead of failing closed."""
+    return RunFacts(id=str(uuid4()), agent="").as_namespace(tool)
+
+
 def _outcome(
     policy: Policy,
     tool: str,
     args: dict[str, Any] | None,
     role: str | None,
     attributes: dict[str, Any] | None,
+    run: Mapping[str, Any] | None,
 ) -> DecisionOutcome:
+    resolved_run = run if run is not None else _zeroed_run(tool)
     if isinstance(policy, PolicySet):
         return policy.evaluate(
-            role=role, tool=tool, args=args or {}, attributes=attributes
+            role=role,
+            tool=tool,
+            args=args or {},
+            attributes=attributes,
+            run=resolved_run,
         ).outcome
     return evaluate_tool_call(
-        policy, tool, args or {}, role=role, attributes=attributes
+        policy, tool, args or {}, role=role, attributes=attributes, run=resolved_run
     ).outcome
 
 
@@ -47,9 +106,10 @@ def _check(
     args: dict[str, Any] | None,
     role: str | None,
     attributes: dict[str, Any] | None,
+    run: Mapping[str, Any] | None,
     expected: DecisionOutcome,
 ) -> None:
-    actual = _outcome(policy, tool, args, role, attributes)
+    actual = _outcome(policy, tool, args, role, attributes, run)
     if actual is not expected:
         scope = f"role={role!r} " if role is not None else ""
         raise AssertionError(
@@ -65,12 +125,13 @@ def assert_allows(
     *,
     role: str | None = None,
     attributes: dict[str, Any] | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> None:
     """Assert the policy ALLOWS this call.
 
-    ``attributes`` supplies the caller's ABAC bag for ``ctx.*`` constraints,
-    mirroring what :class:`HexgateContext` carries at runtime."""
-    _check(policy, tool, args, role, attributes, DecisionOutcome.ALLOW)
+    ``attributes`` and ``run`` feed ``ctx.*`` and ``run.*`` constraints; ``run``
+    defaults to a freshly-started run — see :func:`run_namespace` to set one."""
+    _check(policy, tool, args, role, attributes, run, DecisionOutcome.ALLOW)
 
 
 def assert_denies(
@@ -80,9 +141,10 @@ def assert_denies(
     *,
     role: str | None = None,
     attributes: dict[str, Any] | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> None:
     """Assert the policy DENIES this call."""
-    _check(policy, tool, args, role, attributes, DecisionOutcome.DENY)
+    _check(policy, tool, args, role, attributes, run, DecisionOutcome.DENY)
 
 
 def assert_needs_approval(
@@ -92,6 +154,7 @@ def assert_needs_approval(
     *,
     role: str | None = None,
     attributes: dict[str, Any] | None = None,
+    run: Mapping[str, Any] | None = None,
 ) -> None:
     """Assert the policy routes this call to approval."""
-    _check(policy, tool, args, role, attributes, DecisionOutcome.NEEDS_APPROVAL)
+    _check(policy, tool, args, role, attributes, run, DecisionOutcome.NEEDS_APPROVAL)

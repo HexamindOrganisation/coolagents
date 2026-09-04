@@ -31,13 +31,18 @@ pytestmark = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on 
 
 
 def _py_outcome(
-    policy: dict, role: str | None, tool: str, args: dict, attributes: dict | None
+    policy: dict,
+    role: str | None,
+    tool: str,
+    args: dict,
+    attributes: dict | None,
+    run: dict | None = None,
 ) -> str:
     ps = load_policy_set_from_dict(policy)
     # Route through PolicySet.evaluate (the real engine entry) so role/tool are
     # threaded into the constraint context, matching what the runtime does.
     return ps.evaluate(
-        role=role, tool=tool, args=args, attributes=attributes
+        role=role, tool=tool, args=args, attributes=attributes, run=run
     ).outcome.value
 
 
@@ -47,11 +52,16 @@ def _wasm_bytes(rego: str) -> bytes:
 
 
 def _wasm_outcome(
-    policy: dict, role: str | None, tool: str, args: dict, attributes: dict | None
+    policy: dict,
+    role: str | None,
+    tool: str,
+    args: dict,
+    attributes: dict | None,
+    run: dict | None = None,
 ) -> str:
     wasm = _wasm_bytes(compile_to_rego(policy))
     d = WasmPolicy.from_bytes(wasm).decide(
-        role=role, tool=tool, args=args, ctx=attributes
+        role=role, tool=tool, args=args, ctx=attributes, run=run
     )
     if d.allow:
         return "allow"
@@ -68,9 +78,10 @@ def _assert_parity(
     expect: str,
     *,
     attributes: dict | None = None,
+    run: dict | None = None,
 ) -> None:
-    py = _py_outcome(policy, role, tool, args, attributes)
-    wasm = _wasm_outcome(policy, role, tool, args, attributes)
+    py = _py_outcome(policy, role, tool, args, attributes, run)
+    wasm = _wasm_outcome(policy, role, tool, args, attributes, run)
     assert py == wasm, f"engine divergence {role}/{tool}/{args}: py={py} wasm={wasm}"
     assert py == expect, f"wrong outcome {role}/{tool}/{args}: {py} (want {expect})"
 
@@ -715,13 +726,17 @@ class _WasmEngine:
     def __init__(self, wasm_bytes: bytes) -> None:
         self._w = WasmPolicy.from_bytes(wasm_bytes)
 
-    def evaluate(self, *, role, tool, args, attributes=None):
+    def evaluate(self, *, role, tool, args, attributes=None, run=None):
         from hexgate.security.policy import verdict_from_rego
 
         role_ = role or "default"
         return verdict_from_rego(
             self._w.decide(
-                role=role_, tool=tool, args=dict(args), ctx=dict(attributes or {})
+                role=role_,
+                tool=tool,
+                args=dict(args),
+                ctx=dict(attributes or {}),
+                run=dict(run or {}),
             ),
             tool_name=tool,
             role=role_,
@@ -864,3 +879,51 @@ def test_single_role_union_matches_direct_evaluation_on_both_engines(
         assert through_union.reason == direct.reason
         assert through_union.violations == direct.violations
         assert through_union.hint == direct.hint
+
+
+# ---------------------------------------------------------------------------
+# run.* — the invocation's own fact record
+# ---------------------------------------------------------------------------
+
+_RUN_POLICY = {
+    "version": 1,
+    "roles": {
+        "default": {
+            "tools": {
+                "identity": {
+                    "mode": "allow",
+                    "constraints": ['run.agent == "billing"'],
+                },
+                "elapsed": {
+                    "mode": "allow",
+                    "constraints": ["run.elapsed_seconds < 300"],
+                },
+            },
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("tool", "run", "expect"),
+    [
+        # identity
+        ("identity", {"agent": "billing"}, "allow"),
+        ("identity", {"agent": "support"}, "deny"),
+        ("identity", {}, "deny"),  # missing → fail closed on BOTH engines
+        # the time budget, and its cross-type guard
+        ("elapsed", {"elapsed_seconds": 12.5}, "allow"),
+        ("elapsed", {"elapsed_seconds": 400.0}, "deny"),
+        ("elapsed", {"elapsed_seconds": 300}, "deny"),  # the boundary is exclusive
+        ("elapsed", {"elapsed_seconds": "12"}, "deny"),  # str vs num → fail closed
+        ("elapsed", {}, "deny"),
+    ],
+)
+def test_run_fact_parity(tool: str, run: dict, expect: str) -> None:
+    """Elapsed time is a float compared against an integer literal — the shape
+    every time budget takes, so the numeric guard must agree across engines."""
+    _assert_parity(_RUN_POLICY, "default", tool, {}, expect, run=run)
+
+
+def test_run_none_namespace_fails_closed_both_engines() -> None:
+    _assert_parity(_RUN_POLICY, "default", "identity", {}, "deny", run=None)

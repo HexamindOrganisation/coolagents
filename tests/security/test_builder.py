@@ -13,7 +13,9 @@ from hexgate.security import (
     assert_allows,
     assert_denies,
     assert_needs_approval,
+    run_namespace,
 )
+from hexgate.runtime.run_facts import KNOWN_RUN_PATHS, RUN_PATH_TYPES
 from hexgate.security.constraints import ConstraintParseError
 
 
@@ -216,3 +218,78 @@ def test_assert_allows_raises_on_wrong_outcome() -> None:
     policy = PolicyBuilder().deny("x").build()
     with pytest.raises(AssertionError, match="expected allow"):
         assert_allows(policy, "x")
+
+
+# ---------------------------------------------------------------------------
+# run.* — the assertion helpers model a freshly-started run by default
+# ---------------------------------------------------------------------------
+
+
+def test_assert_helpers_default_to_a_started_run_not_a_missing_one() -> None:
+    """``run=None`` models a fresh run's zeros, not a fail-closed absence."""
+    policy = PolicyBuilder().allow("refund", when=["run.elapsed_seconds < 300"]).build()
+    assert_allows(policy, "refund")
+
+
+def test_assert_helpers_accept_an_explicit_run_namespace() -> None:
+    policy = PolicyBuilder().allow("refund", when=['run.agent == "billing"']).build()
+
+    assert_allows(policy, "refund", run=run_namespace(agent="billing"))
+    assert_denies(policy, "refund", run=run_namespace(agent="support"))
+
+
+def test_run_namespace_fills_every_registered_path() -> None:
+    assert set(run_namespace()) == KNOWN_RUN_PATHS
+
+
+def test_run_namespace_rejects_an_unregistered_path() -> None:
+    with pytest.raises(ValueError, match="unknown run.* path"):
+        run_namespace(definitely_not_a_path=1)
+
+
+def test_run_path_types_covers_exactly_the_registered_paths() -> None:
+    """Keeps the type registry in step with the path registry, the way
+    ``as_namespace`` is kept in step with it."""
+    assert set(RUN_PATH_TYPES) == KNOWN_RUN_PATHS
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        # A quoted number is the classic JSON typo. Left untyped it fails the
+        # comparison closed and renders as an ordinary threshold trip, so the
+        # dry-run silently answers a different question.
+        {"tool_calls": "5"},
+        {"tool_calls": True},
+        {"elapsed_seconds": "300"},
+        {"agent": 1},
+        {"tools_used": "search"},
+    ],
+)
+def test_run_namespace_rejects_a_wrong_typed_value(facts: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="expects"):
+        run_namespace("search", **facts)
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        {"tool_calls": 5},
+        {"elapsed_seconds": 300},  # an int is an acceptable float
+        {"elapsed_seconds": 300.5},
+        {"agent": "billing"},
+        {"tools_used": ["search"]},
+    ],
+)
+def test_run_namespace_accepts_correctly_typed_values(facts: dict[str, object]) -> None:
+    assert run_namespace("search", **facts).items() >= facts.items()
+
+
+def test_a_wrong_typed_cap_is_not_mistaken_for_a_threshold_trip() -> None:
+    """The regression this guards: ``tool_calls="5"`` used to make a green
+    ``assert_denies`` against a cap the run is nowhere near."""
+    policy = PolicyBuilder().allow("refund", when=["run.tool_calls < 20"]).build()
+
+    assert_allows(policy, "refund", run=run_namespace("refund", tool_calls=5))
+    with pytest.raises(ValueError):
+        assert_denies(policy, "refund", run=run_namespace("refund", tool_calls="5"))

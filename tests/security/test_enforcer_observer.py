@@ -32,6 +32,7 @@ class _StubEngine:
         tool: str,
         args: Mapping[str, Any],
         attributes: Mapping[str, Any] | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> Verdict:
         return self._verdict
 
@@ -202,6 +203,7 @@ async def test_observer_sees_the_whole_role_set_and_the_deciding_role() -> None:
             tool: str,
             args: Mapping[str, Any],
             attributes: Mapping[str, Any] | None = None,
+            run: Mapping[str, Any] | None = None,
         ) -> Verdict:
             if role == "billing":
                 return Verdict(

@@ -31,6 +31,9 @@ class _RecordingEngine:
     def __init__(self, verdict: Verdict) -> None:
         self.verdict = verdict
         self.calls: list[dict[str, Any]] = []
+        # Separate from ``calls`` (kept readable) and by identity, not copy:
+        # whether every role saw the *same* namespace object is the contract.
+        self.runs: list[Mapping[str, Any] | None] = []
 
     def evaluate(
         self,
@@ -39,6 +42,7 @@ class _RecordingEngine:
         tool: str,
         args: Mapping[str, Any],
         attributes: Mapping[str, Any] | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> Verdict:
         self.calls.append(
             {
@@ -48,6 +52,7 @@ class _RecordingEngine:
                 "attributes": dict(attributes) if attributes is not None else None,
             }
         )
+        self.runs.append(run)
         return self.verdict
 
 
@@ -388,6 +393,85 @@ def test_enforcer_attributes_gate_real_pydantic_engine() -> None:
 
     # No active context → ctx.* ref misses → fail closed.
     assert not enforcer.decide("refund", {}).allowed
+
+
+# ---------------------------------------------------------------------------
+# The run.* namespace
+# ---------------------------------------------------------------------------
+
+
+def test_enforcer_forwards_run_facts_to_engine() -> None:
+    from hexgate.runtime.run_facts import run_scope
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
+    enforcer = PolicyEnforcer(engine, agent_name="support")
+
+    with run_scope("support") as facts:
+        facts.record_execution("read_file")
+        enforcer.decide("read_file", {})
+
+    (run,) = engine.runs
+    assert run is not None
+    assert run["id"] == facts.id
+    assert run["agent"] == "support"
+
+
+def test_enforcer_reads_run_facts_once_per_decision() -> None:
+    """One read for the whole role fold, not one per role — see enforcer.py."""
+    from hexgate.runtime.context import HexgateContext
+    from hexgate.runtime.run_facts import run_scope
+
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.DENY, reason="no"))
+    enforcer = PolicyEnforcer(engine, agent_name="a")
+
+    with HexgateContext(user_id="u", user_roles=["x", "y", "z"]).sync_scope():
+        with run_scope("a"):
+            enforcer.decide("t", {})
+
+    assert len(engine.runs) == 3  # one evaluate per role...
+    first, *rest = engine.runs
+    assert all(other is first for other in rest)  # ...one namespace object
+
+
+def test_enforcer_outside_a_run_scope_forwards_detached_zeros() -> None:
+    """``run.id == ""`` is the signal a decision happened outside a run."""
+    engine = _RecordingEngine(Verdict(outcome=DecisionOutcome.ALLOW))
+
+    PolicyEnforcer(engine, agent_name="a").decide("t", {})
+
+    (run,) = engine.runs
+    assert run is not None
+    assert run["id"] == ""
+    assert run["elapsed_seconds"] == 0.0
+
+
+def test_run_constraint_decides_through_the_real_engine() -> None:
+    from hexgate.runtime.run_facts import run_scope
+
+    policy = AgentPolicy.model_validate(
+        {"tools": {"search": {"mode": "allow", "constraints": ['run.agent == "a"']}}}
+    )
+    enforcer = PolicyEnforcer(PolicySet({"default": policy}), agent_name="a")
+
+    with run_scope("a"):
+        assert enforcer.decide("search", {}).allowed
+
+    with run_scope("b"):
+        denied = enforcer.decide("search", {})
+
+    assert not denied.allowed
+    assert 'run.agent == "a"' in denied.reason
+
+
+def test_run_constraint_denies_outside_a_scope_when_it_names_identity() -> None:
+    """Fail-open applies to zero-valued counters, not identity: ``run.agent``
+    is ``""`` on the detached record, so an identity predicate still denies."""
+    policy = AgentPolicy.model_validate(
+        {"tools": {"search": {"mode": "allow", "constraints": ['run.agent == "a"']}}}
+    )
+    enforcer = PolicyEnforcer(PolicySet({"default": policy}), agent_name="a")
+
+    assert not enforcer.decide("search", {}).allowed
 
 
 # ---------------------------------------------------------------------------

@@ -68,7 +68,8 @@ a quantifier body.
 Besides `args.*`, constraints can reference two **call-scope facts**: `role`
 (the caller's role) and `tool` (the tool being invoked) — e.g.
 `role == "admin"` or `tool == "refund_order"`. These mirror Rego's
-`input.role` / `input.tool`.
+`input.role` / `input.tool`. Two further namespaces follow below: `ctx.*` (who
+is calling) and `run.*` (what this invocation has done so far).
 
 ## Caller attributes (`ctx.*`)
 
@@ -92,6 +93,118 @@ A missing `ctx.<key>` fails closed (deny), like any absent reference.
 contract as `role`**: populate `HexgateContext.attributes` from trusted
 server-side data (your auth/session/IdP), never from raw client input. An
 attribute is exactly as trustworthy as the code that set it.
+
+## Run facts (`run.*`)
+
+Everything above describes *this* call. `run.*` describes the **invocation so
+far** — how many tools the agent has already run, how long it has been going,
+how many tokens it has spent. It is what a runaway agent is stopped with.
+
+Facts are accumulated in-process by the SDK, so they are always available and
+never need a network call. A run starts at the adapter boundary (`ainvoke`,
+`run`, `run_sync`, `astream_events`, …) and ends when it returns.
+
+```yaml
+default_policy:
+  mode: allow
+  constraints:
+    - run.tool_calls < 20         # runaway-agent circuit breaker
+    - run.elapsed_seconds < 300   # wall-budget breaker
+    - run.calls_of_this_tool < 5  # per-tool cap, without naming any tool
+    - run.errors < 5              # stop after repeated failures
+    - run.denials < 3             # stop a thrashing agent
+    - run.total_tokens < 200000   # trailing token budget
+
+tools:
+  bulk_delete:
+    mode: allow
+    constraints:
+      - run.tool_calls < 5          # a tighter cap on the dangerous tool
+      - count(run.tools_used) <= 6  # breadth cap
+```
+
+### The 13 paths
+
+| Path | Type | Meaning |
+|---|---|---|
+| `run.id` | string | Unique id for this invocation. `""` outside a run scope |
+| `run.agent` | string | The agent's name |
+| `run.tool_calls` | int | Tools that have **executed** this run |
+| `run.calls_of_this_tool` | int | Executions of the tool now being decided |
+| `run.tools_used` | list | Distinct tools executed, in first-use order |
+| `run.llm_calls` | int | Model requests |
+| `run.input_tokens` | int | Prompt tokens, cached ones included |
+| `run.output_tokens` | int | Completion tokens |
+| `run.total_tokens` | int | `input_tokens + output_tokens` |
+| `run.denials` | int | Calls the policy or a guard refused |
+| `run.approvals` | int | Calls that hit an approval gate |
+| `run.errors` | int | Tools that raised |
+| `run.elapsed_seconds` | float | Seconds since the run started (monotonic clock) |
+
+`run.tools_used` is list-valued, so read it with `count(...)`, `any(...)` or
+`every(...)`. A typo'd path, a deeper path (`run.id.value`), or a list path used
+where a scalar belongs are all **rejected when the policy loads** rather than
+denying silently at runtime.
+
+### What the counters mean
+
+These distinctions change what a cap does, so they are worth reading once:
+
+- **A tool counts when it is dispatched**, after the decision has allowed it.
+  `run.tool_calls < 20` permits exactly 20 executions, in parallel as well as in
+  sequence.
+- **A denied call consumes no tool budget.** It counts toward `run.denials`
+  instead, which you can bound separately — otherwise an agent misbehaving
+  against one tool would exhaust a legitimate caller's budget.
+- **An approval gate counts when it fires**, not when it is granted. An
+  approval that is refused adds to `run.approvals` and nothing else.
+- **A guard halt before the tool** is a denial; the tool never ran. A guard halt
+  **after** the tool still counts the call — the side effect already happened
+  and only the result is withheld.
+- **A tool that raises** counts as both a call and an error.
+
+<Warning>
+**`run.*` caps are circuit breakers, not quotas.** They stop a run that has gone
+wrong; they do not meter it precisely. Four places the count can lag reality:
+
+- **Tokens trail by one turn.** Tokens are only known once the model has
+  answered, so the turn that blows the budget still gets its tool calls; the cap
+  fires on the next decision.
+- **Token facts are not available on the Pydantic AI adapter.** It has no
+  per-call usage hook, so it reports usage once, after the whole run finishes.
+  `run.input_tokens`, `run.output_tokens`, `run.total_tokens` and
+  `run.llm_calls` therefore read **zero at every decision** in a Pydantic AI
+  run, and a token budget never fires there. Use `run.tool_calls` or
+  `run.elapsed_seconds` to bound those runs. The LangChain, OpenAI and Google
+  adapters all report per LLM call and are unaffected.
+- **Sub-agents don't roll up.** A child invocation opens its own run, so its
+  counts don't reach the parent — a per-run cap is bypassable by spawning one.
+- **Raw threads.** A tool call is counted before it is dispatched, and on an
+  event loop that read-then-increment cannot interleave — so parallel tool calls
+  (`asyncio.gather`, LangChain's executor) respect a cap exactly. Guarded calls
+  dispatched to a hand-rolled `threading.Thread` can still overshoot, since two
+  OS threads can be decided concurrently.
+</Warning>
+
+### Where facts aren't collected
+
+In a few places a decision happens outside any run scope. There, every counter
+reads **zero** and `run.id` is `""` — so a counter cap *passes*. This is
+deliberate: an unwired boundary should not brick the agent. The cases:
+
+- **Network egress.** The egress proxy is one per process and sits above every
+  run, and a tool's outbound connection carries no invocation id to correlate
+  back, so egress decisions record nothing.
+- **Methods that bypass the wrapper**, such as LangChain's `agent.batch()`.
+- **Tools that dispatch guarded work to a raw thread or thread pool.**
+  `asyncio.gather`, `asyncio.to_thread` and LangChain's own executor all carry
+  the run correctly; only a hand-rolled `threading.Thread` loses it.
+
+One more, if you consume streams: two `astream()` generators consumed
+round-robin **in the same task** will cross-contaminate, because Python has no
+per-generator context. Consume one at a time, or put each in its own task. (This
+already affects caller identity via `HexgateContext`, so it isn't new to
+`run.*`.)
 
 ## Named constants
 

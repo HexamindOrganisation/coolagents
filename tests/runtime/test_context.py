@@ -333,7 +333,7 @@ class _RoleRecordingEngine:
         self.seen_roles: list[str | None] = []
         self._verdict = Verdict(outcome=DecisionOutcome.DENY, reason="recorded")
 
-    def evaluate(self, *, role, tool, args, attributes=None):  # type: ignore[no-untyped-def]
+    def evaluate(self, *, role, tool, args, attributes=None, run=None):  # type: ignore[no-untyped-def]
         self.seen_roles.append(role)
         return self._verdict
 
