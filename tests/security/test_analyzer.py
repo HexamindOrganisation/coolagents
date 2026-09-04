@@ -481,6 +481,24 @@ def test_check_project_unknown_capability_is_a_link_error():
     assert [lint.code for lint in lints] == ["link-error"]
 
 
+def test_check_project_surfaces_named_agent_column_link_error():
+    # A named-agent column importing an unknown capability must show as a
+    # link-error lint (the "*" column alone would never touch it).
+    from hexgate.security import AgentBinding
+
+    read_only = _mod("read_only", "capability", {"view": _allow()})
+    roles = {
+        "member": {
+            "*": AgentBinding(capabilities=("read_only",)),
+            "billing_bot": AgentBinding(capabilities=("nonexistent",)),
+        }
+    }
+    lints = check_project([], [read_only], roles)
+    assert any(
+        lint.code == "link-error" and "billing_bot" in lint.message for lint in lints
+    )
+
+
 def test_no_roles_emit_no_project_lints():
     # None (no roles.yaml) -> one default importing everything. Nothing unused,
     # and the default is present, so neither project-level lint fires.

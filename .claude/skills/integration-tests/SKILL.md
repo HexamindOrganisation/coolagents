@@ -1,33 +1,58 @@
 ---
 name: integration-tests
-description: Run the opt-in integration test suites (pytest -m integration) for the SDK and/or the platform API — the ones that hit a live ClickHouse (and, for the SDK, a live platform-api server). Use when asked to run, verify, or debug integration tests, as opposed to the default unit test suite.
+description: Run the opt-in integration test suites (pytest -m integration) for the SDK and/or the platform API — the ones that hit a live ClickHouse (and, for the SDK, the full OTLP pipeline: platform-api, Collector, Redpanda, span-enricher). Use when asked to run, verify, or debug integration tests, as opposed to the default unit test suite.
 ---
 
 # Run Integration Tests
 
 ## SDK integration tests (repo root — `tests/adapters/*/test_integration.py`, `tests/audit/test_integration.py`)
-Hits a live platform server + ClickHouse end-to-end. Needs ClickHouse running, `platform-api` running, and a real `HEXGATE_API_KEY` minted via the dashboard (repo-root `.env`).
+
+Infra (idempotent):
 ```bash
-make clickhouse-up   # idempotent — safe to run even if already up, no-ops if unchanged
-
-# Check platform-api first — it's NOT idempotent. uvicorn binds :8000 directly,
-# so running `make platform-api` while one's already up fails with
-# "Address already in use" instead of reusing the running instance.
-curl -sf http://localhost:8000/health
-# ^ if this 200s, platform-api is already up — skip starting it.
-# If it fails, start `make platform-api` in a separate terminal (it's a
-# foreground/blocking dev server — don't chain it into this script).
-
-set -a && source .env && set +a   # loads HEXGATE_API_KEY etc. from .env into the shell
-pytest -m integration
+make postgres-init
+make clickhouse-up
+make redpanda-topics
 ```
-Unset afterward because some unit tests rely on not having any API key defined:
+
+Mint a key — prints `fty_live_…` on stdout, and creates the keypair the Collector needs:
 ```bash
-unset HEXGATE_API_KEY HEXGATE_API_URL LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_HOST
+cd platform/api && DATABASE_URL=postgresql+asyncpg://hexgate:hexgate-dev-password@localhost:5433/hexgate \
+    PYTHONPATH=$PWD uv run python ../../deploy/provision.py
+```
+
+Three blocking servers, one terminal each. Check first — they bind fixed ports and die with "Address already in use":
+```bash
+curl -sf http://localhost:8000/health   # platform-api already up?
+ss -ltn | grep -q 4318                  # collector already up?
+
+make platform-api-pg    # :8000 — must be -pg, never `make platform-api`
+make collector-run      # :4317 / :4318
+make enricher-run
+```
+
+Run:
+```bash
+export HEXGATE_API_KEY=<the fty_live_… from above>
+export HEXGATE_API_URL=http://localhost:8000
+pytest -m integration   # expect 5 passed, ~20s
+```
+
+Unset afterward — some unit tests require no API key:
+```bash
+unset HEXGATE_API_KEY HEXGATE_API_URL HEXGATE_OTLP_ENDPOINT \
+      LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_HOST
+```
+
+On `row never landed in ClickHouse`, read the export error in the captured log, then:
+```bash
+curl -s "http://localhost:8124/?query=SELECT+count()+FROM+hexgate_audit.policy_decision" \
+     -u hexgate:hexgate-dev-password
+# DLQ: want HIGH-WATERMARK 0 on every partition
+docker exec hexgate-redpanda rpk topic describe hexgate.otlp.dlq -p --brokers localhost:9092
 ```
 
 ## Platform API integration tests (`platform/api/tests/...`)
-Call the service layer directly against ClickHouse, in-process — no live platform server, no `HEXGATE_API_KEY`, just ClickHouse running.
+ClickHouse only — no live server, no Collector, no `HEXGATE_API_KEY`.
 ```bash
-make platform-api-test-integration   # starts ClickHouse (idempotent), then runs pytest -m integration
+make platform-api-test-integration
 ```

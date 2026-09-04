@@ -114,14 +114,40 @@ def test_nested_same_stem_modules_stay_distinct(tmp_path):
 
 
 def test_load_roles_reads_bindings(tmp_path):
+    from hexgate.security import AgentBinding
+
     _write(
         tmp_path,
         "roles.yaml",
         "version: 1\nroles:\n  default: [read_only]\n  billing: [read_only, payments]\n",
     )
+    # A flat `role: [caps]` normalizes to the generic "*" agent cell.
     assert load_roles(tmp_path) == {
-        "default": ["read_only"],
-        "billing": ["read_only", "payments"],
+        "default": {"*": AgentBinding(capabilities=("read_only",))},
+        "billing": {"*": AgentBinding(capabilities=("read_only", "payments"))},
+    }
+
+
+def test_load_roles_reads_agent_matrix(tmp_path):
+    from hexgate.security import AgentBinding
+
+    _write(
+        tmp_path,
+        "roles.yaml",
+        "version: 1\n"
+        "roles:\n"
+        "  member:\n"
+        "    '*': [read_only]\n"
+        "    billing_bot:\n"
+        "      capabilities: [read_only, payments]\n"
+        "    triage_bot: [read_only]\n",
+    )
+    assert load_roles(tmp_path) == {
+        "member": {
+            "*": AgentBinding(capabilities=("read_only",)),
+            "billing_bot": AgentBinding(capabilities=("read_only", "payments")),
+            "triage_bot": AgentBinding(capabilities=("read_only",)),
+        }
     }
 
 
@@ -160,7 +186,7 @@ def test_load_roles_rejects_non_mapping_document(tmp_path):
 
 def test_load_roles_rejects_non_list_value(tmp_path):
     _write(tmp_path, "roles.yaml", "roles:\n  default: read_only\n")
-    with pytest.raises(ValueError, match="list of capability names"):
+    with pytest.raises(ValueError, match="capability list or an agent mapping"):
         load_roles(tmp_path)
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
@@ -21,24 +20,8 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.errors import AgentBannedError
-from hexgate.tracing import _senders as senders_mod
 from hexgate.tracing import usage as tracing_usage_mod
-from hexgate.tracing._senders import AuditSender
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
-
-
-@contextmanager
-def _registered_sender(key: tuple[str, str] = ("test-key", "/test-path")) -> Any:
-    """Register a real AuditSender in the shared registry for the duration
-    of a test, so drain_pending_tasks' pending_send_tasks() scoping can
-    find a task tracked in it — evicted afterward since the registry is
-    process-global state shared across the whole test session."""
-    sender = AuditSender(endpoint="https://example.invalid/test-path", api_key="k")
-    senders_mod._senders[key] = sender
-    try:
-        yield sender
-    finally:
-        del senders_mod._senders[key]
 
 
 class _StaticBanSource:
@@ -257,56 +240,6 @@ def test_run_sync_opens_user_scope_and_calls_runner_run_sync(
     assert get_current_context() is None
 
 
-def test_run_sync_drains_pending_tasks_on_the_default_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The last turn's fire-and-forget audit-send task can still be
-    pending on the per-thread default loop when Runner.run_sync returns —
-    the ``agents`` SDK deliberately keeps that loop open across calls, and
-    nothing else pumps it for a sibling task once the top-level run
-    settles. run_sync() must drain it via _drain_default_loop before
-    returning, or the send is silently abandoned (the exact scenario
-    _drain_default_loop's own docstring describes)."""
-    _silence_observability(monkeypatch)
-    completed: list[bool] = []
-    loop = asyncio.new_event_loop()
-
-    with _registered_sender() as sender:
-
-        async def _slow_background_send() -> None:
-            # Long enough that it's still pending once fake_run_sync returns —
-            # nothing here pumps the loop any further for it on its own.
-            await asyncio.sleep(0.05)
-            completed.append(True)
-
-        def fake_run_sync(starting_agent: Agent, input: Any, **kwargs: Any) -> str:
-            # Mirrors the real SDK: set the per-thread default loop and
-            # schedule the fire-and-forget audit-send task on it, then return
-            # immediately without pumping the loop for that task.
-            asyncio.set_event_loop(loop)
-            task = loop.create_task(_slow_background_send())
-            sender._tasks.add(task)
-            task.add_done_callback(sender._tasks.discard)
-            return "run-sync-result"
-
-        monkeypatch.setattr(
-            "hexgate.adapters.openai.runner.Runner.run_sync",
-            staticmethod(fake_run_sync),
-        )
-
-        try:
-            runner = HexgateRunner(api_key="k")
-            result = runner.run_sync(_make_agent(), "hello", hexgate_context=_user())
-
-            assert result == "run-sync-result"
-            # If run_sync() had returned without draining the default loop,
-            # the background send would never have gotten the chance to finish.
-            assert completed == [True]
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
-
-
 @pytest.mark.asyncio
 async def test_run_streamed_wraps_stream_events_to_re_enter_scope_and_propagation(
     monkeypatch: pytest.MonkeyPatch,
@@ -331,8 +264,6 @@ async def test_run_streamed_wraps_stream_events_to_re_enter_scope_and_propagatio
     )
 
     propagate_calls: list[dict[str, Any]] = []
-
-    from contextlib import contextmanager
 
     @contextmanager
     def fake_propagate_attributes(**kwargs: Any) -> Any:
@@ -406,8 +337,6 @@ async def test_run_propagates_user_identity_to_langfuse(
     )
 
     propagate_calls: list[dict[str, Any]] = []
-
-    from contextlib import contextmanager
 
     @contextmanager
     def fake_propagate_attributes(**kwargs: Any) -> Any:
@@ -666,6 +595,70 @@ def test_run_streamed_refreshes_before_setup(
     runner.run_streamed(_make_agent("my-agent"), "hello", hexgate_context=_user())
 
     assert order == ["refresh", "run_streamed"]
+
+
+@pytest.mark.asyncio
+async def test_arun_streamed_refreshes_async_before_run_streamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """arun_streamed (the serve path) awaits the async refresh before
+    Runner.run_streamed — same security-relevant ordering as the sync path, but
+    off the event loop so serve isn't blocked."""
+    _silence_observability(monkeypatch)
+
+    order: list[str] = []
+
+    def fake_run_streamed(*_args: Any, **_kwargs: Any) -> _FakeStreamingResult:
+        order.append("run_streamed")
+        return _FakeStreamingResult()
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_streamed",
+        staticmethod(fake_run_streamed),
+    )
+
+    class _OrderedBinding(_CountingBinding):
+        async def refresh_async(self) -> None:
+            order.append("refresh_async")
+            await super().refresh_async()
+
+    runner = HexgateRunner(api_key="k")
+    runner._bindings["my-agent"] = _OrderedBinding()  # type: ignore[assignment]
+
+    await runner.arun_streamed(
+        _make_agent("my-agent"), "hello", hexgate_context=_user()
+    )
+
+    assert order == ["refresh_async", "run_streamed"]
+
+
+@pytest.mark.asyncio
+async def test_arun_streamed_refused_before_task_spawns_when_banned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ban gate is awaited (check_async) before Runner.run_streamed spawns
+    its background task, so a banned stream never starts on the serve path."""
+    _silence_observability(monkeypatch)
+    called: list[str] = []
+
+    def fake_run_streamed(*_a: Any, **_kw: Any) -> _FakeStreamingResult:
+        called.append("run_streamed")
+        return _FakeStreamingResult()
+
+    monkeypatch.setattr(
+        "hexgate.adapters.openai.runner.Runner.run_streamed",
+        staticmethod(fake_run_streamed),
+    )
+
+    runner = HexgateRunner(api_key="k")
+    runner._ban_gates["my-agent"] = _agent_ban_gate("my-agent")
+
+    with pytest.raises(AgentBannedError):
+        await runner.arun_streamed(
+            _make_agent("my-agent"), "hi", hexgate_context=_user()
+        )
+
+    assert called == []  # background task never spawned
 
 
 # ---------------------------------------------------------------------------

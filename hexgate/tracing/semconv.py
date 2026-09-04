@@ -1,7 +1,7 @@
 """Semantic conventions for Hexgate audit events carried as OTel spans.
 
 Single source of truth for the OTLP wire contract between the SDK's span
-emitter (future) and the platform's span-enricher job. Both sides import
+emitter (``hexgate.tracing._senders``) and the platform's span-enricher job. Both sides import
 these names; neither hardcodes a string. String constants only — this
 module must stay importable with zero dependencies.
 

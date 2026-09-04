@@ -75,7 +75,7 @@ Key properties:
         │        └── miss? ── continue to policy/LLM     │   │
         └──────────────────────────────────────────────┼────┘
                                                         │
-                   POST /v1/audit/ban-enforcements (bearer, fire-and-forget)
+                   OTLP span, scope hexgate.bans (bearer, fire-and-forget)
                                                         ▼
         ┌──────────────────────────────────────────────────┐
         │  ClickHouse  hexgate_audit.ban_enforcement         │
@@ -312,8 +312,8 @@ Two entry points:
 
 - `check(context)` — sync: fetch (fail-soft) → decide.
 - `check_async(context)` — fetches off-loop via `asyncio.to_thread`, then decides + emits + raises
-  **on the loop** (the fire-and-forget `AuditSender` only adopts a running loop on its on-loop path,
-  so emitting from the worker thread would drop the event).
+  on the loop. (The sender itself is thread-agnostic — its span export runs on its own worker — so
+  the on-loop placement is about raising in the caller's context, not about delivery.)
 
 **Precedence.** Agent ban wins over a coincident user ban. When `context is None`, only the agent
 dimension is evaluated. Tool-level bans don't exist on the SDK side.
@@ -358,24 +358,26 @@ which returns **`None`** — and callers then skip the check entirely — for ev
 
 ### 4.5 Reporting a blocked attempt
 
-Before raising, `BanGate._emit()` fires a **`BanEnforcementEvent`** at the shared `AuditSender`
-(fire-and-forget). Its payload:
+Before raising, `BanGate._emit()` fires a **`BanEnforcementEvent`** at the shared `AuditSender`,
+which exports it as one OTel span under instrumentation scope **`hexgate.bans`**
+(`BanEnforcementEvent.SCOPE`). Its attributes (`span_attributes()`, keys from
+`hexgate/tracing/semconv.py`):
 
-```python
-{
-  "event_id": str(uuid4), "occurred_at": iso8601,
-  "agent_name": ..., "user_id": ... or "", "session_id": ... or "",
-  "ban_type": ..., "ban_id": ..., "reason": ... or "",
-}
+```
+start_time == end_time = occurred_at
+sec_ai.event_id    str(uuid4)
+sec_ai.agent_name  ...      sec_ai.user_id  ... or ""     sec_ai.session_id  ... or ""
+sec_ai.ban_type    ...      sec_ai.ban_id   ...           sec_ai.reason      ... or ""
 ```
 
-- **Endpoint:** `POST {base_url}/v1/audit/ban-enforcements` (bearer). Server-resolved fields
-  (`project_id`, `agent_version_id`, `received_at`) are deliberately omitted from the SDK payload.
-- **Sink:** `configure_ban_sink()` gets-or-creates an `AuditSender` keyed on the path constant
-  `/v1/audit/ban-enforcements`; it's distinct from the decisions/usage senders even for the same
-  key, and is `None` in local mode / without a key. Drained by the existing `audit.shutdown`.
-- **Best-effort:** if the sink is `None` (or, on a sync entrypoint with no running loop, was built
-  off-loop) the event is dropped — **the refusal itself is unaffected**.
+- **Transport:** OTLP/HTTP to the Collector (`HEXGATE_OTLP_ENDPOINT`, else `{base_url}/v1/traces`),
+  bearer-authenticated. Server-resolved fields (`project_id`, `agent_version_id`, `received_at`)
+  are deliberately absent from the span.
+- **Sink:** `configure_ban_sink()` gets-or-creates the per-`api_key` `AuditSender` — the very same
+  one decisions and LLM usage use for that key; the scope name keeps the streams apart. `None` in
+  local mode / without a key. Flushed by the existing `audit.shutdown`.
+- **Best-effort:** if the sink is `None`, or its queue is saturated, the event is dropped —
+  **the refusal itself is unaffected**.
 
 **Ingest** (`features/audit/router.py:103`): `ingest_ban_enforcement` validates the event window,
 resolves `agent_version_id` from the latest agent version, and inserts into `ban_enforcement` via
@@ -477,8 +479,8 @@ All ban routes live in `features/bans/router.py`; the enforcement telemetry rout
 | `BanContentError` | raised on a 200-but-malformed feed body (contract drift, not transient). |
 | `PlatformBanSource` | ETag-cached, lock-serialized, fail-soft fetch. Owns last-good. |
 | `get_ban_source(key, client)` | get-or-create the shared source, keyed `(api_key, base_url)`. |
-| `BanEnforcementEvent` | the fire-and-forget telemetry payload (`as_payload()`). |
-| `configure_ban_sink(...)` | get-or-create the shared `AuditSender` for `/v1/audit/ban-enforcements`. |
+| `BanEnforcementEvent` | the telemetry event, exported as a `hexgate.bans` span (`span_attributes()`). |
+| `configure_ban_sink(...)` | get-or-create the shared per-`api_key` `AuditSender`. |
 | `BanGate` | per-agent gate: refresh (fail-soft) → decide → emit + raise. `check` / `check_async`. |
 | `resolve_ban_gate(name, ...)` | build the gate, or `None` for all "no platform" cases. |
 

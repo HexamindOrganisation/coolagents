@@ -8,10 +8,9 @@ enforcer, so a refresh swap reaches every clone.
 """
 
 import asyncio
-import warnings
 from collections.abc import Sequence
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import nest_asyncio
 from agents import (
@@ -29,13 +28,13 @@ from agents.lifecycle import RunHooksBase
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
-from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import HexgateContext, run_scope, use_run_facts
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
@@ -210,7 +209,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         async with hexgate_context:
-            with self._propagate(hexgate_context, agent.name):
+            with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
                     input,
@@ -244,41 +243,14 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         with hexgate_context.sync_scope():
-            with self._propagate(hexgate_context, agent.name):
-                try:
-                    return Runner.run_sync(
-                        wrapped_agent,
-                        input,
-                        run_config=run_config,
-                        hooks=self._merge_hooks(hooks),
-                        **kwargs,
-                    )
-                finally:
-                    self._drain_default_loop()
-
-    def _drain_default_loop(self) -> None:
-        """``AgentRunner.run_sync`` (the ``agents`` SDK) deliberately keeps
-        its per-thread default loop open across calls rather than closing
-        it, but ``run_until_complete`` only waits for the top-level run —
-        not sibling tasks on the same loop. The last turn's fire-and-forget
-        audit-send (policy decision / LLM usage) can still be scheduled and
-        pending when ``run_sync`` returns, with nothing left to pump the
-        loop for it. Give it one last chance here; don't close the loop —
-        the SDK expects to find the same one open on the next call.
-
-        If ``Runner.run_sync`` is mocked out and never touches asyncio,
-        ``get_event_loop`` just hands back a freshly created, empty loop —
-        so there's simply nothing pending to drain. The ``RuntimeError``
-        guard instead covers callers with no loop set on the current
-        thread at all (e.g. a background thread, or a test that has
-        explicitly called ``asyncio.set_event_loop(None)``)."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                return
-        drain_pending_tasks(loop)
+            with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
+                return Runner.run_sync(
+                    wrapped_agent,
+                    input,
+                    run_config=run_config,
+                    hooks=self._merge_hooks(hooks),
+                    **kwargs,
+                )
 
     def run_streamed(
         self,
@@ -305,6 +277,75 @@ class HexgateRunner:
         if ban_gate is not None:
             # Before run_streamed spawns its task, so a banned run yields nothing.
             ban_gate.check(hexgate_context)
+        return self._launch_streamed(
+            agent,
+            input,
+            binding=binding,
+            hexgate_context=hexgate_context,
+            run_config=run_config,
+            hooks=hooks,
+            kwargs=kwargs,
+        )
+
+    async def arun_streamed(
+        self,
+        agent: Agent,
+        input: str | list[TResponseInputItem] | RunState[TContext],
+        *,
+        hexgate_context: HexgateContext,
+        run_config: RunConfig | None = None,
+        hooks: RunHooks | None = None,
+        **kwargs,
+    ) -> RunResultStreaming:
+        """Async-friendly ``run_streamed`` for callers already on an event loop.
+
+        ``run_streamed`` refreshes the policy binding and ban gate with blocking
+        sync HTTP; on an asyncio loop that freezes the loop thread (which, under
+        ``hexgate serve``, would stall the approval-reply and ping/pong frames
+        the per-frame dispatch depends on). This awaits the async variants
+        first, then launches ``Runner.run_streamed`` on-loop. It stays on-loop
+        rather than ``to_thread`` because ``run_streamed`` returns immediately
+        and spawns the agent loop as an ``asyncio.create_task`` that must inherit
+        both this running loop and the active contextvar scope.
+        """
+        self._setup_observability()
+        binding = self._binding_for(agent)
+        await binding.refresh_async()  # per-run policy pull; 304 when unchanged
+        ban_gate = self._ban_gate_for(agent)
+        if ban_gate is not None:
+            await ban_gate.check_async(hexgate_context)
+        return self._launch_streamed(
+            agent,
+            input,
+            binding=binding,
+            hexgate_context=hexgate_context,
+            run_config=run_config,
+            hooks=hooks,
+            kwargs=kwargs,
+        )
+
+    def _launch_streamed(
+        self,
+        agent: Agent,
+        input: str | list[TResponseInputItem] | RunState[TContext],
+        *,
+        binding: PolicyBinding,
+        hexgate_context: HexgateContext,
+        run_config: RunConfig | None,
+        hooks: RunHooks | None,
+        kwargs: dict[str, Any],
+    ) -> RunResultStreaming:
+        """Wrap the agent, launch ``Runner.run_streamed`` inside the context
+        scope, and re-wrap ``stream_events`` to re-enter it. Shared by the sync
+        ``run_streamed`` and async ``arun_streamed`` after each has refreshed the
+        binding + ban gate in its own way.
+
+        ``run_streamed`` returns sync but spawns the agent loop as a background
+        task that snapshots the current contextvars at creation; tools fire
+        there, not in ``stream_events``. So the scope must be active around the
+        ``run_streamed`` call for the task to inherit it; the wrapped iterator
+        re-opens it for exit/audit semantics.
+        """
         wrapped_agent = wrap_openai_agent(
             agent,
             enforcer=binding.enforcer,
@@ -314,22 +355,29 @@ class HexgateRunner:
         )
 
         with hexgate_context.sync_scope():
-            with self._propagate(hexgate_context, agent.name):
-                result = Runner.run_streamed(
-                    wrapped_agent,
-                    input,
-                    run_config=run_config,
-                    hooks=self._merge_hooks(hooks),
-                    **kwargs,
-                )
+            # Scope must be open around run_streamed(): it snapshots the
+            # contextvars into the background task where tools fire, and that
+            # snapshot keeps the facts alive after this block exits.
+            with run_scope(agent.name) as run_facts:
+                with self._propagate(hexgate_context, agent.name):
+                    result = Runner.run_streamed(
+                        wrapped_agent,
+                        input,
+                        run_config=run_config,
+                        hooks=self._merge_hooks(hooks),
+                        **kwargs,
+                    )
 
         original_stream_events = result.stream_events
 
         async def _stream_events_with_scope():
             async with hexgate_context:
-                with self._propagate(hexgate_context, agent.name):
-                    async for event in original_stream_events():
-                        yield event
+                # Re-bind the snapshotted facts, not a second run: one
+                # invocation must have one run id.
+                with use_run_facts(run_facts):
+                    with self._propagate(hexgate_context, agent.name):
+                        async for event in original_stream_events():
+                            yield event
 
         result.stream_events = _stream_events_with_scope
         return result

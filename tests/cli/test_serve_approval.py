@@ -718,19 +718,20 @@ async def test_chat_lock_serializes_concurrent_chat_turns() -> None:
         async def send(self, _: str) -> None:
             pass
 
-    async def _fake_stream_agent(agent, handler, inp):  # noqa: ARG001
-        nonlocal concurrent_in_chat, max_seen_concurrent
-        concurrent_in_chat += 1
-        max_seen_concurrent = max(max_seen_concurrent, concurrent_in_chat)
-        # Yield so a lock-free second chat would race in here.
-        await asyncio.sleep(0.01)
-        concurrent_in_chat -= 1
-        if False:  # pragma: no cover — never yields, keeps signature async iter
-            yield None
-
     class _StubRuntime:
         agent = object()
         handler = object()
+
+        # The framework streaming seam serve now drives per turn. Counts
+        # overlap so a lock-free second chat would be detected racing in here.
+        async def astream_normalized(self, agent_input, ctx, query):  # noqa: ARG002
+            nonlocal concurrent_in_chat, max_seen_concurrent
+            concurrent_in_chat += 1
+            max_seen_concurrent = max(max_seen_concurrent, concurrent_in_chat)
+            await asyncio.sleep(0.01)
+            concurrent_in_chat -= 1
+            if False:  # pragma: no cover — never yields, keeps signature async iter
+                yield None
 
     context = ServeContext(
         runtime=_StubRuntime(),  # type: ignore[arg-type]
@@ -741,18 +742,11 @@ async def test_chat_lock_serializes_concurrent_chat_turns() -> None:
         chat_lock=asyncio.Lock(),
     )
 
-    import hexgate.cli.serve as serve_mod
-
-    original = serve_mod.stream_agent
-    serve_mod.stream_agent = _fake_stream_agent
-    try:
-        ws = _NoopWS()
-        await asyncio.gather(
-            _handle_message(context, ws, {"type": "chat", "message": "first"}),
-            _handle_message(context, ws, {"type": "chat", "message": "second"}),
-        )
-    finally:
-        serve_mod.stream_agent = original
+    ws = _NoopWS()
+    await asyncio.gather(
+        _handle_message(context, ws, {"type": "chat", "message": "first"}),
+        _handle_message(context, ws, {"type": "chat", "message": "second"}),
+    )
 
     assert max_seen_concurrent == 1, (
         "two chat frames overlapped — chat_lock did not serialize them"

@@ -12,6 +12,13 @@ from hexgate_api.schemas import AgentManifest
 
 logger = logging.getLogger("hexgate.platform.agents.compiler")
 
+# Fail-closed starter policy for a brand-new agent in a MODULAR project. The
+# agent's real enforcement is the shared modular bundle; policy_yaml is only the
+# SDK's pydantic fallback if that bundle can't be built or served (e.g. opa
+# down). A modular agent must fall back to deny-all, not to a permissive
+# tool-derived starter — otherwise a transient compile failure fails open.
+DENY_ALL_POLICY_YAML = "version: 1\ndefault_policy:\n  mode: deny\n"
+
 
 def compile_bundle(
     policy_yaml: str, sign: Callable[[bytes], bytes]

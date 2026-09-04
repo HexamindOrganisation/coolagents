@@ -8,17 +8,18 @@ back echoed on the accepted handshake; a missing echo means the
 platform is older than Phase 6 and we error out fast.
 
 Receives chat messages sent by dashboard Playground tabs, runs the
-agent via the same ``stream_agent`` engine the terminal chat uses,
+agent through the runtime's framework-agnostic ``astream_normalized`` seam
+(``stream_agent`` for native agents, the OpenAI normalizer for OpenAI ones),
 and ships every normalized ``StreamEvent`` back over the socket.
 
 Handles reconnection with exponential backoff so a backend bounce
 doesn't permanently break the connection.
 
 When a payload includes ``user_attenuation`` metadata (the Playground's
-"Act as alice" affordance), the turn is wrapped in an ``async with
-HexgateContext(...)`` scope. The runtime then lazily attenuates the agent's
-bound HexgateClient token inside ``stream_agent`` — same code path a
-production dev's backend uses when serving a real user.
+"Act as alice" affordance), the turn runs inside a ``HexgateContext(...)``
+scope opened by the framework's streaming seam. The runtime then lazily
+attenuates the agent's bound token — the same code path a production dev's
+backend uses when serving a real user.
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ import argparse
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -39,7 +39,6 @@ from rich.console import Console
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-from hexgate.agents.factory import stream_agent
 from hexgate.bootstrap import bootstrap
 from hexgate.cli._common import (
     AgentRuntime,
@@ -301,16 +300,6 @@ def _context_from_payload(attenuation: Any) -> HexgateContext | None:
         return None
 
 
-@asynccontextmanager
-async def _maybe_user_scope(context: HexgateContext | None):
-    """No-op async context manager when ``context`` is ``None``."""
-    if context is None:
-        yield
-    else:
-        async with context:
-            yield
-
-
 async def _run_chat_turn(
     context: ServeContext, ws: Any, text: str, payload: dict
 ) -> None:
@@ -321,20 +310,24 @@ async def _run_chat_turn(
     outbound event goes through ``_safe_send`` so a mid-turn approval
     request from the enforcer serializes cleanly with these stream
     deltas rather than interleaving on the wire.
+
+    Streaming goes through the runtime's ``astream_normalized`` seam, bound
+    per framework in ``build_runtime_from_local_agent``, so serve stays
+    framework-blind. Each seam owns its own attenuation-scope handling and
+    per-turn policy refresh (the PolicySource / runner sends If-None-Match and
+    reuses the cached bundle on 304).
     """
-    # Policy refresh is handled inside stream_agent now (Phase 8a) —
-    # the attached PolicySource sends If-None-Match and reuses the
-    # cached bundle on 304. No need for serve to rebuild the runtime.
     context.state.start_turn(text)
     hexgate_context = _context_from_payload(payload.get("user_attenuation"))
-    async with _maybe_user_scope(hexgate_context):
-        async for event in stream_agent(
-            context.runtime.agent,
-            context.runtime.handler,
-            context.state.build_input(),
-        ):
-            context.state.apply_event(event)
-            await _safe_send(context, ws, event.model_dump_json())
+    astream = context.runtime.astream_normalized
+    if astream is None:  # pragma: no cover — serve always binds a seam
+        raise RuntimeError(
+            "serve runtime has no astream_normalized seam bound; "
+            "build_runtime_from_local_agent must set one per framework"
+        )
+    async for event in astream(context.state.build_input(), hexgate_context, text):
+        context.state.apply_event(event)
+        await _safe_send(context, ws, event.model_dump_json())
 
 
 async def _handle_message(

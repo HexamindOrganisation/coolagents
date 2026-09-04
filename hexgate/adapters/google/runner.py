@@ -17,13 +17,13 @@ from google.genai import types
 from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from hexgate.adapters._common import drain_pending_tasks, langfuse_propagate_kwargs
+from hexgate.adapters._common import langfuse_propagate_kwargs
 from hexgate.adapters.google.usage import HexgateUsagePlugin
 from hexgate.adapters.google.wrapper import wrap_google_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
-from hexgate.runtime import HexgateContext
+from hexgate.runtime import DEFAULT_AGENT_NAME, HexgateContext, run_scope
 from hexgate.security.bans import resolve_ban_gate
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ class HexgateRunner:
             session_service=session_service,
             **runner_kwargs,
         )
-        self._agent_name = getattr(agent, "name", "default")
+        self._agent_name = getattr(agent, "name", DEFAULT_AGENT_NAME)
         self._ban_gate = resolve_ban_gate(
             self._agent_name, api_key=self.api_key, client=client
         )
@@ -117,7 +117,11 @@ class HexgateRunner:
         self._binding.refresh()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
             self._ban_gate.check(hexgate_context)
-        with hexgate_context.sync_scope(), self._propagate(hexgate_context):
+        with (
+            hexgate_context.sync_scope(),
+            run_scope(self._agent_name),
+            self._propagate(hexgate_context),
+        ):
             agen = self._runner.run_async(
                 user_id=hexgate_context.user_id,
                 session_id=hexgate_context.session_id,
@@ -133,13 +137,6 @@ class HexgateRunner:
                         break
             finally:
                 loop.run_until_complete(agen.aclose())
-                # The last turn's fire-and-forget audit-send task (policy
-                # decision / LLM usage) may still be in flight — there's no
-                # further turn left to keep this loop spinning in the
-                # background while it completes. Give it one last chance
-                # before tearing the loop down, or its event is silently
-                # dropped.
-                drain_pending_tasks(loop)
                 loop.close()
 
     async def run_async(
@@ -147,18 +144,29 @@ class HexgateRunner:
         *,
         new_message: types.Content | None = None,
         hexgate_context: HexgateContext,
+        session_id: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
-        """Run the Google ADK agent asynchronously, yielding events."""
+        """Run the Google ADK agent asynchronously, yielding events.
+
+        ``session_id`` overrides the ADK session used for the run; it defaults to
+        ``hexgate_context.session_id``. Pass it explicitly to decouple the ADK
+        conversation store from the caller-facing session id that lands in audit
+        (``hexgate serve`` does this so audit stays correlatable while ADK memory
+        is managed separately).
+        """
         self._setup_observability()
         await self._binding.refresh_async()  # per-run policy pull; 304 when unchanged
         if self._ban_gate is not None:
             await self._ban_gate.check_async(hexgate_context)
+        adk_session_id = (
+            session_id if session_id is not None else hexgate_context.session_id
+        )
         async with hexgate_context:
-            with self._propagate(hexgate_context):
+            with run_scope(self._agent_name), self._propagate(hexgate_context):
                 async for event in self._runner.run_async(
                     user_id=hexgate_context.user_id,
-                    session_id=hexgate_context.session_id,
+                    session_id=adk_session_id,
                     new_message=new_message,
                     **kwargs,
                 ):

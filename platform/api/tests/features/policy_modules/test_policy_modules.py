@@ -9,6 +9,9 @@ test_projects.py.
 
 from __future__ import annotations
 
+import shutil
+
+import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -196,8 +199,9 @@ def test_set_roles_is_idempotent_on_reused_role_name(client: TestClient) -> None
     assert r1.status_code == 200, r1.text
     r2 = client.put(f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": []}})
     assert r2.status_code == 200, r2.text
+    # Flat write normalizes to the generic "*" agent in the (role, agent) matrix.
     assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
-        "default": []
+        "default": {"*": []}
     }
 
 
@@ -241,3 +245,732 @@ def test_content_hash_matches_sdk_loader_and_is_format_stable() -> None:
     assert a == b  # hash is over the parsed payload, not the raw text
     # byte-identical to what the SDK's file loader would compute for the module
     assert a == _canonical_hash(_yaml.safe_load("tools:\n  x: { mode: allow }\n"))
+
+
+# --- 3a-2: compile agent bundles from resolved modules (docs/adr/R-POL-002) ---
+
+needs_opa = pytest.mark.skipif(shutil.which("opa") is None, reason="opa not on PATH")
+
+
+def _dummy_sign(data: bytes) -> bytes:
+    return b"sig"
+
+
+async def _fresh_project_with_agent(
+    session, *, policy_yaml="version: 1\n", bundle=None
+):
+    """A project under the default org with one agent, isolated from the seeded
+    default project (which carries seeded agents)."""
+    import uuid
+
+    from hexgate_api.constants import DEFAULT_ORG_ID
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.models import Agent, Project
+
+    proj = Project(
+        id=str(uuid.uuid4()), org_id=DEFAULT_ORG_ID, name=f"mod-{uuid.uuid4().hex[:8]}"
+    )
+    session.add(proj)
+    agent = Agent(
+        id=new_id(Agent),
+        project_id=proj.id,
+        name="a1",
+        agent_yaml="",
+        policy_yaml=policy_yaml,
+        system_md="",
+    )
+    if bundle is not None:
+        agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = bundle
+    session.add(agent)
+    await session.commit()
+    await session.refresh(proj)
+    await session.refresh(agent)
+    return proj, agent
+
+
+async def test_is_modular_flips_on_first_role_binding(session_factory):
+    from hexgate_api.features.policy_modules import service as pm
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        assert await pm.is_modular(s, proj.id) is False
+        await pm.set_roles(s, project_id=proj.id, roles={"default": []})
+        assert await pm.is_modular(s, proj.id) is True
+
+
+async def test_resolved_policy_yaml_is_inline_roles_shape(session_factory):
+    import yaml
+
+    from hexgate_api.features.policy_modules import service as pm
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(
+            s,
+            project_id=proj.id,
+            roles={"default": ["read_only"], "billing": ["read_only"]},
+        )
+        text = await pm.resolved_policy_yaml(s, proj.id)
+
+    doc = yaml.safe_load(text)
+    assert set(doc["roles"]) == {"default", "billing"}
+    assert "view_orders" in doc["roles"]["billing"]["tools"]
+
+
+async def test_bundle_for_agent_routes_by_mode(session_factory, monkeypatch):
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.policy_modules import service as pm
+
+    captured: list[str] = []
+
+    def fake_compile(policy_yaml, sign):
+        captured.append(policy_yaml)
+        return (b"w", "m", b"s")
+
+    monkeypatch.setattr(asvc, "compile_bundle", fake_compile)
+
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(s, policy_yaml="version: 1\n")
+        # classic: no role bindings -> compile from the agent's own policy_yaml
+        await asvc.bundle_for_agent(s, agent, _dummy_sign)
+        assert captured[-1] == "version: 1\n"
+
+        # make modular -> compile from the resolved role-keyed policy instead
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+        await asvc.bundle_for_agent(s, agent, _dummy_sign)
+        assert "roles:" in captured[-1]
+        assert "view_orders" in captured[-1]
+
+
+async def test_recompile_project_fans_out_to_every_agent(session_factory, monkeypatch):
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import Agent
+
+    monkeypatch.setattr(
+        asvc, "compile_bundle", lambda py, sign: (b"WASM", "MANI", b"SIG")
+    )
+
+    async with session_factory() as s:
+        proj, a1 = await _fresh_project_with_agent(s)
+        a2 = Agent(
+            id=new_id(Agent),
+            project_id=proj.id,
+            name="a2",
+            agent_yaml="",
+            policy_yaml="version: 1\n",
+            system_md="",
+        )
+        s.add(a2)
+        await s.commit()
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 2
+        for a in (a1, a2):
+            await s.refresh(a)
+            assert a.compiled_wasm == b"WASM"
+
+
+async def test_recompile_project_noop_leaves_bundles_when_unresolvable(session_factory):
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.policy_modules import service as pm
+
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(
+            s, bundle=(b"OLD", "OLDMANI", b"OLDSIG")
+        )
+        # role imports a capability that doesn't exist -> project won't resolve
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["nonexistent"]})
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n is None  # modular but couldn't build -> signal "not built"
+        await s.refresh(agent)
+        assert agent.compiled_wasm == b"OLD"  # last-good bundle untouched
+
+
+def _capture_compile(monkeypatch, ret=(b"w", "m", b"s")):
+    import hexgate_api.features.agents.service as asvc
+
+    captured: list[str] = []
+
+    def fake(policy_yaml, sign):
+        captured.append(policy_yaml)
+        return ret
+
+    monkeypatch.setattr(asvc, "compile_bundle", fake)
+    return captured
+
+
+async def test_classic_project_recompiles_from_policy_yaml(
+    session_factory, monkeypatch
+):
+    import hexgate_api.features.agents.service as asvc
+
+    captured = _capture_compile(monkeypatch)
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(
+            s, policy_yaml="version: 1\n# classic\n"
+        )
+        # classic: recompile_project rebuilds each agent from its own policy_yaml
+        assert await asvc.recompile_project(s, proj.id, _dummy_sign) == 1
+        assert captured[-1] == "version: 1\n# classic\n"
+
+
+async def test_update_agent_does_not_blank_a_modular_bundle_when_unresolvable(
+    session_factory,
+):
+    # R-POL-002 fail-safe: editing an agent while the project's modules don't
+    # resolve must leave the last-good bundle enforced, not wipe it.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.policy_modules import service as pm
+
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(
+            s, bundle=(b"LIVE", "MANI", b"SIG")
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["nonexistent"]})
+
+        updated = await asvc.update_agent(
+            s, proj.id, agent.name, system_md="edited", sign=_dummy_sign
+        )
+        assert updated is not None
+        assert updated.compiled_wasm == b"LIVE"  # untouched despite the edit
+
+
+async def test_modular_to_classic_transition_recompiles_from_policy_yaml(
+    session_factory, monkeypatch
+):
+    # Dropping the last role binding returns the project to classic; agents must
+    # recompile from policy_yaml, not keep enforcing the stale resolved bundle.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.policy_modules import service as pm
+
+    captured = _capture_compile(monkeypatch)
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(
+            s, policy_yaml="version: 1\n# classic\n"
+        )
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+        assert await asvc.recompile_project(s, proj.id, _dummy_sign) == 1
+        assert "roles:" in captured[-1]  # modular: compiled from resolved YAML
+
+        await pm.set_roles(s, project_id=proj.id, roles={})  # unbind -> classic
+        assert await pm.is_modular(s, proj.id) is False
+        assert await asvc.recompile_project(s, proj.id, _dummy_sign) == 1
+        assert captured[-1] == "version: 1\n# classic\n"  # back to policy_yaml
+
+
+@needs_opa
+async def test_modular_bundle_matches_compile_of_resolved_yaml(session_factory, client):
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.agents.compiler import compile_bundle
+    from hexgate_api.features.policy_modules import service as pm
+
+    sign = keystore_mod.keystore.sign
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(s)
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+
+        got = await asvc.bundle_for_agent(s, agent, sign)
+        expected = compile_bundle(await pm.resolved_policy_yaml(s, proj.id), sign)
+
+    assert got is not None and expected is not None
+    assert got[0] == expected[0]  # identical wasm bytes -> same enforced policy
+
+
+async def test_classic_recompile_nulls_bundle_when_policy_fails_to_compile(
+    session_factory, monkeypatch
+):
+    # A classic agent whose own policy_yaml no longer compiles must DROP its
+    # stale bundle (fall back to pydantic), never keep serving a wrong one — the
+    # Agent.compiled_wasm invariant, and the worst case after a modular->classic
+    # unbind. (The other recompile tests stub compile to always succeed.)
+    import hexgate_api.features.agents.service as asvc
+
+    monkeypatch.setattr(asvc, "compile_bundle", lambda py, sign: None)
+    async with session_factory() as s:
+        proj, agent = await _fresh_project_with_agent(s, bundle=(b"STALE", "M", b"S"))
+        # no role bindings -> classic branch
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 1
+        await s.refresh(agent)
+        assert agent.compiled_wasm is None
+        assert agent.bundle_manifest is None
+        assert agent.bundle_signature is None
+
+
+def test_identical_role_put_skips_recompile(client: TestClient, monkeypatch) -> None:
+    # An idempotent PUT /policy-roles (re-saving the same bindings) must not pay
+    # a resolve + opa compile; a real change still recompiles.
+    import hexgate_api.features.agents.service as asvc
+
+    calls = {"n": 0}
+    real = asvc.recompile_project
+
+    async def spy(session, project_id, sign):
+        calls["n"] += 1
+        return await real(session, project_id, sign)
+
+    monkeypatch.setattr(asvc, "recompile_project", spy)
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    body = {"roles": {"default": ["read_only"]}}
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=body).status_code == 200
+    after_change = calls["n"]
+    assert after_change >= 1  # a real change recompiled
+    # identical re-save -> no recompile
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=body).status_code == 200
+    assert calls["n"] == after_change
+
+
+def test_reordered_role_put_skips_recompile(client: TestClient, monkeypatch) -> None:
+    # Re-saving the same imports in a different order is not a change -> no
+    # recompile (the comparison is order-insensitive).
+    import hexgate_api.features.agents.service as asvc
+
+    calls = {"n": 0}
+    real = asvc.recompile_project
+
+    async def spy(session, project_id, sign):
+        calls["n"] += 1
+        return await real(session, project_id, sign)
+
+    monkeypatch.setattr(asvc, "recompile_project", spy)
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    b1 = {"roles": {"billing": ["read_only", "payments"]}}
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=b1).status_code == 200
+    after_change = calls["n"]
+    assert after_change >= 1
+    b2 = {"roles": {"billing": ["payments", "read_only"]}}  # same set, reordered
+    assert client.put(f"/v1/projects/{pid}/policy-roles", json=b2).status_code == 200
+    assert calls["n"] == after_change  # not recompiled
+
+
+# --- review fixes: fail-closed on modular flips / deletes -------------------
+
+
+def test_delete_capability_still_imported_is_409(client: TestClient) -> None:
+    # Deleting a capability a role still imports must 409, not silently succeed
+    # and leave every agent enforcing the old (still-granting) bundle.
+    pid = _project(client)
+    _seed_bundle(client, pid)  # 'billing' imports read_only + payments
+    r = client.delete(f"/v1/projects/{pid}/policy-modules/capability/payments")
+    assert r.status_code == 409, r.text
+    rows = client.get(f"/v1/projects/{pid}/policy-modules").json()
+    assert any(m["path"] == "payments" for m in rows)  # not deleted
+    # Removing it from the binding first makes the delete succeed.
+    client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={"roles": {"default": ["read_only"], "billing": ["read_only"]}},
+    )
+    assert (
+        client.delete(
+            f"/v1/projects/{pid}/policy-modules/capability/payments"
+        ).status_code
+        == 204
+    )
+
+
+def test_flip_to_modular_with_unresolvable_roles_is_rejected(
+    client: TestClient,
+) -> None:
+    # Binding a role that imports an unknown capability would flip the project
+    # modular while it can't resolve -> reject and stay classic.
+    pid = _project(client)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["nope"]}}
+    )
+    assert r.status_code == 409, r.text
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {}
+
+
+async def test_flip_to_modular_rejected_when_bundle_cannot_build(
+    session_factory, client: TestClient, monkeypatch
+) -> None:
+    # The flip resolves fine but the bundle can't compile (opa down). We must
+    # reject + roll back rather than leave is_modular True with the agent still
+    # on its now-wrong classic bundle.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.models import Agent
+
+    monkeypatch.setattr(asvc, "compile_bundle", lambda py, sign: None)  # opa "down"
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    async with session_factory() as s:
+        agent = Agent(
+            id=new_id(Agent),
+            project_id=pid,
+            name="a1",
+            agent_yaml="",
+            policy_yaml="version: 1\n",
+            system_md="",
+        )
+        agent.compiled_wasm, agent.bundle_manifest, agent.bundle_signature = (
+            b"CLASSIC",
+            "M",
+            b"S",
+        )
+        s.add(agent)
+        await s.commit()
+
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )
+    assert r.status_code == 409, r.text
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {}
+
+    async with session_factory() as s:
+        from sqlmodel import select
+
+        from hexgate_api.models import Agent as A
+
+        row = (await s.exec(select(A).where(A.project_id == pid))).first()
+        assert row.compiled_wasm == b"CLASSIC"  # stale classic bundle left intact
+
+
+async def test_register_into_modular_project_seeds_deny_all_fallback(
+    session_factory, monkeypatch
+) -> None:
+    # A new agent in a modular project must fall back to deny-all (not a
+    # permissive tool-derived starter) if the modular bundle can't be served.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.features.agents.compiler import DENY_ALL_POLICY_YAML
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.schemas import (
+        AgentFramework,
+        AgentManifest,
+        InputSchema,
+        ToolDefinition,
+    )
+
+    monkeypatch.setattr(asvc, "compile_bundle", lambda py, sign: (b"W", "M", b"S"))
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["read_only"]})
+
+        manifest = AgentManifest(
+            name="newbot",
+            framework=AgentFramework.LANGCHAIN,
+            tools=[
+                ToolDefinition(
+                    name="delete_thing",  # write-shape: permissive under the starter
+                    description=None,
+                    input_schema=InputSchema(properties={}, required=[]),
+                )
+            ],
+        )
+        _, created = await asvc.register_manifest(
+            s, proj.id, manifest, sign=_dummy_sign
+        )
+        assert created
+        agent = await asvc.get_agent(s, proj.id, "newbot")
+        assert agent is not None
+        assert agent.policy_yaml == DENY_ALL_POLICY_YAML
+
+
+def test_identical_module_put_skips_recompile(client: TestClient, monkeypatch) -> None:
+    # Re-PUTting byte-identical module content must not pay a recompile; a real
+    # content change still does.
+    import hexgate_api.features.agents.service as asvc
+
+    calls = {"n": 0}
+    real = asvc.recompile_project
+
+    async def spy(session, project_id, sign):
+        calls["n"] += 1
+        return await real(session, project_id, sign)
+
+    monkeypatch.setattr(asvc, "recompile_project", spy)
+
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    client.put(
+        f"/v1/projects/{pid}/policy-roles", json={"roles": {"default": ["read_only"]}}
+    )  # modular now
+    base = calls["n"]
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)  # identical
+    assert calls["n"] == base  # no recompile
+    _put_module(
+        client,
+        pid,
+        "capability",
+        "read_only",
+        "tools:\n  view_orders: { mode: allow }\n  list_orders: { mode: allow }\n",
+    )  # changed
+    assert calls["n"] == base + 1
+
+
+async def test_classic_recompile_memoizes_identical_policies(
+    session_factory, monkeypatch
+) -> None:
+    # Classic recompile shells out to opa once per DISTINCT policy, not once per
+    # agent — agents that share a policy compile a single time.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.models import Agent
+
+    calls = {"n": 0}
+
+    def fake(policy_yaml, sign):
+        calls["n"] += 1
+        return (b"W", "M", b"S")
+
+    monkeypatch.setattr(asvc, "compile_bundle", fake)
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s, policy_yaml="version: 1\n# same\n")
+        for name in ("a2", "a3"):
+            s.add(
+                Agent(
+                    id=new_id(Agent),
+                    project_id=proj.id,
+                    name=name,
+                    agent_yaml="",
+                    policy_yaml="version: 1\n# same\n",
+                    system_md="",
+                )
+            )
+        await s.commit()
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 3  # all three agents got a bundle
+        assert calls["n"] == 1  # ...from a single opa compile (memoized)
+
+
+# --- (role, agent) matrix ---------------------------------------------------
+
+
+def test_matrix_binding_resolves_per_agent(client: TestClient) -> None:
+    # A named agent sees its own column; an unnamed agent falls back to "*".
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    _put_module(client, pid, "capability", "payments", PAYMENTS)
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={
+            "roles": {
+                "member": {
+                    "*": ["read_only"],
+                    "billing_bot": ["read_only", "payments"],
+                }
+            }
+        },
+    )
+    assert r.status_code == 200, r.text
+    # Round-trips as the matrix.
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
+        "member": {"*": ["read_only"], "billing_bot": ["read_only", "payments"]}
+    }
+
+    billing = client.get(f"/v1/projects/{pid}/policy/resolve?agent=billing_bot").json()[
+        "roles"
+    ]["member"]["tools"]
+    assert "refund_order" in billing  # its own column grants payments
+
+    generic = client.get(f"/v1/projects/{pid}/policy/resolve?agent=triage_bot").json()[
+        "roles"
+    ]["member"]["tools"]
+    assert "refund_order" not in generic  # unnamed agent -> "*" -> read_only only
+
+
+def test_default_agent_sentinel_matches_sdk() -> None:
+    # The platform keeps its own "*" constant (to avoid importing the SDK at
+    # module load); guard against it drifting from the SDK's DEFAULT_AGENT.
+    from hexgate.security import DEFAULT_AGENT as SDK_DEFAULT_AGENT
+
+    from hexgate_api.features.policy_modules.service import DEFAULT_AGENT
+
+    assert DEFAULT_AGENT == SDK_DEFAULT_AGENT
+
+
+def test_named_agent_column_with_unknown_capability_is_rejected(
+    client: TestClient,
+) -> None:
+    # A named-agent cell importing a capability that doesn't exist must be
+    # rejected at write time — not accepted (because "*" resolves) and then
+    # silently fail to compile, leaving stored bindings diverged from bundles.
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    # Make it modular first with a valid binding.
+    assert (
+        client.put(
+            f"/v1/projects/{pid}/policy-roles",
+            json={"roles": {"member": {"*": ["read_only"]}}},
+        ).status_code
+        == 200
+    )
+    # Now a named agent imports an unknown capability — "*" still resolves, but
+    # billing_bot's column does not.
+    r = client.put(
+        f"/v1/projects/{pid}/policy-roles",
+        json={
+            "roles": {"member": {"*": ["read_only"], "billing_bot": ["nonexistent"]}}
+        },
+    )
+    assert r.status_code == 409, r.text
+    # Rolled back to the last valid binding.
+    assert client.get(f"/v1/projects/{pid}/policy-roles").json()["roles"] == {
+        "member": {"*": ["read_only"]}
+    }
+
+
+async def test_recompile_builds_distinct_bundles_per_agent(
+    session_factory, monkeypatch
+) -> None:
+    # Two agents with different columns compile to different bundles (the yaml
+    # each agent resolves to differs), fanned out per agent.
+    import hexgate_api.features.agents.service as asvc
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import Agent
+
+    monkeypatch.setattr(
+        asvc, "compile_bundle", lambda py, sign: (py.encode(), "M", b"S")
+    )  # echo the resolved yaml as the wasm bytes so we can compare
+
+    async with session_factory() as s:
+        proj, billing = await _fresh_project_with_agent(s)  # agent name "a1"
+        billing.name = "billing_bot"
+        s.add(billing)
+        triage = Agent(
+            id=new_id(Agent),
+            project_id=proj.id,
+            name="triage_bot",
+            agent_yaml="",
+            policy_yaml="version: 1\n",
+            system_md="",
+        )
+        s.add(triage)
+        await s.commit()
+
+        await pm.upsert_module(
+            s,
+            project_id=proj.id,
+            tier="capability",
+            path="read_only",
+            content=READ_ONLY,
+        )
+        await pm.upsert_module(
+            s, project_id=proj.id, tier="capability", path="payments", content=PAYMENTS
+        )
+        await pm.set_roles(
+            s,
+            project_id=proj.id,
+            roles={
+                "default": {
+                    "billing_bot": ["read_only", "payments"],
+                    "triage_bot": ["read_only"],
+                }
+            },
+        )
+
+        n = await asvc.recompile_project(s, proj.id, _dummy_sign)
+        assert n == 2
+        await s.refresh(billing)
+        await s.refresh(triage)
+        # billing_bot's bundle carries refund_order; triage_bot's does not.
+        assert b"refund_order" in billing.compiled_wasm
+        assert b"refund_order" not in triage.compiled_wasm
+
+
+def test_capability_deny_put_rejected_on_modular_project(client: TestClient) -> None:
+    # PUT-ing a capability with a deny into a modular project must 409 (the linker
+    # rejects it at resolve), not store an uncomposable module that silently keeps
+    # agents on the old bundle.
+    pid = _project(client)
+    _put_module(client, pid, "capability", "read_only", READ_ONLY)
+    assert (
+        client.put(
+            f"/v1/projects/{pid}/policy-roles",
+            json={"roles": {"default": ["read_only"]}},
+        ).status_code
+        == 200
+    )
+    r = client.put(
+        f"/v1/projects/{pid}/policy-modules/capability/bad",
+        json={"content": "tools:\n  x: { mode: deny }\n"},
+    )
+    assert r.status_code == 409, r.text
+    # rolled back — the newly-created module was removed.
+    paths = {
+        (m["tier"], m["path"])
+        for m in client.get(f"/v1/projects/{pid}/policy-modules").json()
+    }
+    assert ("capability", "bad") not in paths
+
+
+async def test_resolves_false_on_unparseable_stored_module(session_factory) -> None:
+    # A stored module that no longer parses must make resolves() return False
+    # (→ 409 on a write), never raise (→ 500). Regression guard: _sdk_inputs
+    # re-parses stored modules and must be inside resolves()' try.
+    from hexgate_api.core.ids import new_id
+    from hexgate_api.features.policy_modules import service as pm
+    from hexgate_api.models import PolicyModule
+
+    async with session_factory() as s:
+        proj, _ = await _fresh_project_with_agent(s)
+        # Valid YAML, but a list — not a valid AgentPolicy (model_validate raises).
+        s.add(
+            PolicyModule(
+                id=new_id(PolicyModule),
+                project_id=proj.id,
+                tier="capability",
+                path="broken",
+                content="- not\n- a\n- policy\n",
+                content_hash="x",
+            )
+        )
+        await pm.set_roles(s, project_id=proj.id, roles={"default": ["broken"]})
+        await s.commit()
+        assert await pm.resolves(s, proj.id) is False  # must not raise

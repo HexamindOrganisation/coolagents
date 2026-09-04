@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from hexgate.audit import AuditEvent
-from hexgate.tracing import _senders
+from hexgate.tracing import _senders, semconv
 from hexgate.runtime.context import HexgateContext
 from hexgate.security.decision import DecisionOutcome, Verdict
 from hexgate.security.enforcer import PolicyEnforcer
@@ -68,7 +68,7 @@ async def test_sender_with_user_populates_envelope_from_user() -> None:
         decision = enforcer.decide("read_file", {})
     ev = sender.events[0]
     assert decision.user_roles == ("analyst",)
-    assert ev.as_payload()["user_roles"] == ["analyst"]
+    assert ev.span_attributes()[semconv.USER_ROLES] == ["analyst"]
     assert ev.user_id == "alice"
     assert ev.session_id == "sess_42"
     assert ev.decision is decision  # same Decision instance wrapped
@@ -116,8 +116,8 @@ async def test_attribute_mutation_after_decide_does_not_alter_audit_snapshot() -
 
 
 async def test_no_attributes_emits_an_empty_bag() -> None:
-    """HexgateContext.attributes defaults to {}; as_payload normalizes that to
-    None on the wire (see tests/audit/test_event.py)."""
+    """HexgateContext.attributes defaults to {}; span_attributes leaves the
+    attribute out of the span entirely (see tests/audit/test_event.py)."""
     sender = _CapturingSender()
     enforcer = PolicyEnforcer(_StubEngine(), agent_name="r", audit_sender=sender)
     async with HexgateContext(user_id="alice", user_roles=["analyst"]):
@@ -166,9 +166,9 @@ async def test_audited_decision_carries_the_full_role_set_and_deciding_role() ->
     assert decision.deciding_role == "billing"
 
     # ...and both reach the wire in caller order.
-    wire = sender.events[0].as_payload()
-    assert wire["user_roles"] == ["support", "billing"]
-    assert wire["deciding_role"] == "billing"
+    wire = sender.events[0].span_attributes()
+    assert wire[semconv.USER_ROLES] == ["support", "billing"]
+    assert wire[semconv.DECIDING_ROLE] == "billing"
 
 
 async def test_audited_deny_records_no_deciding_role() -> None:
@@ -181,6 +181,6 @@ async def test_audited_deny_records_no_deciding_role() -> None:
     assert decision.deciding_role is None
 
     # None → "" on the wire: the platform column is a non-null String.
-    wire = sender.events[0].as_payload()
-    assert wire["deciding_role"] == ""
-    assert wire["user_roles"] == ["support", "billing"]
+    wire = sender.events[0].span_attributes()
+    assert wire[semconv.DECIDING_ROLE] == ""
+    assert wire[semconv.USER_ROLES] == ["support", "billing"]
