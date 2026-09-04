@@ -140,6 +140,11 @@ def test_negative_run_counter_rejected() -> None:
     assert "run_tool_calls" in str(exc.value)
 
 
+# The cross-package run-attribution contract — the SDK's real span attributes
+# decoded by the real enricher — lives in tests/jobs/enricher/test_mapping.py,
+# where the span builders are.
+
+
 # ---------------------------------------------------------------------------
 # Endpoint behaviour — auth + ClickHouse stubbed
 # ---------------------------------------------------------------------------

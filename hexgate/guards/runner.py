@@ -39,7 +39,12 @@ from hexgate.guards.types import (
 )
 from hexgate.runtime.context import get_current_context
 from hexgate.runtime.run_facts import get_run_facts
-from hexgate.security.decision import Decision, DecisionOutcome, Verdict
+from hexgate.security.decision import (
+    Decision,
+    DecisionOutcome,
+    RunAttribution,
+    Verdict,
+)
 
 if TYPE_CHECKING:
     from hexgate.approvals import ApprovalHandler
@@ -168,6 +173,10 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
     still cannot see the input the guard objected to. A DENY halt is marked
     ``guard_denied`` so it is distinguishable from a real policy denial to both
     the model and any trail consumer.
+
+    Run facts are read here, not threaded down from ``decide()``: a pre-guard
+    halt fires before any snapshot exists, and a post-guard halt fires after
+    the call was counted.
     """
     # A guard halt has no policy-deciding role (the guard decided, not a role),
     # so deciding_role stays None; user_roles carries the caller's roles.
@@ -178,6 +187,9 @@ def _halt_to_decision(halt: Halt, call: ToolCall) -> Decision:
         tool_name=call.tool_name,
         user_roles=user_roles,
         arguments=dict(call.args),
+        # Shares a run_id with the decision it interrupts, so a per-run
+        # timeline keeps the row explaining why the run stopped.
+        run=RunAttribution.from_namespace(get_run_facts().as_namespace(call.tool_name)),
     )
     if halt.outcome is DecisionOutcome.DENY:
         decision = replace(decision, error_type="guard_denied")

@@ -88,10 +88,10 @@ def evaluate_tool_call(
 ) -> Verdict:
     """Return a :class:`Verdict` for a proposed tool call (pydantic engine).
 
-    Evaluates the tool's ``constraints`` list against the invocation's
-    arguments (see :mod:`hexgate.security.constraints` for the grammar).
-    Every constraint must pass for the call to authorize — fail-closed by
-    design. A path denial carries a machine-readable ``hint`` so the host
+    Evaluates the policy's own ``constraints`` (which apply to every tool)
+    followed by the tool's, against the invocation's arguments (see
+    :mod:`hexgate.security.constraints` for the grammar). Every constraint must
+    pass for the call to authorize — fail-closed by design. A path denial carries a machine-readable ``hint`` so the host
     can tell the model what scope it stayed within.
 
     Returns rather than raises; :func:`authorize_tool_call` wraps this for
@@ -109,7 +109,9 @@ def evaluate_tool_call(
 
     try:
         check_constraints(
-            tool_policy.constraints,
+            # Policy-level first, so a run-budget denial is the one reported.
+            # Order is all it affects — every constraint must pass either way.
+            [*policy.constraints, *tool_policy.constraints],
             arguments,
             tool_name,
             role=role,

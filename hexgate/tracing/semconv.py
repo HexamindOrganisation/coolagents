@@ -60,6 +60,18 @@ HINT = "sec_ai.hint"
 ARGUMENTS = "sec_ai.arguments"
 ATTRIBUTES = "sec_ai.attributes"
 
+# --- Run attribution ------------------------------------------------------------
+# The in-process ``run.*`` tally at the moment of the decision. RUN_ID also
+# rides SCOPE_USAGE spans, so a model call joins the run it belongs to.
+# Omitted, never sent empty, outside a run scope: OTLP attributes cannot
+# carry null, and the enricher's event models type run_id as ``UUID | None``.
+RUN_ID = "sec_ai.run_id"
+RUN_TOOL_CALLS = "sec_ai.run_tool_calls"
+RUN_LLM_CALLS = "sec_ai.run_llm_calls"
+RUN_DENIALS = "sec_ai.run_denials"
+RUN_TOTAL_TOKENS = "sec_ai.run_total_tokens"
+RUN_ELAPSED_MS = "sec_ai.run_elapsed_ms"
+
 # --- LLM usage spans (SCOPE_USAGE) ----------------------------------------------
 # Official OTel GenAI semconv names — never coin new gen_ai.* names ourselves.
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"

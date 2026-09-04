@@ -32,13 +32,20 @@ class LlmUsageEvent:
     session_id: str = ""
     user_id: str = ""
     error_code: str | None = None  # optional error code if status is "error"
+    # Joins this row to the policy_decision rows of the same invocation. ``""``
+    # outside a run scope. A plain field, not a RunAttribution: llm_invocation
+    # carries one run column.
+    run_id: str = ""
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def span_attributes(self) -> dict[str, Any]:
         """Flat span attributes: official ``gen_ai.*`` names for model and
-        token counts, ``sec_ai.*`` for everything Hexgate-specific."""
-        return {
+        token counts, ``sec_ai.*`` for everything Hexgate-specific.
+
+        ``run_id`` is omitted outside a run scope, never sent as ``""`` — see
+        :meth:`hexgate.security.decision.RunAttribution.as_span_attributes`."""
+        attrs: dict[str, Any] = {
             semconv.EVENT_ID: str(self.event_id),
             semconv.AGENT_NAME: self.agent_name,
             semconv.SESSION_ID: self.session_id,
@@ -50,6 +57,9 @@ class LlmUsageEvent:
             semconv.STATUS: self.status,
             semconv.ERROR_CODE: self.error_code or "",
         }
+        if self.run_id:
+            attrs[semconv.RUN_ID] = self.run_id
+        return attrs
 
 
 def emit_llm_usage(
@@ -80,7 +90,9 @@ def emit_llm_usage(
     try:
         # Before the sender check: a token cap must work with no platform
         # attached, or run.total_tokens stays a permanent 0 in local mode.
-        get_run_facts().record_llm_usage(input_tokens, output_tokens)
+        # Bound once, so the tokens and the run_id come from the same object.
+        facts = get_run_facts()
+        facts.record_llm_usage(input_tokens, output_tokens)
 
         sender = configure_usage_sender(api_key)
         if sender is None:
@@ -99,6 +111,7 @@ def emit_llm_usage(
                 else "",
                 user_id=context.user_id if context is not None else "",
                 error_code=error_code,
+                run_id=facts.id,
             )
         )
     except Exception:

@@ -12,12 +12,16 @@ from collections.abc import Callable
 import pytest
 
 from hexgate.security.decision import (
+    DETACHED_RUN,
     Decision,
     DecisionOutcome,
+    RunAttribution,
     Verdict,
     combine_role_verdicts,
 )
 from hexgate.runtime.roles import MAX_EVALUATED_ROLES
+from hexgate.runtime.run_facts import RunFacts
+from hexgate.tracing import semconv
 
 
 def _deny_decision() -> Decision:
@@ -454,3 +458,123 @@ def test_combine_rejects_an_empty_role_list() -> None:
 
     with pytest.raises(ValueError, match="at least one role"):
         combine_role_verdicts([], evaluate)
+
+
+# --- RunAttribution ---------------------------------------------------------
+#
+# The one place that knows the wire field names, the seconds→ms conversion, and
+# the ``""`` → ``None`` rule for run_id.
+
+
+def _facts_with(tool_calls: int = 0, denials: int = 0, tokens: int = 0) -> RunFacts:
+    facts = RunFacts(id="run-1", agent="agent-1")
+    for _ in range(tool_calls):
+        facts.record_execution("read_file")
+    for _ in range(denials):
+        facts.record_denial()
+    if tokens:
+        facts.record_llm_usage(tokens, 0)
+    return facts
+
+
+def test_run_attribution_projects_the_namespace() -> None:
+    facts = _facts_with(tool_calls=2, denials=1, tokens=7)
+
+    run = RunAttribution.from_namespace(facts.as_namespace("read_file"))
+
+    assert run.run_id == "run-1"
+    assert run.tool_calls == 2
+    assert run.denials == 1
+    assert run.llm_calls == 1
+    assert run.total_tokens == 7
+
+
+def test_run_attribution_converts_elapsed_seconds_to_truncated_milliseconds() -> None:
+    """The column is UInt32 ms; the namespace is a float."""
+    run = RunAttribution.from_namespace({"id": "r", "elapsed_seconds": 1.2345})
+
+    assert run.elapsed_ms == 1234
+
+
+def test_run_attribution_of_no_namespace_is_the_detached_singleton() -> None:
+    assert RunAttribution.from_namespace(None) is DETACHED_RUN
+    assert RunAttribution.from_namespace({}) is DETACHED_RUN
+
+
+def test_run_attribution_of_detached_facts_reads_zeros_and_no_id() -> None:
+    """A detached run is a value, not an absence."""
+    from hexgate.runtime.run_facts import DETACHED
+
+    run = RunAttribution.from_namespace(DETACHED.as_namespace("read_file"))
+
+    assert run.run_id == ""
+    assert (run.tool_calls, run.denials, run.total_tokens, run.elapsed_ms) == (
+        0,
+        0,
+        0,
+        0,
+    )
+
+
+def test_run_attribution_omits_run_id_rather_than_sending_it_empty() -> None:
+    """The enricher validates "" against ``UUID | None`` and DLQs the span, so
+    an empty string loses the whole record — not just the attribution — for
+    every decision made outside a run scope. OTLP has no null to send instead,
+    so the attribute is left off entirely."""
+    attrs = DETACHED_RUN.as_span_attributes()
+
+    assert semconv.RUN_ID not in attrs
+    # The counters still travel: zero is a tally, not an absence.
+    assert attrs[semconv.RUN_TOOL_CALLS] == 0
+
+
+def test_run_attribution_attribute_names_are_the_semconv_run_names() -> None:
+    """Mirrors what the enricher's ``_run_fields`` decodes. Neither side
+    forbids extras, so a rename is silently dropped rather than rejected."""
+    assert set(RunAttribution(run_id="run-1").as_span_attributes()) == {
+        semconv.RUN_ID,
+        semconv.RUN_TOOL_CALLS,
+        semconv.RUN_LLM_CALLS,
+        semconv.RUN_DENIALS,
+        semconv.RUN_TOTAL_TOKENS,
+        semconv.RUN_ELAPSED_MS,
+    }
+
+
+def test_decision_defaults_to_the_detached_run() -> None:
+    assert _deny_decision().run is DETACHED_RUN
+
+
+def test_from_verdict_carries_the_run_through() -> None:
+    run = RunAttribution(run_id="run-9", tool_calls=3)
+
+    decision = Decision.from_verdict(
+        Verdict(outcome=DecisionOutcome.ALLOW),
+        agent_name="a",
+        tool_name="t",
+        run=run,
+    )
+
+    assert decision.run is run
+
+
+def test_error_payload_withholds_the_run_from_the_model() -> None:
+    """A deliberate information-flow boundary, not an oversight.
+
+    The model may learn *that* a constraint tripped — the reason names it —
+    but never the counter's value, i.e. how close it is to its budget.
+    """
+    decision = Decision(
+        outcome=DecisionOutcome.DENY,
+        agent_name="a",
+        tool_name="read_file",
+        reason="constraint failed — run.tool_calls < 20",
+        run=RunAttribution(run_id="run-secret", tool_calls=19, total_tokens=4321),
+    )
+
+    payload = decision.as_error_payload()
+
+    assert not [key for key in payload if key.startswith("run")]
+    rendered = repr(payload) + decision.as_error_message()
+    assert "run-secret" not in rendered
+    assert "4321" not in rendered

@@ -168,3 +168,46 @@ def test_policy_set_construction_rejects_an_unknown_run_path() -> None:
 
 def test_policy_set_construction_accepts_a_registered_run_path() -> None:
     PolicySet({DEFAULT_ROLE_NAME: _policy('run.agent == "billing"')})
+
+
+# --- policy-level constraints ----------------------------------------------
+#
+# Where a run cap is most likely to be written, so the linter has to reach it.
+
+
+def _policy_level(*constraints: str) -> AgentPolicy:
+    return AgentPolicy.model_validate({"constraints": list(constraints)})
+
+
+def test_unknown_path_rejected_at_the_policy_level() -> None:
+    with pytest.raises(PolicySetError, match="unknown run.\\* path 'tool_call'"):
+        _validate(policy=_policy_level("run.tool_call < 5"))
+
+
+def test_too_deep_path_rejected_at_the_policy_level() -> None:
+    with pytest.raises(PolicySetError, match="exactly two segments"):
+        _validate(policy=_policy_level('run.id.value == "x"'))
+
+
+def test_list_path_in_scalar_position_rejected_at_the_policy_level() -> None:
+    with pytest.raises(PolicySetError, match="silently passes"):
+        _validate(policy=_policy_level('run.tools_used not in ["shell"]'))
+
+
+def test_known_path_accepted_at_the_policy_level() -> None:
+    _validate(policy=_policy_level("run.tool_calls < 20"))
+
+
+def test_inherited_policy_level_constraint_is_validated() -> None:
+    """Validation runs on the resolved map, so a bad ref cannot hide in a mixin."""
+    from hexgate.security.policy_set import load_policy_map
+
+    with pytest.raises(PolicySetError, match="unknown run.\\* path 'tool_call'"):
+        load_policy_map(
+            {
+                "base": AgentPolicy.model_validate(
+                    {"is_mixin": True, "constraints": ["run.tool_call < 5"]}
+                ),
+                "default": AgentPolicy.model_validate({"inherits": ["base"]}),
+            }
+        )

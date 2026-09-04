@@ -179,8 +179,9 @@ class AuditEvent:
         JSON strings (the caps are defined in serialized-JSON bytes, so the
         capped quantity stays the measured one); the two list fields as native
         string arrays. Absent optional fields are left out rather than sent as
-        ``None`` — OTel attributes can't carry null. The role fields
-        deliberately pass through untouched — see the comment on them below."""
+        ``None`` — OTel attributes can't carry null. The role fields and the
+        ``run.*`` fields deliberately pass through untouched — see the comments
+        on them below."""
         d = self.decision
         attrs: dict[str, Any] = {
             semconv.EVENT_ID: str(self.event_id),
@@ -200,6 +201,9 @@ class AuditEvent:
             semconv.VIOLATIONS: _bounded_violations(d.violations),
             semconv.USER_ID: self.user_id,
             semconv.SESSION_ID: self.session_id,
+            # Neither redacted nor capped — SDK counters, not caller data.
+            # Spread so the attribute names live in one place.
+            **d.run.as_span_attributes(),
         }
         if d.arguments is not None:
             attrs[semconv.ARGUMENTS] = json.dumps(

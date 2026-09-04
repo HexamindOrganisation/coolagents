@@ -87,3 +87,15 @@ def test_occurred_at_defaults_to_an_aware_utc_datetime() -> None:
     ev = _event()
     assert ev.occurred_at.utcoffset() is not None
     assert ev.occurred_at.utcoffset().total_seconds() == 0
+
+
+def test_span_attributes_omit_run_id_never_send_it_empty() -> None:
+    """An empty string is not a UUID: the enricher's validation fails and the
+    span is DLQ'd, losing the record for every model call outside a run scope."""
+    assert semconv.RUN_ID not in _event().span_attributes()
+
+
+def test_span_attributes_carry_the_run_id_when_inside_a_run() -> None:
+    wire = _event(run_id="9c2f1d3e-0000-4000-8000-000000000001").span_attributes()
+
+    assert wire[semconv.RUN_ID] == "9c2f1d3e-0000-4000-8000-000000000001"

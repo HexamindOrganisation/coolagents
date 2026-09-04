@@ -200,11 +200,77 @@ deliberate: an unwired boundary should not brick the agent. The cases:
   `asyncio.gather`, `asyncio.to_thread` and LangChain's own executor all carry
   the run correctly; only a hand-rolled `threading.Thread` loses it.
 
+### What a denied model is told
+
+On a `run.*` denial the model sees the constraint text — `run.tool_calls < 20`
+— so it learns the threshold and that it was crossed. It is never told the
+current counter value, and the run's id and counters are not in the payload the
+model receives. Budget *pressure* is deliberately not surfaced to the agent.
+
 One more, if you consume streams: two `astream()` generators consumed
 round-robin **in the same task** will cross-contaminate, because Python has no
 per-generator context. Consume one at a time, or put each in its own task. (This
 already affects caller identity via `HexgateContext`, so it isn't new to
 `run.*`.)
+
+## Where a constraint can live
+
+Three places, widening in reach:
+
+| Location | Applies to |
+|---|---|
+| `tools.<name>.constraints` | that one tool |
+| `default_policy.constraints` | tools **not** listed under `tools:` |
+| `constraints:` (top level) | **every** tool the role can reach |
+
+`default_policy.constraints` is the common trap. It is the *catch-all* policy,
+not a floor: once a tool is listed under `tools:`, the default no longer applies
+to it, so a run cap written there silently misses every tool you named.
+
+```yaml
+constraints:
+  - run.tool_calls < 20        # applies to read_file AND refund_order
+
+default_policy:
+  mode: deny
+
+tools:
+  read_file:
+    mode: allow
+  refund_order:
+    mode: allow
+    constraints:
+      - args.amount <= 500     # plus this one, on refund_order only
+```
+
+Policy-level constraints can only **narrow**. A tool with `mode: deny` is denied
+before constraints are consulted, so nothing here can grant access.
+
+### Inheritance unions them
+
+Every other field overrides through `inherits:` — a child's `tools` entry
+replaces its parent's. Policy-level constraints are the exception: they
+**accumulate**, so a child cannot drop a fence a mixin declared.
+
+```yaml
+# policies/read_only.yaml
+is_mixin: true
+constraints:
+  - run.tool_calls < 50
+
+# policies/billing.yaml
+inherits: [read_only]
+constraints:
+  - run.elapsed_seconds < 120
+# → both apply. Duplicates across a diamond are collapsed.
+```
+
+<Note>
+  Policy-level constraints belong in a single-file policy. Composed module
+  policies (`policies/boundaries/`, `policies/capabilities/`) reject them at
+  load: the fold composes per-tool rules only, and silently dropping a
+  role-wide fence would be fail-open.
+</Note>
 
 ## Named constants
 

@@ -131,7 +131,20 @@ sec_ai.arguments      '{"path": "/etc/passwd"}'  JSON string; redacted + capped;
 sec_ai.attributes     '{"department": "finance"}' JSON string; caller ABAC bag; absent when empty
 sec_ai.user_id        "alice"              "" when no request context
 sec_ai.session_id     "sess_1"             "" when unset
+
+sec_ai.run_id           "9c2f…"            str(UUID); *absent* outside a run scope
+sec_ai.run_tool_calls   3                  the run.* tally the verdict was evaluated
+sec_ai.run_llm_calls    2                  against — one snapshot per decision, so the
+sec_ai.run_denials      1                  record and the decision cannot disagree
+sec_ai.run_total_tokens 1200
+sec_ai.run_elapsed_ms   4500               run.elapsed_seconds, in ms (UInt32 column)
 ```
+
+The run counters are neither redacted nor capped — they are SDK counters, not
+caller data — and always travel: zero is a meaningful tally. `run_id` is the
+exception: it is **omitted** outside a run scope, never sent as `""`. An empty
+string is not a UUID, so the enricher's `DecisionEvent` validation would fail
+and DLQ the whole span — losing the entire record over an advisory column.
 
 Two shape rules worth knowing: the dict fields travel as **JSON strings**
 (their platform byte caps are defined in serialized-JSON bytes, so the capped

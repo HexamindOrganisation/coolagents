@@ -12,6 +12,15 @@ from hexgate.security.constraints import parse_constraint
 PolicyMode = Literal["allow", "deny", "approval_required"]
 
 
+def _parse_all(constraints: list[str]) -> list[str]:
+    """Parse every constraint at load — a malformed expression is a config
+    error, surfaced at ``model_validate`` time rather than at the first
+    matching tool call."""
+    for constraint in constraints:
+        parse_constraint(constraint)
+    return constraints
+
+
 class BaseToolPolicy(BaseModel):
     """Define the access mode and per-call constraints for a single tool.
 
@@ -29,13 +38,7 @@ class BaseToolPolicy(BaseModel):
     @field_validator("constraints")
     @classmethod
     def _validate_constraint_grammar(cls, value: list[str]) -> list[str]:
-        """Parse every constraint at load — a malformed expression is a config
-        error, surfaced here at ``model_validate`` time rather than lazily at
-        the first matching tool call. Keeps ``models.py`` (document schema) and
-        ``constraints.py`` (expression grammar) jointly the enforced spec."""
-        for constraint in value:
-            parse_constraint(constraint)
-        return value
+        return _parse_all(value)
 
 
 class FileScope(BaseModel):
@@ -123,6 +126,11 @@ class AgentPolicy(BaseModel):
     won't pick it as the effective policy for any HexgateContext scope; it can only
     be referenced via ``inherits``.
 
+    ``constraints`` apply to every tool this role can reach, not just those
+    falling through to ``default_policy`` — the place for a run-wide circuit
+    breaker. Alone among these fields they **union** across ``inherits``:
+    a child dropping a parent's fence would be fail-open.
+
     ``consts`` names reusable values referenced from constraints as
     ``consts.<name>`` (e.g. ``args.amount <= consts.max_refund``). Merged
     through ``inherits`` like ``tools`` — put shared constants in a mixin.
@@ -150,10 +158,20 @@ class AgentPolicy(BaseModel):
     inherits: list[str] = Field(default_factory=list)
     is_mixin: bool = False
     default_policy: BaseToolPolicy = Field(default_factory=BaseToolPolicy)
+    # Applied to *every* tool this role can reach, before the tool's own.
+    # Unlike ``default_policy.constraints``, which only reaches tools that fall
+    # through to the default. Can only narrow: ``mode: deny`` short-circuits
+    # before constraints on both engines.
+    constraints: list[str] = Field(default_factory=list)
     tools: dict[str, ToolPolicy] = Field(default_factory=dict)
     consts: dict[str, Any] = Field(default_factory=dict)
     admission: BaseToolPolicy | None = None
     agents: dict[str, AgentTargetPolicy] = Field(default_factory=dict)
+
+    @field_validator("constraints")
+    @classmethod
+    def _validate_constraint_grammar(cls, value: list[str]) -> list[str]:
+        return _parse_all(value)
 
     @field_validator("tools")
     @classmethod

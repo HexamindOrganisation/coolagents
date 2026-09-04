@@ -778,3 +778,8 @@ def test_when_a_written_column_is_missing_then_verify_schema_raises() -> None:
     with pytest.raises(SchemaOutOfDate) as exc:
         llm_invocations.verify_schema(_describing(columns))
     assert exc.value.missing == {"llm_invocation": ["input_tokens"]}
+
+
+# The cross-package run_id contract — the SDK's real span attributes decoded
+# by the real enricher — lives in tests/jobs/enricher/test_mapping.py, where
+# the span builders are.

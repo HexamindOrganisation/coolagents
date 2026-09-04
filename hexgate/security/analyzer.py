@@ -381,6 +381,10 @@ def _drift(
       * capability drift is a dead grant -> warning.
       * a boundary deny's arg typo inverts (``not(<missing> ...)`` folds to allow)
         -> fail-open -> error; other arg drift -> warning.
+
+    Policy-level ``constraints`` are not walked: they have no tool to check
+    ``args.*`` against, and ``link()`` rejects the field in a module anyway, so
+    this pipeline never sees one.
     """
     tool_props: dict[str, set[str]] = {
         t.name: set(t.input_schema.properties) for t in manifest.tools
