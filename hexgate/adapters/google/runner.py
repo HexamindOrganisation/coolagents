@@ -4,6 +4,7 @@ active role. Langfuse propagation mirrors HexgateContext identity into spans.
 """
 
 import asyncio
+from collections import OrderedDict
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Generator
@@ -52,12 +53,31 @@ class _HexgateReachPlugin(BasePlugin):
     enforcer.
     """
 
+    # Cap on tracked invocations. after_run_callback clears an invocation's depth
+    # on a normal run, but ADK skips it when the agent loop raises or the caller
+    # stops iterating early, so a shared, long-lived plugin would otherwise leak one
+    # entry per abnormally-terminated run. Bounding the map turns that unbounded
+    # leak into a fixed ceiling: the least-recently-transferred entry is evicted
+    # once this many distinct invocations are in flight (far above real concurrency).
+    _MAX_TRACKED_INVOCATIONS = 4096
+
     def __init__(self, runner: "HexgateRunner") -> None:
         super().__init__(name="hexgate_reach")
         self._runner = runner
         # Handoff depth per invocation (this plugin is shared across runs, unlike
-        # the OpenAI per-run hook), cleared in after_run_callback.
-        self._depth: dict[str, int] = {}
+        # the OpenAI per-run hook). Cleared in after_run_callback; bounded (see the
+        # class constant) so a skipped cleanup on an aborted run can't leak forever.
+        self._depth: OrderedDict[str, int] = OrderedDict()
+
+    def _bump_depth(self, invocation_id: str) -> int:
+        """Increment and return this invocation's handoff depth, keeping the most
+        recently active invocations and evicting the stalest past the cap."""
+        depth = self._depth.get(invocation_id, 0) + 1
+        self._depth[invocation_id] = depth
+        self._depth.move_to_end(invocation_id)
+        while len(self._depth) > self._MAX_TRACKED_INVOCATIONS:
+            self._depth.popitem(last=False)  # evict least-recently-transferred
+        return depth
 
     async def before_tool_callback(self, *, tool, tool_args, tool_context) -> None:
         # A raise here aborts the run, so after_run_callback never fires; drop this
@@ -76,10 +96,9 @@ class _HexgateReachPlugin(BasePlugin):
         # transfers in one invocation is the chain depth.
         cap = self._runner._max_handoff_depth
         if is_transfer and cap is not None:
-            inv = tool_context.invocation_id
-            self._depth[inv] = self._depth.get(inv, 0) + 1
-            if self._depth[inv] > cap:
-                raise HandoffDepthExceededError(self._depth[inv], cap)
+            depth = self._bump_depth(tool_context.invocation_id)
+            if depth > cap:
+                raise HandoffDepthExceededError(depth, cap)
         if canonical_name(tool_context.agent_name) != self._runner._agent_name:
             return None  # source is not the governed root; reach from it isn't gated
         if is_transfer:

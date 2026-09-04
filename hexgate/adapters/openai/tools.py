@@ -132,12 +132,21 @@ def wrap_tool(
         # on a handoff-only policy would deny every as-tool with no diagnostic. A
         # policy that declares no via:tool target keeps today's name-gating.
         if reach_target is not None and enforcer.policy.declares_tool_reach():
-            # Decide on the reach key, but keep ``name`` as the call/guard identity
-            # (policy_key), so a guard scoped to the tool's function name still fires.
+            # Decide on the reach key with the same {agent, target, via} reach args
+            # the handoff seam uses (ReachGate._decide), so a reach constraint reads
+            # args.target/args.via identically at both seams. ``name`` stays the
+            # call/guard identity (policy_key), so a guard scoped to the tool's
+            # function name still fires, and the sub-agent still receives its input.
             policy_key = agent_target_key("tool", reach_target)
+            policy_args: dict[str, Any] | None = {
+                "agent": enforcer.agent_name,
+                "target": reach_target,
+                "via": "tool",
+            }
             render_error = _render_reach_error(reach_target)
         else:
             policy_key = None
+            policy_args = None
             render_error = _render_error
 
         def invoke(final: dict[str, Any]) -> Any:
@@ -177,6 +186,7 @@ def wrap_tool(
             invoke=invoke,
             render_error=render_error,
             policy_key=policy_key,
+            policy_args=policy_args,
         )
 
     wrapped = copy.copy(tool)

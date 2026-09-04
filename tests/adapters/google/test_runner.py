@@ -695,6 +695,18 @@ async def test_reach_plugin_enforces_depth_cap_per_invocation(
     assert "inv-1" not in plugin._depth
 
 
+def test_reach_plugin_depth_map_is_bounded() -> None:
+    """ADK skips after_run_callback on an abnormally-terminated run, so the shared
+    depth map must be bounded rather than leaking one entry per aborted run."""
+    plugin = _HexgateReachPlugin(SimpleNamespace())
+    cap = _HexgateReachPlugin._MAX_TRACKED_INVOCATIONS
+    for i in range(cap + 500):
+        plugin._bump_depth(f"inv-{i}")
+    assert len(plugin._depth) == cap
+    assert f"inv-{cap + 499}" in plugin._depth  # most recent retained
+    assert "inv-0" not in plugin._depth  # stalest evicted
+
+
 # ---------------------------------------------------------------------------
 # Usage plugin: merge behavior + HexgateContext contextvar survives into
 # after_model_callback

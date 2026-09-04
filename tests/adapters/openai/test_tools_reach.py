@@ -200,6 +200,60 @@ async def test_name_scoped_guard_fires_on_as_tool_under_reach() -> None:
     assert seen == ["billing"]  # matched by tool name, not agent.tool:billing_bot
 
 
+@pytest.mark.asyncio
+async def test_reach_constraint_reads_reach_args_not_tool_input() -> None:
+    """A constraint on the reach rule sees ``{agent, target, via}`` (as at the
+    handoff seam), not the sub-agent's tool-call payload — so the same rule shape
+    behaves identically at both seams."""
+    calls: list[Any] = []
+    enforcer = _enforcer(
+        {
+            "default_policy": {"mode": "deny"},
+            "agents": {
+                "billing_bot": {
+                    "via": ["tool"],
+                    "mode": "allow",
+                    "constraints": [
+                        'args.target == "billing_bot"',
+                        'args.via == "tool"',
+                    ],
+                }
+            },
+        }
+    )
+    wrapped = wrap_tool(_agent_tool(calls=calls), enforcer)
+
+    result = await wrapped.on_invoke_tool("ctx", '{"query": "balance"}')
+
+    assert result == 'ran-subagent:{"query": "balance"}'
+    assert calls
+
+
+@pytest.mark.asyncio
+async def test_reach_constraint_target_mismatch_denies() -> None:
+    """The reach args are the real decision input, so a constraint that doesn't
+    match the actual target denies (proving the args aren't ignored)."""
+    calls: list[Any] = []
+    enforcer = _enforcer(
+        {
+            "default_policy": {"mode": "deny"},
+            "agents": {
+                "billing_bot": {
+                    "via": ["tool"],
+                    "mode": "allow",
+                    "constraints": ['args.target == "someone_else"'],
+                }
+            },
+        }
+    )
+    wrapped = wrap_tool(_agent_tool(calls=calls), enforcer)
+
+    result = await wrapped.on_invoke_tool("ctx", '{"query": "balance"}')
+
+    assert calls == []
+    assert "[policy_denied]" in result
+
+
 # --- name-gating fallback (no reach declared) — non-breaking -----------------
 
 
