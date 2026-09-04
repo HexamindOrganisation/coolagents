@@ -1,12 +1,15 @@
 """End-to-end verification that HexgatePydanticAgent.run_sync() (1) pulls
 its policy from the live platform, (2) delivers its LLM-usage event even
-with no asyncio event loop anywhere in the process — the exact condition
-AuditSender.emit()'s no-loop fallback exists for — and (3) lands a
-policy_decision row for its tool call.
+with no asyncio event loop anywhere in the process — the sender's span
+export runs on its own worker thread, with no loop affinity — and (3) lands
+a policy_decision row for its tool call.
 
-Requires: `make clickhouse-up` and `make platform-api` running, and
-`HEXGATE_API_KEY` set to a token minted via the dashboard (or the
-platform API directly).
+Requires the full OTLP ingest pipeline — Postgres, ClickHouse, Redpanda,
+`make platform-api-pg`, `make collector-run` and `make enricher-run` — plus
+`HEXGATE_API_KEY` set to a token minted against that Postgres-backed API.
+`make platform-api` (SQLite) is NOT enough: the Collector authenticates
+keys against the `devtoken` table in Postgres. See
+.claude/skills/integration-tests for the exact sequence.
 
 Opt in with: `pytest -m integration`.
 """
@@ -49,9 +52,9 @@ def test_run_sync_with_no_event_loop_delivers_llm_usage_event(
     hexgate_platform_env: HexgatePlatformEnv,
 ) -> None:
     """Regression: run_sync(), called from a plain synchronous test with no
-    asyncio.run() anywhere, used to silently drop its usage event —
-    AuditSender.emit() had no loop to fall back to and just warned once.
-    It now delivers via a bounded, non-daemon background thread instead.
+    asyncio.run() anywhere, used to silently drop its usage event — the
+    pre-OTel AuditSender.emit() had no loop to schedule its POST on. The
+    span exporter's worker thread has no such dependency.
 
     The agent carries one tool (`get_weather`) so the run also produces a
     policy_decision row — TestModel's default `call_tools='all'` calls

@@ -1,9 +1,9 @@
 """audit.configure() — thin wiring onto the shared sender registry.
 
-Generic registry mechanics (idempotency, distinct-key/path isolation,
-HEXGATE_LOCAL_MODE suppression) live in tests/tracing/test_senders.py under
-Design C — this file only checks that audit.py wires the shared registry to
-the right endpoint (/v1/audit/decisions).
+Generic registry mechanics (idempotency, distinct-key isolation,
+HEXGATE_LOCAL_MODE suppression) live in tests/tracing/test_senders.py —
+this file only checks that audit.py wires the shared registry to the OTLP
+endpoint.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ from hexgate.tracing import _senders
 def _isolate_audit_state(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Reset the shared sender registry + clear HEXGATE_* env between tests."""
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
     monkeypatch.delenv("HEXGATE_API_KEY", raising=False)
     monkeypatch.delenv("HEXGATE_API_URL", raising=False)
     monkeypatch.delenv(_senders._LOCAL_MODE_ENV, raising=False)
     yield
     _senders._senders.clear()
-    _senders._logged_local_mode_suppressed.clear()
+    _senders._logged_local_mode_suppressed = False
 
 
 def test_returns_none_when_no_key_anywhere() -> None:
@@ -37,7 +37,7 @@ def test_returns_none_when_no_key_anywhere() -> None:
 def test_explicit_api_key_uses_default_url() -> None:
     sender = audit_mod.configure("explicit_key")
     assert sender is not None
-    assert sender._endpoint == "https://app.hexgate.ai/v1/audit/decisions"
+    assert sender._endpoint == "https://app.hexgate.ai/v1/traces"
 
 
 def test_env_api_key_picked_up_when_not_explicit(
@@ -46,25 +46,25 @@ def test_env_api_key_picked_up_when_not_explicit(
     monkeypatch.setenv("HEXGATE_API_KEY", "env_key")
     sender = audit_mod.configure()
     assert sender is not None
-    assert sender._endpoint == "https://app.hexgate.ai/v1/audit/decisions"
+    assert sender._endpoint == "https://app.hexgate.ai/v1/traces"
 
 
 def test_explicit_api_key_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXGATE_API_KEY", "env_key")
     sender = audit_mod.configure("explicit_key")
-    assert sender._client.headers["Authorization"] == "Bearer explicit_key"
+    assert sender._api_key == "explicit_key"
 
 
 def test_env_base_url_respected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXGATE_API_URL", "https://prod.example.com/")
     sender = audit_mod.configure("k")
-    assert sender._endpoint == "https://prod.example.com/v1/audit/decisions"
+    assert sender._endpoint == "https://prod.example.com/v1/traces"
 
 
 def test_explicit_base_url_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HEXGATE_API_URL", "https://env.example.com")
     sender = audit_mod.configure("k", "https://explicit.example.com")
-    assert sender._endpoint == "https://explicit.example.com/v1/audit/decisions"
+    assert sender._endpoint == "https://explicit.example.com/v1/traces"
 
 
 def test_get_sender_scoped_by_key() -> None:

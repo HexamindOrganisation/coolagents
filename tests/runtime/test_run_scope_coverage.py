@@ -185,10 +185,3 @@ def test_run_streamed_rejoins_rather_than_mints() -> None:
     # background task snapshots the context.
     assert source.index(_OPENS_SCOPE) < source.index("Runner.run_streamed(")
     assert source.index("Runner.run_streamed(") < source.index(_JOINS_SCOPE)
-
-
-def test_run_sync_keeps_the_loop_drain_inside_the_scope() -> None:
-    """The drain pumps a late fire-and-forget audit or usage send; outside the
-    scope those tokens would belong to no run."""
-    source = _source_of("hexgate.adapters.openai.runner", "HexgateRunner", "run_sync")
-    assert source.index(_OPENS_SCOPE) < source.index("_drain_default_loop()")

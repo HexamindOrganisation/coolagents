@@ -5,8 +5,32 @@ from __future__ import annotations
 import os
 
 import pytest
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 from hexgate.runtime.srt import SrtUnavailableError, ensure_srt_available
+from hexgate.tracing import _senders
+
+
+@pytest.fixture(autouse=True)
+def _no_network_span_export(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep every ``AuditSender`` a unit test builds off the network.
+
+    ``AuditSender()`` otherwise wires a real OTLP/HTTP exporter, and any span
+    a test emits through a registry sender is POSTed to the default endpoint
+    (the production Collector) when the sender is flushed or shut down.
+    Swapping the exporter factory for an in-memory one keeps the sender's
+    full pipeline (provider → batch processor → exporter) intact while
+    making the export a no-op. Integration tests opt out (they exist to hit
+    the live pipeline), as does anything marked ``real_span_exporter``."""
+    if "integration" in request.keywords or "real_span_exporter" in request.keywords:
+        return
+    monkeypatch.setattr(
+        _senders.AuditSender, "_new_exporter", lambda self: InMemorySpanExporter()
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:

@@ -6,9 +6,12 @@ Not a test of answer quality — the model is a scripted fake, never a real
 LLM provider — this only proves Hexgate's own plumbing: policy fetch at
 wrap time, tool-call auditing, and usage ingestion.
 
-Requires: `make clickhouse-up` and `make platform-api` running, and
-`HEXGATE_API_KEY` set to a token minted via the dashboard (or the
-platform API directly).
+Requires the full OTLP ingest pipeline — Postgres, ClickHouse, Redpanda,
+`make platform-api-pg`, `make collector-run` and `make enricher-run` — plus
+`HEXGATE_API_KEY` set to a token minted against that Postgres-backed API.
+`make platform-api` (SQLite) is NOT enough: the Collector authenticates
+keys against the `devtoken` table in Postgres. See
+.claude/skills/integration-tests for the exact sequence.
 
 Opt in with: `pytest -m integration`.
 """
