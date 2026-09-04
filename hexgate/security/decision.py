@@ -69,6 +69,22 @@ class PolicyEngine(Protocol):
         attributes: Mapping[str, Any] | None = None,
     ) -> Verdict: ...
 
+    def declares_admission(self) -> bool:
+        """Whether this policy configures admission anywhere.
+
+        The agent gate's opt-in signal: it fires only when this is true, so an
+        agent that never mentions admission is never gated (agent keys are
+        otherwise closed-world). A pydantic engine derives it from the resolved
+        policy; a WASM bundle reads it from its signed manifest (R-AGENT-002)."""
+        ...
+
+    def declares_reach(self) -> bool:
+        """Whether this policy configures agent-to-agent reach anywhere.
+
+        The delegation seam's opt-in signal, the reach counterpart to
+        :meth:`declares_admission` (consumed once handoff interception lands)."""
+        ...
+
 
 # Over the platform's ``DecisionEvent.reason`` max_length the audit event is
 # rejected outright, losing the record for the calls most worth keeping.

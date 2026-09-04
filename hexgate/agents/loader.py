@@ -347,15 +347,17 @@ def _apply_decision_observer(
 def _apply_approval_handler(
     agent: AgentGraph, approval_handler: ApprovalHandler | None
 ) -> AgentGraph:
-    """Re-stamp every :class:`GuardedTool` on ``agent`` with ``approval_handler``.
+    """Re-stamp ``approval_handler`` onto ``agent``'s tools and admission gate.
 
     For code-registered agents whose factories ran ``enforce_policy``
-    internally and never saw the CLI's approval callback. Pass the
-    ``GuardedTool`` itself (not its inner tool) so the idempotent
-    re-wrap branch preserves the existing enforcer. Logs a warning
-    when the agent has no ``GuardedTool`` tools (e.g. registered agent
-    backed by a non-LangChain framework) so the caller knows the
-    handler was silently dropped.
+    internally and never saw the CLI's approval callback. Re-wraps every
+    :class:`GuardedTool` (passing the ``GuardedTool`` itself, not its inner
+    tool, so the idempotent re-wrap preserves the existing enforcer) and
+    rebuilds the admission gate with the handler too — the gate is independent
+    of tools, so it must pick up the handler even for a tool-less agent gated
+    purely by ``admission``. Logs a warning when the agent has no
+    ``GuardedTool`` tools (e.g. a non-LangChain framework) so the caller knows
+    tool approval prompts will not fire; admission approval still works.
     """
     import logging
 
@@ -377,11 +379,26 @@ def _apply_approval_handler(
     if not touched:
         logging.getLogger(__name__).warning(
             "approval_handler was supplied but %r has no GuardedTool tools to apply "
-            "it to; approval prompts will not fire for this agent",
+            "it to; tool approval prompts will not fire for this agent",
             getattr(agent, "name", None) or "agent",
         )
-        return agent
-    return agent.with_tools(rewrapped)
+    # The admission gate is independent of tools, so it must pick up the handler
+    # even for a tool-less (or non-LangChain-tool) agent gated purely by admission.
+    # with_tools threads the existing gate forward, but that gate was built with the
+    # OLD handler (often None), so without re-stamping it an `admission:
+    # approval_required` policy fails closed even though the caller wired a handler.
+    binding = getattr(agent, "_binding", None)
+    gate = getattr(agent, "_agent_gate", None)
+    if not touched and gate is None:
+        return agent  # no tools re-wrapped and no admission gate — nothing to do
+    rebuilt = agent.with_tools(rewrapped)  # rewrapped == agent.tools when untouched
+    if binding is not None and gate is not None:
+        from hexgate.security.agent_gate import resolve_agent_gate
+
+        rebuilt._agent_gate = resolve_agent_gate(
+            binding.enforcer, approval_handler=approval_handler
+        )
+    return rebuilt
 
 
 def resolve_agent_source(name: str, base_dir: str | Path | None = None) -> AgentSource:

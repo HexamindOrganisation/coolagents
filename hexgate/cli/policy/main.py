@@ -564,6 +564,7 @@ def _main_show_rego(args: argparse.Namespace) -> int:
 def _main_resolve(args: argparse.Namespace) -> int:
     """Resolve the local project into effective policy per role and print it."""
     from hexgate.security import (
+        RESOLVED_POLICY_MARKER,
         LinkError,
         effective_policy_by_role,
         load_local_modules,
@@ -623,6 +624,11 @@ def _main_resolve(args: argparse.Namespace) -> int:
         payload = {"roles": effective_policy_by_role(result)}
         roles_shown = sorted(result.by_role)
 
+    # Mark the dump as a resolved artifact so `hexgate policy build` re-loads it
+    # under the resolved context that accepts lowered agent.* keys in tools
+    # (a modular policy with an admission:/agents: block otherwise fails to build).
+    if isinstance(payload, dict):
+        payload[RESOLVED_POLICY_MARKER] = True
     text = yaml.safe_dump(payload, sort_keys=False)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")

@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import cached_property
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from hexgate.security.constraints import parse_constraint
 
@@ -77,18 +77,21 @@ def agent_target_key(via: AgentVia, target: str) -> str:
 def is_agent_reach_key(name: str) -> bool:
     """True for an ``agent.tool:`` / ``agent.handoff:`` reach key.
 
-    Reach is closed-world: an unlisted reach key denies regardless of
-    ``default_policy``. Admission (``agent.run``) is *not* a reach key — it is
-    opt-in, so its absence admits — hence the two are checked separately."""
+    Distinguishes reach keys from admission (``agent.run``) for callers that gate
+    the two differently at the seam. Both are closed-world at the engine
+    (R-AGENT-002): an unlisted agent key denies regardless of ``default_policy``.
+    Opt-in survives only as the gate's ``declares_admission()`` / ``declares_reach()``
+    engagement check, not as an admit-on-absence fallback."""
     return name.startswith(AGENT_REACH_PREFIXES)
 
 
 def is_agent_key(name: str) -> bool:
     """True for any synthetic agent-level key (``agent.run`` or a reach key).
 
-    Used to reserve the ``agent.*`` namespace from authored tools. Enforcement
-    splits the two: :func:`is_agent_reach_key` for the closed-world reach keys,
-    ``agent.run`` for opt-in admission."""
+    Used to reserve the ``agent.*`` namespace from authored tools. Both admission
+    and reach are closed-world at the engine (R-AGENT-002); :func:`is_agent_reach_key`
+    only separates the two for callers that need to tell a handoff/tool reach from
+    admission (e.g. per-adapter warnings), not because they enforce differently."""
     return name == AGENT_RUN_TOOL or is_agent_reach_key(name)
 
 
@@ -135,9 +138,11 @@ class AgentPolicy(BaseModel):
 
     Both lower into synthetic tool keys via :attr:`effective_tools`, which both
     policy engines read, so agent-level rules evaluate through the identical
-    decision path as tools with no engine change. A target not named in ``agents``
-    falls to ``default_policy`` (deny by default), so a listed-``agents`` policy is
-    closed-world for free; the runtime gate refines that fallback in a later PR.
+    decision path as tools with no engine change. Agent keys are closed-world
+    (R-AGENT-002): an unlisted ``agent.run`` / ``agent.<via>:<target>`` denies at
+    the engine rather than falling to ``default_policy``. Whether a gate fires at
+    all is a separate, opt-in signal derived per run from whether the policy
+    declares the block (``declares_admission()`` / ``declares_reach()``).
     """
 
     # frozen: policies are immutable after load (inheritance builds fresh
@@ -158,13 +163,22 @@ class AgentPolicy(BaseModel):
     @field_validator("tools")
     @classmethod
     def _reject_reserved_tool_names(
-        cls, value: dict[str, ToolPolicy]
+        cls, value: dict[str, ToolPolicy], info: ValidationInfo
     ) -> dict[str, ToolPolicy]:
         """Keep the ``agent.*`` key namespace for agent-level gating.
 
         An authored tool named ``agent.run`` / ``agent.tool:x`` / ``agent.handoff:x``
         would collide with a lowered agent rule in :attr:`effective_tools` and
-        silently shadow (or be shadowed by) it. Reject it at load."""
+        silently shadow (or be shadowed by) it. Reject it at load.
+
+        Skipped when validated under a ``{"resolved": True}`` context: a *resolved*
+        policy legitimately carries the lowered ``agent.*`` keys in ``tools`` (the
+        linker's :meth:`resolved` builder puts them there), and it must round-trip
+        back through this loader when a modular agent's bundle is compiled from its
+        resolved YAML (R-POL-002). The guard is an authoring ergonomic — it only
+        needs to fire on hand-written source, not on a machine-resolved artifact."""
+        if info.context and info.context.get("resolved"):
+            return value
         for name in value:
             if is_agent_key(name):
                 raise ValueError(
@@ -172,6 +186,29 @@ class AgentPolicy(BaseModel):
                     "use the 'admission'/'agents' blocks instead"
                 )
         return value
+
+    @classmethod
+    def resolved(
+        cls,
+        *,
+        default_policy: BaseToolPolicy,
+        tools: dict[str, ToolPolicy],
+        consts: dict[str, Any],
+    ) -> "AgentPolicy":
+        """Build a linker-resolved policy directly from folded tool keys.
+
+        The fold composes agent-level blocks into lowered ``agent.*`` keys and
+        stores them alongside ordinary tools, so a resolved policy carries them
+        in ``tools`` rather than in ``admission``/``agents``: per-via divergence
+        across capabilities (a target allowed via one mode, denied via another,
+        or granted different constraints per mode) can't always be reverse-lowered
+        into a single :class:`AgentTargetPolicy`. The reserved-key guard on
+        ``tools`` is an authoring ergonomic that does not apply to this machine
+        path, so this bypasses validation via ``model_construct`` — every value is
+        an already-validated model instance produced by the fold."""
+        return cls.model_construct(
+            default_policy=default_policy, tools=dict(tools), consts=dict(consts)
+        )
 
     def lowered_agent_tools(self) -> dict[str, BaseToolPolicy]:
         """Expand ``admission``/``agents`` into synthetic tool entries.

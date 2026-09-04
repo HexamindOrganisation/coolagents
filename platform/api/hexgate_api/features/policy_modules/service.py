@@ -504,8 +504,12 @@ async def resolved_policy_yaml(
     ``ConstraintParseError`` if the modules don't compose, so callers can leave
     live bundles untouched.
     """
+    from hexgate.security import RESOLVED_POLICY_MARKER
+
     result = await resolve(session, project_id, agent=agent)
-    return yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+    return yaml.safe_dump(
+        {"roles": roles_json(result), RESOLVED_POLICY_MARKER: True}, sort_keys=False
+    )
 
 
 async def resolved_yaml_by_agent(
@@ -518,11 +522,14 @@ async def resolved_yaml_by_agent(
     agent. This loads the SDK inputs once and resolves each agent's column in
     memory. Raises the SDK's link/compose errors if any agent's set doesn't
     compose, so callers keep the last-good bundle (fail-safe)."""
-    from hexgate.security import resolve_for_project
+    from hexgate.security import RESOLVED_POLICY_MARKER, resolve_for_project
 
     boundaries, capabilities, roles = await _sdk_inputs(session, project_id)
     out: dict[str, str] = {}
     for agent in agents:
         result = resolve_for_project(boundaries, capabilities, roles, agent=agent)
-        out[agent] = yaml.safe_dump({"roles": roles_json(result)}, sort_keys=False)
+        out[agent] = yaml.safe_dump(
+            {"roles": roles_json(result), RESOLVED_POLICY_MARKER: True},
+            sort_keys=False,
+        )
     return out

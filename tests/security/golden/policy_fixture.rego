@@ -111,20 +111,10 @@ violations contains `ctx.region in ["EU", "UK"]` if {
     not _p_b7b1e13455
 }
 
-allow if {
-    input.role == "billing"
-    input.tool == "agent.run"
-}
-
 # ---- role: default -----------------------------------------------------
 allow if {
     not input.role in {"billing", "support"}
     input.tool == "web_search"
-}
-
-allow if {
-    not input.role in {"billing", "support"}
-    input.tool == "agent.run"
 }
 
 # ---- role: support -----------------------------------------------------
@@ -149,11 +139,6 @@ violations contains `args.amount <= 500` if {
 allow if {
     input.role == "support"
     input.tool == "read_file"
-}
-
-allow if {
-    input.role == "support"
-    input.tool == "agent.run"
 }
 
 _p_066518c099 if {

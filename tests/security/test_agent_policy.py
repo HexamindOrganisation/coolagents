@@ -176,26 +176,25 @@ def test_unlisted_target_is_closed_world_under_deny_default() -> None:
     assert_denies(_policy(), agent_target_key("handoff", "evil-bot"))
 
 
-def test_admission_is_opt_in_when_unlisted_but_enforced_when_declared() -> None:
-    # agent.run is opt-in: a policy that declares no admission admits (even under a
-    # deny-default), so adding admission to one role never locks out roles without
-    # it. A declared admission still enforces.
-    no_admission = AgentPolicy(default_policy=BaseToolPolicy(mode="deny"))
-    assert_allows(no_admission, AGENT_RUN_TOOL)  # absent → admit, not deny-default
-    declared_deny = AgentPolicy(
-        default_policy=BaseToolPolicy(mode="deny"),
-        admission=BaseToolPolicy(mode="deny"),
-    )
-    assert_denies(declared_deny, AGENT_RUN_TOOL)
+def test_agent_run_is_closed_world_at_the_engine() -> None:
+    # agent.run is closed-world like reach: an unlisted agent.run denies regardless
+    # of default_policy. Opt-in lives at the gate (declares_admission), not here, so
+    # the engine never opt-in-admits (R-AGENT-002).
+    allow_default = AgentPolicy(default_policy=BaseToolPolicy(mode="allow"))
+    assert_denies(allow_default, AGENT_RUN_TOOL)  # closed-world, not default-allow
+    admits = AgentPolicy(admission=BaseToolPolicy(mode="allow"))
+    assert_allows(admits, AGENT_RUN_TOOL)  # declared allow → admit
+    denies = AgentPolicy(admission=BaseToolPolicy(mode="deny"))
+    assert_denies(denies, AGENT_RUN_TOOL)
 
 
 def test_authored_agent_prefixed_tool_follows_default_not_closed_world() -> None:
     # An authored tool whose name merely starts with "agent." (not a reserved key)
-    # follows default_policy, it is not swept into the closed-world reach handling.
+    # follows default_policy, it is not swept into the closed-world agent handling.
     policy = AgentPolicy(default_policy=BaseToolPolicy(mode="allow"))
     assert_allows(policy, "agent.foo")  # not a key → default allow
     assert_allows(policy, "agent.tool")  # no colon → not a reach key → default allow
-    assert_allows(policy, AGENT_RUN_TOOL)  # admission opt-in → allow
+    assert_denies(policy, AGENT_RUN_TOOL)  # real agent key → closed-world deny
     assert_denies(policy, agent_target_key("tool", "x"))  # real reach key → deny
 
 
@@ -210,32 +209,30 @@ def test_rego_compiler_emits_lowered_agent_keys() -> None:
     assert 'input.tool == "agent.handoff:billing-bot"' in rego
 
 
-def test_rego_permissive_default_excludes_reach_keys_and_opts_in_admission() -> None:
-    # Reach keys are excluded from the permissive catch-all (so they deny), while
-    # admission opts in via its own rule. The old broad ``agent.`` exclusion is gone
-    # (it wrongly caught authored agent.* tool names).
-    rego = compile_to_rego(
-        {
-            "default_policy": {"mode": "allow"},
-            "agents": {"b": {"mode": "allow", "via": ["tool"]}},
-        }
-    )
+def test_rego_permissive_default_excludes_all_agent_keys() -> None:
+    # Every agent key (agent.run + reach prefixes) is excluded from the permissive
+    # catch-all, so an unlisted agent key denies. The exclusion is the exact
+    # reserved set (not a broad ``agent.`` prefix that would catch authored
+    # agent.*-named tools), matching is_agent_key (R-AGENT-002).
+    rego = compile_to_rego({"default_policy": {"mode": "allow"}})
+    assert 'input.tool != "agent.run"' in rego
     assert 'not startswith(input.tool, "agent.tool:")' in rego
     assert 'not startswith(input.tool, "agent.handoff:")' in rego
-    assert 'input.tool == "agent.run"' in rego  # opt-in admit rule
-    assert 'not startswith(input.tool, "agent.")' not in rego
+    assert 'not startswith(input.tool, "agent.")' not in rego  # not the broad prefix
 
 
 @needs_opa
 def test_closed_world_agent_parity_pydantic_vs_wasm() -> None:
     # The fallbacks must agree across engines under an allow-default: ordinary tools
-    # and authored agent.*-named tools follow the default (allow), admission opts in
-    # (allow), and unlisted reach keys deny — on both the pydantic and WASM paths.
+    # and authored agent.*-named tools follow the default (allow), while every agent
+    # key is closed-world — a declared admission allows, an unlisted agent.run and
+    # unlisted reach keys deny — on both the pydantic and WASM paths.
     from hexgate.security import compile_to_wasm, verdict_from_rego
     from hexgate.security.wasm_engine import WasmPolicy
 
     payload = {
         "default_policy": {"mode": "allow"},
+        "admission": {"mode": "allow"},
         "agents": {"billing-bot": {"mode": "allow", "via": ["tool"]}},
     }
     ps = load_policy_set_from_dict(payload)
@@ -244,7 +241,7 @@ def test_closed_world_agent_parity_pydantic_vs_wasm() -> None:
     cases = [
         "some_unlisted_tool",  # ordinary tool → default allow
         "agent.foo",  # authored agent.*-named tool (not a key) → default allow
-        AGENT_RUN_TOOL,  # admission opt-in → allow
+        AGENT_RUN_TOOL,  # admission declared allow → allow
         agent_target_key("tool", "billing-bot"),  # listed → allow
         agent_target_key("handoff", "billing-bot"),  # via not listed → deny
         agent_target_key("tool", "other-bot"),  # target not listed → deny

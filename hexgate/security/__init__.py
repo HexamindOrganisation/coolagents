@@ -19,6 +19,12 @@ from hexgate.security.bans import (
     get_ban_source,
     resolve_ban_gate,
 )
+from hexgate.security.agent_gate import (
+    AgentGate,
+    AgentNotAdmittedError,
+    resolve_agent_gate,
+    warn_if_admission_unenforced,
+)
 from hexgate.security.models import (
     AGENT_RUN_TOOL,
     AgentPolicy,
@@ -80,6 +86,7 @@ from hexgate.security.policy import (
 )
 from hexgate.security.policy_set import (
     DEFAULT_ROLE_NAME,
+    RESOLVED_POLICY_MARKER,
     PolicySet,
     PolicySetError,
     load_policy_map,
@@ -147,6 +154,8 @@ from hexgate.security.testing import (
 __all__ = [
     "AGENT_RUN_TOOL",
     "AgentBannedError",
+    "AgentGate",
+    "AgentNotAdmittedError",
     "AgentPolicy",
     "AgentTargetPolicy",
     "AgentVia",
@@ -154,6 +163,7 @@ __all__ = [
     "DEFAULT_AGENT",
     "AgentBinding",
     "RoleMatrix",
+    "resolve_agent_gate",
     "LayerKind",
     "LinkError",
     "LinkResult",
@@ -201,6 +211,7 @@ __all__ = [
     "DEFAULT_ENTRYPOINT",
     "DEFAULT_ENTRYPOINTS",
     "DEFAULT_ROLE_NAME",
+    "RESOLVED_POLICY_MARKER",
     "Decision",
     "FileScope",
     "FileToolPolicy",
@@ -255,4 +266,5 @@ __all__ = [
     "load_policy_set",
     "load_policy_set_from_dict",
     "parse_constraint",
+    "warn_if_admission_unenforced",
 ]

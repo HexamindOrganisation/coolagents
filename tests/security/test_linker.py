@@ -291,31 +291,108 @@ def test_file_scope_in_module_raises():
         link([guard], [])
 
 
-def test_link_rejects_agents_block_in_module() -> None:
-    # An ``agents`` egress rule authored in a module would be silently dropped by
-    # the fold (which composes ``.tools`` only) — the same fail-open file_scope
-    # guards against. Fail loud instead.
-    mod = ModuleContent(
+def test_inherits_in_module_raises():
+    """``inherits:`` resolves only on the single-file policy-set path; the module
+    fold composes by role binding and never resolves a module's own base, so a
+    boundary/capability that declares it would silently get none of the base. Fail
+    loud (like file_scope) instead of dropping the operator's inherited rules."""
+    guard = ModuleContent(
+        name="g",
+        kind="boundary",
+        policy=AgentPolicy(inherits=["read_only"]),
+        source="g.yaml",
+        content_hash="hash-g",
+    )
+    with pytest.raises(LinkError, match="inherits"):
+        link([guard], [])
+
+
+def test_boundary_agents_deny_composes_as_authoritative_deny() -> None:
+    # An ``agents`` block lowers to agent.* keys the fold composes like tools
+    # (R-AGENT-002). A boundary agent-deny is authoritative — it folds to a hard
+    # deny on the lowered reach key, exactly as a boundary tool deny would.
+    boundary = ModuleContent(
         name="b",
         kind="boundary",
         policy=AgentPolicy(agents={"evil-bot": {"mode": "deny"}}),
         source="b.yaml",
         content_hash="hash-b",
     )
-    with pytest.raises(LinkError, match=r"\['agents'\]"):
-        link([mod], [])
+    effective, _ = link([boundary], [])
+    denied = effective.effective_tools["agent.handoff:evil-bot"]
+    assert denied.mode == "deny"
 
 
-def test_link_rejects_admission_block_in_module() -> None:
-    mod = ModuleContent(
+def test_capability_admission_grant_composes() -> None:
+    # A capability may grant admission: an ``admission`` block lowers to agent.run,
+    # which the fold unions like any other capability grant.
+    cap = ModuleContent(
         name="c",
         kind="capability",
         policy=AgentPolicy(admission={"mode": "allow"}),
         source="c.yaml",
         content_hash="hash-c",
     )
-    with pytest.raises(LinkError, match=r"\['admission'\]"):
-        link([], [mod])
+    effective, _ = link([], [cap])
+    assert effective.effective_tools["agent.run"].mode == "allow"
+
+
+def test_ceiling_shadowed_admission_stays_a_deny_not_dropped() -> None:
+    # A capability grants admission, but a ceiling boundary (default deny) that
+    # doesn't list agent.run would shadow it. For an ordinary tool that drop IS the
+    # implicit deny; for an agent key it must stay an explicit deny, or the gate's
+    # engagement (declares_admission, derived from effective_tools) would read the
+    # key as absent and admit everyone — a fail-open.
+    ceiling = _mod(
+        "org.ceiling", "boundary", {"read_file": _allow()}, default_mode="deny"
+    )
+    cap = ModuleContent(
+        name="c",
+        kind="capability",
+        policy=AgentPolicy(admission={"mode": "allow"}),
+        source="c.yaml",
+        content_hash="hash-c",
+    )
+    effective, _ = link([ceiling], [cap])
+    # Present (so declares_admission stays True and the gate stays engaged) AND a
+    # deny (closed-world), rather than dropped (which would disengage → admit-all).
+    assert "agent.run" in effective.effective_tools
+    assert effective.effective_tools["agent.run"].mode == "deny"
+
+
+def test_admission_declared_with_no_grant_stays_a_deny_not_dropped() -> None:
+    # The twin of the shadow case: a floor boundary declares admission but no
+    # capability grants agent.run, so the fold's no-grants branch is hit. For an
+    # ordinary tool that omission is the implicit deny; an agent key must instead
+    # stay an explicit deny, or declares_admission() would read it absent and
+    # disengage the gate (admit everyone) rather than deny.
+    boundary = ModuleContent(
+        name="b",
+        kind="boundary",
+        policy=AgentPolicy(
+            default_policy=BaseToolPolicy(mode="allow"),  # floor, not a ceiling
+            admission=BaseToolPolicy(mode="allow"),
+        ),
+        source="b.yaml",
+        content_hash="hash-b",
+    )
+    effective, _ = link([boundary], [])  # no capability grants agent.run
+    assert "agent.run" in effective.effective_tools
+    assert effective.effective_tools["agent.run"].mode == "deny"
+
+
+def test_capability_agents_deny_is_a_link_error() -> None:
+    # Capabilities grant only, agent keys included: a capability that denies a
+    # lowered agent key is a config error, same as a capability tool deny.
+    cap = ModuleContent(
+        name="c",
+        kind="capability",
+        policy=AgentPolicy(agents={"evil-bot": {"mode": "deny"}}),
+        source="c.yaml",
+        content_hash="hash-c",
+    )
+    with pytest.raises(LinkError, match=r"agent\.handoff:evil-bot"):
+        link([], [cap])
 
 
 # --- provenance + policy-set wiring ---
