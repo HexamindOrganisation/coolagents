@@ -310,8 +310,18 @@ async def run_guarded_async(
     approval_handler: "ApprovalHandler | None",
     invoke: Callable[[dict[str, Any]], Awaitable[Any]],
     render_error: RenderError,
+    policy_key: str | None = None,
+    policy_args: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Run one guarded tool call, async. See module docstring for the order."""
+    """Run one guarded tool call, async. See module docstring for the order.
+
+    ``policy_key`` / ``policy_args`` override the key and args the *policy*
+    decision uses while ``tool_name`` and the model's args still identify the call
+    for guards, invoke, and audit-notify. The OpenAI adapter uses these to gate an
+    agent-as-tool under its reach key ``agent.tool:<target>`` with the same
+    ``{agent, target, via}`` reach args the handoff seam decides on — so a reach
+    constraint behaves identically at both seams — without renaming the tool or
+    rewriting the sub-agent's input. Every other caller leaves them ``None``."""
     context = get_current_context() if _has_guards(pipeline) else None
     call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
@@ -348,7 +358,10 @@ async def run_guarded_async(
         # policy's are independent gates: if both fire on one call, the handler
         # is prompted for each. We do not merge them, because a guard's approval
         # must not silently satisfy the policy's separate requirement.
-        decision = enforcer.decide(call.tool_name, call.args)
+        decision = enforcer.decide(
+            policy_key or call.tool_name,
+            call.args if policy_args is None else policy_args,
+        )
         if not decision.allowed:
             approved = (
                 decision.outcome is DecisionOutcome.NEEDS_APPROVAL
@@ -480,8 +493,11 @@ def run_guarded_sync(
     approval_handler: "ApprovalHandler | None",
     invoke: Callable[[dict[str, Any]], Any],
     render_error: RenderError,
+    policy_key: str | None = None,
+    policy_args: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Run one guarded tool call, sync. Mirrors :func:`run_guarded_async`."""
+    """Run one guarded tool call, sync. Mirrors :func:`run_guarded_async`
+    (including ``policy_key`` / ``policy_args``)."""
     context = get_current_context() if _has_guards(pipeline) else None
     call = _new_call(tool_name, args, enforcer, context)
     mods: list[Modification] = []
@@ -512,7 +528,10 @@ def run_guarded_sync(
                 call = _apply_pre(call, guard, outcome, mods)
 
     if enforcer is not None:
-        decision = enforcer.decide(call.tool_name, call.args)
+        decision = enforcer.decide(
+            policy_key or call.tool_name,
+            call.args if policy_args is None else policy_args,
+        )
         if not decision.allowed:
             approved = (
                 decision.outcome is DecisionOutcome.NEEDS_APPROVAL

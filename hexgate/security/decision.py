@@ -85,6 +85,14 @@ class PolicyEngine(Protocol):
         :meth:`declares_admission` (consumed once handoff interception lands)."""
         ...
 
+    def declares_tool_reach(self) -> bool:
+        """Whether this policy configures agent-as-tool (``via: tool``) reach.
+
+        A finer signal than :meth:`declares_reach`: an adapter that enforces
+        handoff reach but not agent-as-tool reach (OpenAI) warns only when this is
+        true, so a handoff-only policy is not spammed."""
+        ...
+
 
 # Over the platform's ``DecisionEvent.reason`` max_length the audit event is
 # rejected outright, losing the record for the calls most worth keeping.

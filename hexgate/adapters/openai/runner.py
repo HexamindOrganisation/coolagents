@@ -29,16 +29,23 @@ from langfuse import get_client, propagate_attributes
 from openinference.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 
 from hexgate.adapters._common import langfuse_propagate_kwargs
+from hexgate.adapters.openai.tools import _CAN_DETECT_AGENT_TOOLS
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.adapters.openai.wrapper import wrap_openai_agent
 from hexgate.approvals import ApprovalHandler
 from hexgate.cloud.client import HexgateClient, HexgateConfig
 from hexgate.config.env import resolve_api_key
 from hexgate.runtime import HexgateContext, run_scope, use_run_facts
-from hexgate.security.agent_gate import warn_if_admission_unenforced
+from hexgate.security.agent_gate import (
+    HandoffDepthExceededError,
+    resolve_agent_gate,
+    resolve_reach_gate,
+    warn_if_tool_reach_unenforced,
+)
 from hexgate.security.bans import BanGate, resolve_ban_gate
 from hexgate.security.binding import PolicyBinding, resolve_policy
 from hexgate.security.enforcer import build_enforcer
+from hexgate.security.naming import canonical_agent_name
 
 if TYPE_CHECKING:
     from hexgate.guards.types import Guard, GuardObserver
@@ -85,6 +92,44 @@ class _CompositeRunHooks(RunHooks):
             await hook.on_tool_end(context, agent, tool, result)
 
 
+class _HexgateReachHooks(RunHooks):
+    """Enforce agent-to-agent reach at the SDK handoff seam.
+
+    ``on_handoff`` fires (awaited, via ``asyncio.gather``) after the target agent
+    is resolved but before the handoff completes, so raising here vetoes the
+    transfer and the target never runs. Reach is governed by the *source* agent's
+    policy, so this looks up the source's cached binding and decides
+    ``agent.handoff:<target>``. Only handoffs from a Hexgate-governed source (the
+    resolved top-level agent) are gated; a handoff from an un-governed sub-agent is
+    left alone here (sub-agent governance is a later slice). Agent-as-tool reach
+    (``Agent.as_tool``) is not handled here — it never fires ``on_handoff`` — but
+    is gated at the tool seam instead: :func:`~hexgate.adapters.openai.tools.wrap_tool`
+    reads the SDK's tool-origin metadata and decides ``agent.tool:<target>``.
+    """
+
+    def __init__(self, runner: "HexgateRunner") -> None:
+        self._runner = runner
+        self._depth = 0  # per-run: this hook is rebuilt on every run
+
+    async def on_handoff(self, context, from_agent, to_agent) -> None:
+        # Depth cap first, as a runaway guard independent of reach policy: a
+        # handoff transfers control forward, so the count of handoffs in this run
+        # is the chain depth. Counts every handoff, governed source or not.
+        self._depth += 1
+        cap = self._runner._max_handoff_depth
+        if cap is not None and self._depth > cap:
+            raise HandoffDepthExceededError(self._depth, cap)
+        binding = self._runner._bindings.get(canonical_agent_name(from_agent))
+        if binding is None:
+            return  # source is not Hexgate-governed; reach from it isn't gated here
+        if not binding.enforcer.policy.declares_reach():
+            return  # no 'agents' block — skip building a gate on the hot handoff path
+        gate = resolve_reach_gate(
+            binding.enforcer, approval_handler=self._runner._approval_handler
+        )
+        await gate.check_reach_async(canonical_agent_name(to_agent), via="handoff")
+
+
 class HexgateRunner:
     """Runner for OpenAI agents with Hexgate tool policy and observability."""
 
@@ -95,6 +140,7 @@ class HexgateRunner:
         approval_handler: ApprovalHandler | None = None,
         guards: "Sequence[Guard] | None" = None,
         guard_observer: "GuardObserver | None" = None,
+        max_handoff_depth: int | None = None,
     ):
         # ``guards`` (not ``hooks``) on purpose: ``run*`` below already take a
         # ``hooks=`` that means the agents SDK's ``RunHooks`` (we mirror the SDK
@@ -112,6 +158,8 @@ class HexgateRunner:
         # Ban gates cached per agent name too (None cached to avoid re-resolving).
         self._ban_gates: dict[str, BanGate | None] = {}
         self._approval_handler = approval_handler
+        # Handoff-chain depth cap (None = no cap); enforced per run by the reach hook.
+        self._max_handoff_depth = max_handoff_depth
         # Guards are fixed per runner; threaded into each per-call rewrap below,
         # where wrap_openai_agent builds the pipeline (matching the other adapters).
         self._guards = guards
@@ -125,19 +173,24 @@ class HexgateRunner:
         unregistered agent (platform 404) raises — register it first with
         ``hexgate register``.
         """
-        # `or "default"` collapses a None/empty name to a real string (matches
-        # the pydantic_ai adapter) so a null identity never reaches the cache
-        # key or the platform resolve / enforcer / audit below.
-        name = getattr(agent, "name", None) or "default"
+        # Shared derivation (trim + blank/None → "default") so a null identity
+        # never reaches the cache key or the platform resolve / enforcer / audit
+        # below, and so it matches how a reach target would be named.
+        name = canonical_agent_name(agent)
         binding = self._bindings.get(name)
         if binding is None:
             resolved = resolve_policy(name, api_key=self.api_key, client=self._client)
             enforcer = build_enforcer(
                 resolved.engine, agent_name=name, api_key=self.api_key
             )
-            warn_if_admission_unenforced(
-                resolved.engine, framework="OpenAI Agents", agent_name=name
-            )
+            # Handoff reach is enforced (on_handoff). Agent-as-tool reach is
+            # enforced too when the SDK tags as-tools with their origin (wrap_tool
+            # gates the top edge under agent.tool:<target>); on an SDK too old to
+            # expose that, it is not, so warn only in that fallback case.
+            if not _CAN_DETECT_AGENT_TOOLS:
+                warn_if_tool_reach_unenforced(
+                    resolved.engine, framework="OpenAI Agents", agent_name=name
+                )
             binding = PolicyBinding(enforcer, resolved.source)
             self._bindings[name] = binding
         return binding
@@ -145,12 +198,28 @@ class HexgateRunner:
     def _ban_gate_for(self, agent: Agent) -> BanGate | None:
         """Get-or-resolve the cached ban gate for ``agent``'s name (``None`` in
         local mode / no key). ``None`` is cached too, so we resolve once."""
-        name = getattr(agent, "name", None) or "default"
+        name = canonical_agent_name(agent)
         if name not in self._ban_gates:
             self._ban_gates[name] = resolve_ban_gate(
                 name, api_key=self.api_key, client=self._client
             )
         return self._ban_gates[name]
+
+    async def _check_admission_async(self, binding: PolicyBinding) -> None:
+        """Refuse a caller not admitted by the top-level agent's policy, before the
+        run starts. Must run inside the active HexgateContext scope (admission reads
+        the caller's role from it). No-op when the policy declares no admission."""
+        gate = resolve_agent_gate(
+            binding.enforcer, approval_handler=self._approval_handler
+        )
+        await gate.check_admission_async()
+
+    def _check_admission_sync(self, binding: PolicyBinding) -> None:
+        """Sync mirror of :meth:`_check_admission_async`."""
+        gate = resolve_agent_gate(
+            binding.enforcer, approval_handler=self._approval_handler
+        )
+        gate.check_admission()
 
     def _setup_observability(self):
         """Install Langfuse + OpenAIAgentsInstrumentor (idempotent)."""
@@ -172,21 +241,29 @@ class HexgateRunner:
             yield
 
     def _merge_hooks(self, hooks: RunHooks | None) -> RunHooks:
-        """Compose caller-supplied ``hooks`` with the usage hook — never
-        clobber a hooks object the caller already passed."""
-        usage_hooks = HexgateUsageHooks(api_key=self.api_key)
-        if hooks is None:
-            return usage_hooks
-        if not isinstance(hooks, RunHooksBase):
-            # A Hexgate guard list passed to run(hooks=...) instead of the
-            # constructor would otherwise crash at the first lifecycle callback,
-            # far from the mistake. Name it here.
-            raise TypeError(
-                f"run(hooks=...) takes an agents RunHooks object, got "
-                f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
-                "HexgateRunner(guards=[...])."
-            )
-        return _CompositeRunHooks([hooks, usage_hooks])
+        """Compose the caller's ``hooks`` with Hexgate's own — never clobber a
+        hooks object the caller already passed.
+
+        Always installs the usage hook and the reach hook (which enforces
+        ``agent.handoff:*`` at the SDK handoff seam), so the result is always a
+        composite fanning out to every hook in turn.
+        """
+        installed: list[RunHooksBase] = [
+            HexgateUsageHooks(api_key=self.api_key),
+            _HexgateReachHooks(self),
+        ]
+        if hooks is not None:
+            if not isinstance(hooks, RunHooksBase):
+                # A Hexgate guard list passed to run(hooks=...) instead of the
+                # constructor would otherwise crash at the first lifecycle callback,
+                # far from the mistake. Name it here.
+                raise TypeError(
+                    f"run(hooks=...) takes an agents RunHooks object, got "
+                    f"{type(hooks).__name__}. Hexgate guards go on the constructor: "
+                    "HexgateRunner(guards=[...])."
+                )
+            installed.insert(0, hooks)
+        return _CompositeRunHooks(installed)
 
     async def run(
         self,
@@ -213,6 +290,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         async with hexgate_context:
+            await self._check_admission_async(binding)  # in-scope: reads the role
             with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return await Runner.run(
                     wrapped_agent,
@@ -247,6 +325,7 @@ class HexgateRunner:
             guard_observer=self._guard_observer,
         )
         with hexgate_context.sync_scope():
+            self._check_admission_sync(binding)  # in-scope: reads the role
             with run_scope(agent.name), self._propagate(hexgate_context, agent.name):
                 return Runner.run_sync(
                     wrapped_agent,
@@ -273,6 +352,11 @@ class HexgateRunner:
         tools fire there, not in ``stream_events``. So the HexgateContext scope must be
         active around the ``run_streamed`` call for the task to inherit it —
         the wrapped iterator re-opens it for exit/audit semantics.
+
+        Admission is checked synchronously before the task spawns (so a refused run
+        yields nothing). Like any sync entrypoint, an *async* ``approval_handler``
+        cannot be awaited here and fails closed on a NEEDS_APPROVAL admission
+        verdict; use the async ``run`` entrypoint if admission approval is async.
         """
         self._setup_observability()
         binding = self._binding_for(agent)
@@ -359,6 +443,8 @@ class HexgateRunner:
         )
 
         with hexgate_context.sync_scope():
+            # Before run_streamed spawns its task, so a non-admitted run yields nothing.
+            self._check_admission_sync(binding)
             # Scope must be open around run_streamed(): it snapshots the
             # contextvars into the background task where tools fire, and that
             # snapshot keeps the facts alive after this block exits.

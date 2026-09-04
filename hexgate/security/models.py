@@ -8,6 +8,7 @@ from typing import Any, Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from hexgate.security.constraints import parse_constraint
+from hexgate.security.naming import canonical_name
 
 PolicyMode = Literal["allow", "deny", "approval_required"]
 
@@ -72,6 +73,14 @@ AGENT_REACH_PREFIXES = tuple(f"agent.{via}:" for via in get_args(AgentVia))
 def agent_target_key(via: AgentVia, target: str) -> str:
     """Synthetic tool key for reaching ``target`` in a given transfer mode."""
     return f"agent.{via}:{target}"
+
+
+def is_agent_via_key(name: str, via: AgentVia) -> bool:
+    """True for a reach key of a specific ``via`` mode (``agent.<via>:``).
+
+    Lets a caller tell agent-as-tool reach from handoff reach, e.g. to warn only
+    about the mode a given adapter cannot enforce."""
+    return name.startswith(f"agent.{via}:")
 
 
 def is_agent_reach_key(name: str) -> bool:
@@ -217,6 +226,11 @@ class AgentPolicy(BaseModel):
         ``via`` mode (``agent.tool:<name>`` / ``agent.handoff:<name>``). Only the
         *listed* rules are lowered; the fallback for an unlisted target is the
         agent gate's concern, not this map's.
+
+        The target name is canonicalized (:func:`~hexgate.security.naming.canonical_name`)
+        so the lowered key matches the one the reach gate derives from the runtime
+        target's name — both sides normalize identically, or a padded authored name
+        would never match and a policy-allowed handoff would fall to closed-world deny.
         """
         lowered: dict[str, BaseToolPolicy] = {}
         if self.admission is not None:
@@ -226,7 +240,7 @@ class AgentPolicy(BaseModel):
             # rebuild would silently drop any field later added to BaseToolPolicy.
             # via is an extra field the engines ignore.
             for via in target_policy.via:
-                lowered[agent_target_key(via, target)] = target_policy
+                lowered[agent_target_key(via, canonical_name(target))] = target_policy
         return lowered
 
     @cached_property

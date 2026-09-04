@@ -317,6 +317,11 @@ class PolicyBundle:
         """Read the reach-configured flag from the signed manifest (reach counterpart)."""
         return bool(self.manifest.get("agent_gating", {}).get("reach", False))
 
+    def declares_tool_reach(self) -> bool:
+        """Read the agent-as-tool reach flag from the signed manifest. Absent (an
+        older bundle) reads False, so no spurious warning fires."""
+        return bool(self.manifest.get("agent_gating", {}).get("reach_tool", False))
+
     # ---- Metadata ------------------------------------------------------
 
     @property
@@ -397,6 +402,7 @@ def build_signed_bundle(
     agent_gating = {
         "admission": resolved.declares_admission(),
         "reach": resolved.declares_reach(),
+        "reach_tool": resolved.declares_tool_reach(),
     }
 
     wasm_bytes: bytes | None = None

@@ -21,12 +21,63 @@ from agents.tool import ToolContext
 from hexgate.approvals import ApprovalHandler
 from hexgate.guards.runner import run_guarded_async
 from hexgate.guards.types import ToolPipeline
+from hexgate.security.decision import DecisionOutcome
 from hexgate.security.enforcer import PolicyEnforcer
+from hexgate.security.models import agent_target_key
+from hexgate.security.naming import canonical_name
+
+try:
+    # The Agents SDK tags an ``Agent.as_tool()`` tool with its origin (the target
+    # agent's name), which lets us gate the reach edge under ``agent.tool:<target>``.
+    from agents.tool import ToolOriginType, get_function_tool_origin
+
+    _CAN_DETECT_AGENT_TOOLS = True
+except ImportError:  # older SDK without tool-origin metadata
+    _CAN_DETECT_AGENT_TOOLS = False
+
+
+def _agent_tool_target(tool: FunctionTool) -> str | None:
+    """Canonical target-agent name if ``tool`` is an ``Agent.as_tool()``, else ``None``.
+
+    Reads the SDK's public tool-origin metadata so an agent reached *as a tool*
+    can be gated under its reach key rather than its plain tool name. Returns
+    ``None`` for an ordinary function tool, or on an SDK too old to expose the
+    origin (capability fallback — the caller keeps name-gating)."""
+    if not _CAN_DETECT_AGENT_TOOLS:
+        return None
+    origin = get_function_tool_origin(tool)
+    if (
+        origin is not None
+        and origin.type is ToolOriginType.AGENT_AS_TOOL
+        and origin.agent_name
+    ):
+        return canonical_name(origin.agent_name)
+    return None
 
 
 def _render_error(decision: Any) -> str:
     """OpenAI renders a blocked decision as a string tool result."""
     return decision.as_error_message()
+
+
+def _render_reach_error(target: str):
+    """Model-facing renderer for a denied/held agent-as-tool reach.
+
+    Keeps :meth:`Decision.as_error_message`'s ``[marker] …`` shape so adapters and
+    the dashboard still key off the ``policy_denied`` / ``approval_required``
+    marker, but names the bare target agent instead of the lowered
+    ``agent.tool:<target>`` key — the same no-leak stance as
+    :class:`~hexgate.security.agent_gate.ReachNotAllowedError`."""
+
+    def render(decision: Any) -> str:
+        marker = decision.error_type or decision.outcome.value
+        if decision.outcome is DecisionOutcome.NEEDS_APPROVAL:
+            body = f"reach to agent {target!r} requires human approval before it runs"
+        else:
+            body = f"reach to agent {target!r} is not permitted by this agent's policy"
+        return f"[{marker}] {body}. The sub-agent was not invoked."
+
+    return render
 
 
 def _parse_args(raw: str) -> dict[str, Any] | None:
@@ -60,6 +111,11 @@ def wrap_tool(
 
     name = tool.name
     original_invoke = tool.on_invoke_tool
+    # An ``Agent.as_tool()`` is a reach edge, not an ordinary tool. When the
+    # policy declares reach we gate it under its reach key ``agent.tool:<target>``
+    # (closed-world, ``via``/constraints honored) rather than its tool name.
+    # ``None`` for a normal tool, or an SDK too old to expose the origin.
+    reach_target = _agent_tool_target(tool)
     # Without guards nothing can rewrite the args, so we forward the model's
     # payload byte-for-byte. Re-serializing would be a silent change on every
     # call (reformatted whitespace, collapsed duplicate keys, 1e400 -> Infinity,
@@ -69,6 +125,29 @@ def wrap_tool(
     @functools.wraps(original_invoke, updated=())
     async def guarded_invoke(ctx: ToolContext[Any], input: str) -> Any:
         parsed = _parse_args(input)  # None when the payload is not a JSON object
+        # Engagement is read here, per call, so a hot-reloaded policy that adds or
+        # drops a via:tool target is honored on the next call. Gate under the reach
+        # key only when the policy declares *tool* reach (an ``agent.tool:`` key) —
+        # not merely any ``agents`` block: agent keys are closed-world, so engaging
+        # on a handoff-only policy would deny every as-tool with no diagnostic. A
+        # policy that declares no via:tool target keeps today's name-gating.
+        if reach_target is not None and enforcer.policy.declares_tool_reach():
+            # Decide on the reach key with the same {agent, target, via} reach args
+            # the handoff seam uses (ReachGate._decide), so a reach constraint reads
+            # args.target/args.via identically at both seams. ``name`` stays the
+            # call/guard identity (policy_key), so a guard scoped to the tool's
+            # function name still fires, and the sub-agent still receives its input.
+            policy_key = agent_target_key("tool", reach_target)
+            policy_args: dict[str, Any] | None = {
+                "agent": enforcer.agent_name,
+                "target": reach_target,
+                "via": "tool",
+            }
+            render_error = _render_reach_error(reach_target)
+        else:
+            policy_key = None
+            policy_args = None
+            render_error = _render_error
 
         def invoke(final: dict[str, Any]) -> Any:
             if not has_guards:
@@ -105,7 +184,9 @@ def wrap_tool(
             pipeline=pipeline,
             approval_handler=approval_handler,
             invoke=invoke,
-            render_error=_render_error,
+            render_error=render_error,
+            policy_key=policy_key,
+            policy_args=policy_args,
         )
 
     wrapped = copy.copy(tool)

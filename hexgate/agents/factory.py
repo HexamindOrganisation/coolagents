@@ -604,7 +604,10 @@ class HexgateAgent:
                 wrapped.append(tool_spec)
         rebuilt = self.with_tools(wrapped)
         if enforcer is not None:
-            from hexgate.security.agent_gate import resolve_agent_gate
+            from hexgate.security.agent_gate import (
+                resolve_agent_gate,
+                warn_if_reach_unenforced,
+            )
 
             # The binding pairs the enforcer the tools just closed over with the
             # refresh source, so refresh_policy() can swap the policy in place.
@@ -613,6 +616,12 @@ class HexgateAgent:
             # swaps the policy is reflected on the next run entry too.
             rebuilt._agent_gate = resolve_agent_gate(
                 enforcer, approval_handler=approval_handler
+            )
+            # Admission is enforced here, but reach is not: the native agent is a
+            # single graph with no agent-to-agent handoff seam. Warn if the policy
+            # declares reach, so it is not a silent no-op.
+            warn_if_reach_unenforced(
+                enforcer.policy, framework="native", agent_name=self.name or "default"
             )
         else:
             # Guards-only path: no enforcer, so no admission. Clear any gate a

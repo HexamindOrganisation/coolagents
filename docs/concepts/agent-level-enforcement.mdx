@@ -1,0 +1,140 @@
+---
+title: "Agent-level enforcement"
+description: "Gate who may run an agent, and which agents one agent may reach, through the same policy engine that gates tool calls."
+---
+
+Policy normally decides one thing: may this caller invoke this tool with these
+arguments. Agent-level enforcement asks the same kind of question in two new
+places:
+
+- **Admission** — may this caller, in this role, run *this agent at all*?
+  Checked at the top of a run, before the model sees anything.
+- **Reach** (delegation) — may this agent invoke or hand off to *another agent*?
+  Checked at the moment it tries to.
+
+Both reuse the same [`PolicyEnforcer`](/concepts/policy-decision) as tool calls,
+so the [decision](/concepts/policy-decision) type, the constraint language, the
+[audit trail](/concepts/audit-trail), and the [approval flow](/concepts/approval-required)
+all apply unchanged.
+
+## The two ways one agent reaches another
+
+They are genuinely different, so a policy can treat them differently, via the
+`via` modes:
+
+- **agent-as-tool** (`via: tool`) — the caller invokes a helper agent like a
+  tool and folds the result back into its own answer. Control stays with the
+  caller.
+- **handoff** (`via: handoff`) — the caller transfers the whole conversation to
+  another agent, which takes over and answers the user directly. Control does
+  not return.
+
+Handing the user to `billing-bot` is a bigger deal than asking it to compute one
+number, so a policy can allow the tool mode freely and gate the handoff.
+
+## Write the policy
+
+Agent rules sit next to `tools:` in a role and read the same way — a `mode` plus
+optional `constraints`:
+
+```yaml
+roles:
+  support:
+    default_policy: { mode: deny }
+
+    admission:                     # may a "support" caller run THIS agent?
+      mode: allow
+
+    agents:                        # which agents may "support" reach, and how?
+      billing-bot:
+        via: [tool, handoff]       # both modes are governed by this rule
+        mode: approval_required    # a human okays it either way
+      refund-bot:
+        via: [tool]                # callable as a tool; handoff is denied
+        mode: allow
+      admin-bot:
+        mode: deny                 # off limits, in any mode
+      # anything not listed here is denied (closed-world)
+```
+
+Under the hood each rule lowers to an ordinary tool key — `admission` to
+`agent.run`, and each `agents` target to `agent.tool:<name>` / `agent.handoff:<name>` —
+so the same `decide()` that gates every tool call runs on them, and the same
+policy authoring (including modular boundaries, capabilities, and roles) composes
+them. A deny written at a boundary is authoritative; grants union.
+
+## Closed-world, and opt-in
+
+- **Unlisted means denied.** Once you declare agent rules, any agent you did not
+  list is denied. You name what is in; everything else falls to deny. There is
+  no default block to set.
+- **It is opt-in.** An agent whose policy has no `admission` and no `agents`
+  block is not gated at all — it runs exactly as before. The gates engage only
+  once a block is present.
+- **Declare `admission` on every role that should get in.** Because admission is
+  closed-world, once any role declares it the gate is on for every caller, and a
+  role you did not grant admission is refused. Across several roles the check is
+  permissive: any role that grants admission admits the caller.
+
+## Approvals and the depth cap
+
+An `approval_required` agent rule uses the same [human-approval](/concepts/approval-required)
+path a tool does. On a handoff the model is told the transfer was refused or is
+pending and can re-plan; on admission the run waits for a yes before it starts.
+
+A handoff transfers control forward, so a chain of handoffs can run away. Set a
+per-run cap on the runner to bound it:
+
+```python
+from hexgate.adapters.openai import HexgateRunner
+
+runner = HexgateRunner(max_handoff_depth=3)  # refuse the 4th handoff in a chain
+```
+
+## Framework support
+
+Enforcement lands wherever the framework exposes the *target* agent at the
+delegation seam. Where it does not, Hexgate does not fail open silently — it logs
+a warning at setup, so you always know whether a rule is actually enforced.
+
+| framework | admission | handoff reach | agent-as-tool reach |
+|---|---|---|---|
+| [OpenAI Agents](/adapters/openai) | enforced | enforced | enforced at the top level (nested is name-gated — see Limits) |
+| [Google ADK](/adapters/google-adk) | enforced | enforced | enforced |
+| native agent (`create_agent`) | enforced | not applicable — no handoff concept | gated as an ordinary tool, by name |
+| [pydantic_ai](/adapters/pydantic-ai) | warns | not applicable — no handoff concept | gated as an ordinary tool, by name |
+| [LangChain](/adapters/langchain) | warns | warns | gated as an ordinary tool, by name |
+
+<Note>
+**Agent-as-tool is still gated even where the reach key is not.** A sub-agent
+exposed as a tool is also an ordinary tool: it is gated by its tool name through
+the normal enforcer, on every adapter, today. The `agent.tool:<name>` *reach* key
+is a separate, higher-level statement ("gate this as a delegation to agent B")
+that fires where the framework lets Hexgate recover the target agent. On Google
+(via `AgentTool`) and OpenAI (via the SDK's tool-origin metadata) an `agent.tool:`
+reach rule is enforced for the top-level agent; on the native agent, or when the
+policy declares no `agents` block, you gate agent-as-tool by writing a `tools:`
+rule on the tool's name.
+</Note>
+
+## Limits
+
+- **The handoff concept does not exist everywhere.** pydantic_ai has no native
+  handoff primitive (multi-agent there is agent-as-tool, run inside a tool body),
+  and the native single-graph agent has no transfer seam. There is nothing to
+  intercept on those, by nature — a declared `agents` handoff rule warns rather
+  than silently doing nothing.
+- **Agent-as-tool reach on OpenAI is enforced only at the top level.** The SDK
+  tags an `Agent.as_tool()` with its target agent, so a top-level agent's
+  `agent.tool:<name>` reach rule *is* enforced. But a sub-agent reached as a tool
+  runs through the SDK's own runner on the *unwrapped* agent, so a reach edge one
+  level deeper (B calls C as a tool) is not gated — only B's tools were wrapped.
+  Governing nested agents needs each nested agent wrapped through Hexgate; until
+  then, deeper edges fall back to name-gating. (On an SDK too old to expose the
+  tool origin, even the top level falls back to name-gating and a `via: tool` rule
+  warns.)
+- **Reach is governed by the source agent's policy.** When A hands off to B,
+  today the check is A's `agents:` rule. B re-checking its *own* admission when
+  reached by a handoff is a planned addition.
+- **Reach is gated only from a Hexgate-governed source.** A transfer originating
+  from an un-governed sub-agent is not gated.

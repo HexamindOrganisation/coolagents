@@ -119,6 +119,17 @@ so the wrapper resolves the policy for an agent called `LangGraph` and fails
 with a 404 unless one is registered under that name.
 </Note>
 
+## Agent-level enforcement
+
+<Note>
+[Agent-level policy](/concepts/agent-level-enforcement) (`admission` / `agents`)
+is not yet enforced on the LangChain adapter — a declared block logs a warning at
+setup rather than gating. A sub-agent exposed as a tool is still gated normally by
+its **tool name**. (The native `create_agent` orchestrator does enforce admission;
+this adapter, which wraps a pre-built LangChain/LangGraph agent, is a planned
+follow-up.)
+</Note>
+
 ## Runnable example
 
 `examples/devops_langchain.py` — `wrap_langchain_agent` (LangChain / LangGraph)

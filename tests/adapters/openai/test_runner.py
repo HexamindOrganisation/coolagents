@@ -12,7 +12,11 @@ from agents.items import ModelResponse
 from agents.usage import Usage
 
 from hexgate.adapters.openai import runner as runner_mod
-from hexgate.adapters.openai.runner import HexgateRunner
+from hexgate.adapters.openai.runner import (
+    HexgateRunner,
+    _CompositeRunHooks,
+    _HexgateReachHooks,
+)
 from hexgate.adapters.openai.usage import HexgateUsageHooks
 from hexgate.runtime import HexgateContext
 from hexgate.runtime.context import get_current_context
@@ -20,8 +24,8 @@ from hexgate.security import AgentPolicy, BaseToolPolicy, PolicySet, ResolvedPol
 from hexgate.security.bans import BanEntry, BanGate, BanSet
 from hexgate.security.enforcer import PolicyEnforcer
 from hexgate.security.errors import AgentBannedError
-from hexgate.tracing import usage as tracing_usage_mod
 from hexgate.security.policy_set import DEFAULT_ROLE_NAME
+from hexgate.tracing import usage as tracing_usage_mod
 
 
 class _StaticBanSource:
@@ -201,7 +205,10 @@ async def test_run_wraps_agent_opens_user_scope_and_calls_runner_run(
     assert captured["agent"].name == agent.name
     assert captured["input"] == "hello"
     assert captured["kwargs"]["run_config"] is None
-    assert isinstance(captured["kwargs"]["hooks"], HexgateUsageHooks)
+    hooks = captured["kwargs"]["hooks"]
+    assert isinstance(hooks, _CompositeRunHooks)
+    assert any(isinstance(h, HexgateUsageHooks) for h in hooks._hooks)
+    assert any(isinstance(h, _HexgateReachHooks) for h in hooks._hooks)
     # HexgateContext scope was live for the duration of Runner.run.
     assert captured["active_user"] is context
     # Scope unwound on exit — no leak.
@@ -697,7 +704,7 @@ def _fake_llm_response(
 
 
 @pytest.mark.asyncio
-async def test_run_passes_a_usage_hooks_instance_when_caller_passes_none(
+async def test_run_installs_usage_and_reach_hooks_when_caller_passes_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _silence_observability(monkeypatch)
@@ -714,7 +721,10 @@ async def test_run_passes_a_usage_hooks_instance_when_caller_passes_none(
     runner = HexgateRunner(api_key="k")
     await runner.run(_make_agent(), "hi", hexgate_context=_user())
 
-    assert isinstance(captured["hooks"], HexgateUsageHooks)
+    hooks = captured["hooks"]
+    assert isinstance(hooks, _CompositeRunHooks)
+    assert any(isinstance(h, HexgateUsageHooks) for h in hooks._hooks)
+    assert any(isinstance(h, _HexgateReachHooks) for h in hooks._hooks)
 
 
 @pytest.mark.asyncio
