@@ -15,12 +15,13 @@ import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 from uuid import UUID, uuid4
 
 from hexgate.config.env import resolve_api_key
 from hexgate.security.errors import AgentBannedError
 from hexgate.security.source import _LOCAL_POLICY_ENV_VAR
+from hexgate.tracing import semconv
 from hexgate.tracing._senders import (
     AuditSender,
     _local_mode_active,
@@ -179,14 +180,14 @@ def get_ban_source(api_key: str, client: HexgateClient) -> PlatformBanSource:
 # Ban-enforcement emitter — thin wrapper over the shared sender registry
 # ---------------------------------------------------------------------------
 
-_BAN_ENFORCEMENT_PATH = "/v1/audit/ban-enforcements"
-
 
 @dataclass(frozen=True, slots=True)
 class BanEnforcementEvent:
-    """One refusal, ready to POST. Matches the platform
-    ``BanEnforcementEvent(AuditEnvelope)``; the server resolves project_id /
-    agent_version_id / received_at."""
+    """One refusal, emitted as a span under scope ``hexgate.bans``. Matches
+    the platform ``BanEnforcementEvent(AuditEnvelope)``; the server resolves
+    project_id / agent_version_id / received_at."""
+
+    SCOPE: ClassVar[str] = semconv.SCOPE_BANS
 
     ban_type: str
     ban_id: str
@@ -197,16 +198,15 @@ class BanEnforcementEvent:
     event_id: UUID = field(default_factory=uuid4)
     occurred_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    def as_payload(self) -> dict[str, Any]:
+    def span_attributes(self) -> dict[str, Any]:
         return {
-            "event_id": str(self.event_id),
-            "occurred_at": self.occurred_at.isoformat(),
-            "agent_name": self.agent_name,
-            "user_id": self.user_id,
-            "session_id": self.session_id,
-            "ban_type": self.ban_type,
-            "ban_id": self.ban_id,
-            "reason": self.reason or "",
+            semconv.EVENT_ID: str(self.event_id),
+            semconv.AGENT_NAME: self.agent_name,
+            semconv.USER_ID: self.user_id,
+            semconv.SESSION_ID: self.session_id,
+            semconv.BAN_TYPE: self.ban_type,
+            semconv.BAN_ID: self.ban_id,
+            semconv.REASON: self.reason or "",
         }
 
 
@@ -216,7 +216,7 @@ def configure_ban_sink(
 ) -> AuditSender | None:
     """Get-or-create the ban-enforcement sender (shared registry; ``None`` in
     local mode / no key). Drained by the existing ``audit.shutdown``."""
-    return get_or_create_sender(_BAN_ENFORCEMENT_PATH, api_key, base_url)
+    return get_or_create_sender(api_key, base_url)
 
 
 # ---------------------------------------------------------------------------
@@ -279,17 +279,17 @@ class BanGate:
     async def check_async(self, context: HexgateContext | None) -> None:
         """Async check: fetch off-loop, decide + emit + raise on the loop.
 
-        The emit must stay on the loop — the fire-and-forget ``AuditSender``
-        only adopts a running loop on its on-loop path, so emitting from the
-        ``to_thread`` worker would drop the event.
+        The sender is thread-agnostic — emitting from the ``to_thread``
+        worker would deliver fine — so the on-loop placement of decide/emit
+        is about raising :class:`AgentBannedError` in the caller's context,
+        not about delivery.
         """
         bans = await asyncio.to_thread(self._current)
         self._decide(bans, context)
 
     def _emit(self, hit: BanEntry, context: HexgateContext | None) -> None:
-        # Best-effort: on sync entrypoints with no running loop, a sink built
-        # off-loop drops the event (shared AuditSender limitation, not
-        # ban-specific). The refusal itself is unaffected.
+        # Best-effort: a saturated sender drops the event; the refusal
+        # itself is unaffected.
         if self._sink is None:
             return
         self._sink.emit(
