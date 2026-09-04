@@ -1,14 +1,17 @@
 # Audit Pipeline Specification
 
-> Status: living — kept in sync with the audit code. Last reviewed 2026-07.
+> Status: living — kept in sync with the audit code. Last reviewed 2026-09.
 
 Scope: the end-to-end path that records every policy decision a Hexgate-wrapped
 agent makes, from the SDK enforcement point to durable storage in ClickHouse and
-the dashboard read view.
+the dashboard read view. LLM-usage and ban-enforcement events ride the same
+pipeline (same sender, same collector, same enricher, their own tables) and are
+called out where they differ.
 
-This document is descriptive of the current implementation (PR
-`gp/feat/sdk_emit_audit_event` + the platform audit endpoint). Where behaviour
-is intentionally lossy or POC-grade, it says so explicitly.
+This document is descriptive of the current implementation: the SDK's OTel
+span emitter (#146), the Go collector (#128/#130/#131), the Redpanda topics
+(#136), the span-enricher job (#133) and the deploy stack (#157). Where
+behaviour is intentionally lossy or POC-grade, it says so explicitly.
 
 ---
 
@@ -21,39 +24,38 @@ validates it, resolves server-owned identity fields, and appends one immutable
 row to a ClickHouse table. Audit emission is a **side effect of enforcement**:
 it never changes, blocks, or fails the decision the agent acts on.
 
+```mermaid
+flowchart LR
+  classDef customerBox fill:#EAF7EC,stroke:#2E9E44,stroke-width:2px,color:#1B5E20
+  classDef sdkBox fill:#EAF2FF,stroke:#2F6FED,stroke-width:2px,color:#153E90
+  classDef hexBox fill:#F3EAFB,stroke:#8E3FC7,stroke-width:2px,color:#4A148C
+  classDef redpandaBox fill:#FCE8EC,stroke:#D6336C,stroke-width:2px,color:#8A1538
+  classDef pgBox fill:#FFF6E0,stroke:#E0A800,stroke-width:2px,color:#7A5900
+
+  subgraph CUST["Customer application"]
+    A["Agent code"]:::customerBox --> B["Hexgate SDK<br/>PolicyEnforcer → AuditSender → BatchSpanProcessor queue"]:::sdkBox
+  end
+
+  B -->|"OTLP/HTTP protobuf<br/>POST /v1/traces · Bearer api_key"| P["Reverse proxy<br/>app.hexgate.ai"]:::hexBox
+  P -->|"path /v1/traces → HEXGATE_OTLP_PORT<br/>(host 7001/7201 → container :4318)"| C["Go Collector<br/>biscuit auth · batch 5s / 512 spans"]:::hexBox
+  P -->|"all other paths"| F["FastAPI platform API"]:::hexBox
+  C --> K["Redpanda topic<br/>hexgate.otlp.raw"]:::redpandaBox
+  K --> E["span-enricher job<br/>decode semconv · redact · batch insert"]:::hexBox
+  E --> CH[("ClickHouse")]:::hexBox
+  E -->|"lookup agent_version_id"| PG[("Postgres")]:::pgBox
+  C -->|"key lookup + revocation poll<br/>(devtoken table, every 20s)"| PG
+  F <-->|"control-plane data:<br/>orgs, projects, agents, API keys"| PG
+  D["React dashboard"]:::hexBox -->|"audit & usage queries"| F
+  F -->|"reads audit/usage rows"| CH
 ```
-┌─────────────────────────── SDK (hexgate) ───────────────────────────┐
-│  tool call                                                           │
-│     │                                                                │
-│     ▼                                                                │
-│  PolicyEnforcer.decide()  ──►  Decision (event_id, occurred_at)      │
-│     │                            │                                   │
-│     │ returns to agent  ◄────────┘ (synchronous, authoritative)      │
-│     │                                                                │
-│     └─► AuditSender.emit(AuditEvent)   (one OTel span, best-effort)  │
-│              │  BatchSpanProcessor: bounded queue, drop-on-saturation│
-└──────────────┼───────────────────────────────────────────────────────┘
-               │  OTLP/HTTP POST /v1/traces   (Bearer <hexgate_key>)
-               │  → Collector → Redpanda → span-enricher job (see the
-               │    "OpenTelemetry migration design" doc)
-               ▼
-┌─────────────────────── Platform API (FastAPI) ──────────────────────┐
-│  require_project      bearer → project_id                            │
-│  require_clickhouse   client or 503                                  │
-│  validate             clock-skew / retention window                  │
-│  resolve              agent_version_id from latest AgentVersion      │
-│  insert_decision      byte-cap args/hint, write one row              │
-└──────────────┼───────────────────────────────────────────────────────┘
-               │  INSERT (async_insert, wait_for_async_insert=1)
-               ▼
-┌─────────────────────────── ClickHouse ──────────────────────────────┐
-│  hexgate_audit.policy_decision   MergeTree, monthly partitions,      │
-│  TTL 90 days, received_at server-stamped                             │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │  GET /v1/projects/{id}/audit/{summary,timeseries,decisions}
-               ▼
-        Project-scoped aggregation endpoints (read API)
-```
+
+The SDK side in more detail: `PolicyEnforcer.decide()` returns the `Decision`
+to the agent synchronously and authoritatively, then hands a copy to
+`AuditSender.emit()` as one OTel span, best-effort, through a bounded
+`BatchSpanProcessor` queue that drops on saturation (§3). ClickHouse holds
+`hexgate_audit.policy_decision`, `llm_invocation` and `ban_enforcement`
+(§5); the dashboard reads them through the project-scoped aggregation
+endpoints (§7).
 
 ### Design principles
 
@@ -297,49 +299,120 @@ flush that outlives the timeout loses whatever was queued. Call `shutdown()`.
 
 ---
 
-## 4. Platform ingest endpoint
+## 4. Platform ingest — Collector → Redpanda → span-enricher
 
-`POST /v1/audit/decisions` (`platform/api/main.py` → `ingest_decision`).
+The API does not ingest spans. Ingest is three services; the API only reads.
 
-### 4.1 Request
+### 4.1 Collector (`platform/collector/`)
 
-- **Auth:** `Authorization: Bearer <hexgate_key>`. `require_project` verifies
-  the key and resolves it to a `project_id`. Missing/invalid → **401**.
-- **Body:** `DecisionEvent` (`platform/api/schemas.py`), a pydantic model that
-  extends `AuditEnvelope`. Field-level validation (max lengths, enum membership)
-  happens here; a malformed body → **422** (FastAPI validation).
-- **ClickHouse dependency:** `require_clickhouse` resolves the client and maps a
-  connect failure to **503** with `Retry-After: 5`.
+A custom OpenTelemetry Collector build (`builder-config.yaml`) with one
+Hexgate-specific extension, `hexgatebiscuitauth`, attached to the OTLP
+receiver. Deployed it listens on `:4318` (HTTP) behind the reverse proxy's
+`/v1/traces` rule; the gRPC receiver on `:4317` is enabled but not published.
 
-### 4.2 Server-side processing
+Per request, the extension:
 
-1. **Clock-skew / retention guard.** Reject `occurred_at` more than 5 minutes in
-   the future (`CLOCK_SKEW_FUTURE`) or older than the 90-day `RETENTION_WINDOW`
-   → **400**.
-2. **Resolve `agent_version_id`** = latest `AgentVersion.id` for
-   `(project_id, agent_name)`, or `""` if the agent isn't registered. Unknown
-   agents still log; the version is just empty.
-3. **Insert** via `audit.insert_decision`. `project_id` (bearer-resolved) and
-   `agent_version_id` (platform lookup) are passed explicitly and override
-   anything in the body.
+1. **Parses the bearer envelope** `fty_<env>_<project>_<biscuit>` and verifies
+   the Biscuit's signature against the platform's root Ed25519 public key
+   (`hexgate.pub`, written by the API's keystore, mounted read-only). TTL
+   caveats are checked against the current time. Any failure → **401**
+   `invalid Hexgate API key`; the reason is logged at debug level only, to
+   keep a stolen key from probing.
+2. **Reads the `token_id` fact** from the authority block (the API key row's
+   own id, platform-api #126) and looks it up in a **revocation snapshot** of
+   the key table, polled from Postgres every 20 s. Revoking a key deletes its
+   row, so absence = revoked → **401**. A snapshot older than `max_staleness`
+   (2 min, i.e. Postgres unreachable) makes the extension reject *everything*
+   rather than let revoked keys keep working.
+3. **Resolves `project_id` from the key's row**, not from the token's own
+   `project` fact (a mint-time snapshot) and never from a span attribute, and
+   attaches it as client metadata. `include_metadata` on the receiver and
+   `metadata_keys: [project_id]` on the batch processor carry it through to
+   the exporter, where `message_key_from_metadata_key` makes it the **Kafka
+   record key**. The record key is the only project attribution downstream.
 
-### 4.3 Responses
+Processors: `memory_limiter`, a `resource` tag (`collector.name`), a
+placeholder `attributes` tag, and `batch` (5 s / 512 spans, one batcher per
+project; `metadata_cardinality_limit: 10000` is a hard ceiling on distinct
+projects per process lifetime). Exporter: `kafka`, `otlp_proto` encoding,
+`murmur2` sticky-key partitioning so one project always lands on one
+partition.
 
-| Status | Meaning |
-|--------|---------|
-| **202 Accepted** | Row written. Body: `{"event_id": "<uuid>"}`. (Sync write, see §5.2 — 202 reflects "queued/durable" semantics but the insert has actually completed.) |
-| **400** | `occurred_at` outside the accepted time window. |
-| **401** | Missing/malformed/invalid/revoked bearer key. |
-| **413** | `arguments` > 8 KiB, or `hint` / `attributes` > 4 KiB each, after JSON serialization. |
-| **422** | Body failed schema validation, **or** ClickHouse rejected the row (non-transient — retry won't help). |
-| **503** | ClickHouse unreachable or transient insert failure (`OperationalError`). Retryable; carries `Retry-After`. |
+The Collector **acks the HTTP request before the Kafka publish**. A Redpanda
+outage therefore looks like success to the SDK; the exporter retries and then
+drops. The healthcheck does not surface this yet (see §9).
+
+### 4.2 Redpanda (`platform/redpanda/`)
+
+Two topics, created by `create-topics.sh` (`make redpanda-topics` locally, the
+`redpanda-init` one-shot in the deploy stack). `auto_create_topics_enabled` is
+switched off so a wrong topic name fails loudly instead of fabricating a
+1-partition topic.
+
+| Topic | Purpose | Partitions | Retention |
+|---|---|---|---|
+| `hexgate.otlp.raw` | span buffer between collector and enricher | 3 | 3 days |
+| `hexgate.otlp.dlq` | permanently rejected records/spans (JSON envelopes) | 3 | 30 days |
+
+Redpanda is a buffer, not a store: ClickHouse is the system of record, and the
+raw topic only needs to outlive an enricher restart or redeploy. It is
+PLAINTEXT with no auth and must never be exposed outside the Compose network.
+
+### 4.3 span-enricher (`hexgate_api.jobs.enricher`)
+
+One consumer-group member (`hexgate-enricher`), run from the API image with
+`python -m hexgate_api.jobs.enricher`. On startup it verifies the three
+ClickHouse tables against the expected schema and that both topics exist
+(`TopicsMissing` otherwise). Per poll (`max_poll_records` 500, 1 s timeout),
+in order:
+
+1. **Decode** each record's bytes as `ExportTraceServiceRequest`. Undecodable
+   bytes → one DLQ envelope for the whole record.
+2. **Attribute the project** from the record key. A missing or non-UTF-8 key
+   can only come from a foreign producer; every span in such a record goes to
+   the DLQ (`missing_key`).
+3. **Map and validate** each span by instrumentation scope — `hexgate.audit`
+   → `DecisionEvent`, `hexgate.usage` → `LlmInvocationEvent`, `hexgate.bans` →
+   `BanEnforcementEvent` (the platform pydantic schemas, so the same max
+   lengths and enum checks apply everywhere). `occurred_at` is the span's
+   `start_time_unix_nano` (zero → rejected). A rejected span becomes a DLQ
+   envelope; its siblings in the same record are unaffected.
+4. **Resolve `agent_version_id`** for every distinct `(project_id, agent_name)`
+   in the batch — two Postgres queries regardless of batch size. Unregistered
+   agents resolve to `""` and are inserted anyway.
+5. **Insert**, three batch inserts (one per table), retried as a whole with
+   exponential backoff (cap 30 s) until ClickHouse acks. The consumer's
+   `max_poll_interval` is raised to 30 min so a ClickHouse outage does not get
+   the partition reassigned to a replica that would hit the same outage.
+6. **Send DLQ envelopes**, then **commit offsets**.
+
+Committing only after the ack means a crash anywhere in the cycle replays the
+poll. That is safe for the tables — `event_id` is the idempotency key and the
+tables are `ReplacingMergeTree` — and merely duplicates DLQ envelopes, which
+carry no dedup key (consumers of the DLQ must tolerate that).
+
+DLQ envelopes are JSON, keyed by project like the source record, and carry the
+decoded attributes with the dict-typed fields redacted (same sensitive-key
+regex as the SDK) and capped, plus a `_source` pointer (topic/partition/offset)
+back to the raw bytes for as long as the raw topic's retention lasts.
 
 ### 4.4 Trust boundary
 
-`AuditEnvelope` is intentionally **narrower** than the storage row. The body
-carries only `event_id`, `occurred_at`, `agent_name`, `session_id`, `user_id`
-(envelope) plus the decision fields. `project_id`, `agent_version_id`, and
-`received_at` are server-owned and cannot be spoofed by the SDK.
+The span body carries only the envelope fields (`event_id`, `occurred_at` as
+span start, `agent_name`, `session_id`, `user_id`) plus the event fields.
+`project_id` is derived by the Collector from the key's database row and
+travels as the record key; `agent_version_id` is a platform lookup;
+`received_at` is stamped by ClickHouse. None of the three can be set by an SDK.
+
+### 4.5 Legacy HTTP ingest
+
+`POST /v1/audit/decisions`, `POST /v1/audit/ban-enforcements` and
+`POST /v1/audit/llm-invocations` (`features/audit/router.py`,
+`features/llm_invocations/router.py`) still exist: one event per request,
+same bearer via `require_project`, same pydantic validation, synchronous
+single-row insert, `202 {"event_id"}` on success. They predate the OTLP
+pipeline, the SDK no longer calls them, and they are slated for removal.
+Nothing new should target them.
 
 ---
 
@@ -401,7 +474,11 @@ SETTINGS index_granularity = 8192;
 
 ### 5.2 Insert semantics
 
-`platform/api/audit.py` — `insert_decision`:
+The enricher writes through `insert_decisions_batch` /
+`insert_llm_invocations_batch` / `insert_ban_enforcements_batch`
+(`features/audit/service.py`, `features/llm_invocations/service.py`): one
+multi-row insert per table per poll, retried until acked (§4.3). The legacy
+HTTP ingest uses the single-row `insert_decision`, whose settings are:
 
 - **Byte caps before write:** `arguments` JSON ≤ 8 KiB, `hint` JSON ≤ 4 KiB,
   `attributes` JSON ≤ 4 KiB — each checked independently, else
@@ -512,19 +589,28 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 
 | Failure | Platform behaviour |
 |---------|--------------------|
-| ClickHouse unreachable | 503 + `Retry-After` (startup logs a warning, does not crash) |
-| Transient insert error | 503 + `Retry-After` |
-| Storage rejects row | 422 (retry won't help) |
-| Oversize args/hint/attributes | 413 |
-| Bad/missing bearer | 401 |
-| occurred_at out of window | 400 |
+| Bad/missing/revoked bearer | Collector 401; the SDK logs and drops the batch |
+| Postgres unreachable > 2 min | Collector's revocation snapshot goes stale → **every** request 401s until Postgres is back (fail closed) |
+| Redpanda unreachable | Collector has already acked 200; exporter retries then drops. Invisible to the SDK and to the current healthcheck (§9) |
+| Enricher down / redeploying | Spans buffer in `hexgate.otlp.raw`; nothing lost within the 3-day retention; dashboard lags |
+| ClickHouse unreachable | Enricher retries the batch with backoff (cap 30 s), commits nothing; consumer lag grows; `restart: unless-stopped` |
+| Undecodable record / keyless record / span fails validation | DLQ envelope on `hexgate.otlp.dlq`; sibling spans still inserted |
+| Unregistered agent_name | Inserted with `agent_version_id = ""` |
+| Legacy HTTP ingest (§4.5): ClickHouse down / bad row / oversize / bad bearer / occurred_at out of window | 503 + `Retry-After` / 422 / 413 / 401 / 400 |
 
 ---
 
 ## 9. Open items / known gaps
 
-1. **Read path auth & scoping** — `GET /v1/audit/decisions` is unauthenticated
-   and cross-project (POC). Needs `read_audit` scope + `project_id` filter.
+1. **Pipeline health is not observable** — the Collector's healthcheck is a TCP
+   probe on `:4318` that stays green in both real failure modes (revocation
+   snapshot past `max_staleness` → every request 401s; Redpanda unreachable →
+   acked spans dropped after retries). The enricher has no healthcheck at all
+   and its insert retry is unbounded, so a wedged consumer stays "Up" while the
+   raw topic's 3-day retention deletes what it never committed. Needs the
+   `healthcheckv2` extension in the collector build with the auth extension
+   reporting component status, and a heartbeat file plus a retry ceiling in the
+   enricher. Until then `make platform-smoke` is the only end-to-end signal.
 2. **`arguments`/`attributes` redaction is key-name-only** — the default
    redactor strips sensitive-keyed values, but content-sensitive values (SQL,
    email bodies, identifiers in the ABAC bag) pass through; no per-tool
@@ -542,10 +628,10 @@ columns make these scans cheap. All time-axis logic keys off `occurred_at`
 5. **At-least-once, not exactly-once end to end** — the SDK can drop on
    saturation/network failure (audit is best-effort); `event_id` dedup prevents
    duplicates but not gaps.
-6. **Write path is unscoped within a project** — `POST /v1/audit/decisions`
-   authorizes via `require_project` (signature + project resolution only); any
-   valid SDK bearer for the project can write audit, fetch policy, and register
-   agents interchangeably. The biscuit attenuation primitive already exists
+6. **Write path is unscoped within a project** — the Collector's auth extension
+   (and the legacy `POST /v1/audit/*` via `require_project`) checks signature,
+   revocation and project resolution only; any valid SDK bearer for the project
+   can write audit, fetch policy, and register agents interchangeably. The biscuit attenuation primitive already exists
    (`platform/api/biscuits.py`); an `emit_audit` scope fact + endpoint check is
    the natural fix. Note existing minted tokens won't carry the fact — needs a
    deprecation window or re-mint.

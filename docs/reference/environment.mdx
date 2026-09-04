@@ -31,6 +31,7 @@ raises a key-named error when the agent is built.
 |---|---|
 | `HEXGATE_API_KEY` | `fty_live_…` / `fty_test_…` token. Wakes up the platform path; without it, adapters and `load_agent` fall back to local / registered resolution. |
 | `HEXGATE_API_URL` | Platform endpoint. Defaults to Hexgate Cloud (`https://app.hexgate.ai`). Set to `http://localhost:8000` only when self-hosting locally — the key must be minted by whichever platform this points at. |
+| `HEXGATE_OTLP_ENDPOINT` | Where audit, usage and ban spans are exported (OTLP/HTTP). Defaults to `<HEXGATE_API_URL>/v1/traces`, which Hexgate Cloud and the reference deploy both serve. Set it only when the collector lives on a different host than the control plane, e.g. `http://localhost:4318/v1/traces` for a local `make collector-run`. |
 | `HEXGATE_LOCAL_MODE` | Truthy value forces local audit and shorts the platform auto-bind path, even when `HEXGATE_API_KEY` is set. `hexgate chat` sets this automatically. |
 | `HEXGATE_BIND_AGENTS` | Truthy value opts a code-built agent into the platform path at construction time (requires `HEXGATE_API_KEY` — the platform path is otherwise opt-in). |
 
@@ -67,3 +68,9 @@ Read from the real environment or `platform/api/.env`. See
 | `RESEND_API_KEY` | Resend API key — enables `ResendEmailSender` when paired with `HEXGATE_EMAIL_FROM`. |
 | `HEXGATE_EMAIL_FROM` | From-address on a verified Resend domain, e.g. `"Hexgate <noreply@yourdomain.com>"`. |
 | `HEXGATE_DASHBOARD_URL` | Link host embedded inside verification / reset emails. |
+| `HEXGATE_REDPANDA_BOOTSTRAP_SERVER` | Kafka-protocol broker the span-enricher consumes from and the collector publishes to (default `localhost:9092`). |
+
+The collector and the span-enricher are separate processes with their own
+variables (broker, topics, the collector's public-key file and Postgres DSN for
+key revocation); the deploy compose sets all of them — see
+`platform/DEPLOY.md` and [audit log](/platform/audit-clickhouse).
