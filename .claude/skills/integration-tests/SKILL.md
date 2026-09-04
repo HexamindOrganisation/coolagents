@@ -5,6 +5,9 @@ description: Run the opt-in integration test suites (pytest -m integration) for 
 
 # Run Integration Tests
 
+The local stack below is the same one `docs/internals/development.md` ("Run the
+platform locally") documents for developers; keep the two in sync.
+
 ## SDK integration tests (repo root — `tests/adapters/*/test_integration.py`, `tests/audit/test_integration.py`)
 
 Infra (idempotent):
