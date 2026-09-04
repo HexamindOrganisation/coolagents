@@ -140,9 +140,9 @@ curl -sf https://app.staging.hexgate.ai/v1/health
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://app.hexgate.ai/v1/traces   # → 401
 ```
 
-Then prove the whole pipeline, not just the front door. From a laptop with the
-repo checked out (needs an admin account on the stage — §5 — and an API key
-minted in its dashboard):
+Then prove the pipeline behind the front door. From a laptop with the repo
+checked out (needs an admin account on the stage — §5 — and an API key minted
+in its dashboard):
 
 ```bash
 export HEXGATE_API_KEY=fty_live_...          # minted on THIS stage; a prod key 401s on staging
@@ -152,10 +152,16 @@ make platform-smoke STAGE=prod               # or STAGE=staging
 ```
 
 It sends five events (allow / deny / needs_approval decisions, one LLM usage,
-one ban enforcement) through the SDK's real OTLP path and polls the dashboard
+one ban enforcement) through the SDK's OTLP sender and polls the dashboard
 API until each shows up, then prints `PASS` or a per-event `MISSING` list.
 Rows are tagged `agent_name = otlp_smoke` and a per-run `session_id`, so they
 are easy to spot and harmless to leave. Run it after every `platform-up`.
+
+Scope: it starts at the SDK's sender, so a PASS proves the deployment —
+proxy route, collector auth, Redpanda, enricher, ClickHouse, read API — for
+this SDK version. It runs no agent, so the enforcer and adapter hooks that
+produce these events in real use are not exercised; those are covered by
+`pytest -m integration` against a local stack.
 
 ## 5. First admin (per env)
 

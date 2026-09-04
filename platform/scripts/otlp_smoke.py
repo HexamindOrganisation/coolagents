@@ -1,7 +1,7 @@
 """OTLP pipeline smoke test: one of every event type, then verify they landed.
 
-Sends five events through the SDK's real audit path (configure -> emit ->
-flush) to the stage HEXGATE_API_URL / HEXGATE_API_KEY point at:
+Sends five events through the SDK's sender (configure -> emit -> flush) to the
+stage HEXGATE_API_URL / HEXGATE_API_KEY point at:
 
     policy decision  allow / deny / needs_approval   -> policy_decision table
     LLM usage                                        -> llm_invocation table
@@ -9,6 +9,16 @@ flush) to the stage HEXGATE_API_URL / HEXGATE_API_KEY point at:
 
 All five ride the same sender, tagged with a per-run session id so the
 verification step can find exactly this run's rows.
+
+Scope — what this does and does not prove. It starts at the sender, so it
+covers the transport and storage path: OTLP exporter -> reverse proxy ->
+Collector (auth, project key) -> Redpanda -> span-enricher -> ClickHouse ->
+dashboard read endpoints. It runs no agent: the PolicyEnforcer, the adapter
+hooks that produce usage and ban events, identity from the HexgateContext
+scope, and policy evaluation are all upstream of where this starts and are
+covered by the adapter integration tests (`pytest -m integration`), not here.
+A PASS means "a correctly-formed span from this SDK version lands and is
+queryable on this stage"; it does not mean "an agent on this stage is audited".
 
 Verification needs a dashboard login (the read endpoints are org-member
 only, an API key is not enough). Set HEXGATE_SMOKE_EMAIL and
