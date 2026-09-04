@@ -6,7 +6,7 @@ before trusting the contents.
 | Doc | What it is | Status |
 |-----|------------|--------|
 | [architecture.md](architecture.md) | How `hexgate` is structured, runtime flow, file responsibilities | ⚠️ STALE — needs a refresh |
-| [audit-pipeline.md](audit-pipeline.md) | End-to-end audit/decision pipeline: SDK → platform endpoint → ClickHouse → dashboard | Living |
+| [audit-pipeline.md](audit-pipeline.md) | End-to-end audit pipeline: SDK spans → OTLP collector → Redpanda → span-enricher → ClickHouse → dashboard | Living |
 | [rego-wasm.md](rego-wasm.md) | How agent policies compile to signed WebAssembly | Snapshot (Milestone 2) |
 
 Conventions:

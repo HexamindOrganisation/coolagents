@@ -32,24 +32,60 @@ The service binds to **127.0.0.1 only, on host ports 8124 (HTTP) and 9001
 (native)** rather than ClickHouse's default 8123/9000, so it coexists with any
 other local ClickHouse instance (e.g. a Langfuse-bundled one).
 
-## Ingest endpoint
+## How events arrive
 
-Once both `make clickhouse-up` and `make platform-api` are running, the ingest
-endpoint `POST /v1/audit/decisions` accepts one decision per request:
+The SDK does not write to ClickHouse, and neither does the API. Events travel
+as OpenTelemetry spans through three more services that a self-hosted stack
+has to run alongside the API:
 
-```bash
-curl -X POST localhost:8000/v1/audit/decisions \
-  -H "Authorization: Bearer fty_test_..." \
-  -H "Content-Type: application/json" \
-  -d '{"event_id":"9f1e3c5a-4d2b-4b8e-9c8a-1f4e2d8a7c3b",
-       "occurred_at":"2026-05-29T14:00:00Z",
-       "agent_name":"example_agent","tool_name":"read_file","outcome":"deny"}'
-# → 202 {"event_id":"9f1e3c5a-..."}
+```mermaid
+flowchart LR
+  classDef sdkBox fill:#EAF2FF,stroke:#2F6FED,stroke-width:2px,color:#153E90
+  classDef hexBox fill:#F3EAFB,stroke:#8E3FC7,stroke-width:2px,color:#4A148C
+  classDef redpandaBox fill:#FCE8EC,stroke:#D6336C,stroke-width:2px,color:#8A1538
+
+  B["Hexgate SDK<br/>one OTel span per event"]:::sdkBox
+  P["Reverse proxy<br/>routes /v1/traces to the collector"]:::hexBox
+  C["Collector<br/>verifies the API key, keys spans by project"]:::hexBox
+  K["Redpanda<br/>buffer, 3-day retention"]:::redpandaBox
+  E["span-enricher<br/>decode · validate · resolve agent version"]:::hexBox
+  CH[("ClickHouse<br/>policy_decision · llm_invocation · ban_enforcement")]:::hexBox
+
+  B -->|"OTLP/HTTP POST /v1/traces<br/>Bearer api_key"| P --> C --> K --> E -->|"batch insert"| CH
 ```
 
-Integration tests (`pytest -m integration`) round-trip rows through the live
-ClickHouse — opt-in so the default `make platform-api-test` stays
+- **Collector** (`platform/collector/`, Go): the OTLP/HTTP receiver. Verifies
+  the bearer API key's signature and revocation status, stamps the project id on
+  every span as the Kafka record key, and publishes to Redpanda. A rejected key
+  is a `401` back to the SDK; a self-declared project id in the span is never
+  trusted.
+- **Redpanda**: two topics, `hexgate.otlp.raw` (the buffer, 3-day retention)
+  and `hexgate.otlp.dlq` (permanently rejected spans, 30 days). ClickHouse is
+  the system of record; the raw topic only has to outlive an enricher restart.
+- **span-enricher** (`hexgate_api.jobs.enricher`, same image as the API): a
+  consumer that decodes each span by instrumentation scope into a decision,
+  LLM-usage or ban-enforcement event, resolves `agent_version_id` from
+  Postgres, and batch-inserts into the three tables. Offsets commit only after
+  ClickHouse acknowledges, so a crash replays the batch; `event_id` plus
+  `ReplacingMergeTree` collapses the duplicates.
+
+Locally, `make collector-run` and `make enricher-run` start the two processes
+against the dev Redpanda (`make redpanda-topics` creates the topics). The
+reverse proxy in front of a deployed stack must route the path `/v1/traces` to
+the collector rather than the API; the reference compose, ports and proxy rules
+are in `platform/DEPLOY.md`, and `make platform-smoke STAGE=<stage>` sends one
+of every event type through a live stage and checks each row arrived.
+
+Integration tests (`pytest -m integration`) round-trip real spans through this
+whole chain — opt-in so the default `make platform-api-test` stays
 offline-friendly.
+
+<Note>
+**Legacy HTTP ingest.** The API still serves `POST /v1/audit/decisions`,
+`POST /v1/audit/ban-enforcements` and `POST /v1/llm/invocations`, one event per
+request with the same bearer. The SDK no longer calls them; they bypass the
+collector and are slated for removal. Don't build on them.
+</Note>
 
 ## Seed data
 

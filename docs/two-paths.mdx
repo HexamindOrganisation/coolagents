@@ -32,7 +32,7 @@ debugging a production-like trace, or demoing.
 | Path | Needs platform? | Audit destination | Policy edits visible at | Best for |
 |------|-----------------|-------------------|--------------------------|----------|
 | `hexgate chat --agent ...` | No | Local terminal panel | Edit + restart (hot-reload only when `HEXGATE_LOCAL_POLICY` is set) | Inner loop, policy authoring |
-| `hexgate serve module.path:attr` + Playground | Yes | ClickHouse via `/v1/audit/decisions` | Per-turn fetch from dashboard | Team review, demos, integration testing |
+| `hexgate serve module.path:attr` + Playground | Yes | ClickHouse, via OTLP spans to `/v1/traces` | Per-turn fetch from dashboard | Team review, demos, integration testing |
 
 `hexgate chat` takes `--agent`, accepting either a plain agent id
 (`--agent example_agent`) or a uvicorn-style `module.path:attr` spec

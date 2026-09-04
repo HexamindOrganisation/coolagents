@@ -59,12 +59,34 @@ schema upgrades as a maintenance step.
 - `GET /v1/agents/:name` — read an agent's current policy (the `hexgate serve` fetch)
 - `WS /v1/serve` — producer socket (the `hexgate serve` CLI dials here)
 - `WS /v1/projects/:id/chat` — consumer socket (the dashboard Playground dials here)
+- `POST /v1/traces` — OTLP/HTTP span ingest for audit, usage and ban events.
+  **Served by the collector, not by this API**: on the same origin only because
+  the reverse proxy routes that one path to the collector's port. See below.
 
-The `/v1/agents…` and `/v1/serve` routes are **not** project-scoped in the path —
-the project is resolved from the bearer token (carried in the WebSocket
-subprotocol for `serve`), so a `fty_live_…` key both authenticates *and* selects
-the project. Only the dashboard-facing routes (`/projects/:id/…`, `chat`) take an
-explicit project id.
+The `/v1/agents…`, `/v1/serve` and `/v1/traces` routes are **not** project-scoped
+in the path — the project is resolved from the bearer token (carried in the
+WebSocket subprotocol for `serve`), so a `fty_live_…` key both authenticates
+*and* selects the project. Only the dashboard-facing routes (`/projects/:id/…`,
+`chat`) take an explicit project id.
+
+## The full stack
+
+`uvicorn` alone gives you agents, tokens, policy and the Playground. The audit
+trail needs three more processes — the OTLP **collector**, **Redpanda** as the
+span buffer, and the **span-enricher** that writes ClickHouse — plus a reverse
+proxy rule sending `/v1/traces` to the collector instead of the API. Locally:
+
+```bash
+make platform-api-pg      # API on Postgres (the collector checks key revocation there)
+make collector-run        # OTLP receiver on :4318
+make enricher-run         # Redpanda → ClickHouse
+```
+
+For a deployed stack, `platform/docker-compose.deploy.yml` runs all of it as one
+Compose project per environment and `platform/DEPLOY.md` is the runbook (ports,
+secrets, the proxy rule, and `make platform-smoke` to verify a live stage). How
+events move through these services is described in
+[audit log](/platform/audit-clickhouse).
 
 ## Health & readiness
 
